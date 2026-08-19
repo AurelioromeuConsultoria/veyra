@@ -39,21 +39,21 @@ pnpm monorepo · TypeScript strict ponta a ponta · NestJS (monólito modular) �
 
 ## 4. Padrões proibidos
 
-| Proibido | Por quê |
-|---|---|
-| Tabela de domínio sem `workspaceId` | Quebra o modelo shared-database; retrofit é caríssimo |
-| `findUnique`/`update`/`delete`/`upsert` em modelo tenant-protegido | Bypass silencioso do filtro de tenant |
-| `prisma.raw` fora das exceções do §3.3 | Única superfície de erro humano do modelo de isolamento |
-| Ramificar por nome de role | RBAC é por permissão; nomes de papéis são dado do workspace |
-| Endpoint privado sem decorator de autorização | Guard é default-deny; autenticado ≠ autorizado — use `@RequirePermissions` ou `@AuthenticatedOnly()` explícito |
-| Camada Repository sobre o Prisma | Service faz demais? Divida em dois services, não empilhe camada |
-| Microsserviço ou "camada genérica" sem ADR | Monólito modular é decisão (ADR-001) |
-| Conceito vertical no Core | O Core origina verticais; não os conhece |
-| Segredo em DTO, log, front ou commit | Hook bloqueia commit; revisão de security é obrigatória |
-| Float para dinheiro | Erro de arredondamento em produção |
-| Migration destrutiva sem plano | Hook exige confirmação; produção não tem undo |
-| Registro público de usuário | Adiado até billing + quotas + rate limit + antiabuso (ADR) |
-| Estado de servidor duplicado em store de UI | TanStack Query é a fonte; store só para UI/sessão |
+| Proibido                                                           | Por quê                                                                                                        |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| Tabela de domínio sem `workspaceId`                                | Quebra o modelo shared-database; retrofit é caríssimo                                                          |
+| `findUnique`/`update`/`delete`/`upsert` em modelo tenant-protegido | Bypass silencioso do filtro de tenant                                                                          |
+| `prisma.raw` fora das exceções do §3.3                             | Única superfície de erro humano do modelo de isolamento                                                        |
+| Ramificar por nome de role                                         | RBAC é por permissão; nomes de papéis são dado do workspace                                                    |
+| Endpoint privado sem decorator de autorização                      | Guard é default-deny; autenticado ≠ autorizado — use `@RequirePermissions` ou `@AuthenticatedOnly()` explícito |
+| Camada Repository sobre o Prisma                                   | Service faz demais? Divida em dois services, não empilhe camada                                                |
+| Microsserviço ou "camada genérica" sem ADR                         | Monólito modular é decisão (ADR-001)                                                                           |
+| Conceito vertical no Core                                          | O Core origina verticais; não os conhece                                                                       |
+| Segredo em DTO, log, front ou commit                               | Hook bloqueia commit; revisão de security é obrigatória                                                        |
+| Float para dinheiro                                                | Erro de arredondamento em produção                                                                             |
+| Migration destrutiva sem plano                                     | Hook exige confirmação; produção não tem undo                                                                  |
+| Registro público de usuário                                        | Adiado até billing + quotas + rate limit + antiabuso (ADR)                                                     |
+| Estado de servidor duplicado em store de UI                        | TanStack Query é a fonte; store só para UI/sessão                                                              |
 
 ## 5. Fluxo de desenvolvimento
 
@@ -77,11 +77,11 @@ pnpm monorepo · TypeScript strict ponta a ponta · NestJS (monólito modular) �
 
 `docs/` é a referência completa; `.claude/` é a camada executável (agentes, skills, hooks) que **linka de volta** para `docs/` — nunca duplique o raciocínio inteiro nos dois lugares. Ao mudar um, atualize o outro.
 
-| Executável | Papel |
-|---|---|
-| `.claude/agents/` | architect, backend, frontend, database, security (read-only), qa, reviewer (read-only), intelligence |
+| Executável        | Papel                                                                                                                                                                          |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `.claude/agents/` | architect, backend, frontend, database, security (read-only), qa, reviewer (read-only), intelligence                                                                           |
 | `.claude/skills/` | create-module, create-entity, create-migration, create-api, create-vertical, review-rbac, review-tenant-isolation, implement-ai-capability, security-review, release-checklist |
-| `.claude/hooks/` | bloqueiam migration destrutiva, segredos em commit, mudança sensível em tenancy/RBAC sem revisão, push sem validação |
+| `.claude/hooks/`  | bloqueiam migration destrutiva, segredos em commit, mudança sensível em tenancy/RBAC sem revisão, push sem validação                                                           |
 
 **Roteie proativamente**: mudanças em auth, tenancy, RBAC, segredos ou migrations exigem `reviewer` + `security` antes do commit — sem esperar ser pedido.
 

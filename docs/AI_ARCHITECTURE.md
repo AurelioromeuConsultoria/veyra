@@ -29,29 +29,29 @@ graph LR
 
 Componentes do módulo (`apps/api/src/intelligence/` na Fase 2):
 
-| Componente | Responsabilidade |
-|---|---|
-| `IntelligenceService` | Orquestra runs: monta contexto mínimo, escolhe prompt versionado, chama o LLM, persiste `AiRun` |
+| Componente            | Responsabilidade                                                                                                                       |
+| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `IntelligenceService` | Orquestra runs: monta contexto mínimo, escolhe prompt versionado, chama o LLM, persiste `AiRun`                                        |
 | `ToolRegistryService` | `build({ membership, consents })` → ToolSet condicional; cada tool = descrição + `inputSchema` Zod + `execute` que delega a um service |
-| `ProposalService` | Ciclo de vida de `AiProposal` (pending → approved/rejected/expired); execução aprovada delega ao service de domínio e audita |
-| `PromptRegistry` | Prompts versionados (`PromptVersion`: capability, version, hash, changelog) — mudar prompt = nova versão, nunca edição silenciosa |
-| `CostService` | Agrega tokens/custo por workspace; alimenta quotas |
-| `evals/` | Avaliações automatizadas por capacidade |
+| `ProposalService`     | Ciclo de vida de `AiProposal` (pending → approved/rejected/expired); execução aprovada delega ao service de domínio e audita           |
+| `PromptRegistry`      | Prompts versionados (`PromptVersion`: capability, version, hash, changelog) — mudar prompt = nova versão, nunca edição silenciosa      |
+| `CostService`         | Agrega tokens/custo por workspace; alimenta quotas                                                                                     |
+| `evals/`              | Avaliações automatizadas por capacidade                                                                                                |
 
 Nota de engenharia (herdada do Norteie): tipar o ToolSet explicitamente — a inferência profunda de generics de AI SDK + Zod estoura a memória do `tsc`.
 
 ## 3. Capacidades iniciais (contratos)
 
-| # | Capacidade | Entrada | Saída | Ação externa? |
-|---|---|---|---|---|
-| 1 | **Resumo de conversa** | conversationId | Resumo estruturado (participantes, assunto, pendências, sentimento) | Não |
-| 2 | **Extração de intenção** | mensagem/conversa | Intenção classificada (catálogo: comprar, cancelar, dúvida, reclamação…) + confiança | Não |
-| 3 | **Sugestão de resposta** | conversationId + contexto do contato | Rascunho de resposta (tom do workspace) | Sim → `AiProposal` (enviar) |
-| 4 | **Próxima ação** | contactId ou dealId | Ação recomendada + justificativa (ligar, agendar, proposta…) | Sim → `AiProposal` (criar task) |
-| 5 | **Lead scoring explicável** | contactId/dealId | Score 0–100 + **fatores explicáveis** (recência, engajamento, fit, estágio) — nunca score opaco | Não |
-| 6 | **Oportunidade parada** | job periódico por workspace | Deals com `stalledSince` acima do limiar + motivo provável + próxima ação | Sim → `AiProposal` |
-| 7 | **Limpeza de dados** | job/pedido | Duplicatas prováveis, campos inconsistentes, sugestão de merge | Sim → `AiProposal` (merge) |
-| 8 | **Previsão de pipeline** | pipelineId + período | Forecast com intervalos + premissas explicitadas | Não |
+| #   | Capacidade                  | Entrada                              | Saída                                                                                           | Ação externa?                   |
+| --- | --------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------- | ------------------------------- |
+| 1   | **Resumo de conversa**      | conversationId                       | Resumo estruturado (participantes, assunto, pendências, sentimento)                             | Não                             |
+| 2   | **Extração de intenção**    | mensagem/conversa                    | Intenção classificada (catálogo: comprar, cancelar, dúvida, reclamação…) + confiança            | Não                             |
+| 3   | **Sugestão de resposta**    | conversationId + contexto do contato | Rascunho de resposta (tom do workspace)                                                         | Sim → `AiProposal` (enviar)     |
+| 4   | **Próxima ação**            | contactId ou dealId                  | Ação recomendada + justificativa (ligar, agendar, proposta…)                                    | Sim → `AiProposal` (criar task) |
+| 5   | **Lead scoring explicável** | contactId/dealId                     | Score 0–100 + **fatores explicáveis** (recência, engajamento, fit, estágio) — nunca score opaco | Não                             |
+| 6   | **Oportunidade parada**     | job periódico por workspace          | Deals com `stalledSince` acima do limiar + motivo provável + próxima ação                       | Sim → `AiProposal`              |
+| 7   | **Limpeza de dados**        | job/pedido                           | Duplicatas prováveis, campos inconsistentes, sugestão de merge                                  | Sim → `AiProposal` (merge)      |
+| 8   | **Previsão de pipeline**    | pipelineId + período                 | Forecast com intervalos + premissas explicitadas                                                | Não                             |
 
 Capacidades 5–8 preferem sinais determinísticos calculáveis sem LLM (recência, valores, movimentação) com o LLM por cima para explicação/síntese — barato, testável, e o fallback já existe.
 

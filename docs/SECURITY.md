@@ -4,7 +4,7 @@ Segurança e SaaS são inegociáveis. Este documento define o modelo de ameaça 
 
 ## 1. Modelo de ameaça multi-tenant
 
-Ameaça número um: **vazamento entre workspaces** — um tenant ler/escrever dados de outro por query sem filtro, FK cruzada, `include` transitivo, job sem contexto ou tool de IA mal escopada. Todo o design parte de: *o desenvolvedor vai esquecer o filtro um dia; o sistema não pode depender de ele lembrar.*
+Ameaça número um: **vazamento entre workspaces** — um tenant ler/escrever dados de outro por query sem filtro, FK cruzada, `include` transitivo, job sem contexto ou tool de IA mal escopada. Todo o design parte de: _o desenvolvedor vai esquecer o filtro um dia; o sistema não pode depender de ele lembrar._
 
 ## 2. Isolamento de tenant (fail-closed, em camadas)
 
@@ -20,6 +20,7 @@ Ameaça número um: **vazamento entre workspaces** — um tenant ler/escrever da
 **Camada 2 — Integridade no banco (FKs compostas):** entidades referenciáveis declaram `@@unique([workspaceId, id])`; relações entre entidades de workspace usam `FOREIGN KEY (workspaceId, xId) REFERENCES X(workspaceId, id)`. Obrigatório em: Membership→Role, Team→Membership, Deal→Contact/Pipeline/Stage, Message→Conversation, Notification→Membership, extensões verticais→Contact — e default para toda relação futura entre entidades de workspace.
 
 **Camada 3 — Verificação contínua:**
+
 - Teste de integração de segurança **P0** contra Postgres real (`prisma.multitenant.integration-spec.ts` na Fase 2): create carimba o workspace do CLS; A não lê B; `updateMany` de A não alcança linha de B; query sem contexto é bloqueada; operação unsafe é bloqueada. Se falhar, é vazamento — trate como incidente.
 - Script `check:fk` que varre o banco procurando FKs que cruzam fronteira de workspace (exit 1 se sujo; imprime só IDs).
 

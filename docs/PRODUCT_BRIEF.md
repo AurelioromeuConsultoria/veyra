@@ -15,34 +15,34 @@ A tese: construir o CRM uma vez, com isolamento de tenant e IA estruturais, e or
 
 ## 3. Capacidades do Core (universais, e somente elas)
 
-| Área | Capacidades |
-|---|---|
-| Identidade e acesso | Workspace, usuários globais, convites, memberships, equipes, RBAC por permissões |
-| Relacionamento | Contatos, empresas, tags, campos personalizados |
-| Vendas | Pipelines, estágios, oportunidades (deals) |
-| Trabalho | Tarefas, notas, atividades, timeline |
-| Comunicação | Conversas, mensagens, canais |
-| Organização | Agenda, notificações, arquivos |
-| Plataforma | Automações, webhooks, integrações, auditoria, billing, limites/quotas |
-| Inteligência | Módulo `intelligence`: capacidades de IA sobre os dados do workspace, via ferramentas auditadas |
+| Área                | Capacidades                                                                                     |
+| ------------------- | ----------------------------------------------------------------------------------------------- |
+| Identidade e acesso | Workspace, usuários globais, convites, memberships, equipes, RBAC por permissões                |
+| Relacionamento      | Contatos, empresas, tags, campos personalizados                                                 |
+| Vendas              | Pipelines, estágios, oportunidades (deals)                                                      |
+| Trabalho            | Tarefas, notas, atividades, timeline                                                            |
+| Comunicação         | Conversas, mensagens, canais                                                                    |
+| Organização         | Agenda, notificações, arquivos                                                                  |
+| Plataforma          | Automações, webhooks, integrações, auditoria, billing, limites/quotas                           |
+| Inteligência        | Módulo `intelligence`: capacidades de IA sobre os dados do workspace, via ferramentas auditadas |
 
 ## 4. O que o Core NUNCA modela
 
 O Core não conhece **paciente, prontuário, imóvel, visitante** nem qualquer outro conceito vertical. Não há colunas "reservadas", enums "para o futuro clínico" nem módulos dormentes. Se um conceito só faz sentido em um nicho, ele pertence ao vertical.
 
-Teste rápido para saber se algo entra no Core: *"Uma consultoria B2B, uma imobiliária e uma clínica usariam isso do mesmo jeito?"* Se não, é vertical.
+Teste rápido para saber se algo entra no Core: _"Uma consultoria B2B, uma imobiliária e uma clínica usariam isso do mesmo jeito?"_ Se não, é vertical.
 
 ## 5. Como um vertical estende o Core — exemplo Veyra Clinics
 
-| Conceito do Clinics | Mecanismo de extensão |
-|---|---|
-| Paciente | Extension table 1:1 sobre `Contact` (`ClinicsPatient.contactId → Contact`, mesmo `workspaceId`, FK composta) |
-| Profissionais de saúde | Extensão de `Membership`/`User` com dados do conselho e especialidade |
-| Unidades | Entidade própria do vertical, tenant-scoped |
-| Serviços/procedimentos | Entidade própria, ligada a deals/agenda do Core |
-| Agenda clínica | Especialização da agenda do Core (slots, salas, profissional) |
-| Confirmação e no-show | Automações do Core + estados próprios do vertical |
-| Retorno e reativação | Capacidades de IA do Core parametrizadas pelo vertical |
+| Conceito do Clinics    | Mecanismo de extensão                                                                                        |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Paciente               | Extension table 1:1 sobre `Contact` (`ClinicsPatient.contactId → Contact`, mesmo `workspaceId`, FK composta) |
+| Profissionais de saúde | Extensão de `Membership`/`User` com dados do conselho e especialidade                                        |
+| Unidades               | Entidade própria do vertical, tenant-scoped                                                                  |
+| Serviços/procedimentos | Entidade própria, ligada a deals/agenda do Core                                                              |
+| Agenda clínica         | Especialização da agenda do Core (slots, salas, profissional)                                                |
+| Confirmação e no-show  | Automações do Core + estados próprios do vertical                                                            |
+| Retorno e reativação   | Capacidades de IA do Core parametrizadas pelo vertical                                                       |
 
 Regras da extensão (detalhadas em `docs/ARCHITECTURE.md`):
 

@@ -14,23 +14,23 @@ O Veyra deve parecer um produto internacional, premium e deliberado. Cada escolh
 
 ## 2. Anti-padrões (o que o Veyra nunca parece)
 
-| Anti-padrão | Por que é proibido |
-|---|---|
-| Vibe coding (gradientes roxos, glow, emoji em heading) | Genérico, data o produto em 6 meses |
-| Glassmorphism exagerado / blur decorativo | Custo de legibilidade sem função |
-| Dashboard genérico (cards iguais, 4 KPIs aleatórios, donut sem pergunta) | Todo gráfico responde uma pergunta ou sai |
-| Conjunto de componentes prontos sem hierarquia | shadcn é primitivo, não identidade |
-| Dark-admin preto + verde ácido | Identidade do template, não do produto |
-| IA como chat flutuante desconectado | IA aparece como sinais/insights/próximas ações no fluxo |
-| Skeleton screens infinitos e spinners gigantes | Perceived performance é design |
+| Anti-padrão                                                              | Por que é proibido                                      |
+| ------------------------------------------------------------------------ | ------------------------------------------------------- |
+| Vibe coding (gradientes roxos, glow, emoji em heading)                   | Genérico, data o produto em 6 meses                     |
+| Glassmorphism exagerado / blur decorativo                                | Custo de legibilidade sem função                        |
+| Dashboard genérico (cards iguais, 4 KPIs aleatórios, donut sem pergunta) | Todo gráfico responde uma pergunta ou sai               |
+| Conjunto de componentes prontos sem hierarquia                           | shadcn é primitivo, não identidade                      |
+| Dark-admin preto + verde ácido                                           | Identidade do template, não do produto                  |
+| IA como chat flutuante desconectado                                      | IA aparece como sinais/insights/próximas ações no fluxo |
+| Skeleton screens infinitos e spinners gigantes                           | Perceived performance é design                          |
 
 ## 3. Tipografia — três papéis (fontes a validar na Fase 2 de UI)
 
-| Papel | Uso | Direção de escolha |
-|---|---|---|
-| **Display** | Títulos de página, números-herói de dashboards | Grotesca contemporânea com personalidade discreta (candidatas: Söhne-like open source — ex. Inter Display ajustada, General Sans, Switzer) — peso 600–700, tracking levemente negativo |
-| **UI / corpo** | Todo o resto | Sans humanista neutra e altamente legível em 13–14px (candidatas: Inter, Instrument Sans — **não** repetir o par do Norteie por identidade) |
-| **Dados** | Valores monetários, datas, IDs, eyebrows/labels | Mono com `tabular-nums` obrigatório em qualquer coluna numérica (candidatas: IBM Plex Mono, Commit Mono) |
+| Papel          | Uso                                             | Direção de escolha                                                                                                                                                                     |
+| -------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Display**    | Títulos de página, números-herói de dashboards  | Grotesca contemporânea com personalidade discreta (candidatas: Söhne-like open source — ex. Inter Display ajustada, General Sans, Switzer) — peso 600–700, tracking levemente negativo |
+| **UI / corpo** | Todo o resto                                    | Sans humanista neutra e altamente legível em 13–14px (candidatas: Inter, Instrument Sans — **não** repetir o par do Norteie por identidade)                                            |
+| **Dados**      | Valores monetários, datas, IDs, eyebrows/labels | Mono com `tabular-nums` obrigatório em qualquer coluna numérica (candidatas: IBM Plex Mono, Commit Mono)                                                                               |
 
 Regra: os três papéis não se substituem. Número de dinheiro nunca em display; título nunca em mono.
 
@@ -38,15 +38,15 @@ Regra: os três papéis não se substituem. Número de dinheiro nunca em display
 
 Implementação: tokens CSS-first (Tailwind v4 `@theme`), claro como `:root`, dark via classe. Paleta exata definida na Fase de UI; a estrutura e a disciplina definem-se agora:
 
-| Token | Papel |
-|---|---|
-| `--background` | Fundo mineral (off-white quente no claro; grafite azulado profundo no dark) |
-| `--surface` / `--surface-2` | Cards/painéis e hover/campos |
-| `--border` | Hairlines de baixo contraste |
-| `--foreground` / `--muted-fg` | Grafite de texto e secundário |
-| `--accent` / `--accent-fg` | **A única cor de marca** — gasta com parcimônia: ação primária, foco, marcador ativo, assinatura da marca. Direção: um tom mineral profundo (verde-abissal, azul-ardósia ou cobre queimado — decidir com testes de contraste) |
-| `--positive` / `--negative` / `--warning` / `--info` | Semânticos: dinheiro/ganho, perda/atraso, atenção, informação — nunca decorativos |
-| `--ai` | Sinal de inteligência: um matiz próprio e sutil que marca insights/sugestões de IA (borda/ícone), para o usuário reconhecer proveniência sem estridência |
+| Token                                                | Papel                                                                                                                                                                                                                         |
+| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--background`                                       | Fundo mineral (off-white quente no claro; grafite azulado profundo no dark)                                                                                                                                                   |
+| `--surface` / `--surface-2`                          | Cards/painéis e hover/campos                                                                                                                                                                                                  |
+| `--border`                                           | Hairlines de baixo contraste                                                                                                                                                                                                  |
+| `--foreground` / `--muted-fg`                        | Grafite de texto e secundário                                                                                                                                                                                                 |
+| `--accent` / `--accent-fg`                           | **A única cor de marca** — gasta com parcimônia: ação primária, foco, marcador ativo, assinatura da marca. Direção: um tom mineral profundo (verde-abissal, azul-ardósia ou cobre queimado — decidir com testes de contraste) |
+| `--positive` / `--negative` / `--warning` / `--info` | Semânticos: dinheiro/ganho, perda/atraso, atenção, informação — nunca decorativos                                                                                                                                             |
+| `--ai`                                               | Sinal de inteligência: um matiz próprio e sutil que marca insights/sugestões de IA (borda/ícone), para o usuário reconhecer proveniência sem estridência                                                                      |
 
 Regras: acento nunca em fundo de área grande; semânticos nunca para "dar cor"; contraste AA mínimo em texto normal, AAA em texto denso do modo operacional.
 

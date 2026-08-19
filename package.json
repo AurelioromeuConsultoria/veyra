@@ -1,0 +1,27 @@
+{
+  "name": "veyra",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Veyra — CRM Core SaaS multi-tenant com IA nativa",
+  "scripts": {
+    "dev:api": "pnpm --filter @veyra/api dev",
+    "dev:web": "pnpm --filter @veyra/web dev",
+    "build": "pnpm --filter @veyra/contracts build && pnpm --filter @veyra/api build && pnpm --filter @veyra/web build",
+    "test": "pnpm --filter @veyra/api test && pnpm --filter @veyra/web test",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "db:up": "docker compose up -d postgres"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.8.1",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.6",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.67.0"
+  }
+}

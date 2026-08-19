@@ -6,18 +6,23 @@ Toda decisão arquitetural vira ADR **antes** do código. Formato abaixo. ADRs s
 
 ```markdown
 ## ADR-NNN — Título
+
 **Status:** aceito | supersedido por ADR-XXX | adiado (gatilho: ...)
 **Data:** AAAA-MM-DD
 
 ### Contexto
+
 ### Alternativas consideradas
+
 ### Decisão
+
 ### Consequências
 ```
 
 ---
 
 ## ADR-001 — Monólito modular NestJS em monorepo pnpm
+
 **Status:** aceito · **Data:** 2026-08-19
 
 **Contexto:** um desenvolvedor + agentes; SaaS multi-tenant que precisa nascer coeso e evoluir para verticais.
@@ -26,6 +31,7 @@ Toda decisão arquitetural vira ADR **antes** do código. Formato abaixo. ADRs s
 **Consequências:** deploy simples, refactor barato entre módulos, disciplina de boundaries mantida por revisão + grafo documentado em ARCHITECTURE.md. Extração de serviço só com necessidade demonstrada em novo ADR.
 
 ## ADR-002 — Isolamento de tenant por Prisma Client Extension fail-closed
+
 **Status:** aceito · **Data:** 2026-08-19
 
 **Contexto:** shared database multi-tenant; a ameaça nº 1 é vazamento entre workspaces; o filtro não pode depender de disciplina.
@@ -34,6 +40,7 @@ Toda decisão arquitetural vira ADR **antes** do código. Formato abaixo. ADRs s
 **Consequências:** isolamento na camada de dados; `raw` é a única superfície de erro humano — restrita e revisada. RLS fica como defesa em profundidade futura (ADR-013).
 
 ## ADR-003 — User global + Membership tenant-scoped
+
 **Status:** aceito · **Data:** 2026-08-19
 
 **Contexto:** um mesmo humano participa de vários workspaces; o Norteie usa `User.tenantId` direto, que não serve para SaaS.
@@ -42,6 +49,7 @@ Toda decisão arquitetural vira ADR **antes** do código. Formato abaixo. ADRs s
 **Consequências:** identidade única, revogação por workspace (ADR-009), dados de acesso isolados pelo mesmo mecanismo do domínio. `raw` para User/RefreshToken continua excepcional e justificado.
 
 ## ADR-004 — RBAC por permissões; Permission global, Role do workspace
+
 **Status:** aceito · **Data:** 2026-08-19
 
 **Contexto:** CRM SaaS exige papéis customizáveis por cliente sem que o código conheça nomes de papéis.
@@ -50,6 +58,7 @@ Toda decisão arquitetural vira ADR **antes** do código. Formato abaixo. ADRs s
 **Consequências:** flexibilidade por tenant com catálogo estável; auditoria de RBAC viável (skill `review-rbac`); nenhum "role global" existe.
 
 ## ADR-005 — Sem camada Repository sobre o Prisma
+
 **Status:** aceito · **Data:** 2026-08-19
 
 **Contexto:** tentação recorrente de "abstrair o ORM".
@@ -57,6 +66,7 @@ Toda decisão arquitetural vira ADR **antes** do código. Formato abaixo. ADRs s
 **Consequências:** menos indireção; o isolamento vive na extension (ADR-002), não numa camada; trocar de ORM (improvável) custaria refactor — aceito.
 
 ## ADR-006 — Contratos duais: Zod interno + OpenAPI público
+
 **Status:** aceito · **Data:** 2026-08-19
 
 **Contexto:** back e front compartilham tipos; integrações externas precisam de contrato padrão.
@@ -65,6 +75,7 @@ Toda decisão arquitetural vira ADR **antes** do código. Formato abaixo. ADRs s
 **Consequências:** fonte única interna com custo zero de rede; superfície pública documentada e estável; duplicação controlada apenas na fronteira pública.
 
 ## ADR-007 — pg-boss para jobs; outbox transacional para efeitos externos
+
 **Status:** aceito · **Data:** 2026-08-19
 
 **Contexto:** jobs recorrentes e entrega confiável de webhooks/e-mails sem infra extra.
@@ -73,6 +84,7 @@ Toda decisão arquitetural vira ADR **antes** do código. Formato abaixo. ADRs s
 **Consequências:** uma infra só; entrega ao-menos-uma-vez com dedupe; throughput do Postgres é o limite — aceitável por muito tempo.
 
 ## ADR-008 — Auth: JWT curto + refresh rotativo em cookie httpOnly
+
 **Status:** aceito · **Data:** 2026-08-19
 
 **Contexto:** o Norteie guarda tokens em localStorage — inaceitável para SaaS (XSS exfiltra refresh).
@@ -80,6 +92,7 @@ Toda decisão arquitetural vira ADR **antes** do código. Formato abaixo. ADRs s
 **Consequências:** XSS não rouba sessão; exige CORS/CSRF bem configurados e cuidado com subdomínios de verticais no futuro.
 
 ## ADR-009 — Revogação de acesso por tokenVersion na Membership
+
 **Status:** aceito · **Data:** 2026-08-19
 
 **Contexto:** remover alguém de um workspace precisa valer imediatamente, não em 15 minutos.
@@ -88,6 +101,7 @@ Toda decisão arquitetural vira ADR **antes** do código. Formato abaixo. ADRs s
 **Consequências:** revogação imediata com um inteiro; custo de uma leitura cacheável por request.
 
 ## ADR-010 — Integridade cross-workspace por FKs compostas
+
 **Status:** aceito · **Data:** 2026-08-19
 
 **Contexto:** a extension protege queries, mas uma FK simples permitiria `Deal.contactId` apontar para contato de outro workspace (vazaria via include).
@@ -95,6 +109,7 @@ Toda decisão arquitetural vira ADR **antes** do código. Formato abaixo. ADRs s
 **Consequências:** o banco impede relação cross-tenant mesmo com bug de aplicação; migrations um pouco mais verbosas — preço correto.
 
 ## ADR-011 — Timeline com relações explícitas, sem polimorfismo sem integridade
+
 **Status:** aceito · **Data:** 2026-08-19
 
 **Contexto:** timelines costumam usar `entityType + entityId` sem FK — sem integridade, sem isolamento verificável.
@@ -102,6 +117,7 @@ Toda decisão arquitetural vira ADR **antes** do código. Formato abaixo. ADRs s
 **Consequências:** timeline auditável e tenant-safe; adicionar um novo tipo referenciável = nova coluna + migration — custo aceito.
 
 ## ADR-012 — Módulo `intelligence`: tools sobre services, aprovação humana, custo registrado
+
 **Status:** aceito · **Data:** 2026-08-19
 
 **Contexto:** IA nativa sem virar chat decorativo nem risco de vazamento/ação indevida.
@@ -109,12 +125,14 @@ Toda decisão arquitetural vira ADR **antes** do código. Formato abaixo. ADRs s
 **Consequências:** IA governada e faturável por workspace; latência extra da aprovação humana — desejada no MVP.
 
 ## ADR-013 — RLS no Postgres adiado
+
 **Status:** adiado (gatilho: primeiro cliente enterprise, requisito de compliance, ou incidente de quase-vazamento) · **Data:** 2026-08-19
 
 **Contexto:** RLS daria defesa em profundidade contra mau uso de `raw`, mas complica Prisma, migrations e testes agora.
 **Decisão:** adiar, com as camadas 1–3 do SECURITY.md §2 como proteção. Reavaliar no gatilho.
 
 ## ADR-014 — Sem registro público no MVP
+
 **Status:** aceito · **Data:** 2026-08-19
 
 **Contexto:** signup aberto sem billing, quotas, rate limit e antiabuso é passivo de segurança e de custo (especialmente com IA).
@@ -122,6 +140,7 @@ Toda decisão arquitetural vira ADR **antes** do código. Formato abaixo. ADRs s
 **Consequências:** GTM inicial assistido; a fundação (auth, convites, provisioning) já suporta a virada de chave.
 
 ## ADR-015 — Verticais por extension tables + composição no bootstrap
+
 **Status:** aceito · **Data:** 2026-08-19
 
 **Contexto:** verticais precisam estender o Core sem fork, e o Core não pode conhecê-los.
@@ -130,6 +149,7 @@ Toda decisão arquitetural vira ADR **antes** do código. Formato abaixo. ADRs s
 **Consequências:** Core permanece universal; verticais evoluem sem tocar o Core; joins extras nas leituras estendidas — aceitável.
 
 ## ADR-016 — Autorização default-deny na PermissionsGuard
+
 **Status:** aceito · **Data:** 2026-08-19
 
 **Contexto:** o desenho original deixava a `PermissionsGuard` em pass-through quando o handler não tinha `@RequirePermissions` (rota já autenticada passava). Isso torna o esquecimento de decorator um furo silencioso de autorização: autenticado vira autorizado por omissão.

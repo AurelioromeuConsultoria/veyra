@@ -10,20 +10,20 @@ A IA não é um chat decorativo: é o módulo estrutural `intelligence`, que ope
 
 ## Stack
 
-| Camada | Tecnologia |
-|---|---|
-| Monorepo | pnpm workspaces |
-| Linguagem | TypeScript ponta a ponta (strict) |
-| API | NestJS — monólito modular |
-| Web | React + Vite + TypeScript |
-| Banco | PostgreSQL + Prisma |
-| Contratos internos | Zod em `packages/contracts` |
-| API pública | OpenAPI |
-| Front (dados/UI) | TanStack Query, TanStack Table, React Hook Form, Tailwind |
-| Primitivos acessíveis | Radix/shadcn à la carte |
-| Jobs | pg-boss (mesmo Postgres) |
-| Testes | Jest (API), Vitest (web), Playwright (e2e) |
-| Infra dev | Docker (Postgres) |
+| Camada                | Tecnologia                                                |
+| --------------------- | --------------------------------------------------------- |
+| Monorepo              | pnpm workspaces                                           |
+| Linguagem             | TypeScript ponta a ponta (strict)                         |
+| API                   | NestJS — monólito modular                                 |
+| Web                   | React + Vite + TypeScript                                 |
+| Banco                 | PostgreSQL + Prisma                                       |
+| Contratos internos    | Zod em `packages/contracts`                               |
+| API pública           | OpenAPI                                                   |
+| Front (dados/UI)      | TanStack Query, TanStack Table, React Hook Form, Tailwind |
+| Primitivos acessíveis | Radix/shadcn à la carte                                   |
+| Jobs                  | pg-boss (mesmo Postgres)                                  |
+| Testes                | Jest (API), Vitest (web), Playwright (e2e)                |
+| Infra dev             | Docker (Postgres)                                         |
 
 Monólito modular por decisão (ADR-001). Nada de microsserviços ou camadas genéricas sem necessidade demonstrada.
 

@@ -1,0 +1,68 @@
+@import 'tailwindcss';
+
+/*
+ * Tokens iniciais da direção "Mineral" (docs/DESIGN_DIRECTION.md).
+ * Placeholders estruturais: a paleta definitiva e as fontes serão fixadas na
+ * fase de UI — a ESTRUTURA dos tokens (claro-padrão em :root, dark por classe,
+ * um único acento, semânticos separados) já é a definitiva.
+ */
+:root {
+  --background: #f7f6f3; /* off-white mineral quente */
+  --surface: #ffffff;
+  --surface-2: #efede8;
+  --border: #e0ddd5;
+  --foreground: #22272e; /* grafite profundo */
+  --muted-fg: #6b7280;
+  --accent: #1f5f5b; /* acento único provisório (verde-abissal) */
+  --accent-fg: #f7fbfa;
+  --positive: #157347;
+  --negative: #b42328;
+  --warning: #92600a;
+  --info: #1d6fa5;
+  --ai: #5b4b8a; /* proveniência de IA — sutil, nunca estridente */
+  --ring: var(--accent);
+}
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root.dark {
+  --background: #14181f;
+  --surface: #1b212b;
+  --surface-2: #232b37;
+  --border: #2e3947;
+  --foreground: #e7eaef;
+  --muted-fg: #8b95a5;
+  --accent: #3fa39c;
+  --accent-fg: #0c1514;
+  --positive: #3ecf8e;
+  --negative: #f07178;
+  --warning: #d9a441;
+  --info: #6cb8e6;
+  --ai: #9d8cd4;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-foreground: var(--foreground);
+  --color-muted-fg: var(--muted-fg);
+  --color-accent: var(--accent);
+  --color-accent-fg: var(--accent-fg);
+  --color-positive: var(--positive);
+  --color-negative: var(--negative);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --color-ai: var(--ai);
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+}
+
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}

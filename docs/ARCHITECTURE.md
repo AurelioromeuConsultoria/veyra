@@ -137,12 +137,12 @@ Direção de dependência: vertical → Core. Nunca o contrário. A skill `creat
 
 ## 11. Padrões utilizados (e onde)
 
-| Padrão | Onde | Por quê |
-|---|---|---|
-| Client extension fail-closed | `prisma.service.ts` | Isolamento na camada de dados, não na disciplina |
-| Guard global + opt-out | `JwtAuthGuard` + `@Public()` | Seguro por default |
-| Outbox | mutações com efeito externo | Atomicidade domínio+efeito |
-| Dedupe key | notificações, outbox, webhooks | Idempotência barata via unique |
-| Extension table 1:1 | verticais | Estender sem tocar o Core |
-| CLS (AsyncLocalStorage) | request e jobs | Contexto de tenant sem passar parâmetro |
-| ADR numerado | `docs/DECISIONS.md` | Decisão rastreável no código |
+| Padrão                       | Onde                           | Por quê                                          |
+| ---------------------------- | ------------------------------ | ------------------------------------------------ |
+| Client extension fail-closed | `prisma.service.ts`            | Isolamento na camada de dados, não na disciplina |
+| Guard global + opt-out       | `JwtAuthGuard` + `@Public()`   | Seguro por default                               |
+| Outbox                       | mutações com efeito externo    | Atomicidade domínio+efeito                       |
+| Dedupe key                   | notificações, outbox, webhooks | Idempotência barata via unique                   |
+| Extension table 1:1          | verticais                      | Estender sem tocar o Core                        |
+| CLS (AsyncLocalStorage)      | request e jobs                 | Contexto de tenant sem passar parâmetro          |
+| ADR numerado                 | `docs/DECISIONS.md`            | Decisão rastreável no código                     |

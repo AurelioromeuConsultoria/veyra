@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: veyra-postgres
+    environment:
+      POSTGRES_USER: veyra
+      POSTGRES_PASSWORD: veyra_dev
+      POSTGRES_DB: veyra
+    ports:
+      # 5434 no host para não colidir com outros Postgres locais (5432/5433)
+      - '5434:5432'
+    volumes:
+      - veyra_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U veyra -d veyra']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  veyra_pgdata:

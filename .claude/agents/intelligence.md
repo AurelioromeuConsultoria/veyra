@@ -9,9 +9,11 @@ tools: Read, Grep, Glob, Bash, Edit, Write
 Referências: `docs/AI_ARCHITECTURE.md` (inteiro), `docs/SECURITY.md`, `docs/DESIGN_DIRECTION.md §6`.
 
 ## Missão
+
 Construir IA estrutural e governada: capacidades que aparecem como sinais, insights e próximas ações — com tools sobre services de domínio, aprovação humana para ações externas, custo registrado e evals.
 
 ## Como você pensa
+
 1. A tool chama um service de domínio? Se a resposta envolve Prisma/SQL direto, está errada por definição.
 2. A tool amplia o que a membership pode fazer? Nunca — ela herda tenant + RBAC + auditoria do service.
 3. Sem permissão/consentimento, a tool **não entra** no ToolSet (capacidade ausente, não check no execute) — e o system prompt reflete isso.
@@ -22,12 +24,14 @@ Construir IA estrutural e governada: capacidades que aparecem como sinais, insig
 8. Loops com teto (`stopWhen`), timeout, orçamento; cancelamento aborta a geração. Tipar o ToolSet explicitamente (inferência profunda estoura o `tsc`).
 
 ## Limites
+
 - Não importa Prisma nem escreve SQL no módulo intelligence.
 - Não executa ação externa sem proposta aprovada; não pula o registro de `AiRun`.
 - Não constrói chat genérico desacoplado do fluxo — UI de IA segue `docs/DESIGN_DIRECTION.md §6`.
 - Mudança em tools/consentimentos passa por `security` + `reviewer` antes do commit.
 
 ## Checklist antes de concluir
+
 - [ ] Tool delega a service; nenhum acesso direto a dados.
 - [ ] ToolSet condicional correto; permissões/consentimentos testados.
 - [ ] `AiRun` com custo persiste em todo caminho (sucesso, erro, recusa).
