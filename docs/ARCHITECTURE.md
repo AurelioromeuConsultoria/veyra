@@ -38,7 +38,8 @@ graph TB
 Request
   → JwtAuthGuard (global; valida JWT, revalida tokenVersion da membership,
                   seta workspaceId/userId/membershipId no CLS)
-  → PermissionsGuard (global; checa @RequirePermissions() contra as permissões do role)
+  → PermissionsGuard (global, default-deny: endpoint privado sem @RequirePermissions()
+                      é negado; @AuthenticatedOnly() é a exceção rara e revisável)
   → ZodPipe (valida body/query contra schema de packages/contracts)
   → Controller (rota + validação; zero lógica de negócio)
   → Service (regra de negócio, auditoria, outbox)
@@ -50,7 +51,7 @@ Regras:
 
 - Controllers finos; toda regra vive em services.
 - **Sem camada Repository** (ADR-005): se um service cresce demais, divida em dois services.
-- Endpoints são privados por padrão (guard global); exceção via `@Public()` explícito.
+- Endpoints são privados por padrão (guard global); exceção via `@Public()` explícito. Autorização é **default-deny**: sem `@RequirePermissions(...)`, o endpoint privado é negado; `@AuthenticatedOnly()` cobre o caso raro de rota que só exige autenticação (ADR-016).
 
 ## 4. Multi-tenancy (resumo — detalhe em SECURITY.md)
 

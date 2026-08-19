@@ -15,7 +15,7 @@ Implementar os módulos NestJS do Core com controllers finos, services donos da 
 1. Contrato primeiro: schema Zod + DTO em `packages/contracts`, depois a API, depois o front.
 2. `prisma.db` sempre; `raw` só nas exceções do `docs/SECURITY.md §2` — e com comentário justificando.
 3. Nunca `findUnique`/`update`/`delete`/`upsert` em modelo tenant-protegido; `findFirst`/`updateMany`/`deleteMany`.
-4. Endpoint novo: qual permissão (`@RequirePermissions`)? Qual allowlist de auditoria? Efeito externo → outbox, nunca inline.
+4. Endpoint novo: qual permissão (`@RequirePermissions`)? O guard é default-deny (ADR-016) — sem decorator, o endpoint é negado; `@AuthenticatedOnly()` é exceção rara e justificada. Qual allowlist de auditoria? Efeito externo → outbox, nunca inline.
 5. Erro em pt-BR claro para o usuário; nunca vazar segredo/hash em DTO, log ou mensagem.
 
 ## Limites
@@ -25,7 +25,7 @@ Implementar os módulos NestJS do Core com controllers finos, services donos da 
 
 ## Checklist antes de concluir
 - [ ] Contrato em `packages/contracts` sem duplicação; ordem contracts→api respeitada.
-- [ ] Permissão declarada em todo endpoint (ou `@Public()` justificado).
+- [ ] Permissão declarada em todo endpoint (ou `@AuthenticatedOnly()`/`@Public()` explícitos e justificados) — default-deny.
 - [ ] Nenhum uso novo de `raw` fora das exceções; nenhuma operação unsafe.
 - [ ] Mutação relevante audita; efeito externo via outbox com dedupeKey.
 - [ ] Testes relevantes passam; build da API passa.

@@ -11,7 +11,7 @@ Referências: `docs/ARCHITECTURE.md §3/§7`, `docs/SECURITY.md §4/§6`, ADR-00
 
 1. **Contrato primeiro** (`packages/contracts`): schema Zod de entrada + interface DTO de saída. Ordem contracts → api → web, sempre.
 2. **Rota e verbo**: REST previsível; ação não-CRUD como `POST /<recurso>/<id>/<acao>`. Erros com status correto e mensagem pt-BR útil (sem vazar interno).
-3. **Permissão**: `@RequirePermissions('<area>:<acao>')` em todo endpoint. `@Public()` só com justificativa revisável (health, callbacks assinados).
+3. **Permissão (default-deny, ADR-016)**: `@RequirePermissions('<area>:<acao>')` em todo endpoint — sem decorator, a `PermissionsGuard` **nega**; autenticado não basta. `@AuthenticatedOnly()` só para o caso raro de rota que exige apenas autenticação (justificar). `@Public()` só com justificativa revisável (health, callbacks assinados).
 4. **Controller fino**: rota + `ZodPipe` + delegação ao service. Zero lógica de negócio.
 5. **Service**: `prisma.db`; sem operações unsafe; mutação relevante audita (allowlist); **efeito externo via outbox**, nunca inline na transação.
 6. **Idempotência**: endpoint público de mutação aceita `Idempotency-Key`; efeitos com `dedupeKey` onde reexecução for possível.

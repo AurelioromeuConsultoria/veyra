@@ -39,7 +39,7 @@ Ameaça número um: **vazamento entre workspaces** — um tenant ler/escrever da
 
 - `Permission` = catálogo global de chaves estáveis (`contacts:read`, `deals:write`, `settings:billing`, `intelligence:approve`…). Código só conhece chaves.
 - `Role` sempre pertence a um workspace. Padrões (Owner/Admin/Member/Guest) semeados no provisionamento com `isSystem=true` — não editáveis nem deletáveis. Roles customizados pertencem ao workspace.
-- `PermissionsGuard` global (segundo APP_GUARD, depois do JwtAuthGuard) com `@RequirePermissions('deals:write')`; sem decorator = passa (rota já autenticada), o que torna o guard seguro de registrar globalmente.
+- `PermissionsGuard` global (segundo APP_GUARD, depois do JwtAuthGuard) com **default-deny**: endpoint privado **sem** `@RequirePermissions(...)` é **negado** — estar autenticado não basta. Rota que legitimamente precise apenas de autenticação usa `@AuthenticatedOnly()` explícito, raro e revisável (ex.: `GET /me`, troca de workspace). `@Public()` continua sendo a única exceção para endpoint não autenticado. Endpoint privado sem nenhum decorator é achado de revisão P1 — P0 se expõe dado ou mutação sensível (ADR-016).
 - **Proibido** ramificar por nome de role. Auditoria de RBAC via skill `review-rbac`.
 - API pública: `ApiKey` com `scopes` = subconjunto de permission keys; mesmo guard.
 
@@ -87,7 +87,7 @@ Política obrigatória para `FileObject`:
 - [ ] Tabela nova tem `workspaceId`, entrou em `WORKSPACE_MODELS` e tem FK composta onde referencia entidade de workspace?
 - [ ] Nenhum uso novo de `raw` sem comentário de justificativa nas exceções do §2?
 - [ ] Nenhuma operação unsafe (`findUnique`/`update`/`delete`/`upsert`) em modelo protegido?
-- [ ] Endpoint novo tem `@RequirePermissions` (ou `@Public()` justificado)?
+- [ ] Endpoint novo tem `@RequirePermissions` (ou `@AuthenticatedOnly()`/`@Public()` explícitos e justificados)? Sem decorator = negado pelo guard e achado P1/P0.
 - [ ] DTO de saída não expõe segredo/hash/token?
 - [ ] Mutação relevante grava `AuditLog` com allowlist?
 - [ ] Efeito externo passa por outbox?

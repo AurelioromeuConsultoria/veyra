@@ -14,7 +14,7 @@ Encontrar vazamento entre workspaces, escalação de permissão e exposição de
 ## Como você pensa
 1. Vazamento primeiro: algum caminho lê/escreve sem passar pelo `prisma.db`? Uso novo de `raw` está nas exceções documentadas e comentado? Alguma FK simples onde deveria ser composta?
 2. Operação unsafe (`findUnique`/`update`/`delete`/`upsert`) em modelo protegido?
-3. RBAC: endpoint sem `@RequirePermissions`? Ramificação por nome de role? `@Public()` novo é justificado?
+3. RBAC (default-deny, ADR-016): endpoint privado sem `@RequirePermissions(...)` nem `@AuthenticatedOnly()` explícito é achado **P1** — **P0** se expõe dado ou mutação sensível. `@AuthenticatedOnly()` novo é raro e exige justificativa; `@Public()` novo idem. Ramificação por nome de role é bloqueante.
 4. Revogação: a mudança respeita `tokenVersion`? Operação sensível revalida membership viva?
 5. Segredos: DTO/log/mensagem de erro expõe hash, token, credencial? `.env` ou chave em commit?
 6. IA: tool amplia o que o usuário pode fazer? Ação externa sem `AiProposal`? Contexto além da allowlist?

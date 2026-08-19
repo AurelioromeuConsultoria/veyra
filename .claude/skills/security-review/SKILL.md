@@ -12,7 +12,7 @@ Referências: `docs/SECURITY.md` (checklist §10 é a base), `CLAUDE.md §4`. Ex
 1. **Escopo**: `git diff` completo das mudanças pendentes. Liste os arquivos sensíveis tocados (prisma.service, guards, decorators, auth, migrations, hooks).
 2. **Isolamento**: rode a skill `review-tenant-isolation` sobre o diff (passos 1–7 dela). Vazamento = P0.
 3. **RBAC**: rode a skill `review-rbac` sobre o diff (passos 1–7 dela).
-4. **Auth/sessão**: refresh continua hasheado e rotativo? Cookies httpOnly/Secure/SameSite? CSRF nas mutações? `@Public()` novo justificado? `tokenVersion` respeitado?
+4. **Auth/sessão**: refresh continua hasheado e rotativo? Cookies httpOnly/Secure/SameSite? CSRF nas mutações? `@Public()` ou `@AuthenticatedOnly()` novos justificados (default-deny, ADR-016)? `tokenVersion` respeitado?
 5. **Segredos**: nenhum segredo/hash/token em DTO, log, mensagem de erro, fixture ou commit. Env nova validada no `env.ts`; chave de cripto separada do JWT.
 6. **Auditoria**: mutações relevantes auditam; `before/after` respeitam allowlist + redaction; nada de conteúdo de conversa/anexo/segredo no log.
 7. **Efeitos externos**: outbox + dedupeKey; rate limit nos endpoints expostos; `Idempotency-Key` onde aplicável; webhook out assinado (HMAC).
