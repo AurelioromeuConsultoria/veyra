@@ -1,0 +1,46 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/block-destructive-migration.sh",
+            "timeout": 10,
+            "statusMessage": "Verificando migration destrutiva..."
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/guard-secrets.sh",
+            "timeout": 10,
+            "statusMessage": "Verificando segredos no stage do commit..."
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/guard-tenant-rbac.sh",
+            "timeout": 10,
+            "statusMessage": "Verificando arquivos sensíveis de tenancy/RBAC..."
+          },
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/block-unvalidated-push.sh",
+            "timeout": 10,
+            "statusMessage": "Verificando validações antes do push..."
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/guard-tenant-rbac.sh",
+            "timeout": 10,
+            "statusMessage": "Verificando arquivos sensíveis de tenancy/RBAC..."
+          }
+        ]
+      }
+    ]
+  }
+}

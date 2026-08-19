@@ -1,0 +1,32 @@
+# Dependências
+node_modules/
+.pnpm-store/
+
+# Builds
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Ambiente e segredos — NUNCA versionar (exceção: .env.example com placeholders)
+.env
+.env.*
+!.env.example
+
+# Prisma (cliente gerado, quando existir)
+apps/api/src/generated/
+
+# Testes
+playwright-report/
+test-results/
+
+# Sistema e editores
+.DS_Store
+*.log
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Claude Code — estado local de sessão
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
