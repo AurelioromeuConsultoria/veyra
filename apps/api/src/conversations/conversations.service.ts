@@ -11,6 +11,7 @@ import type {
   UpdateConversationInput,
 } from '@veyra/contracts';
 import { ActivitiesService } from '../activities/activities.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { AuthContext } from '../common/decorators';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 
@@ -61,6 +62,7 @@ export class ConversationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly activities: ActivitiesService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /**
@@ -136,17 +138,45 @@ export class ConversationsService {
     return this.get((created as unknown as { id: string }).id);
   }
 
-  async update(id: string, input: UpdateConversationInput): Promise<ConversationDto> {
-    const existing = await this.prisma.db.conversation.findFirst({ where: { id } });
+  async update(
+    auth: AuthContext,
+    id: string,
+    input: UpdateConversationInput,
+  ): Promise<ConversationDto> {
+    const existing = (await this.prisma.db.conversation.findFirst({
+      where: { id },
+    })) as unknown as ConversationRow | null;
     if (!existing) throw new NotFoundException('Conversa não encontrada');
     await this.validateReferences(input);
-    await this.prisma.db.conversation.updateMany({
-      where: { id },
-      data: {
-        subject: input.subject,
-        status: input.status,
-        assigneeMembershipId: input.assigneeMembershipId,
-      },
+
+    const db = this.prisma.db as unknown as TxRunner;
+    await db.$transaction(async (tx) => {
+      await tx.conversation.updateMany({
+        where: { id },
+        data: {
+          subject: input.subject,
+          status: input.status,
+          assigneeMembershipId: input.assigneeMembershipId,
+        },
+      });
+      // atribuir a OUTRA pessoa avisa quem recebeu. dedupeKey pelo par
+      // (conversa, destinatário): reatribuir para quem já foi avisado não
+      // repete o aviso — evita tempestade de notificação ao alternar responsável
+      const assignee = input.assigneeMembershipId;
+      if (
+        assignee &&
+        assignee !== existing.assigneeMembershipId &&
+        assignee !== auth.membershipId
+      ) {
+        await this.notifications.emit(
+          tx,
+          auth.workspaceId as string,
+          assignee,
+          'conversation_assigned',
+          { subject: input.subject ?? existing.subject ?? 'Sem assunto' },
+          `conversation_assigned:${id}:${assignee}`,
+        );
+      }
     });
     return this.get(id);
   }

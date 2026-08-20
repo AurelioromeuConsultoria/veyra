@@ -68,6 +68,7 @@ Ameaça número um: **vazamento entre workspaces** — um tenant ler/escrever da
 - `Idempotency-Key` nas mutações marcadas com `@Idempotent()` (ADR-020): reserva atômica antes de executar, replay só com hash idêntico (método + rota + params + query + body), 409 para chave reutilizada com request diferente. Rota que devolve segredo NUNCA é idempotente.
 - Efeitos externos idempotentes via `dedupeKey` + unique tenant-scoped, entregues pelo outbox (ADR-021).
 - Outbox transacional para todo efeito externo (webhooks out, e-mail, mensagens) — retry com backoff, sem efeito dentro da transação de domínio.
+- Notificação é caixa **pessoal**: `/api/notifications` usa `@AuthenticatedOnly()` (ADR-016) porque não existe acesso à caixa alheia para conceder — o destinatário é sempre a membership da sessão, imposto no service, e id de outra pessoa devolve 404. Payload por allowlist Zod `.strict()` por tipo, como no outbox e na timeline.
 - Claim do outbox com **lease + fencing token**: só o dono do `claimToken` corrente conclui o evento; worker lento que perdeu o lease é recusado, entrega longa renova por heartbeat e perde-o abortando o fan-out. Teto de 20 webhooks por workspace mantém a entrega sequencial dentro do lease.
 
 ## 7. Arquivos

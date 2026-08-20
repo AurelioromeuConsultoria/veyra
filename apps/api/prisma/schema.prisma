@@ -95,6 +95,8 @@ model Workspace {
   channels               Channel[]
   conversations          Conversation[]
   messages               Message[]
+  calendarEvents         CalendarEvent[]
+  notifications          Notification[]
 }
 
 /// Catálogo GLOBAL de permissões (ADR-004): chaves estáveis do sistema —
@@ -166,16 +168,18 @@ model Membership {
   // FK composta (ADR-010): Membership não pode apontar para Role de outro workspace
   role      Role      @relation(fields: [workspaceId, roleId], references: [workspaceId, id])
 
-  ownedCompanies        Company[]      @relation("CompanyOwner")
-  ownedContacts         Contact[]      @relation("ContactOwner")
-  activeSessions        RefreshToken[] @relation("SessionActiveMembership")
-  ownedDeals            Deal[]         @relation("DealOwner")
-  assignedTasks         Task[]         @relation("TaskAssignee")
-  authoredNotes         Note[]         @relation("NoteAuthor")
-  activities            Activity[]     @relation("ActivityActor")
-  auditLogs             AuditLog[]     @relation("AuditActor")
-  assignedConversations Conversation[] @relation("ConversationAssignee")
-  authoredMessages      Message[]      @relation("MessageAuthorMembership")
+  ownedCompanies        Company[]       @relation("CompanyOwner")
+  ownedContacts         Contact[]       @relation("ContactOwner")
+  activeSessions        RefreshToken[]  @relation("SessionActiveMembership")
+  ownedDeals            Deal[]          @relation("DealOwner")
+  assignedTasks         Task[]          @relation("TaskAssignee")
+  authoredNotes         Note[]          @relation("NoteAuthor")
+  activities            Activity[]      @relation("ActivityActor")
+  auditLogs             AuditLog[]      @relation("AuditActor")
+  assignedConversations Conversation[]  @relation("ConversationAssignee")
+  authoredMessages      Message[]       @relation("MessageAuthorMembership")
+  organizedEvents       CalendarEvent[] @relation("EventOrganizer")
+  notifications         Notification[]  @relation("NotificationRecipient")
 
   // Alvo de FK composta para Team/ownership futuros
   @@unique([workspaceId, id])
@@ -295,8 +299,9 @@ model Contact {
   notes      Note[]
   activities Activity[]
 
-  conversations Conversation[]
-  messages      Message[]      @relation("MessageAuthorContact")
+  conversations  Conversation[]
+  messages       Message[]       @relation("MessageAuthorContact")
+  calendarEvents CalendarEvent[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, status, createdAt])
@@ -421,6 +426,7 @@ enum ActivityType {
   note_deleted
   message_sent
   message_received
+  event_scheduled
 }
 
 enum ActivityActor {
@@ -496,9 +502,10 @@ model Deal {
   company   Company?    @relation(fields: [workspaceId, companyId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
   owner     Membership? @relation("DealOwner", fields: [workspaceId, ownerMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
 
-  tasks      Task[]
-  notes      Note[]
-  activities Activity[]
+  tasks          Task[]
+  notes          Note[]
+  activities     Activity[]
+  calendarEvents CalendarEvent[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, pipelineId, stageId, position])
@@ -577,14 +584,16 @@ model Activity {
   dealId            String?       @db.Uuid
   taskId            String?       @db.Uuid
   conversationId    String?       @db.Uuid
+  calendarEventId   String?       @db.Uuid
 
-  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  actor        Membership?   @relation("ActivityActor", fields: [workspaceId, actorMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  contact      Contact?      @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
-  company      Company?      @relation(fields: [workspaceId, companyId], references: [workspaceId, id], onDelete: Cascade)
-  deal         Deal?         @relation(fields: [workspaceId, dealId], references: [workspaceId, id], onDelete: Cascade)
-  task         Task?         @relation(fields: [workspaceId, taskId], references: [workspaceId, id], onDelete: Cascade)
-  conversation Conversation? @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  actor         Membership?    @relation("ActivityActor", fields: [workspaceId, actorMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  contact       Contact?       @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  company       Company?       @relation(fields: [workspaceId, companyId], references: [workspaceId, id], onDelete: Cascade)
+  deal          Deal?          @relation(fields: [workspaceId, dealId], references: [workspaceId, id], onDelete: Cascade)
+  task          Task?          @relation(fields: [workspaceId, taskId], references: [workspaceId, id], onDelete: Cascade)
+  conversation  Conversation?  @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+  calendarEvent CalendarEvent? @relation(fields: [workspaceId, calendarEventId], references: [workspaceId, id], onDelete: Cascade)
 
   // cursor keyset (occurredAt, id) por alvo — paginação estável (ajuste #5)
   @@index([workspaceId, contactId, occurredAt(sort: Desc), id])
@@ -851,4 +860,63 @@ model Message {
   // dedup de ingestão externa (nulos não colidem: mensagem interna não tem externalId)
   @@unique([workspaceId, channelId, externalId])
   @@index([workspaceId, conversationId, createdAt(sort: Desc), id])
+}
+
+// ─── Organização: agenda e notificações (Entrega 6.2) ─────────────────────────
+
+enum CalendarEventStatus {
+  scheduled
+  done
+  canceled
+}
+
+model CalendarEvent {
+  id                    String              @id @default(uuid()) @db.Uuid
+  workspaceId           String              @db.Uuid
+  title                 String
+  description           String?
+  /// CHECK "endAt" > "startAt" no banco: invariante de tempo não depende do
+  /// service (migration 20260820190000_calendar_notifications)
+  startAt               DateTime
+  endAt                 DateTime
+  location              String?
+  status                CalendarEventStatus @default(scheduled)
+  organizerMembershipId String              @db.Uuid
+  contactId             String?             @db.Uuid
+  dealId                String?             @db.Uuid
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  workspace  Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  organizer  Membership @relation("EventOrganizer", fields: [workspaceId, organizerMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  contact    Contact?   @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  deal       Deal?      @relation(fields: [workspaceId, dealId], references: [workspaceId, id], onDelete: Cascade)
+  activities Activity[]
+
+  @@unique([workspaceId, id])
+  // agenda é sempre consultada por janela de tempo
+  @@index([workspaceId, startAt])
+  @@index([workspaceId, organizerMembershipId, startAt])
+  @@index([workspaceId, contactId])
+  @@index([workspaceId, dealId])
+}
+
+/// Notificação PESSOAL: sempre lida pelo próprio destinatário. `dedupeKey`
+/// torna a emissão idempotente — retry do mesmo fato não gera segunda notificação.
+model Notification {
+  id                    String    @id @default(uuid()) @db.Uuid
+  workspaceId           String    @db.Uuid
+  recipientMembershipId String    @db.Uuid
+  type                  String
+  payload               Json
+  dedupeKey             String
+  readAt                DateTime?
+  createdAt             DateTime  @default(now())
+
+  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  recipient Membership @relation("NotificationRecipient", fields: [workspaceId, recipientMembershipId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, dedupeKey])
+  // caixa pessoal: não lidas primeiro, mais recentes no topo
+  @@index([workspaceId, recipientMembershipId, readAt, createdAt(sort: Desc)])
 }

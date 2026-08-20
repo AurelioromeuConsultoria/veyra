@@ -1,6 +1,7 @@
 export * from './activities';
 export * from './audit';
 export * from './auth';
+export * from './calendar';
 export * from './common';
 export * from './companies';
 export * from './contacts';
@@ -10,6 +11,7 @@ export * from './deals';
 export * from './health';
 export * from './members';
 export * from './notes';
+export * from './notifications';
 export * from './permissions';
 export * from './pipelines';
 export * from './tags';

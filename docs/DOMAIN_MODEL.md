@@ -93,11 +93,15 @@ Timeline: `Activity` ganhou `conversationId` (FK composta) e os tipos `message_s
 
 ## 6. Organização
 
-| Entidade        | Campos-chave                                                                                                                                         | Notas                                                           |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| `CalendarEvent` | title, startAt, endAt, organizerId (membership), contactId?, dealId?, location?, status                                                              | Verticais especializam (agenda clínica) sem tocar esta entidade |
-| `Notification`  | recipientId (membership, FK composta), type, payload, readAt, **dedupeKey**                                                                          | `@@unique([workspaceId, dedupeKey])` — idempotência             |
-| `FileObject`    | key (storage prefixado por workspace), fileName, mimeType detectado por magic bytes, sizeBytes, uploadedById, scanStatus (pending/clean/quarantined) | Política completa em SECURITY.md §7                             |
+Agenda e notificações implementadas na Entrega 6.2; arquivos entram na 6.3.
+
+| Entidade        | Campos-chave                                                                                                                                                        | Notas                                                                                                                                                                       |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CalendarEvent` | title, description?, startAt, endAt, location?, status (scheduled/done/canceled), organizerMembershipId, contactId?, dealId? — **todas as relações em FK composta** | **CHECK `endAt > startAt` no banco**, além do Zod. Consultado sempre por JANELA (eventos que intersectam `[from, to)`), nunca "tudo". Verticais especializam sem tocar nele |
+| `Notification`  | recipientMembershipId (FK composta), type, payload (allowlist Zod `.strict()` por tipo), **dedupeKey**, readAt                                                      | `@@unique([workspaceId, dedupeKey])` — emissão idempotente. Caixa **pessoal**: o destinatário é sempre a membership da sessão, imposto no service                           |
+| `FileObject`    | key (storage prefixado por workspace), fileName, mimeType detectado por magic bytes, sizeBytes, uploadedById, scanStatus (pending/clean/quarantined)                | Entrega 6.3. Política completa em SECURITY.md §7                                                                                                                            |
+
+Emissão de notificação acontece **dentro da transação do fato que a origina** — notificação de evento que não existe é impossível. Hoje há dois produtores: evento agendado para outra pessoa e conversa atribuída a outra pessoa. Em ambos, quem age não se autonotifica, e o `dedupeKey` é o par (fato, destinatário).
 
 ## 7. Plataforma
 

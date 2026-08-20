@@ -50,10 +50,11 @@ export class ConversationsController {
   @RequirePermissions('conversations:write')
   @Patch(':id')
   update(
+    @CurrentAuth() auth: AuthContext,
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body(new ZodPipe(updateConversationSchema)) body: UpdateConversationInput,
   ): Promise<ConversationDto> {
-    return this.conversations.update(id, body);
+    return this.conversations.update(auth, id, body);
   }
 
   @RequirePermissions('conversations:read')

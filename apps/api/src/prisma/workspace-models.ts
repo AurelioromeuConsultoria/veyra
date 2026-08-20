@@ -43,6 +43,9 @@ export const WORKSPACE_MODELS = new Set<string>([
   'Channel',
   'Conversation',
   'Message',
+  // Organização (Entrega 6.2)
+  'CalendarEvent',
+  'Notification',
 ]);
 
 /**
@@ -87,6 +90,8 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     auditLogs: 'AuditLog',
     assignedConversations: 'Conversation',
     authoredMessages: 'Message',
+    organizedEvents: 'CalendarEvent',
+    notifications: 'Notification',
     // alvo fora do perímetro: travessia via db é bloqueada (sessões só via raw)
     activeSessions: 'RefreshToken',
   },
@@ -114,6 +119,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     activities: 'Activity',
     conversations: 'Conversation',
     messages: 'Message',
+    calendarEvents: 'CalendarEvent',
   },
   Tag: {
     workspace: 'Workspace',
@@ -146,6 +152,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
   },
   Deal: {
     workspace: 'Workspace',
+    calendarEvents: 'CalendarEvent',
     pipeline: 'Pipeline',
     stage: 'Stage',
     contact: 'Contact',
@@ -196,6 +203,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     deal: 'Deal',
     task: 'Task',
     conversation: 'Conversation',
+    calendarEvent: 'CalendarEvent',
   },
   Channel: {
     workspace: 'Workspace',
@@ -209,6 +217,17 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     assignee: 'Membership',
     messages: 'Message',
     activities: 'Activity',
+  },
+  CalendarEvent: {
+    workspace: 'Workspace',
+    organizer: 'Membership',
+    contact: 'Contact',
+    deal: 'Deal',
+    activities: 'Activity',
+  },
+  Notification: {
+    workspace: 'Workspace',
+    recipient: 'Membership',
   },
   Message: {
     workspace: 'Workspace',

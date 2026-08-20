@@ -13,6 +13,7 @@ export const activityTypeSchema = z.enum([
   'note_deleted',
   'message_sent',
   'message_received',
+  'event_scheduled',
 ]);
 export type ActivityType = z.infer<typeof activityTypeSchema>;
 

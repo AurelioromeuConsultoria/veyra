@@ -1,6 +1,7 @@
 import { clsx } from 'clsx';
 import {
   Building2,
+  CalendarDays,
   CheckSquare,
   Inbox,
   KanbanSquare,
@@ -13,12 +14,14 @@ import {
 } from 'lucide-react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { hasPermission, useLogout, useSession } from '../../lib/session';
+import { NotificationBell } from './NotificationBell';
 
 const nav = [
   { to: '/pipeline', label: 'Pipeline', icon: KanbanSquare },
   { to: '/contacts', label: 'Contatos', icon: Users },
   { to: '/companies', label: 'Empresas', icon: Building2 },
   { to: '/inbox', label: 'Inbox', icon: Inbox, permission: 'conversations:read' },
+  { to: '/calendar', label: 'Agenda', icon: CalendarDays, permission: 'calendar:read' },
   { to: '/tasks', label: 'Tarefas', icon: CheckSquare },
   { to: '/tags', label: 'Tags', icon: Tags },
   { to: '/settings/fields', label: 'Campos', icon: Settings2 },
@@ -61,6 +64,9 @@ export function AppShell() {
               </NavLink>
             ))}
         </nav>
+        <div className="border-t border-border px-2 py-2">
+          <NotificationBell />
+        </div>
         <div className="border-t border-border p-3">
           <p className="truncate text-xs font-medium">{user?.name}</p>
           <p className="truncate text-xs text-muted-fg">{user?.activeMembership?.roleName}</p>

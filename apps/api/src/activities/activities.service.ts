@@ -29,6 +29,7 @@ const ACTIVITY_PAYLOADS: Record<ActivityType, z.ZodType> = {
   // NUNCA o corpo da mensagem na timeline (LGPD/§5): a direção já está no tipo
   message_sent: z.object({}).strict(),
   message_received: z.object({}).strict(),
+  event_scheduled: z.object({ title: z.string().max(200), startAt: z.string().max(40) }).strict(),
 };
 
 export interface ActivityTargets {
@@ -37,6 +38,7 @@ export interface ActivityTargets {
   dealId?: string | null;
   taskId?: string | null;
   conversationId?: string | null;
+  calendarEventId?: string | null;
 }
 
 interface Cursor {
@@ -96,6 +98,7 @@ export class ActivitiesService {
         dealId: options.targets.dealId ?? null,
         taskId: options.targets.taskId ?? null,
         conversationId: options.targets.conversationId ?? null,
+        calendarEventId: options.targets.calendarEventId ?? null,
       },
     } as never);
   }
