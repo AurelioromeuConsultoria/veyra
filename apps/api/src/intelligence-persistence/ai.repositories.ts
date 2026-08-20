@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
+import { TasksService } from '../tasks/tasks.service';
 import type {
   AiConsentRepository,
   AiConsentState,
@@ -11,9 +12,12 @@ import type {
   AiRunRecord,
   AiRunRepository,
   AiRunSummary,
+  ApprovalContext,
   ConsentActor,
+  CreateTaskExecution,
   PromptVersionRepository,
 } from '../intelligence/ports/repositories';
+import { PromptHashMismatchError } from '../intelligence/ports/repositories';
 
 /**
  * ADAPTADORES Prisma das portas do módulo `intelligence` (ADR-027). Ficam AQUI,
@@ -42,17 +46,58 @@ export class PrismaAiRunRepository implements AiRunRepository {
         costCents: run.costCents,
         latencyMs: run.latencyMs,
         action: run.action,
+        result: (run.result ?? undefined) as object | undefined,
+        conversationId: run.conversationId ?? null,
+        contactId: run.contactId ?? null,
         triggeredByMembershipId: run.triggeredByMembershipId,
       },
     } as never);
     return (created as unknown as { id: string }).id;
   }
 
+  async latestResult(
+    capability: string,
+    target: { conversationId?: string; contactId?: string },
+  ): Promise<{ id: string; result: Record<string, unknown>; createdAt: Date } | null> {
+    // filtrar JSON não-nulo no Prisma exige DbNull e vira ruído aqui; pegar as
+    // últimas e escolher a primeira COM resultado é simples e suficiente
+    const rows = (await this.prisma.db.aiRun.findMany({
+      where: {
+        capability,
+        status: 'ok',
+        ...(target.conversationId ? { conversationId: target.conversationId } : {}),
+        ...(target.contactId ? { contactId: target.contactId } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+    } as never)) as unknown as { id: string; result: unknown; createdAt: Date }[];
+    const row = rows.find((candidate) => candidate.result !== null);
+    if (!row) return null;
+    return { id: row.id, result: row.result as Record<string, unknown>, createdAt: row.createdAt };
+  }
+
+  /** Sem `result`: visão de custo não carrega conteúdo derivado de conversa. */
   async list(limit: number): Promise<AiRunSummary[]> {
     const rows = (await this.prisma.db.aiRun.findMany({
+      select: {
+        id: true,
+        capability: true,
+        promptVersionId: true,
+        model: true,
+        contextSummary: true,
+        status: true,
+        reasonCode: true,
+        inputTokens: true,
+        outputTokens: true,
+        costCents: true,
+        latencyMs: true,
+        action: true,
+        triggeredByMembershipId: true,
+        createdAt: true,
+      },
       orderBy: { createdAt: 'desc' },
       take: limit,
-    } as never)) as unknown as (AiRunSummary & { createdAt: Date })[];
+    } as never)) as unknown as AiRunSummary[];
     return rows;
   }
 
@@ -66,7 +111,11 @@ export class PrismaAiRunRepository implements AiRunRepository {
 
 @Injectable()
 export class PrismaAiProposalRepository implements AiProposalRepository {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tasks: TasksService,
+    private readonly audit: AuditService,
+  ) {}
 
   async create(workspaceId: string, proposal: AiProposalInput): Promise<string> {
     const created = await this.prisma.db.aiProposal.create({
@@ -100,13 +149,10 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
     } as never)) as unknown as AiProposalRecord[];
   }
 
-  /**
-   * Transição ATÔMICA: `status: 'pending'` no WHERE faz duas aprovações
-   * concorrentes resultarem em uma só — a segunda encontra zero linhas.
-   */
+  /** Transições que não executam nada (rejeitar, expirar). */
   async transition(
     id: string,
-    to: Exclude<AiProposalStatus, 'pending'>,
+    to: 'rejected' | 'expired',
     reviewerMembershipId: string,
   ): Promise<boolean> {
     const { count } = await this.prisma.db.aiProposal.updateMany({
@@ -114,6 +160,61 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
       data: { status: to, reviewedByMembershipId: reviewerMembershipId, reviewedAt: new Date() },
     });
     return count > 0;
+  }
+
+  /**
+   * Reivindicar → criar → registrar → concluir, TUDO numa transação (ADR-030).
+   *
+   * O `status: 'pending'` no WHERE do claim é o que serializa duas aprovações
+   * simultâneas. E como a criação da tarefa acontece DENTRO da mesma transação,
+   * uma falha ali desfaz o claim junto: a proposta volta a `pending` por
+   * rollback, em vez de ficar `approved` sem tarefa nenhuma.
+   */
+  async executeCreateTask(
+    id: string,
+    runId: string,
+    input: CreateTaskExecution,
+    approver: ApprovalContext,
+  ): Promise<{ taskId: string } | 'not_pending'> {
+    const db = this.prisma.db as unknown as TxRunner;
+    return db.$transaction(async (tx) => {
+      const claimed = await tx.aiProposal.updateMany({
+        where: { id, status: 'pending' },
+        data: {
+          status: 'executing',
+          reviewedByMembershipId: approver.membershipId,
+          reviewedAt: new Date(),
+        },
+      });
+      if (claimed.count === 0) return 'not_pending';
+
+      // a mutação é da IA; o aprovador fica como contexto de aprovação
+      const taskId = await this.tasks.createWithin(
+        tx,
+        approver.workspaceId,
+        {
+          title: input.title,
+          dueAt: input.dueAt,
+          contactId: input.contactId,
+          priority: 'normal',
+        },
+        { type: 'ai', membershipId: approver.membershipId },
+      );
+
+      await this.audit.record(tx, approver.workspaceId, 'task.created_by_ai', {
+        entityType: 'task',
+        entityId: taskId,
+        // actorId = AiRun: a trilha liga a mutação ao run que a propôs
+        actor: { type: 'ai', id: runId, membershipId: approver.membershipId },
+        after: { title: input.title, status: 'open' },
+      });
+
+      await tx.aiProposal.updateMany({
+        where: { id, status: 'executing' },
+        data: { status: 'approved' },
+      });
+      return { taskId };
+    });
   }
 }
 
@@ -182,7 +283,16 @@ export class PrismaPromptVersionRepository implements PromptVersionRepository {
     const existing = await this.prisma.raw.promptVersion.findFirst({
       where: { capability, version },
     });
-    if (existing) return existing.id;
+    if (existing) {
+      if (existing.hash !== hash) {
+        // editar o texto sem subir a versão faria runs antigos e novos
+        // apontarem para a MESMA versão com conteúdos diferentes
+        throw new PromptHashMismatchError(
+          `Prompt ${capability}@${version} foi alterado sem subir a versão — crie a versão ${version + 1}`,
+        );
+      }
+      return existing.id;
+    }
     const created = await this.prisma.raw.promptVersion.create({
       data: { capability, version, hash, changelog },
     });

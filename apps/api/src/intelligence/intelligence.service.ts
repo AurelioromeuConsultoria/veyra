@@ -5,7 +5,6 @@ import { AuthContext } from '../common/decorators';
 import { ContactsService } from '../contacts/contacts.service';
 import { ConversationsService } from '../conversations/conversations.service';
 import { DealsService } from '../deals/deals.service';
-import { TasksService } from '../tasks/tasks.service';
 import { estimateCostCents } from './cost';
 import { computeLeadScore, type LeadScore, type ScoreSignals } from './lead-score';
 import { LLM_CLIENT, type LlmClient, type LlmRequest } from './llm/llm.client';
@@ -94,7 +93,6 @@ export class IntelligenceService {
     private readonly conversations: ConversationsService,
     private readonly contacts: ContactsService,
     private readonly deals: DealsService,
-    private readonly tasks: TasksService,
     private readonly activities: ActivitiesService,
   ) {}
 
@@ -121,6 +119,7 @@ export class IntelligenceService {
         contextSummary: 'recusado antes de montar contexto: sem consentimento do workspace',
         status: 'refused',
         reasonCode: 'no_consent',
+        conversationId,
       });
       return { status: 'no_consent', runId };
     }
@@ -159,6 +158,7 @@ export class IntelligenceService {
         contextSummary,
         status: 'error',
         reasonCode: 'provider_unavailable',
+        conversationId,
         latencyMs: Date.now() - started,
       });
       return { status: 'unavailable', runId };
@@ -178,6 +178,7 @@ export class IntelligenceService {
         contextSummary,
         status: 'error',
         reasonCode: 'invalid_output',
+        conversationId,
         ...usage,
       });
       return { status: 'unavailable', runId };
@@ -188,6 +189,10 @@ export class IntelligenceService {
       promptVersionId,
       contextSummary,
       status: 'ok',
+      // resultado ESTRUTURADO e já validado: é o que a interface reaproveita
+      // sem pagar outro run. Nunca o prompt nem o corpo das mensagens.
+      result: parsed.data,
+      conversationId,
       ...usage,
     });
     return { status: 'ok', runId, ...parsed.data };
@@ -248,6 +253,8 @@ export class IntelligenceService {
       contextSummary,
       status: 'ok',
       action: 'proposed',
+      result: parsed.data,
+      contactId,
       ...usage,
     });
     const dueAt = new Date(Date.now() + parsed.data.dueInDays * 24 * 60 * 60 * 1000);
@@ -299,9 +306,29 @@ export class IntelligenceService {
       contextSummary: `contact:${contactId}; score determinístico + fatores; sem conteúdo de mensagem`,
       status: parsed.success ? 'ok' : 'error',
       reasonCode: parsed.success ? null : 'invalid_output',
+      result: parsed.success
+        ? { score: score.score, factors: score.factors, explanation: parsed.data.explanation }
+        : null,
+      contactId,
       ...usage,
     });
     return { ...score, explanation: parsed.success ? parsed.data.explanation : null, runId };
+  }
+
+  /**
+   * Último resumo GRAVADO da conversa. Sem isto o insight morre com a resposta
+   * HTTP e a interface teria de pagar outro run para mostrar o mesmo texto.
+   */
+  async latestSummary(conversationId: string): Promise<ConversationSummaryResult | null> {
+    // valida acesso pelo serviço de domínio antes de devolver qualquer coisa
+    await this.conversations.get(conversationId);
+    const latest = await this.runs.latestResult(CONVERSATION_SUMMARY_PROMPT.capability, {
+      conversationId,
+    });
+    if (!latest) return null;
+    const parsed = summarySchema.safeParse(latest.result);
+    if (!parsed.success) return null;
+    return { status: 'ok', runId: latest.id, ...parsed.data };
   }
 
   async listRuns(limit: number) {
@@ -328,7 +355,9 @@ export class IntelligenceService {
 
   // ── Propostas ─────────────────────────────────────────────────────────────
 
-  async listProposals(status: 'pending' | 'approved' | 'rejected' | 'expired' | 'all') {
+  async listProposals(
+    status: 'pending' | 'executing' | 'approved' | 'rejected' | 'expired' | 'all',
+  ) {
     return this.proposals.list(status, 100);
   }
 
@@ -350,6 +379,8 @@ export class IntelligenceService {
     if (proposal.type !== 'create_task') {
       throw new BadRequestException('Tipo de proposta não permitido');
     }
+    // revalida o payload NO ACEITE: entre propor e aprovar, nada garante que a
+    // linha não foi adulterada por outro caminho
     const payload = z
       .object({
         title: z.string().min(1).max(120),
@@ -359,18 +390,14 @@ export class IntelligenceService {
       .strict()
       .parse(proposal.payload);
 
-    // a transição vem ANTES da execução: se duas aprovações correrem juntas,
-    // só uma passa do updateMany condicional e só uma tarefa nasce
-    const claimed = await this.proposals.transition(id, 'approved', auth.membershipId as string);
-    if (!claimed) throw new BadRequestException('Proposta já revisada');
-
-    const task = await this.tasks.create(auth, {
-      title: payload.title,
-      dueAt: payload.dueAt,
-      contactId: payload.contactId,
-      priority: 'normal',
+    // reivindicar → criar → registrar → concluir, tudo em UMA transação
+    // (ADR-030): falha na criação devolve a proposta a `pending` por rollback
+    const result = await this.proposals.executeCreateTask(id, proposal.runId, payload, {
+      workspaceId: auth.workspaceId as string,
+      membershipId: auth.membershipId as string,
     });
-    return { taskId: task.id };
+    if (result === 'not_pending') throw new BadRequestException('Proposta já revisada');
+    return result;
   }
 
   async rejectProposal(auth: AuthContext, id: string): Promise<void> {
@@ -399,6 +426,9 @@ export class IntelligenceService {
       contextSummary: string;
       status: AiRunStatus;
       reasonCode?: string | null;
+      result?: Record<string, unknown> | null;
+      conversationId?: string | null;
+      contactId?: string | null;
       action?: AiRunAction;
       inputTokens?: number;
       outputTokens?: number;
@@ -413,6 +443,9 @@ export class IntelligenceService {
       contextSummary: run.contextSummary,
       status: run.status,
       reasonCode: run.reasonCode ?? null,
+      result: run.result ?? null,
+      conversationId: run.conversationId ?? null,
+      contactId: run.contactId ?? null,
       inputTokens: run.inputTokens ?? 0,
       outputTokens: run.outputTokens ?? 0,
       costCents: run.costCents ?? 0,

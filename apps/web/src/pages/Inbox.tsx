@@ -47,6 +47,16 @@ export function InboxPage() {
   const items = conversations.data?.items ?? [];
   const selected = items.find((c) => c.id === selectedId) ?? null;
 
+  /** resumo já GRAVADO da conversa: aparece sem custar um run novo */
+  const savedSummary = useQuery({
+    queryKey: ['ai-summary', selectedId],
+    queryFn: () =>
+      api.get<ConversationSummaryDto | null>(
+        `/api/intelligence/conversations/${selectedId}/summary`,
+      ),
+    enabled: selectedId !== null && canUseAi,
+  });
+
   const messages = useQuery({
     queryKey: ['messages', selectedId],
     queryFn: () => api.get<MessagePageDto>(`/api/conversations/${selectedId}/messages?limit=50`),
@@ -98,7 +108,10 @@ export function InboxPage() {
   const summarize = useMutation({
     mutationFn: () =>
       api.post<ConversationSummaryDto>(`/api/intelligence/conversations/${selectedId}/summary`),
-    onSuccess: (result) => setSummary(result),
+    onSuccess: (result) => {
+      setSummary(result);
+      void queryClient.invalidateQueries({ queryKey: ['ai-summary'] });
+    },
     onError: (e) => setError(e instanceof ApiError ? e.message : 'Falha ao resumir'),
   });
 
@@ -116,6 +129,9 @@ export function InboxPage() {
 
   // do mais recente para o mais antigo no servidor; a leitura é cronológica
   const thread = [...(messages.data?.items ?? [])].reverse();
+  // o resumo recém-gerado tem precedência sobre o gravado
+  const shownSummary =
+    summary ?? (savedSummary.data && savedSummary.data.status === 'ok' ? savedSummary.data : null);
 
   return (
     <div className="flex h-screen">
@@ -245,22 +261,22 @@ export function InboxPage() {
             ) : null}
           </header>
 
-          {summary ? (
+          {shownSummary ? (
             <div className="border-b border-ai/30 bg-ai/5 px-5 py-3">
-              {summary.status === 'ok' ? (
+              {shownSummary.status === 'ok' ? (
                 <>
                   <p className="text-[11px] font-medium uppercase tracking-wider text-ai">
-                    Resumo · {summary.sentiment}
+                    Resumo · {shownSummary.sentiment}
                   </p>
-                  <p className="mt-1 text-[13px]">{summary.summary}</p>
-                  {summary.pendencies && summary.pendencies.length > 0 ? (
+                  <p className="mt-1 text-[13px]">{shownSummary.summary}</p>
+                  {shownSummary.pendencies && shownSummary.pendencies.length > 0 ? (
                     <ul className="mt-1.5 list-inside list-disc text-xs text-muted-fg">
-                      {summary.pendencies.map((item) => (
+                      {shownSummary.pendencies.map((item) => (
                         <li key={item}>{item}</li>
                       ))}
                     </ul>
                   ) : null}
-                  {summary.injectionAttempt ? (
+                  {shownSummary.injectionAttempt ? (
                     <p className="mt-1.5 text-xs text-warning">
                       Atenção: o conteúdo desta conversa tentou dar instruções ao assistente.
                     </p>
@@ -268,7 +284,7 @@ export function InboxPage() {
                 </>
               ) : (
                 <p className="text-[13px] text-muted-fg">
-                  {summary.status === 'no_consent'
+                  {shownSummary.status === 'no_consent'
                     ? 'Resumo indisponível: o workspace não autorizou o uso de conteúdo de conversa (ajuste em Sinais).'
                     : 'Resumo indisponível no momento.'}
                 </p>

@@ -43,6 +43,15 @@ export class IntelligenceController {
    * Resumo lê conteúdo de conversa: exige `conversations:read` ALÉM de
    * `intelligence:use` — a capacidade nunca amplia o que a pessoa já podia ver.
    */
+  /** Releitura do último resumo gravado: mesma permissão de gerar. */
+  @RequirePermissions('intelligence:use', 'conversations:read')
+  @Get('conversations/:id/summary')
+  latestSummary(
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<ConversationSummaryDto | null> {
+    return this.intelligence.latestSummary(id);
+  }
+
   @RequirePermissions('intelligence:use', 'conversations:read')
   @Idempotent()
   @Post('conversations/:id/summary')
@@ -73,7 +82,13 @@ export class IntelligenceController {
     return this.intelligence.suggestNextAction(auth, id);
   }
 
-  @RequirePermissions('intelligence:use')
+  /**
+   * A fila expõe alvo, justificativa e contexto do workspace inteiro: exige
+   * quem PODE decidir (`intelligence:approve`) e a leitura do domínio-alvo
+   * (`contacts:read`). Uma role só com `intelligence:use` não infere pelo
+   * feed de IA o que não pode ler no CRM.
+   */
+  @RequirePermissions('intelligence:approve', 'contacts:read')
   @Get('proposals')
   async listProposals(
     @Query(new ZodPipe(listProposalsSchema)) query: ListProposalsInput,
@@ -120,8 +135,11 @@ export class IntelligenceController {
     return { ok: true };
   }
 
-  /** Custo e histórico: base das quotas da Entrega 8. */
-  @RequirePermissions('intelligence:use')
+  /**
+   * Histórico e custo do workspace inteiro (inclusive resultados gravados):
+   * é informação de administração, não de uso — `workspace:manage`.
+   */
+  @RequirePermissions('workspace:manage')
   @Get('usage')
   async usage(@Query(new ZodPipe(listRunsSchema)) query: ListRunsInput): Promise<AiUsageDto> {
     const [runs, totalCostCents] = await Promise.all([

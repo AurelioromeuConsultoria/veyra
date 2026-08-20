@@ -133,6 +133,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     messages: 'Message',
     calendarEvents: 'CalendarEvent',
     aiProposals: 'AiProposal',
+    aiRuns: 'AiRun',
   },
   Tag: {
     workspace: 'Workspace',
@@ -227,6 +228,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
   Conversation: {
     workspace: 'Workspace',
     aiProposals: 'AiProposal',
+    aiRuns: 'AiRun',
     channel: 'Channel',
     contact: 'Contact',
     assignee: 'Membership',
@@ -258,6 +260,8 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     // alvo fora do perímetro: catálogo global, travessia via db é bloqueada
     promptVersion: 'PromptVersion',
     triggeredBy: 'Membership',
+    conversation: 'Conversation',
+    contact: 'Contact',
     proposals: 'AiProposal',
   },
   AiProposal: {

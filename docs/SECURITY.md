@@ -100,6 +100,8 @@ Política obrigatória para `FileObject`:
 4. **Aprovar não amplia poder**: aprovar uma proposta exige `intelligence:approve` **e** a permissão do domínio afetado (`tasks:write`). O payload é revalidado no aceite — a linha pode ter sido adulterada entre a proposta e a aprovação.
 5. **Registro sem vazamento**: `AiRun` guarda descrição do contexto, tokens, custo e um `reasonCode` curto. Nunca corpo de mensagem, prompt bruto, segredo ou stack trace — vale também para runs recusados e com erro.
 6. **Custo**: `model` e contagens cruas ficam gravados junto do `costCents`, para que erro de tabela de preço seja recalculável.
+7. **Execução atômica e autoria** (ADR-030): reivindicar → criar → registrar → concluir numa transação só; a mutação é registrada com `actorType='ai'` e `actorId=AiRun.id`, com o aprovador preservado como contexto.
+8. **Resultado persistido** (ADR-031): `AiRun.result` guarda a saída validada, servida apenas pelo endpoint do alvo com a permissão do domínio. A visão de custo (`workspace:manage`) não devolve resultado. A fila de propostas exige `intelligence:approve` + `contacts:read`: uma role só com `intelligence:use` não infere pelo feed de IA o que não pode ler no CRM.
 
 ## 8. Segredos e criptografia
 

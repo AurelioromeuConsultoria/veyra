@@ -76,6 +76,13 @@ export class ActivitiesService {
       actorMembershipId: string | null;
       payload: Record<string, unknown>;
       targets: ActivityTargets;
+      /**
+       * `ai` quando a mutação foi EXECUTADA pela IA a partir de proposta
+       * aprovada: o ator é a IA e `actorMembershipId` guarda quem aprovou,
+       * como contexto. Sem isso, a timeline creditaria o humano por uma ação
+       * que ele apenas autorizou.
+       */
+      actorType?: 'user' | 'system' | 'ai';
     },
   ): Promise<void> {
     const schema = ACTIVITY_PAYLOADS[type];
@@ -90,7 +97,7 @@ export class ActivitiesService {
         // na tx raw (moves sob lock) é o próprio carimbo
         workspaceId,
         type,
-        actorType: options.actorMembershipId ? 'user' : 'system',
+        actorType: options.actorType ?? (options.actorMembershipId ? 'user' : 'system'),
         actorMembershipId: options.actorMembershipId,
         payload: parsed.data as object,
         contactId: options.targets.contactId ?? null,

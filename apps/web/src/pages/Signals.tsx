@@ -32,13 +32,17 @@ export function SignalsPage() {
     queryKey: ['ai-consent'],
     queryFn: () => api.get<AiConsentDto>('/api/intelligence/consent'),
   });
+  // a fila e o custo têm permissões próprias (revisão da Entrega 7): quem só
+  // usa IA não enxerga o feed do workspace inteiro nem o histórico de custo
   const proposals = useQuery({
     queryKey: ['ai-proposals', status],
     queryFn: () => api.get<AiProposalDto[]>(`/api/intelligence/proposals?status=${status}`),
+    enabled: canApprove,
   });
   const usage = useQuery({
     queryKey: ['ai-usage'],
     queryFn: () => api.get<AiUsageDto>('/api/intelligence/usage?limit=20'),
+    enabled: canManage,
   });
 
   const invalidate = () => {
@@ -90,9 +94,11 @@ export function SignalsPage() {
             Propostas da IA aguardando decisão humana — nada é executado sem aprovação.
           </p>
         </div>
-        <span className="font-mono text-xs tabular-nums text-muted-fg">
-          {usage.data ? `${money(usage.data.totalCostCents)} em IA` : '—'}
-        </span>
+        {canManage ? (
+          <span className="font-mono text-xs tabular-nums text-muted-fg">
+            {usage.data ? `${money(usage.data.totalCostCents)} em IA` : '—'}
+          </span>
+        ) : null}
       </header>
 
       <div className="flex-1 overflow-auto p-5">
@@ -125,6 +131,12 @@ export function SignalsPage() {
             ) : null}
           </label>
         </section>
+
+        {!canApprove ? (
+          <p className="mb-6 max-w-2xl text-sm text-muted-fg">
+            A fila de propostas é visível para quem pode aprová-las.
+          </p>
+        ) : null}
 
         <div className="mb-2 flex items-center gap-2">
           <h2 className="mr-auto text-xs font-medium uppercase tracking-wider text-muted-fg">
@@ -171,9 +183,11 @@ export function SignalsPage() {
           ) : null}
         </ul>
 
-        <h2 className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-fg">
-          Execuções recentes
-        </h2>
+        {canManage ? (
+          <h2 className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-fg">
+            Execuções recentes
+          </h2>
+        ) : null}
         <table className="w-full max-w-4xl border-collapse text-[13px]">
           <thead>
             <tr className="border-b border-border">

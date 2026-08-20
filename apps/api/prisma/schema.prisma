@@ -311,6 +311,7 @@ model Contact {
   messages       Message[]       @relation("MessageAuthorContact")
   calendarEvents CalendarEvent[]
   aiProposals    AiProposal[]
+  aiRuns         AiRun[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, status, createdAt])
@@ -441,6 +442,9 @@ enum ActivityType {
 enum ActivityActor {
   user
   system
+  /// mutação EXECUTADA pela IA a partir de proposta aprovada — o aprovador
+  /// fica em actorMembershipId como contexto, mas o ator é a IA
+  ai
 }
 
 model Pipeline {
@@ -831,6 +835,7 @@ model Conversation {
   messages    Message[]
   activities  Activity[]
   aiProposals AiProposal[]
+  aiRuns      AiRun[]
 
   @@unique([workspaceId, id])
   // alvo da FK TRIPLA de Message: o banco garante que a mensagem não pode
@@ -997,6 +1002,9 @@ enum AiRunAction {
 
 enum AiProposalStatus {
   pending
+  /// estado TRANSITÓRIO: reivindicada e em execução dentro da transação.
+  /// Se a transação falhar, o rollback devolve a linha para `pending`.
+  executing
   approved
   rejected
   expired
@@ -1042,17 +1050,28 @@ model AiRun {
   costCents               Int         @default(0)
   latencyMs               Int         @default(0)
   action                  AiRunAction @default(none)
+  /// RESULTADO estruturado e validado (allowlist por capacidade): é o que torna
+  /// o insight reutilizável na interface. Nunca prompt, corpo bruto ou segredo.
+  result                  Json?
+  /// alvo do run, em colunas FK tipadas — nunca polimorfismo solto
+  conversationId          String?     @db.Uuid
+  contactId               String?     @db.Uuid
   triggeredByMembershipId String?     @db.Uuid
   createdAt               DateTime    @default(now())
 
   workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   promptVersion PromptVersion? @relation(fields: [promptVersionId], references: [id])
   triggeredBy   Membership?    @relation("AiRunTrigger", fields: [workspaceId, triggeredByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  conversation  Conversation?  @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+  contact       Contact?       @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
   proposals     AiProposal[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, createdAt(sort: Desc)])
   @@index([workspaceId, capability, createdAt(sort: Desc)])
+  // último resultado por alvo: é assim que a interface reaproveita o insight
+  @@index([workspaceId, conversationId, capability, createdAt(sort: Desc)])
+  @@index([workspaceId, contactId, capability, createdAt(sort: Desc)])
 }
 
 /// Ação externa proposta pela IA: só existe executada DEPOIS de aprovação

@@ -9,7 +9,9 @@ export const aiConsentSchema = z
 export type AiConsentInput = z.infer<typeof aiConsentSchema>;
 
 export const listProposalsSchema = z.object({
-  status: z.enum(['pending', 'approved', 'rejected', 'expired', 'all']).default('pending'),
+  status: z
+    .enum(['pending', 'executing', 'approved', 'rejected', 'expired', 'all'])
+    .default('pending'),
 });
 export type ListProposalsInput = z.infer<typeof listProposalsSchema>;
 
@@ -60,7 +62,7 @@ export interface AiProposalDto {
   type: 'create_task';
   payload: Record<string, unknown>;
   rationale: string;
-  status: 'pending' | 'approved' | 'rejected' | 'expired';
+  status: 'pending' | 'executing' | 'approved' | 'rejected' | 'expired';
   contactId: string | null;
   dealId: string | null;
   conversationId: string | null;
@@ -70,6 +72,12 @@ export interface AiProposalDto {
   createdAt: string;
 }
 
+/**
+ * Visão de CUSTO e histórico. Deliberadamente SEM o resultado: ele pode conter
+ * texto derivado de conversa, e quem vê custo (workspace:manage) não é
+ * necessariamente quem pode ler conversas. O resultado é servido pelo endpoint
+ * do alvo, com a permissão do domínio.
+ */
 export interface AiRunDto {
   id: string;
   capability: string;

@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { TasksModule } from '../tasks/tasks.module';
 import {
   AI_CONSENT_REPOSITORY,
   AI_PROPOSAL_REPOSITORY,
@@ -13,7 +14,9 @@ import {
 } from './ai.repositories';
 
 /** Adaptadores Prisma das portas do módulo `intelligence` (ADR-027). */
+/** Importa TasksModule: a execução de proposta cria tarefa na MESMA transação. */
 @Module({
+  imports: [TasksModule],
   providers: [
     { provide: AI_RUN_REPOSITORY, useClass: PrismaAiRunRepository },
     { provide: AI_PROPOSAL_REPOSITORY, useClass: PrismaAiProposalRepository },

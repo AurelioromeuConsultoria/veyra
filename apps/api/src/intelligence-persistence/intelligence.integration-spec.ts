@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { PrismaService } from '../prisma/prisma.service';
@@ -372,6 +373,120 @@ describe('Intelligence v1 — consentimento, runs e propostas (integração)', (
     expect((await get('/api/intelligence/usage', sessionB).expect(200)).body.runs).toEqual([]);
     await post(`/api/intelligence/proposals/${proposalId}/approve`, sessionB).expect(404);
     await post(`/api/intelligence/conversations/${conversaA}/summary`, sessionB).expect(404);
+  });
+
+  // ── Correções da revisão ──────────────────────────────────────────────────
+
+  it('ADR-030: execução é atômica — falha ao criar a tarefa devolve a proposta a pending', async () => {
+    llm.nextText = ACAO_OK;
+    const { proposalId } = (
+      await post(`/api/intelligence/contacts/${contactA}/next-action`, sessionA).expect(201)
+    ).body;
+
+    // aponta a proposta para um contato que não existe: a criação da tarefa
+    // falha por FK DENTRO da transação (apagar o contato de verdade levaria a
+    // proposta junto por cascade e não testaria rollback nenhum)
+    const payload = { title: 'Ligar', dueAt: new Date().toISOString(), contactId: randomUUID() };
+    await prisma.raw.aiProposal.updateMany({ where: { id: proposalId }, data: { payload } });
+    const res = await post(`/api/intelligence/proposals/${proposalId}/approve`, sessionA);
+    expect(res.status).toBeGreaterThanOrEqual(400);
+
+    // a proposta NÃO ficou approved sem tarefa: o rollback a devolveu a pending
+    const row = await prisma.raw.aiProposal.findFirst({ where: { id: proposalId } });
+    expect(row!.status).toBe('pending');
+    expect(await prisma.raw.task.count()).toBe(0);
+  });
+
+  it('a mutação aprovada é registrada como IA, ligada ao run, com o aprovador como contexto', async () => {
+    llm.nextText = ACAO_OK;
+    const { proposalId, runId } = (
+      await post(`/api/intelligence/contacts/${contactA}/next-action`, sessionA).expect(201)
+    ).body;
+    const { body } = await post(
+      `/api/intelligence/proposals/${proposalId}/approve`,
+      sessionA,
+    ).expect(201);
+
+    // timeline: ator é a IA, e o aprovador fica como contexto
+    const activity = await prisma.raw.activity.findFirst({
+      where: { taskId: body.taskId, type: 'task_created' },
+    });
+    expect(activity!.actorType).toBe('ai');
+    expect(activity!.actorMembershipId).toBeTruthy();
+
+    // auditoria: actorId é o AiRun que propôs
+    const log = await prisma.raw.auditLog.findFirst({ where: { action: 'task.created_by_ai' } });
+    expect(log!.actorType).toBe('ai');
+    expect(log!.actorId).toBe(runId);
+    expect(log!.actorMembershipId).toBeTruthy();
+  });
+
+  it('prompt alterado sem subir a versão falha alto', async () => {
+    await consentir().expect(200);
+    llm.nextText = RESUMO_OK;
+    await post(`/api/intelligence/conversations/${conversaA}/summary`, sessionA).expect(201);
+
+    // alguém edita o texto do prompt e mantém a versão
+    await prisma.raw.promptVersion.updateMany({
+      where: { capability: 'conversation_summary', version: 1 },
+      data: { hash: 'hash-de-outro-texto' },
+    });
+    const res = await post(`/api/intelligence/conversations/${conversaA}/summary`, sessionA);
+    expect(res.status).toBeGreaterThanOrEqual(500);
+  });
+
+  it('resultado é PERSISTIDO e relido sem pagar outro run', async () => {
+    await consentir().expect(200);
+    llm.nextText = RESUMO_OK;
+    await post(`/api/intelligence/conversations/${conversaA}/summary`, sessionA).expect(201);
+    const chamadasAntes = llm.calls.length;
+
+    const relido = (
+      await get(`/api/intelligence/conversations/${conversaA}/summary`, sessionA).expect(200)
+    ).body;
+    expect(relido.status).toBe('ok');
+    expect(relido.subject).toBe('Renovação de contrato');
+    expect(relido.pendencies).toEqual(['Enviar proposta revisada']);
+    expect(llm.calls.length).toBe(chamadasAntes); // nenhuma chamada nova
+
+    // o run guarda o RESULTADO estruturado — que é conteúdo derivado, e é o
+    // ponto de persistir. O que não pode aparecer é o corpo BRUTO da mensagem
+    // nem o prompt: a linha inteira é varrida atrás do texto original.
+    const run = await prisma.raw.aiRun.findFirst({ where: { status: 'ok' } });
+    expect(run!.result).toMatchObject({ subject: 'Renovação de contrato' });
+    expect(Object.keys(run!.result as object).sort()).toEqual([
+      'injectionAttempt',
+      'pendencies',
+      'sentiment',
+      'subject',
+      'summary',
+    ]);
+    expect(JSON.stringify(run)).not.toContain('Quero renovar, mas preciso de desconto');
+    expect(run!.contextSummary).not.toContain('desconto');
+    expect(JSON.stringify(run)).not.toContain('Responda SOMENTE com JSON'); // nada de prompt
+    expect(run!.conversationId).toBe(conversaA);
+  });
+
+  it('conversa sem resumo devolve vazio em vez de inventar', async () => {
+    const outra = (await post('/api/conversations', sessionA, { subject: 'Nova' }).expect(201))
+      .body;
+    const res = await get(`/api/intelligence/conversations/${outra.id}/summary`, sessionA).expect(
+      200,
+    );
+    expect(res.body).toEqual({});
+  });
+
+  it('RBAC estrito: fila de propostas e custo não são visíveis a quem só usa IA', async () => {
+    const memberId = await createUserFixture(prisma, 'member-rbac@veyra.test');
+    await createMembershipFixture(prisma, wsA.workspaceId, memberId, wsA.roles.member);
+    const member = await loginAs('member-rbac@veyra.test');
+
+    // Member tem intelligence:use e contacts:read, mas não approve nem manage
+    await get('/api/intelligence/proposals', member).expect(403);
+    await get('/api/intelligence/usage', member).expect(403);
+    // e continua usando as capacidades normalmente
+    llm.nextText = JSON.stringify({ explanation: 'ok' });
+    await get(`/api/intelligence/contacts/${contactA}/score`, member).expect(200);
   });
 
   it('RBAC: Guest não usa IA; Member usa mas não aprova', async () => {

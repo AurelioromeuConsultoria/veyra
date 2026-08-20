@@ -42,7 +42,9 @@ export type ListActivitiesInput = z.infer<typeof listActivitiesSchema>;
 export interface ActivityDto {
   id: string;
   type: ActivityType;
-  actorType: 'user' | 'system';
+  /** `ai` = mutação executada pela IA a partir de proposta aprovada; o nome,
+   *  quando presente, é de quem aprovou (contexto, não autoria) */
+  actorType: 'user' | 'system' | 'ai';
   actorName: string | null;
   /** payload mínimo validado por mapa fechado no servidor — nunca corpo de nota */
   payload: Record<string, string | number>;

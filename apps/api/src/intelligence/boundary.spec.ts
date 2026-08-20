@@ -45,12 +45,15 @@ describe('fronteira do módulo intelligence (ADR-027)', () => {
     },
   );
 
-  it('as portas de persistência existem e são só interfaces + tokens', () => {
+  it('as portas de persistência existem e nenhuma delas é implementada aqui', () => {
     const ports = readFileSync(join(MODULE_ROOT, 'ports', 'repositories.ts'), 'utf8');
     for (const port of ['AiRunRepository', 'AiProposalRepository', 'AiConsentRepository']) {
       expect(ports).toContain(`interface ${port}`);
     }
-    // porta não implementa nada: sem classe, sem import de runtime de banco
-    expect(ports).not.toMatch(/\bclass\b/);
+    // nenhuma implementação mora no módulo: `implements` só existe do lado dos
+    // adaptadores. (A única classe permitida aqui é um Error de contrato.)
+    expect(ports).not.toMatch(/\bimplements\b/);
+    const classes = [...ports.matchAll(/export class (\w+)/g)].map((match) => match[1]);
+    expect(classes).toEqual(['PromptHashMismatchError']);
   });
 });

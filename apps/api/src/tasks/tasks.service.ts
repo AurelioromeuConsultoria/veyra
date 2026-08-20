@@ -64,26 +64,47 @@ export class TasksService {
   async create(auth: AuthContext, input: CreateTaskInput): Promise<TaskDto> {
     await this.validateReferences(input);
     const db = this.prisma.db as unknown as TxRunner;
-    const id = await db.$transaction(async (tx) => {
-      const task = await tx.task.create({
-        data: {
-          title: input.title,
-          description: input.description ?? null,
-          dueAt: input.dueAt ? new Date(input.dueAt) : null,
-          assigneeMembershipId: input.assigneeMembershipId ?? null,
-          priority: input.priority,
-          contactId: input.contactId ?? null,
-          dealId: input.dealId ?? null,
-        },
-      } as never);
-      await this.activities.record(tx, auth.workspaceId as string, 'task_created', {
-        actorMembershipId: auth.membershipId,
-        payload: { title: input.title },
-        targets: { taskId: task.id, contactId: input.contactId, dealId: input.dealId },
-      });
-      return task.id;
-    });
+    const id = await db.$transaction((tx) =>
+      this.createWithin(tx, auth.workspaceId as string, input, {
+        type: 'user',
+        membershipId: auth.membershipId ?? null,
+      }),
+    );
     return this.get(id);
+  }
+
+  /**
+   * Criação DENTRO de uma transação de quem chama. Existe para que a execução
+   * de uma proposta de IA (reivindicar → criar → registrar → concluir) caiba
+   * numa transação só: se qualquer etapa falhar, nada sobra pela metade.
+   *
+   * `actor.type = 'ai'` registra a mutação como da IA, preservando o aprovador
+   * em `membershipId` como contexto de aprovação.
+   */
+  async createWithin(
+    tx: Db,
+    workspaceId: string,
+    input: CreateTaskInput,
+    actor: { type: 'user' | 'ai'; membershipId: string | null },
+  ): Promise<string> {
+    const task = await tx.task.create({
+      data: {
+        title: input.title,
+        description: input.description ?? null,
+        dueAt: input.dueAt ? new Date(input.dueAt) : null,
+        assigneeMembershipId: input.assigneeMembershipId ?? null,
+        priority: input.priority,
+        contactId: input.contactId ?? null,
+        dealId: input.dealId ?? null,
+      },
+    } as never);
+    await this.activities.record(tx, workspaceId, 'task_created', {
+      actorMembershipId: actor.membershipId,
+      actorType: actor.type,
+      payload: { title: input.title },
+      targets: { taskId: task.id, contactId: input.contactId, dealId: input.dealId },
+    });
+    return (task as unknown as { id: string }).id;
   }
 
   async update(auth: AuthContext, id: string, input: UpdateTaskInput): Promise<TaskDto> {
