@@ -68,36 +68,41 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('Não autenticado');
     }
 
-    // sessão viva? (logout/reuso/expiração derrubam o access na request seguinte)
-    const session = await this.prisma.raw.refreshToken.findFirst({
-      where: {
-        id: payload.sessionId,
-        userId: payload.sub,
-        revokedAt: null,
-        expiresAt: { gt: new Date() },
-      },
-      select: { id: true },
-    });
-    if (!session) throw new UnauthorizedException('Sessão expirada');
+    // revalidação por request (queries independentes → em paralelo):
+    //  - sessão viva (logout/reuso/expiração derrubam o access na request seguinte)
+    //  - user ativo (suspensão global vale imediatamente)
+    //  - membership ativa + tokenVersion (ADR-009) + workspace ativo, se houver
+    const [session, user, membership] = await Promise.all([
+      this.prisma.raw.refreshToken.findFirst({
+        where: {
+          id: payload.sessionId,
+          userId: payload.sub,
+          revokedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+        select: { id: true },
+      }),
+      this.prisma.raw.user.findFirst({
+        where: { id: payload.sub, status: 'active' },
+        select: { id: true },
+      }),
+      payload.membershipId
+        ? this.prisma.raw.membership.findFirst({
+            where: {
+              id: payload.membershipId,
+              userId: payload.sub,
+              status: 'active',
+              workspace: { status: 'active' },
+            },
+            select: { id: true, workspaceId: true, roleId: true, tokenVersion: true },
+          })
+        : Promise.resolve(null),
+    ]);
 
-    // usuário existe e está ativo? (suspensão global vale imediatamente)
-    const user = await this.prisma.raw.user.findFirst({
-      where: { id: payload.sub, status: 'active' },
-      select: { id: true },
-    });
+    if (!session) throw new UnauthorizedException('Sessão expirada');
     if (!user) throw new UnauthorizedException('Sessão expirada');
 
     if (payload.membershipId) {
-      // membership ativa + tokenVersion (ADR-009) + workspace ativo
-      const membership = await this.prisma.raw.membership.findFirst({
-        where: {
-          id: payload.membershipId,
-          userId: payload.sub,
-          status: 'active',
-          workspace: { status: 'active' },
-        },
-        select: { id: true, workspaceId: true, roleId: true, tokenVersion: true },
-      });
       if (!membership || membership.tokenVersion !== payload.tokenVersion) {
         throw new UnauthorizedException('Sessão expirada');
       }

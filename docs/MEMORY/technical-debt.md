@@ -1,0 +1,10 @@
+# Dívida técnica — aceita conscientemente, com gatilho para resolver
+
+Regra: dívida entra aqui com o motivo e o **gatilho** que obriga a resolvê-la. Resolvida = remover a linha.
+
+| Dívida                                                                                                                   | Por que foi aceita                                                                     | Gatilho para resolver                                                                         |
+| ------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Oráculo de timing no aceite de convite (bcrypt roda só com token válido + conta existente)                               | Atacante relevante já sabe que o token é válido; vazamento desprezível no modelo atual | Verificação de e-mail no aceite (pós-MVP) — adicionar `compare` dummy junto                   |
+| Advisory lock de membros usa `hashtext` (int4) — colisão entre workspaces gera contenção rara, nunca ausência de lock    | Simplicidade; over-serialization é inofensiva                                          | Contenção medida em produção → migrar para chave bigint de 64-bit                             |
+| Aceite de convite para e-mail SEM conta cria a conta (pré-registro possível pelo convidante, restrito ao workspace dele) | Sem serviço de e-mail ainda; sem pivô cross-tenant                                     | Canal de e-mail real (Entrega 6) → token deixa de retornar ao criador + verificação de e-mail |
+| Permissões checadas por query a cada request (PermissionsGuard)                                                          | Simplicidade; volume baixo no MVP                                                      | p95 do guard > 20ms ou 1k req/min sustentado → cache por (roleId, updatedAt)                  |
