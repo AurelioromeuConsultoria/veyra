@@ -1,5 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
+  ConversationSummaryDto,
   ConversationDto,
   ConversationPageDto,
   ConversationStatus,
@@ -8,7 +9,7 @@ import type {
   MessagePageDto,
 } from '@veyra/contracts';
 import { clsx } from 'clsx';
-import { MessageSquarePlus, Paperclip, Send, X } from 'lucide-react';
+import { MessageSquarePlus, Paperclip, Send, Sparkles, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '../components/ui/button';
 import { Input, Select } from '../components/ui/input';
@@ -26,12 +27,14 @@ const statusLabels: Record<ConversationStatus, string> = {
 export function InboxPage() {
   const { data: user } = useSession();
   const canWrite = hasPermission(user, 'conversations:write');
+  const canUseAi = hasPermission(user, 'intelligence:use');
   const queryClient = useQueryClient();
 
   const [status, setStatus] = useState<'open' | 'pending' | 'closed' | 'all'>('open');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<FileObjectDto[]>([]);
+  const [summary, setSummary] = useState<ConversationSummaryDto | null>(null);
   const [subject, setSubject] = useState('');
   const [error, setError] = useState<string | null>(null);
 
@@ -89,6 +92,14 @@ export function InboxPage() {
       invalidate();
     },
     onError: (e) => setError(e instanceof ApiError ? e.message : 'Falha ao registrar mensagem'),
+  });
+
+  /** Resumo é sinal, não chat: aparece no contexto da conversa e some com ela. */
+  const summarize = useMutation({
+    mutationFn: () =>
+      api.post<ConversationSummaryDto>(`/api/intelligence/conversations/${selectedId}/summary`),
+    onSuccess: (result) => setSummary(result),
+    onError: (e) => setError(e instanceof ApiError ? e.message : 'Falha ao resumir'),
   });
 
   const changeStatus = useMutation({
@@ -157,7 +168,10 @@ export function InboxPage() {
             <li key={conversation.id}>
               <button
                 type="button"
-                onClick={() => setSelectedId(conversation.id)}
+                onClick={() => {
+                  setSelectedId(conversation.id);
+                  setSummary(null);
+                }}
                 aria-current={conversation.id === selectedId}
                 className={clsx(
                   'w-full border-b border-border/60 px-4 py-2.5 text-left hover:bg-surface-2',
@@ -204,6 +218,17 @@ export function InboxPage() {
                 {selected.assigneeName ? ` · ${selected.assigneeName}` : ''}
               </p>
             </div>
+            {canUseAi ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-ai"
+                disabled={summarize.isPending}
+                onClick={() => summarize.mutate()}
+              >
+                <Sparkles size={13} /> {summarize.isPending ? 'Resumindo…' : 'Resumir'}
+              </Button>
+            ) : null}
             {canWrite ? (
               <Select
                 className="h-7 w-auto text-xs"
@@ -219,6 +244,37 @@ export function InboxPage() {
               </Select>
             ) : null}
           </header>
+
+          {summary ? (
+            <div className="border-b border-ai/30 bg-ai/5 px-5 py-3">
+              {summary.status === 'ok' ? (
+                <>
+                  <p className="text-[11px] font-medium uppercase tracking-wider text-ai">
+                    Resumo · {summary.sentiment}
+                  </p>
+                  <p className="mt-1 text-[13px]">{summary.summary}</p>
+                  {summary.pendencies && summary.pendencies.length > 0 ? (
+                    <ul className="mt-1.5 list-inside list-disc text-xs text-muted-fg">
+                      {summary.pendencies.map((item) => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  {summary.injectionAttempt ? (
+                    <p className="mt-1.5 text-xs text-warning">
+                      Atenção: o conteúdo desta conversa tentou dar instruções ao assistente.
+                    </p>
+                  ) : null}
+                </>
+              ) : (
+                <p className="text-[13px] text-muted-fg">
+                  {summary.status === 'no_consent'
+                    ? 'Resumo indisponível: o workspace não autorizou o uso de conteúdo de conversa (ajuste em Sinais).'
+                    : 'Resumo indisponível no momento.'}
+                </p>
+              )}
+            </div>
+          ) : null}
 
           <div ref={threadRef} className="flex-1 space-y-3 overflow-auto px-5 py-4">
             {thread.map((message) => (

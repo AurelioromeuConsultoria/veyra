@@ -7,6 +7,7 @@ import {
   KanbanSquare,
   LogOut,
   ScrollText,
+  Sparkles,
   Settings2,
   Tags,
   Users,
@@ -26,6 +27,7 @@ const nav = [
   { to: '/tags', label: 'Tags', icon: Tags },
   { to: '/settings/fields', label: 'Campos', icon: Settings2 },
   { to: '/settings/webhooks', label: 'Webhooks', icon: Webhook, permission: 'webhooks:manage' },
+  { to: '/signals', label: 'Sinais', icon: Sparkles, permission: 'intelligence:use' },
   { to: '/audit', label: 'Auditoria', icon: ScrollText, permission: 'audit:read' },
 ];
 

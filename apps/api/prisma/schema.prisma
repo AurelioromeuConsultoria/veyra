@@ -98,6 +98,9 @@ model Workspace {
   calendarEvents         CalendarEvent[]
   notifications          Notification[]
   files                  FileObject[]
+  aiRuns                 AiRun[]
+  aiProposals            AiProposal[]
+  aiConsent              AiConsent?
 }
 
 /// Catálogo GLOBAL de permissões (ADR-004): chaves estáveis do sistema —
@@ -182,6 +185,9 @@ model Membership {
   organizedEvents       CalendarEvent[] @relation("EventOrganizer")
   notifications         Notification[]  @relation("NotificationRecipient")
   uploadedFiles         FileObject[]    @relation("FileUploader")
+  aiRuns                AiRun[]         @relation("AiRunTrigger")
+  reviewedProposals     AiProposal[]    @relation("ProposalReviewer")
+  consentChanges        AiConsent[]     @relation("ConsentAuthor")
 
   // Alvo de FK composta para Team/ownership futuros
   @@unique([workspaceId, id])
@@ -304,6 +310,7 @@ model Contact {
   conversations  Conversation[]
   messages       Message[]       @relation("MessageAuthorContact")
   calendarEvents CalendarEvent[]
+  aiProposals    AiProposal[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, status, createdAt])
@@ -508,6 +515,7 @@ model Deal {
   notes          Note[]
   activities     Activity[]
   calendarEvents CalendarEvent[]
+  aiProposals    AiProposal[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, pipelineId, stageId, position])
@@ -816,12 +824,13 @@ model Conversation {
   lastMessageAt        DateTime           @default(now())
   createdAt            DateTime           @default(now())
 
-  workspace  Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  channel    Channel     @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
-  contact    Contact?    @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
-  assignee   Membership? @relation("ConversationAssignee", fields: [workspaceId, assigneeMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  messages   Message[]
-  activities Activity[]
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  channel     Channel      @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  contact     Contact?     @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  assignee    Membership?  @relation("ConversationAssignee", fields: [workspaceId, assigneeMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  messages    Message[]
+  activities  Activity[]
+  aiProposals AiProposal[]
 
   @@unique([workspaceId, id])
   // alvo da FK TRIPLA de Message: o banco garante que a mensagem não pode
@@ -970,4 +979,120 @@ model MessageAttachment {
 
   @@unique([workspaceId, messageId, fileObjectId])
   @@index([workspaceId, fileObjectId])
+}
+
+// ─── Inteligência (Entrega 7) ─────────────────────────────────────────────────
+
+enum AiRunStatus {
+  ok
+  refused
+  error
+}
+
+enum AiRunAction {
+  none
+  proposed
+  executed
+}
+
+enum AiProposalStatus {
+  pending
+  approved
+  rejected
+  expired
+}
+
+/// Tipos de proposta PERMITIDOS. O modelo não inventa tipo: a saída é validada
+/// contra esta lista e contra o schema Zod estrito do payload (ADR-029).
+enum AiProposalType {
+  create_task
+}
+
+/// Catálogo GLOBAL de prompts versionados (como Permission): mudar prompt é
+/// versão nova, nunca edição silenciosa. Não é dado de tenant.
+model PromptVersion {
+  id         String   @id @default(uuid()) @db.Uuid
+  capability String
+  version    Int
+  /// sha256 do texto do prompt — detecta edição sem bump de versão
+  hash       String
+  changelog  String
+  createdAt  DateTime @default(now())
+
+  runs AiRun[]
+
+  @@unique([capability, version])
+}
+
+model AiRun {
+  id                      String      @id @default(uuid()) @db.Uuid
+  workspaceId             String      @db.Uuid
+  capability              String
+  promptVersionId         String?     @db.Uuid
+  model                   String
+  /// DESCRIÇÃO do contexto (quais entidades/campos), NUNCA o payload bruto,
+  /// corpo de mensagem, prompt ou segredo — vale também para runs com erro
+  contextSummary          String
+  status                  AiRunStatus
+  /// código curto do motivo (ex.: 'no_consent', 'invalid_output', 'provider_error');
+  /// jamais stack trace ou mensagem do provedor
+  reasonCode              String?
+  inputTokens             Int         @default(0)
+  outputTokens            Int         @default(0)
+  costCents               Int         @default(0)
+  latencyMs               Int         @default(0)
+  action                  AiRunAction @default(none)
+  triggeredByMembershipId String?     @db.Uuid
+  createdAt               DateTime    @default(now())
+
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  promptVersion PromptVersion? @relation(fields: [promptVersionId], references: [id])
+  triggeredBy   Membership?    @relation("AiRunTrigger", fields: [workspaceId, triggeredByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  proposals     AiProposal[]
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, createdAt(sort: Desc)])
+  @@index([workspaceId, capability, createdAt(sort: Desc)])
+}
+
+/// Ação externa proposta pela IA: só existe executada DEPOIS de aprovação
+/// humana (princípio 4). Alvos por colunas FK tipadas — nunca polimorfismo solto.
+model AiProposal {
+  id                     String           @id @default(uuid()) @db.Uuid
+  workspaceId            String           @db.Uuid
+  runId                  String           @db.Uuid
+  type                   AiProposalType
+  payload                Json
+  rationale              String
+  status                 AiProposalStatus @default(pending)
+  contactId              String?          @db.Uuid
+  dealId                 String?          @db.Uuid
+  conversationId         String?          @db.Uuid
+  reviewedByMembershipId String?          @db.Uuid
+  reviewedAt             DateTime?
+  expiresAt              DateTime
+  createdAt              DateTime         @default(now())
+
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  run          AiRun         @relation(fields: [workspaceId, runId], references: [workspaceId, id], onDelete: Cascade)
+  contact      Contact?      @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  deal         Deal?         @relation(fields: [workspaceId, dealId], references: [workspaceId, id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
+  reviewedBy   Membership?   @relation("ProposalReviewer", fields: [workspaceId, reviewedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, status, createdAt(sort: Desc)])
+}
+
+/// Consentimento do workspace (ADR-028): UMA flag, desligada por padrão.
+model AiConsent {
+  workspaceId           String   @id @db.Uuid
+  /// corpo de mensagem pode entrar no prompt? default NÃO
+  conversationContent   Boolean  @default(false)
+  updatedByMembershipId String?  @db.Uuid
+  updatedAt             DateTime @updatedAt
+
+  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  // FK composta: quem mudou o consentimento é membership DESTE workspace
+  updatedBy Membership? @relation("ConsentAuthor", fields: [workspaceId, updatedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
 }

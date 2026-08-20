@@ -242,3 +242,27 @@ Toda decisão arquitetural vira ADR **antes** do código. Formato abaixo. ADRs s
 **Contexto:** o critério da Entrega 6.2 dizia "evento criado notifica o organizador uma única vez, inclusive em retry". Na implementação, notificar quem acabou de criar o próprio evento é ruído: a pessoa está olhando para o resultado da ação que acabou de fazer. O critério precisava de decisão explícita, não de exceção silenciosa no código.
 **Decisão:** notificação é emitida **apenas quando o destinatário não é quem agiu**. Vale para os dois produtores atuais: evento agendado com organizador diferente do criador, e conversa atribuída a outra pessoa. Quem age nunca se autonotifica. A garantia de "uma única vez, inclusive em retry" continua valendo integralmente para o caso em que há notificação, sustentada pelo `dedupeKey` com unique tenant-scoped (testado com e sem `Idempotency-Key`). O `dedupeKey` é o par **(fato, destinatário)** — reatribuir uma conversa a quem já foi avisado não repete o aviso, o que evita tempestade de notificação ao alternar responsável.
 **Consequências:** a caixa só contém o que veio de outra pessoa, o que a mantém legível. Preço: se alguém agendar um evento para si e quiser um lembrete, isso terá de vir de um mecanismo de **lembrete por proximidade de horário** — que é outra coisa, e não existe ainda. Ambos os ramos (com e sem autonotificação) têm teste.
+
+## ADR-027 — `intelligence` sem Prisma: portas no módulo, adaptadores fora
+
+**Status:** aceito · **Data:** 2026-08-20
+
+**Contexto:** "a IA não acessa o banco" era convenção escrita. Uma barreira com exceção interna (uma pasta `store/` autorizada dentro do módulo) enfraquece a regra: passa a exigir julgamento sobre o que é "escrituração própria" e o que é domínio, exatamente o tipo de decisão que erra em silêncio meses depois.
+**Decisão:** **inversão de dependência**. O módulo define as portas — `AiRunRepository`, `AiProposalRepository`, `AiConsentRepository` — como interfaces com tokens de DI, e os adaptadores Prisma vivem **fora**, em `src/intelligence-persistence/`. Com isso o banimento de import de Prisma dentro de `src/intelligence/**` é **absoluto**: sem exceção, sem allowlist de pasta. É verificado em duas camadas — `no-restricted-imports` do ESLint e um **teste de fronteira** que varre os arquivos do módulo, porque configuração de lint pode ser afrouxada sem ninguém notar e teste vermelho não. Leitura de domínio continua sendo por serviços de domínio injetados, que já carregam tenant + RBAC + auditoria.
+**Consequências:** trocar a persistência dos runs (outro banco, outro formato) não toca o módulo. Preço: uma camada de interfaces a mais e DTOs de fronteira em vez de tipos do Prisma — aceito, porque é o que torna a regra verificável em vez de aspiracional.
+
+## ADR-028 — Consentimento de conteúdo de conversa, default-deny
+
+**Status:** aceito · **Data:** 2026-08-20
+
+**Contexto:** corpo de mensagem é o dado mais sensível do Core — a §5 da segurança existe para mantê-lo fora de auditoria e log. Colocá-lo num prompt é enviá-lo a um terceiro.
+**Decisão:** `AiConsent` tem **uma** flag por workspace, `conversationContent`, **desligada por padrão**. Sem ela: a capacidade de resumo não é oferecida e **nenhuma chamada ao provedor acontece** — a checagem é anterior ao provedor, não um filtro depois. Alternar exige `workspace:manage` e gera `AuditLog`.
+**Consequências:** um workspace novo não manda conversa para fora sem alguém decidir isso explicitamente. Uma flag só, e não flags por tipo de dado, porque hoje há um único tipo de conteúdo em jogo; granularidade entra quando houver segundo consumidor, não antes.
+
+## ADR-029 — SDK Anthropic direto, sem loop agêntico na v1
+
+**Status:** aceito · **Data:** 2026-08-20
+
+**Contexto:** o `AI_ARCHITECTURE` previa AI SDK com ToolSet e `stopWhen` (herança do Norteie). Para três capacidades de saída estruturada, isso traz complexidade de loop e de tipagem sem ganho — e o próprio documento registra que a inferência de generics do AI SDK com Zod estoura a memória do `tsc`.
+**Decisão:** `@anthropic-ai/sdk` direto, atrás da porta `LLM_CLIENT` (mesmo padrão de `WEBHOOK_TRANSPORT` e `STORAGE_DRIVER`), com o cliente falso nos testes — a suíte nunca fala com provedor real. E **a v1 não tem loop agêntico**: o fluxo é `contexto permitido → chamada estruturada → validação Zod estrita → registro`. O contexto é montado pelo servidor a partir de serviços de domínio; o modelo **não escolhe o que ler** e **não tem ferramenta de escrita**. Nenhuma saída do modelo alcança um service de domínio: ação externa vira `AiProposal` de tipo permitido, executada só depois de aprovação humana.
+**Consequências:** o modelo deixa de ser um agente e passa a ser um transformador de texto validado — o que reduz a superfície de prompt injection a "conteúdo malicioso influencia um texto que um humano vai ler ou aprovar". Ferramentas e teto de passos ficam reservados para capacidades futuras, com ADR próprio. `ToolRegistryService` do `AI_ARCHITECTURE` §2 fica adiado — a seção foi anotada.

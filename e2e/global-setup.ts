@@ -34,10 +34,13 @@ async function seed(): Promise<void> {
   await db.connect();
   try {
     for (const [key, description] of Object.entries(PERMISSION_CATALOG)) {
-      await db.query(`INSERT INTO "Permission" ("key", "description") VALUES ($1, $2)`, [
-        key,
-        description,
-      ]);
+      // ON CONFLICT: a migration da Entrega 7 já semeia as chaves de IA, e o
+      // seed precisa ser reexecutável de qualquer forma
+      await db.query(
+        `INSERT INTO "Permission" ("key", "description") VALUES ($1, $2)
+         ON CONFLICT ("key") DO NOTHING`,
+        [key, description],
+      );
     }
     for (const [slug, ownerEmail] of [
       ['acme', OWNER_A],

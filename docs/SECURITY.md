@@ -92,6 +92,15 @@ Política obrigatória para `FileObject`:
 4. Segredo cifrado (AES-256-GCM, chave independente do JWT) e exibido **uma única vez** na criação — nunca em DTO, log ou auditoria.
 5. Payload por allowlist do evento; 3 entregas mortas consecutivas pausam **apenas** o webhook que falhou.
 
+## 7-C. IA (Entrega 7)
+
+1. **Sem acesso a banco**: `src/intelligence` não importa Prisma — portas no módulo, adaptadores fora (ADR-027), verificado por lint e por teste de fronteira. Leitura de domínio só por serviços de domínio, que já carregam tenant + RBAC + auditoria.
+2. **Consentimento default-deny** (ADR-028): sem `AiConsent.conversationContent`, corpo de mensagem não entra em prompt algum e **nenhuma chamada ao provedor acontece**. Alternar exige `workspace:manage` e é auditado.
+3. **Prompt injection**: conteúdo escrito por terceiros entra sempre delimitado e **rotulado como não confiável**; o modelo não tem ferramenta de escrita (ADR-029); a saída é validada por Zod `.strict()`; e ação externa só existe como `AiProposal` aprovada por humano. O resumo ainda sinaliza `injectionAttempt` para quem lê.
+4. **Aprovar não amplia poder**: aprovar uma proposta exige `intelligence:approve` **e** a permissão do domínio afetado (`tasks:write`). O payload é revalidado no aceite — a linha pode ter sido adulterada entre a proposta e a aprovação.
+5. **Registro sem vazamento**: `AiRun` guarda descrição do contexto, tokens, custo e um `reasonCode` curto. Nunca corpo de mensagem, prompt bruto, segredo ou stack trace — vale também para runs recusados e com erro.
+6. **Custo**: `model` e contagens cruas ficam gravados junto do `costCents`, para que erro de tabela de preço seja recalculável.
+
 ## 8. Segredos e criptografia
 
 - Segredos **jamais** em DTOs, logs, front, commits ou mensagens de erro. Hook `guard-secrets.sh` **nega** commit de `.env`, chaves privadas e tokens reais (só `.env.example` com placeholders).

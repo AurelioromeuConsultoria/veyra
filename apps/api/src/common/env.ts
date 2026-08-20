@@ -32,6 +32,10 @@ const envSchema = z.object({
   AUDIT_RETENTION_DAYS: z.coerce.number().int().min(30).max(3650).default(365),
   // raiz do storage local (ADR-024); com S3 vira bucket + credencial cifrada
   STORAGE_ROOT: z.string().min(1).default('.storage'),
+  // IA (Entrega 7): SEM chave o produto segue funcionando — cada capacidade
+  // degrada com clareza (score continua, explicação some)
+  ANTHROPIC_API_KEY: z.string().min(1).optional(),
+  AI_MODEL: z.string().min(1).default('claude-sonnet-5'),
 });
 
 export type Env = z.infer<typeof envSchema>;

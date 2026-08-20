@@ -92,6 +92,7 @@ export const api = {
   upload,
   post: <T>(path: string, body?: unknown) => run<T>('POST', path, body),
   patch: <T>(path: string, body?: unknown) => run<T>('PATCH', path, body),
+  put: <T>(path: string, body?: unknown) => run<T>('PUT', path, body),
   delete: <T>(path: string) => run<T>('DELETE', path),
 };
 

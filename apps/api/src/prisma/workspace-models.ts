@@ -49,6 +49,11 @@ export const WORKSPACE_MODELS = new Set<string>([
   // Arquivos (Entrega 6.3)
   'FileObject',
   'MessageAttachment',
+  // Inteligência (Entrega 7). PromptVersion NÃO entra: é catálogo global de
+  // prompts, como Permission — exceção documentada (ADR-004/ADR-029).
+  'AiRun',
+  'AiProposal',
+  'AiConsent',
 ]);
 
 /**
@@ -96,6 +101,9 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     organizedEvents: 'CalendarEvent',
     notifications: 'Notification',
     uploadedFiles: 'FileObject',
+    aiRuns: 'AiRun',
+    reviewedProposals: 'AiProposal',
+    consentChanges: 'AiConsent',
     // alvo fora do perímetro: travessia via db é bloqueada (sessões só via raw)
     activeSessions: 'RefreshToken',
   },
@@ -124,6 +132,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     conversations: 'Conversation',
     messages: 'Message',
     calendarEvents: 'CalendarEvent',
+    aiProposals: 'AiProposal',
   },
   Tag: {
     workspace: 'Workspace',
@@ -156,6 +165,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
   },
   Deal: {
     workspace: 'Workspace',
+    aiProposals: 'AiProposal',
     calendarEvents: 'CalendarEvent',
     pipeline: 'Pipeline',
     stage: 'Stage',
@@ -216,6 +226,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
   },
   Conversation: {
     workspace: 'Workspace',
+    aiProposals: 'AiProposal',
     channel: 'Channel',
     contact: 'Contact',
     assignee: 'Membership',
@@ -241,6 +252,25 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
   MessageAttachment: {
     message: 'Message',
     file: 'FileObject',
+  },
+  AiRun: {
+    workspace: 'Workspace',
+    // alvo fora do perímetro: catálogo global, travessia via db é bloqueada
+    promptVersion: 'PromptVersion',
+    triggeredBy: 'Membership',
+    proposals: 'AiProposal',
+  },
+  AiProposal: {
+    workspace: 'Workspace',
+    run: 'AiRun',
+    contact: 'Contact',
+    deal: 'Deal',
+    conversation: 'Conversation',
+    reviewedBy: 'Membership',
+  },
+  AiConsent: {
+    workspace: 'Workspace',
+    updatedBy: 'Membership',
   },
   Message: {
     workspace: 'Workspace',

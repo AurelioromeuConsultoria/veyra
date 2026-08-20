@@ -27,6 +27,31 @@ export default tseslint.config(
     },
   },
   {
+    // BARREIRA do ADR-027: o módulo `intelligence` não alcança o banco. As
+    // portas são interfaces e os adaptadores Prisma vivem em
+    // `src/intelligence-persistence/`. Sem exceção aqui dentro — o teste
+    // `intelligence/boundary.spec.ts` cobre o mesmo, caso esta regra caia.
+    files: ['apps/api/src/intelligence/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['**/prisma/prisma.service', '**/prisma/*', '**/generated/prisma*'],
+              message:
+                'ADR-027: intelligence não importa Prisma. Use uma porta (ports/repositories.ts) e implemente o adaptador em src/intelligence-persistence/.',
+            },
+            {
+              group: ['@prisma/client'],
+              message: 'ADR-027: intelligence não importa Prisma.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     files: ['**/*.js', '**/*.cjs'],
     languageOptions: {
       sourceType: 'commonjs',

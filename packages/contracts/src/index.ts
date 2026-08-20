@@ -10,6 +10,7 @@ export * from './custom-fields';
 export * from './deals';
 export * from './files';
 export * from './health';
+export * from './intelligence';
 export * from './members';
 export * from './notes';
 export * from './notifications';

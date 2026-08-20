@@ -40,10 +40,10 @@ Pipelines/estágios configuráveis, deals com kanban, tarefas, notas, `Activity`
 
 **Pronto quando:** conversa manual ponta a ponta com timeline integrada (✅ 6.1); upload rejeita tipo divergente (✅ 6.3).
 
-## Entrega 7 — `intelligence` v1 🔜
+## Entrega 7 — `intelligence` v1 ✅
 
-Infra do módulo (IntelligenceService, ToolRegistry condicional, PromptRegistry, `AiRun` com custo, `AiProposal` com aprovação). Três capacidades: **resumo de conversa**, **próxima ação**, **lead scoring explicável** (sinais determinísticos + LLM por cima). Evals com fixtures. IA na UI como sinais/insights (token `--ai`).
-**Pronto quando:** cada run registra prompt/tokens/custo; nenhuma ação externa sem aprovação; evals das 3 capacidades verdes.
+Módulo com **portas e adaptadores** (ADR-027): `src/intelligence` não importa Prisma, e a regra é verificada por ESLint **e** por teste de fronteira. SDK Anthropic direto atrás de `LLM_CLIENT`, **sem loop agêntico** na v1 (ADR-029): contexto permitido → chamada estruturada → validação Zod estrita → registro. Consentimento por workspace desligado por padrão (ADR-028) — sem ele não há sequer chamada ao provedor. Três capacidades: **resumo de conversa**, **próxima ação** (vira `AiProposal`, executada só após aprovação) e **lead scoring determinístico** com o LLM apenas explicando. Evals com fixtures gravadas, sem rede. UI: resumo no inbox e página de Sinais com propostas, consentimento e custo.
+**Pronto quando:** cada run registra prompt/tokens/custo (✅); nenhuma ação externa sem aprovação (✅); evals das 3 capacidades verdes (✅).
 
 ## Entrega 8 — Billing, limites e automações v1 🔜
 

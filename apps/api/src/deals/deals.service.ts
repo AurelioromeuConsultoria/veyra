@@ -87,6 +87,22 @@ export class DealsService {
     };
   }
 
+  /**
+   * Oportunidades de um contato, em qualquer pipeline. Existe para consumidores
+   * que raciocinam sobre o contato (sinais de IA, ficha do contato) e não sobre
+   * um board — o `board()` é sempre de um pipeline só.
+   */
+  async listByContact(contactId: string): Promise<DealDto[]> {
+    const rows = (await this.prisma.db.deal.findMany({
+      where: { contactId },
+      include: DEAL_INCLUDE,
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    } as never)) as unknown as DealRow[];
+    const owners = await this.resolveOwnerNames(rows.map((row) => row.ownerMembershipId));
+    return rows.map((row) => this.toDto(row, owners));
+  }
+
   async get(id: string): Promise<DealDto> {
     const row = (await this.prisma.db.deal.findFirst({
       where: { id },

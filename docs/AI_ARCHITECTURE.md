@@ -27,16 +27,16 @@ graph LR
     SVC --> AUDIT[AuditLog actorType=ai]
 ```
 
-Componentes do módulo (`apps/api/src/intelligence/` na Fase 2):
+Componentes do módulo (`apps/api/src/intelligence/`). **O módulo não importa Prisma (ADR-027)**: define as portas `AiRunRepository`, `AiProposalRepository` e `AiConsentRepository`, cujos adaptadores vivem em `src/intelligence-persistence/`.
 
-| Componente            | Responsabilidade                                                                                                                       |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `IntelligenceService` | Orquestra runs: monta contexto mínimo, escolhe prompt versionado, chama o LLM, persiste `AiRun`                                        |
-| `ToolRegistryService` | `build({ membership, consents })` → ToolSet condicional; cada tool = descrição + `inputSchema` Zod + `execute` que delega a um service |
-| `ProposalService`     | Ciclo de vida de `AiProposal` (pending → approved/rejected/expired); execução aprovada delega ao service de domínio e audita           |
-| `PromptRegistry`      | Prompts versionados (`PromptVersion`: capability, version, hash, changelog) — mudar prompt = nova versão, nunca edição silenciosa      |
-| `CostService`         | Agrega tokens/custo por workspace; alimenta quotas                                                                                     |
-| `evals/`              | Avaliações automatizadas por capacidade                                                                                                |
+| Componente            | Responsabilidade                                                                                                                                                                                          |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `IntelligenceService` | Orquestra runs: monta contexto mínimo, escolhe prompt versionado, chama o LLM, persiste `AiRun`                                                                                                           |
+| `ToolRegistryService` | **Adiado (ADR-029)**: a v1 não tem loop agêntico nem ferramenta de escrita. O contexto é montado pelo servidor via serviços de domínio; entra quando uma capacidade exigir que o modelo escolha o que ler |
+| `ProposalService`     | Ciclo de vida de `AiProposal` (pending → approved/rejected/expired); execução aprovada delega ao service de domínio e audita                                                                              |
+| `PromptRegistry`      | Prompts versionados (`PromptVersion`: capability, version, hash, changelog) — mudar prompt = nova versão, nunca edição silenciosa                                                                         |
+| `CostService`         | Agrega tokens/custo por workspace; alimenta quotas                                                                                                                                                        |
+| `evals/`              | Avaliações automatizadas por capacidade                                                                                                                                                                   |
 
 Nota de engenharia (herdada do Norteie): tipar o ToolSet explicitamente — a inferência profunda de generics de AI SDK + Zod estoura a memória do `tsc`.
 

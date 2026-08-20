@@ -39,6 +39,8 @@ export const AUDIT_FIELDS: Record<string, readonly string[]> = {
   webhook: ['url', 'events', 'status'], // secretCipher JAMAIS
   // nome e tipo bastam para a trilha; a CHAVE de storage nunca é auditada
   file: ['fileName', 'mimeType', 'scanStatus'],
+  aiConsent: ['conversationContent'],
+  aiProposal: ['type', 'status'], // payload NUNCA — pode conter texto de terceiro
 };
 
 export interface AuditActorInput {
