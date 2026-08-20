@@ -74,6 +74,23 @@ export class ProvisioningService {
         })),
       });
 
+      // assinatura no plano-base (ADR-034): sem ela não haveria limite
+      // aplicável, e o workspace ficaria sem o equivalente ao default-deny
+      const basePlan = await tx.plan.findFirst({ where: { isDefault: true } });
+      if (basePlan) {
+        const periodStart = new Date();
+        const periodEnd = new Date(periodStart);
+        periodEnd.setUTCMonth(periodEnd.getUTCMonth() + 1);
+        await tx.subscription.create({
+          data: {
+            workspaceId: workspace.id,
+            planKey: basePlan.key,
+            currentPeriodStart: periodStart,
+            currentPeriodEnd: periodEnd,
+          },
+        });
+      }
+
       // canal interno de sistema (ADR-023): exatamente um por workspace, com a
       // unicidade garantida pelo unique parcial — os antigos vieram do backfill
       await tx.channel.create({

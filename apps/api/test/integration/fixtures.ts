@@ -48,6 +48,23 @@ export async function createWorkspaceFixture(
     });
     roles[systemKey] = role.id;
   }
+  // o catálogo de planos é GLOBAL e o resetDb o trunca junto com o resto
+  // (como acontece com Permission): recriar aqui mantém a fixture fiel ao
+  // provisionamento real, que encontra o catálogo já semeado pela migration
+  await seedPlanCatalog(prisma);
+  const basePlan = await prisma.raw.plan.findFirst({ where: { isDefault: true } });
+  if (basePlan) {
+    const periodEnd = new Date();
+    periodEnd.setUTCMonth(periodEnd.getUTCMonth() + 1);
+    await prisma.raw.subscription.create({
+      data: {
+        workspaceId: workspace.id,
+        planKey: basePlan.key,
+        currentPeriodStart: new Date(),
+        currentPeriodEnd: periodEnd,
+      },
+    });
+  }
   // canal interno de sistema, como o provisionamento real faz (ADR-023)
   await prisma.raw.channel.create({
     data: { workspaceId: workspace.id, type: 'internal', name: 'Interno', systemMark: true },
@@ -85,4 +102,54 @@ export async function createMembershipFixture(
     data: { workspaceId, userId, roleId },
   });
   return membership.id;
+}
+
+/**
+ * Catálogo GLOBAL de planos e limites (ADR-034), espelhando a migration.
+ * Idempotente: pode ser chamado por qualquer fixture.
+ */
+export async function seedPlanCatalog(prisma: PrismaService): Promise<void> {
+  const plans = [
+    { key: 'base', name: 'Base', priceCents: 0, isDefault: true },
+    { key: 'pro', name: 'Pro', priceCents: 9900, isDefault: false },
+  ];
+  for (const plan of plans) {
+    await prisma.raw.plan.upsert({ where: { key: plan.key }, create: plan, update: {} });
+  }
+  const limits: { planKey: string; metric: string; kind: 'gauge' | 'counter'; value: bigint }[] = [
+    { planKey: 'base', metric: 'contacts', kind: 'gauge', value: 2000n },
+    { planKey: 'base', metric: 'storage_bytes', kind: 'gauge', value: 1073741824n },
+    { planKey: 'base', metric: 'ai_runs', kind: 'counter', value: 200n },
+    { planKey: 'base', metric: 'ai_cost_cents', kind: 'counter', value: 500n },
+    { planKey: 'pro', metric: 'contacts', kind: 'gauge', value: 50000n },
+    { planKey: 'pro', metric: 'storage_bytes', kind: 'gauge', value: 10737418240n },
+    { planKey: 'pro', metric: 'ai_runs', kind: 'counter', value: 5000n },
+    { planKey: 'pro', metric: 'ai_cost_cents', kind: 'counter', value: 20000n },
+  ];
+  for (const limit of limits) {
+    await prisma.raw.planLimit.upsert({
+      where: { planKey_metric: { planKey: limit.planKey, metric: limit.metric } },
+      create: limit,
+      update: { value: limit.value },
+    });
+  }
+}
+
+/** Aperta um limite do plano-base para exercitar o estouro sem criar 2000 linhas. */
+export async function setPlanLimit(
+  prisma: PrismaService,
+  metric: string,
+  value: number,
+  planKey = 'base',
+): Promise<void> {
+  await prisma.raw.planLimit.upsert({
+    where: { planKey_metric: { planKey, metric } },
+    create: {
+      planKey,
+      metric,
+      kind: metric.startsWith('ai_') ? 'counter' : 'gauge',
+      value: BigInt(value),
+    },
+    update: { value: BigInt(value) },
+  });
 }

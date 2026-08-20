@@ -282,3 +282,27 @@ Toda decisão arquitetural vira ADR **antes** do código. Formato abaixo. ADRs s
 **Contexto:** a v1 registrava só metadados: o resumo, a explicação e a recomendação sumiam depois da resposta HTTP. Reabrir a conversa exigiria pagar outro run para ver o mesmo texto.
 **Decisão:** `AiRun.result` guarda a saída **já validada** pelo Zod da capacidade — nunca o prompt, o corpo bruto da mensagem ou segredo. O run também grava o **alvo** (`conversationId`/`contactId`) em colunas FK compostas, e a interface relê o último resultado por alvo. O resultado é **conteúdo derivado** e por isso é servido só pelo endpoint do alvo, com a permissão do domínio (`conversations:read`); a visão de custo (`workspace:manage`) devolve metadados **sem** o resultado — quem administra custo não é necessariamente quem pode ler conversas.
 **Consequências:** o insight vira parte do produto em vez de um efeito passageiro, e a conta de IA não é paga duas vezes pela mesma pergunta. Preço: texto derivado de conversa passa a existir em mais uma tabela — coberto pelo consentimento (ADR-028), pelo isolamento de workspace e pela retenção, que deve incluir `AiRun` quando o expurgo de auditoria for revisado.
+
+## ADR-032 — Uso: duas naturezas de métrica e incremento dentro da transação
+
+**Status:** aceito · **Data:** 2026-08-20
+
+**Contexto:** quota lida com dois fatos diferentes. "Runs de IA no mês" é acumulador que zera na virada; "contatos ativos" e "bytes em storage" são **nível atual**, que sobe e desce e não tem período. Tratar os dois como a mesma coisa produz contador que nunca zera ou nível que se perde no mês seguinte. E o teto de webhooks já mostrou o segundo erro clássico: `count()` antes do `create` não é atômico (dívida P2 registrada).
+**Decisão:** (a) o catálogo declara a **natureza** de cada métrica — `counter` (acumulador, com período) ou `gauge` (nível, sem período, com decremento). (b) O incremento é `INSERT … ON CONFLICT DO UPDATE SET value = value + $n RETURNING value` **dentro da transação de domínio**, e o limite é conferido sobre o valor retornado: estourou, a exceção derruba a transação e o contador volta pelo rollback — sem compensação manual e sem janela de corrida. (c) Gauges nascem por **backfill** com o valor real dos workspaces existentes, nunca em zero. (d) `Contact` conta apenas em `active`: arquivar decrementa, reativar reserva de novo. Importação em lote reserva o lote **inteiro** na mesma transação — não existe importação parcial por quota.
+**Consequências:** um limite é sempre verdade no instante do commit. Preço: toda escrita de entidade contada passa a abrir transação, e todo caminho de exclusão/arquivamento precisa lembrar do decremento — coberto por teste de simetria (criar+arquivar+reativar volta ao mesmo valor).
+
+## ADR-033 — Quota de custo de IA é RESERVADA antes da chamada
+
+**Status:** aceito · **Data:** 2026-08-20
+
+**Contexto:** incrementar o custo depois da resposta do provedor não protege nada sob concorrência: N requisições simultâneas passam todas na checagem e o teto é ultrapassado por N vezes o custo de um run. Pior: o dinheiro já foi gasto quando a conta chega.
+**Decisão:** **reserva durável e atômica** do teto máximo do run (`maxOutputTokens` no preço do modelo, mais o custo estimado da entrada) **antes** de chamar o LLM; depois **liquidação** pelo custo real, liberando a diferença. Reserva e liquidação usam o mesmo incremento atômico do ADR-032. Se a chamada falhar, a reserva é liberada integralmente. Uma reserva órfã (processo morto entre reservar e liquidar) expira por idade e é varrida — no pior caso o workspace fica temporariamente com menos orçamento do que gastou, nunca com mais.
+**Consequências:** o teto de custo é real, não uma estimativa retroativa. Preço: a reserva é pessimista, então rajadas de runs baratos podem bater no teto antes do gasto real chegar lá — liberar a diferença logo após cada run mantém a distorção curta. Quota estourada devolve **402** com `{ code: 'quota_exceeded', metric, limit, current, resetsAt }`; para a IA, a capacidade degrada pelo caminho de indisponibilidade que já existe, com `reasonCode` próprio no `AiRun`.
+
+## ADR-034 — Billing v1 sem provedor de pagamento
+
+**Status:** aceito · **Data:** 2026-08-20
+
+**Contexto:** limites que valem e uso visível são o que trava abuso hoje. Integrar cobrança traz webhooks de entrada, idempotência de eventos financeiros e um modelo de falha inteiro.
+**Decisão:** `Plan` e `PlanLimit` são **catálogo global** (como `Permission`), com limites em linhas consultáveis, não JSON. `Subscription` pertence ao workspace e é atribuída/alterada por **CLI administrativa**, o mesmo caminho justificado do provisionamento. Todo workspace existente recebe o **plano-base por backfill** — sem assinatura, não haveria limite aplicável e o default-deny do restante do sistema não teria equivalente aqui. **`costCents` é centavo de dólar (USD)**, como o código já calcula; conversão para moeda de cobrança é assunto de quando houver cobrança.
+**Consequências:** dá para operar, limitar e mostrar consumo sem tocar em dinheiro de verdade. Integração de pagamento entra com ADR próprio, e a fronteira já está no lugar certo: `Subscription` é o ponto de encaixe.

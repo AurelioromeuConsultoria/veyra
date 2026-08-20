@@ -54,6 +54,11 @@ export const WORKSPACE_MODELS = new Set<string>([
   'AiRun',
   'AiProposal',
   'AiConsent',
+  // Billing e uso (Entrega 8.1). Plan/PlanLimit NÃO entram: catálogo global
+  // (ADR-034), como Permission e PromptVersion.
+  'Subscription',
+  'UsageCounter',
+  'UsageReservation',
 ]);
 
 /**
@@ -275,6 +280,17 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
   AiConsent: {
     workspace: 'Workspace',
     updatedBy: 'Membership',
+  },
+  Subscription: {
+    workspace: 'Workspace',
+    // alvo fora do perímetro: catálogo global, travessia via db é bloqueada
+    plan: 'Plan',
+  },
+  UsageCounter: {
+    workspace: 'Workspace',
+  },
+  UsageReservation: {
+    workspace: 'Workspace',
   },
   Message: {
     workspace: 'Workspace',

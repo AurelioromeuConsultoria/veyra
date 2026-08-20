@@ -69,6 +69,13 @@ async function seed(): Promise<void> {
         }
         if (systemKey === 'owner') ownerRoleId = roleId;
       }
+      // assinatura no plano-base (como o provisionamento real — ADR-034)
+      await db.query(
+        `INSERT INTO "Subscription" ("workspaceId", "planKey", "status", "currentPeriodStart", "currentPeriodEnd", "updatedAt")
+         VALUES ($1, 'base', 'active', date_trunc('month', now()), date_trunc('month', now()) + interval '1 month', now())
+         ON CONFLICT ("workspaceId") DO NOTHING`,
+        [workspaceId],
+      );
       // canal interno de sistema (como o provisionamento real — ADR-023)
       await db.query(
         `INSERT INTO "Channel" ("id", "workspaceId", "type", "name", "systemMark")

@@ -45,10 +45,14 @@ Pipelines/estágios configuráveis, deals com kanban, tarefas, notas, `Activity`
 Módulo com **portas e adaptadores** (ADR-027): `src/intelligence` não importa Prisma, e a regra é verificada por ESLint **e** por teste de fronteira. SDK Anthropic direto atrás de `LLM_CLIENT`, **sem loop agêntico** na v1 (ADR-029): contexto permitido → chamada estruturada → validação Zod estrita → registro. Consentimento por workspace desligado por padrão (ADR-028) — sem ele não há sequer chamada ao provedor. Três capacidades: **resumo de conversa**, **próxima ação** (vira `AiProposal`, executada só após aprovação) e **lead scoring determinístico** com o LLM apenas explicando. Execução de proposta é atômica e registrada como ação da IA (ADR-030); `AiRun` persiste o resultado estruturado para a interface reaproveitar (ADR-031). Evals com fixtures gravadas, sem rede. UI: resumo no inbox e página de Sinais com propostas, consentimento e custo.
 **Pronto quando:** cada run registra prompt/tokens/custo (✅); nenhuma ação externa sem aprovação (✅); evals das 3 capacidades verdes (✅).
 
-## Entrega 8 — Billing, limites e automações v1 🔜
+## Entrega 8 — Billing, limites e automações 🚧
 
-Planos/assinaturas/quotas (`UsageLimit`/`UsageCounter` — contatos, mensagens, storage, runs de IA), automações de catálogo fechado (trigger → condição → ação), demais capacidades de IA (intenção, sugestão de resposta, oportunidade parada, limpeza de dados, previsão de pipeline) com evals.
-**Pronto quando:** quota estourada degrada com mensagem clara; automação de confirmação funciona ponta a ponta.
+- **8.1 — Uso e quotas ✅** `Plan`/`PlanLimit` globais com `kind` declarado (counter/gauge), `Subscription` por CLI administrativa e backfill do plano-base, incremento atômico dentro da transação de domínio, reserva-antes-de-chamar no custo de IA, 402 estruturado, tela de uso e plano. Métricas cobradas: contatos (gauge), storage (gauge), runs de IA e custo de IA (counters). `messages_sent` fica no catálogo **sem** enforcement enquanto o canal for interno/manual.
+- **8.2 — Automações 🔜** catálogo fechado trigger → condição → ação, `AutomationExecution` único por `(automationId, outboxEventId)`, causalidade (`chainId`/`depth`/`originAutomationId`) em colunas do `OutboxEvent`, automações **antes** dos webhooks, teto de profundidade 3.
+
+**Pronto quando:** quota estourada degrada com mensagem clara (✅ 8.1); "contato criado → tarefa de follow-up" funciona ponta a ponta.
+
+As cinco capacidades de IA restantes (intenção, sugestão de resposta, oportunidade parada, limpeza de dados, previsão de pipeline) foram movidas para a **Entrega 9**: duas delas dependem de canal externo, que não existe, e empacotá-las aqui produziria uma entrega irrevisável.
 
 ## Fora do MVP (backlog consciente)
 

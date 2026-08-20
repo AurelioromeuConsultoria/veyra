@@ -1,11 +1,12 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
 import { ActivitiesService } from '../activities/activities.service';
+import { UsageService } from '../usage/usage.service';
 import { AuthContext } from '../common/decorators';
 import { ContactsService } from '../contacts/contacts.service';
 import { ConversationsService } from '../conversations/conversations.service';
 import { DealsService } from '../deals/deals.service';
-import { estimateCostCents } from './cost';
+import { estimateCostCents, estimateMaxCostCents } from './cost';
 import { computeLeadScore, type LeadScore, type ScoreSignals } from './lead-score';
 import { LLM_CLIENT, type LlmClient, type LlmRequest } from './llm/llm.client';
 import {
@@ -59,7 +60,7 @@ const MAX_OUTPUT_TOKENS = 700;
 const SUMMARY_MESSAGE_LIMIT = 30;
 
 export interface ConversationSummaryResult {
-  status: 'ok' | 'unavailable' | 'no_consent';
+  status: 'ok' | 'unavailable' | 'no_consent' | 'quota_exceeded';
   runId: string | null;
   subject?: string;
   summary?: string;
@@ -75,7 +76,7 @@ export interface LeadScoreResult extends LeadScore {
 }
 
 export interface NextActionResult {
-  status: 'proposed' | 'unavailable';
+  status: 'proposed' | 'unavailable' | 'quota_exceeded';
   runId: string | null;
   proposalId?: string;
   title?: string;
@@ -94,6 +95,7 @@ export class IntelligenceService {
     private readonly contacts: ContactsService,
     private readonly deals: DealsService,
     private readonly activities: ActivitiesService,
+    private readonly usage: UsageService,
   ) {}
 
   /**
@@ -141,7 +143,7 @@ export class IntelligenceService {
       .join('\n');
 
     const started = Date.now();
-    const response = await this.llm.complete({
+    const call = await this.callWithQuota(auth.workspaceId as string, {
       system: CONVERSATION_SUMMARY_PROMPT.system,
       context: `Contato: ${conversation.contactName ?? 'não vinculado'}. Assunto registrado: ${conversation.subject ?? 'sem assunto'}.`,
       untrusted,
@@ -151,6 +153,19 @@ export class IntelligenceService {
     const promptVersionId = await this.ensurePrompt(CONVERSATION_SUMMARY_PROMPT);
     const contextSummary = `conversation:${conversationId}; ${page.items.length} mensagens (corpo); campos: direction, body`;
 
+    if (call.outcome === 'quota_exceeded') {
+      const runId = await this.record(auth, {
+        capability: CONVERSATION_SUMMARY_PROMPT.capability,
+        promptVersionId,
+        contextSummary,
+        status: 'refused',
+        reasonCode: 'quota_exceeded',
+        conversationId,
+        latencyMs: Date.now() - started,
+      });
+      return { status: 'quota_exceeded', runId };
+    }
+    const response = call.outcome === 'ok' ? call.response : null;
     if (!response) {
       const runId = await this.record(auth, {
         capability: CONVERSATION_SUMMARY_PROMPT.capability,
@@ -168,7 +183,7 @@ export class IntelligenceService {
     const usage = {
       inputTokens: response.inputTokens,
       outputTokens: response.outputTokens,
-      costCents: estimateCostCents(this.llm.model, response.inputTokens, response.outputTokens),
+      costCents: call.outcome === 'ok' ? call.costCents : 0,
       latencyMs: Date.now() - started,
     };
     if (!parsed.success) {
@@ -208,7 +223,7 @@ export class IntelligenceService {
     const score = computeLeadScore(signals);
 
     const started = Date.now();
-    const response = await this.llm.complete({
+    const call = await this.callWithQuota(auth.workspaceId as string, {
       system: NEXT_ACTION_PROMPT.system,
       context: this.describeSignals(signals, score),
       maxOutputTokens: MAX_OUTPUT_TOKENS,
@@ -216,6 +231,19 @@ export class IntelligenceService {
     const promptVersionId = await this.ensurePrompt(NEXT_ACTION_PROMPT);
     const contextSummary = `contact:${contactId}; sinais determinísticos (recência, pipeline, engajamento); sem conteúdo de mensagem`;
 
+    if (call.outcome === 'quota_exceeded') {
+      const runId = await this.record(auth, {
+        capability: NEXT_ACTION_PROMPT.capability,
+        promptVersionId,
+        contextSummary,
+        status: 'refused',
+        reasonCode: 'quota_exceeded',
+        contactId,
+        latencyMs: Date.now() - started,
+      });
+      return { status: 'quota_exceeded', runId };
+    }
+    const response = call.outcome === 'ok' ? call.response : null;
     if (!response) {
       const runId = await this.record(auth, {
         capability: NEXT_ACTION_PROMPT.capability,
@@ -232,7 +260,7 @@ export class IntelligenceService {
     const usage = {
       inputTokens: response.inputTokens,
       outputTokens: response.outputTokens,
-      costCents: estimateCostCents(this.llm.model, response.inputTokens, response.outputTokens),
+      costCents: call.outcome === 'ok' ? call.costCents : 0,
       latencyMs: Date.now() - started,
     };
     if (!parsed.success) {
@@ -285,19 +313,22 @@ export class IntelligenceService {
     const score = computeLeadScore(signals);
 
     const started = Date.now();
-    const response = await this.llm.complete({
+    const call = await this.callWithQuota(auth.workspaceId as string, {
       system: LEAD_SCORE_EXPLANATION_PROMPT.system,
       context: this.describeSignals(signals, score),
       maxOutputTokens: 300,
     });
-    if (!response) return { ...score, explanation: null, runId: null };
+    // quota estourada NÃO derruba o score: ele é determinístico e continua
+    // valendo — some apenas a redação (ajuste aprovado da Entrega 7)
+    if (call.outcome !== 'ok') return { ...score, explanation: null, runId: null };
+    const response = call.response;
 
     const promptVersionId = await this.ensurePrompt(LEAD_SCORE_EXPLANATION_PROMPT);
     const parsed = explanationSchema.safeParse(this.parseJson(response.text));
     const usage = {
       inputTokens: response.inputTokens,
       outputTokens: response.outputTokens,
-      costCents: estimateCostCents(this.llm.model, response.inputTokens, response.outputTokens),
+      costCents: call.costCents,
       latencyMs: Date.now() - started,
     };
     const runId = await this.record(auth, {
@@ -453,6 +484,61 @@ export class IntelligenceService {
       action: run.action ?? 'none',
       triggeredByMembershipId: auth.membershipId ?? null,
     });
+  }
+
+  /**
+   * Chamada ao provedor com RESERVA de quota (ADR-033): reserva o teto do run
+   * ANTES de chamar, liquida pelo custo real depois e libera a diferença.
+   * Incrementar só depois da resposta deixaria N chamadas simultâneas furarem
+   * o teto N vezes — com o dinheiro já gasto.
+   */
+  private async callWithQuota(
+    workspaceId: string,
+    request: LlmRequest,
+  ): Promise<
+    | {
+        outcome: 'ok';
+        response: { text: string; inputTokens: number; outputTokens: number };
+        costCents: number;
+      }
+    | { outcome: 'quota_exceeded' }
+    | { outcome: 'unavailable' }
+  > {
+    const promptChars =
+      request.system.length + request.context.length + (request.untrusted?.length ?? 0);
+    const maxCost = estimateMaxCostCents(this.llm.model, promptChars, request.maxOutputTokens);
+
+    const runsReservation = await this.usage.reserve(workspaceId, 'ai_runs', 1);
+    if (runsReservation === 'quota_exceeded') return { outcome: 'quota_exceeded' };
+    const costReservation = await this.usage.reserve(workspaceId, 'ai_cost_cents', maxCost);
+    if (costReservation === 'quota_exceeded') {
+      await this.usage.release(runsReservation.reservationId);
+      return { outcome: 'quota_exceeded' };
+    }
+
+    let response: Awaited<ReturnType<LlmClient['complete']>>;
+    try {
+      response = await this.llm.complete(request);
+    } catch {
+      await this.usage.release(runsReservation.reservationId);
+      await this.usage.release(costReservation.reservationId);
+      return { outcome: 'unavailable' };
+    }
+    if (!response) {
+      // nada foi gasto: libera as duas reservas por inteiro
+      await this.usage.release(runsReservation.reservationId);
+      await this.usage.release(costReservation.reservationId);
+      return { outcome: 'unavailable' };
+    }
+
+    const costCents = estimateCostCents(
+      this.llm.model,
+      response.inputTokens,
+      response.outputTokens,
+    );
+    await this.usage.settle(workspaceId, runsReservation.reservationId, 'ai_runs', 1);
+    await this.usage.settle(workspaceId, costReservation.reservationId, 'ai_cost_cents', costCents);
+    return { outcome: 'ok', response, costCents };
   }
 
   /** Modelo às vezes embrulha JSON em cerca de código; nada além disso é tolerado. */

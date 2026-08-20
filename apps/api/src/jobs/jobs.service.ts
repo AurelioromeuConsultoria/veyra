@@ -3,11 +3,13 @@ import { ConfigService } from '@nestjs/config';
 import { PgBoss } from 'pg-boss';
 import { AuditService } from '../audit/audit.service';
 import { FilesService } from '../files/files.service';
+import { UsageService } from '../usage/usage.service';
 import { INTERNAL_EVENT_TYPES, OutboxService } from '../outbox/outbox.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
 
 const OUTBOX_QUEUE = 'outbox-dispatch';
 const RETENTION_QUEUE = 'audit-retention';
+const RESERVATION_QUEUE = 'usage-reservations';
 
 /**
  * Jobs no MESMO Postgres (pg-boss, ADR-007). Kill switch: DISABLE_JOBS.
@@ -25,6 +27,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     private readonly webhooks: WebhooksService,
     private readonly audit: AuditService,
     private readonly files: FilesService,
+    private readonly usage: UsageService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -51,6 +54,14 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       if (purged > 0) this.logger.log(`Retenção: ${purged} registros de auditoria expurgados`);
     });
     await this.boss.schedule(RETENTION_QUEUE, '0 4 * * *', {}, { tz: 'America/Sao_Paulo' });
+
+    // reservas órfãs (processo morto entre reservar e liquidar) devolvem
+    // orçamento — sem isso o teto encolheria silenciosamente (ADR-033)
+    await this.boss.createQueue(RESERVATION_QUEUE);
+    await this.boss.work(RESERVATION_QUEUE, async () => {
+      await this.usage.purgeExpiredReservations();
+    });
+    await this.boss.schedule(RESERVATION_QUEUE, '*/5 * * * *', {}, { tz: 'America/Sao_Paulo' });
   }
 
   async onModuleDestroy(): Promise<void> {

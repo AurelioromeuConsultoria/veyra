@@ -1,0 +1,334 @@
+import { INestApplication } from '@nestjs/common';
+import { ClsService } from 'nestjs-cls';
+import request from 'supertest';
+import { PrismaService } from '../prisma/prisma.service';
+import { createTestApp } from '../../test/integration/app';
+import {
+  TEST_PASSWORD,
+  createMembershipFixture,
+  createUserFixture,
+  createWorkspaceFixture,
+  seedPermissionCatalog,
+  setPlanLimit,
+  type WorkspaceFixture,
+} from '../../test/integration/fixtures';
+import { resetDb } from '../../test/integration/harness';
+import { UsageService } from './usage.service';
+
+const ORIGIN = process.env.WEB_ORIGIN ?? 'http://localhost:5175';
+
+interface Session {
+  cookieHeader: string;
+  csrf: string;
+}
+
+const png = () =>
+  Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.alloc(200, 3),
+  ]);
+
+describe('Uso e quotas (integração)', () => {
+  let app: INestApplication;
+  let prisma: PrismaService;
+  let http: ReturnType<INestApplication['getHttpServer']>;
+
+  beforeAll(async () => {
+    app = await createTestApp();
+    prisma = app.get(PrismaService);
+    http = app.getHttpServer();
+  });
+  afterAll(async () => {
+    await app.close();
+  });
+
+  let wsA: WorkspaceFixture;
+  let sessionA: Session;
+  let sessionB: Session;
+
+  async function loginAs(email: string): Promise<Session> {
+    const res = await request(http)
+      .post('/api/auth/login')
+      .set('Origin', ORIGIN)
+      .send({ email, password: TEST_PASSWORD })
+      .expect(201);
+    const setCookies = (res.headers['set-cookie'] as unknown as string[]) ?? [];
+    const cookieHeader = setCookies.map((c) => c.split(';')[0]).join('; ');
+    const csrf = /veyra_csrf=([^;]+)/.exec(cookieHeader)?.[1] ?? '';
+    return { cookieHeader, csrf };
+  }
+  const post = (path: string, s: Session, body?: unknown) =>
+    request(http)
+      .post(path)
+      .set('Origin', ORIGIN)
+      .set('Cookie', s.cookieHeader)
+      .set('x-csrf-token', s.csrf)
+      .send((body ?? {}) as object);
+  const patch = (path: string, s: Session, body?: unknown) =>
+    request(http)
+      .patch(path)
+      .set('Origin', ORIGIN)
+      .set('Cookie', s.cookieHeader)
+      .set('x-csrf-token', s.csrf)
+      .send((body ?? {}) as object);
+  const del = (path: string, s: Session) =>
+    request(http)
+      .delete(path)
+      .set('Origin', ORIGIN)
+      .set('Cookie', s.cookieHeader)
+      .set('x-csrf-token', s.csrf);
+  const get = (path: string, s: Session) => request(http).get(path).set('Cookie', s.cookieHeader);
+  const upload = (s: Session, bytes: Buffer, name: string) =>
+    request(http)
+      .post('/api/files')
+      .set('Origin', ORIGIN)
+      .set('Cookie', s.cookieHeader)
+      .set('x-csrf-token', s.csrf)
+      .attach('file', bytes, name);
+
+  /**
+   * Chamar o service direto (sem request) não tem contexto de workspace, e o
+   * client protegido barra — como deve. Aqui entramos no contexto como uma
+   * request faria.
+   */
+  const asWorkspace = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const cls = app.get(ClsService);
+    return cls.run(async () => {
+      cls.set('workspaceId', wsA.workspaceId);
+      return fn();
+    });
+  };
+
+  const counterOf = async (metric: string) => {
+    const row = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric },
+    });
+    return Number(row?.value ?? 0);
+  };
+
+  beforeEach(async () => {
+    await resetDb(prisma);
+    await seedPermissionCatalog(prisma);
+    wsA = await createWorkspaceFixture(prisma, 'acme');
+    const wsB = await createWorkspaceFixture(prisma, 'beta');
+    const ownerA = await createUserFixture(prisma, 'owner-a@veyra.test');
+    await createMembershipFixture(prisma, wsA.workspaceId, ownerA, wsA.roles.owner);
+    const ownerB = await createUserFixture(prisma, 'owner-b@veyra.test');
+    await createMembershipFixture(prisma, wsB.workspaceId, ownerB, wsB.roles.owner);
+    sessionA = await loginAs('owner-a@veyra.test');
+    sessionB = await loginAs('owner-b@veyra.test');
+  });
+
+  // ── Plano e visão de uso ──────────────────────────────────────────────────
+
+  it('workspace nasce com assinatura no plano-base e uso zerado', async () => {
+    const overview = (await get('/api/usage', sessionA).expect(200)).body;
+    expect(overview.subscription.plan.key).toBe('base');
+    expect(overview.subscription.status).toBe('active');
+    const contacts = overview.metrics.find((m: { metric: string }) => m.metric === 'contacts');
+    expect(contacts).toMatchObject({ kind: 'gauge', used: 0, limit: 2000, enforced: true });
+    // gauge não tem virada de período
+    expect(contacts.resetsAt).toBeNull();
+  });
+
+  it('counter declara a virada; a métrica de mensagens está no catálogo mas NÃO é cobrada', async () => {
+    const overview = (await get('/api/usage', sessionA).expect(200)).body;
+    const aiRuns = overview.metrics.find((m: { metric: string }) => m.metric === 'ai_runs');
+    expect(aiRuns.kind).toBe('counter');
+    expect(aiRuns.resetsAt).toBeTruthy();
+
+    const messages = overview.metrics.find((m: { metric: string }) => m.metric === 'messages_sent');
+    expect(messages.enforced).toBe(false); // sem canal externo, não se cobra por digitar
+  });
+
+  it('custo de IA é declarado em centavos de DÓLAR', async () => {
+    const overview = (await get('/api/usage', sessionA).expect(200)).body;
+    const cost = overview.metrics.find((m: { metric: string }) => m.metric === 'ai_cost_cents');
+    expect(cost.unit).toBe('usd_cents');
+  });
+
+  // ── Gauge de contatos ─────────────────────────────────────────────────────
+
+  it('contato criado sobe o gauge; arquivar desce; reativar sobe de novo', async () => {
+    const contact = (await post('/api/contacts', sessionA, { name: 'Ciclo' }).expect(201)).body;
+    expect(await counterOf('contacts')).toBe(1);
+
+    await patch(`/api/contacts/${contact.id}`, sessionA, { status: 'archived' }).expect(200);
+    expect(await counterOf('contacts')).toBe(0); // arquivado não conta
+
+    await patch(`/api/contacts/${contact.id}`, sessionA, { status: 'active' }).expect(200);
+    expect(await counterOf('contacts')).toBe(1);
+
+    await del(`/api/contacts/${contact.id}`, sessionA).expect(200);
+    expect(await counterOf('contacts')).toBe(0);
+  });
+
+  it('excluir contato ARQUIVADO não desconta de novo (não fica negativo)', async () => {
+    const contact = (await post('/api/contacts', sessionA, { name: 'Arquivado' }).expect(201)).body;
+    await patch(`/api/contacts/${contact.id}`, sessionA, { status: 'archived' }).expect(200);
+    await del(`/api/contacts/${contact.id}`, sessionA).expect(200);
+    expect(await counterOf('contacts')).toBe(0);
+  });
+
+  it('quota estourada devolve 402 estruturado e NÃO cria o contato', async () => {
+    await setPlanLimit(prisma, 'contacts', 1);
+    await post('/api/contacts', sessionA, { name: 'Primeiro' }).expect(201);
+
+    const res = await post('/api/contacts', sessionA, { name: 'Excedente' });
+    expect(res.status).toBe(402);
+    expect(res.body).toMatchObject({
+      code: 'quota_exceeded',
+      metric: 'contacts',
+      limit: 1,
+    });
+    // o rollback desfez tudo: nem contato nem contador inflado
+    expect(await prisma.raw.contact.count({ where: { workspaceId: wsA.workspaceId } })).toBe(1);
+    expect(await counterOf('contacts')).toBe(1);
+  });
+
+  it('reativar contato TAMBÉM esbarra no teto', async () => {
+    const contact = (await post('/api/contacts', sessionA, { name: 'Volta' }).expect(201)).body;
+    await patch(`/api/contacts/${contact.id}`, sessionA, { status: 'archived' }).expect(200);
+    await post('/api/contacts', sessionA, { name: 'Ocupa a vaga' }).expect(201);
+    await setPlanLimit(prisma, 'contacts', 1);
+
+    const res = await patch(`/api/contacts/${contact.id}`, sessionA, { status: 'active' });
+    expect(res.status).toBe(402);
+    const row = await prisma.raw.contact.findFirst({ where: { id: contact.id } });
+    expect(row!.status).toBe('archived'); // rollback preservou o estado
+    expect(await counterOf('contacts')).toBe(1);
+  });
+
+  it('importação em lote é TUDO OU NADA quando a quota não cabe', async () => {
+    await setPlanLimit(prisma, 'contacts', 2);
+    const res = await post('/api/contacts/import', sessionA, {
+      rows: [{ name: 'A' }, { name: 'B' }, { name: 'C' }],
+    });
+    expect(res.status).toBe(402);
+    // nenhuma linha entrou: importação parcial deixaria o usuário sem saber
+    // quais foram importadas
+    expect(await prisma.raw.contact.count({ where: { workspaceId: wsA.workspaceId } })).toBe(0);
+    expect(await counterOf('contacts')).toBe(0);
+
+    const ok = await post('/api/contacts/import', sessionA, {
+      rows: [{ name: 'A' }, { name: 'B' }],
+    });
+    expect(ok.status).toBe(201);
+    expect(await counterOf('contacts')).toBe(2);
+  });
+
+  it('concorrência: dez criações simultâneas com teto 5 param em 5', async () => {
+    await setPlanLimit(prisma, 'contacts', 5);
+    const results = await Promise.all(
+      Array.from({ length: 10 }, (_, i) => post('/api/contacts', sessionA, { name: `C${i}` })),
+    );
+    const criados = results.filter((r) => r.status === 201).length;
+    const recusados = results.filter((r) => r.status === 402).length;
+    expect(criados).toBe(5);
+    expect(recusados).toBe(5);
+    expect(await counterOf('contacts')).toBe(5);
+    expect(await prisma.raw.contact.count({ where: { workspaceId: wsA.workspaceId } })).toBe(5);
+  });
+
+  // ── Gauge de storage ──────────────────────────────────────────────────────
+
+  it('upload soma bytes e exclusão devolve', async () => {
+    const file = (await upload(sessionA, png(), 'foto.png').expect(201)).body;
+    expect(await counterOf('storage_bytes')).toBe(png().length);
+    await del(`/api/files/${file.id}`, sessionA).expect(200);
+    expect(await counterOf('storage_bytes')).toBe(0);
+  });
+
+  it('quota de storage recusa o upload E apaga os bytes já gravados', async () => {
+    await setPlanLimit(prisma, 'storage_bytes', 100);
+    const res = await upload(sessionA, png(), 'grande.png');
+    expect(res.status).toBe(402);
+    expect(res.body.metric).toBe('storage_bytes');
+    // nem linha nem contador
+    expect(await prisma.raw.fileObject.count()).toBe(0);
+    expect(await counterOf('storage_bytes')).toBe(0);
+    // e o arquivo recusado não virou lixo em disco
+    const { readdir } = await import('node:fs/promises');
+    const { resolve } = await import('node:path');
+    const dir = resolve(process.env.STORAGE_ROOT ?? '.storage-test/1', wsA.workspaceId);
+    const restos = await readdir(dir).catch(() => []);
+    expect(restos).toEqual([]);
+  });
+
+  // ── P0: isolamento ────────────────────────────────────────────────────────
+
+  it('P0: uso de um workspace não conta no outro', async () => {
+    await post('/api/contacts', sessionA, { name: 'De A' }).expect(201);
+    const overviewB = (await get('/api/usage', sessionB).expect(200)).body;
+    const contactsB = overviewB.metrics.find((m: { metric: string }) => m.metric === 'contacts');
+    expect(contactsB.used).toBe(0);
+  });
+
+  it('teto de um workspace não bloqueia o outro', async () => {
+    await setPlanLimit(prisma, 'contacts', 1);
+    await post('/api/contacts', sessionA, { name: 'Primeiro' }).expect(201);
+    await post('/api/contacts', sessionA, { name: 'Excede' }).expect(402);
+    // B tem o mesmo plano, mas o consumo é dele
+    await post('/api/contacts', sessionB, { name: 'De B' }).expect(201);
+  });
+
+  // ── Reserva (ADR-033) ─────────────────────────────────────────────────────
+
+  it('reserva impede que chamadas concorrentes furem o teto', async () => {
+    const usage = app.get(UsageService);
+    await setPlanLimit(prisma, 'ai_cost_cents', 10);
+
+    const reservas = await asWorkspace(() =>
+      Promise.all(
+        Array.from({ length: 6 }, () => usage.reserve(wsA.workspaceId, 'ai_cost_cents', 3)),
+      ),
+    );
+    const aceitas = reservas.filter((r) => r !== 'quota_exceeded');
+    // 3 centavos por reserva, teto 10 → no máximo 3 cabem
+    expect(aceitas).toHaveLength(3);
+    expect(reservas.filter((r) => r === 'quota_exceeded')).toHaveLength(3);
+  });
+
+  it('liquidação cobra o custo REAL e libera a diferença', async () => {
+    const usage = app.get(UsageService);
+    const reserva = await asWorkspace(() => usage.reserve(wsA.workspaceId, 'ai_cost_cents', 50));
+    if (reserva === 'quota_exceeded') throw new Error('esperava reserva');
+    // a reserva JÁ ocupa o orçamento: é isso que impede a corrida
+    expect(await counterOf('ai_cost_cents')).toBe(50);
+
+    await asWorkspace(() =>
+      usage.settle(wsA.workspaceId, reserva.reservationId, 'ai_cost_cents', 2),
+    );
+    expect(await counterOf('ai_cost_cents')).toBe(2); // sobra devolvida
+    const restantes = await prisma.raw.usageReservation.count();
+    expect(restantes).toBe(0); // a reserva foi consumida
+  });
+
+  it('reserva liberada não cobra nada', async () => {
+    const usage = app.get(UsageService);
+    const reserva = await asWorkspace(() => usage.reserve(wsA.workspaceId, 'ai_cost_cents', 50));
+    if (reserva === 'quota_exceeded') throw new Error('esperava reserva');
+    expect(await counterOf('ai_cost_cents')).toBe(50); // reservado
+    await asWorkspace(() => usage.release(reserva.reservationId));
+    expect(await counterOf('ai_cost_cents')).toBe(0); // devolvido por inteiro
+    expect(await prisma.raw.usageReservation.count()).toBe(0);
+  });
+
+  it('reserva órfã expira e é varrida — nunca deixa orçamento preso para sempre', async () => {
+    const usage = app.get(UsageService);
+    const reserva = await asWorkspace(() => usage.reserve(wsA.workspaceId, 'ai_cost_cents', 50));
+    if (reserva === 'quota_exceeded') throw new Error('esperava reserva');
+    await prisma.raw.usageReservation.updateMany({
+      where: { id: reserva.reservationId },
+      data: { expiresAt: new Date(Date.now() - 1000) },
+    });
+    expect(await usage.purgeExpiredReservations()).toBe(1);
+    // o valor preso voltou ao orçamento
+    expect(await counterOf('ai_cost_cents')).toBe(0);
+    // e liquidar uma reserva já varrida não cobra em dobro
+    await asWorkspace(() =>
+      usage.settle(wsA.workspaceId, reserva.reservationId, 'ai_cost_cents', 7),
+    );
+    expect(await counterOf('ai_cost_cents')).toBe(0);
+  });
+});

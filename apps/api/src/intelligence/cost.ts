@@ -33,3 +33,20 @@ export function estimateCostCents(
 export function isPricedModel(model: string): boolean {
   return model in PRICES;
 }
+
+/**
+ * TETO do custo de um run, para a RESERVA anterior à chamada (ADR-033). A
+ * entrada ainda não foi tokenizada, então usa-se uma estimativa grosseira por
+ * caracteres; a saída usa o `maxOutputTokens` pedido, que é um teto de verdade.
+ * Depois da resposta, a liquidação corrige pelo custo real.
+ */
+export function estimateMaxCostCents(
+  model: string,
+  promptChars: number,
+  maxOutputTokens: number,
+): number {
+  // ~4 caracteres por token é a regra de bolso; arredondar para cima nunca
+  // subestima a reserva
+  const estimatedInputTokens = Math.ceil(promptChars / 3);
+  return Math.max(1, estimateCostCents(model, estimatedInputTokens, maxOutputTokens));
+}

@@ -60,18 +60,20 @@ export class ContactsController {
   @Idempotent()
   @Post('import')
   import(
+    @CurrentAuth() auth: AuthContext,
     @Body(new ZodPipe(importContactsSchema)) body: ImportContactsInput,
   ): Promise<{ imported: number }> {
-    return this.contacts.import(body);
+    return this.contacts.import(auth, body);
   }
 
   @RequirePermissions('contacts:write')
   @Patch(':id')
   update(
+    @CurrentAuth() auth: AuthContext,
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body(new ZodPipe(updateContactSchema)) body: UpdateContactInput,
   ): Promise<ContactDto> {
-    return this.contacts.update(id, body);
+    return this.contacts.update(auth, id, body);
   }
 
   @RequirePermissions('contacts:write')

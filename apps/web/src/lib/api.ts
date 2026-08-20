@@ -61,6 +61,11 @@ async function run<T>(method: string, path: string, body?: unknown, retried = fa
     const message = Array.isArray(payload?.message)
       ? payload.message.join('; ')
       : (payload?.message ?? `Erro ${res.status}`);
+    // quota estourada (402) traz metric/limit: a mensagem do servidor já é a
+    // explicação, e a UI só precisa não engolir o motivo
+    if (res.status === 402) {
+      throw new ApiError(res.status, message, payload?.issues);
+    }
     throw new ApiError(res.status, message, payload?.issues);
   }
   return (await res.json()) as T;

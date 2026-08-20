@@ -25,7 +25,7 @@ export interface AiConsentDto {
 }
 
 export interface ConversationSummaryDto {
-  status: 'ok' | 'unavailable' | 'no_consent';
+  status: 'ok' | 'unavailable' | 'no_consent' | 'quota_exceeded';
   runId: string | null;
   subject?: string;
   summary?: string;
@@ -50,7 +50,7 @@ export interface LeadScoreDto {
 }
 
 export interface NextActionDto {
-  status: 'proposed' | 'unavailable';
+  status: 'proposed' | 'unavailable' | 'quota_exceeded';
   runId: string | null;
   proposalId?: string;
   title?: string;

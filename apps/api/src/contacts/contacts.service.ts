@@ -8,6 +8,7 @@ import type {
   UpdateContactInput,
 } from '@veyra/contracts';
 import { ActivitiesService } from '../activities/activities.service';
+import { UsageService } from '../usage/usage.service';
 import { AuditService } from '../audit/audit.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { AuthContext } from '../common/decorators';
@@ -44,6 +45,7 @@ export class ContactsService {
     private readonly tags: TagsService,
     private readonly customFields: CustomFieldsService,
     private readonly activities: ActivitiesService,
+    private readonly usage: UsageService,
     private readonly audit: AuditService,
     private readonly outbox: OutboxService,
   ) {}
@@ -113,6 +115,9 @@ export class ContactsService {
         } as never);
       }
       await this.customFields.syncValues(tx, 'contact', contact.id, validated);
+      // quota DENTRO da transação (ADR-032): estourou, o 402 derruba tudo e o
+      // contador volta pelo rollback — contato nasce sempre `active`
+      await this.usage.consume(tx, auth.workspaceId as string, 'contacts', 1);
       // ajuste #6: o tipo declarado no catálogo é emitido de fato
       await this.activities.record(tx, auth.workspaceId as string, 'contact_created', {
         actorMembershipId: auth.membershipId,
@@ -132,7 +137,7 @@ export class ContactsService {
     return this.get(id);
   }
 
-  async update(id: string, input: UpdateContactInput): Promise<ContactDto> {
+  async update(auth: AuthContext, id: string, input: UpdateContactInput): Promise<ContactDto> {
     const existing = await this.prisma.db.contact.findFirst({ where: { id } });
     if (!existing) throw new NotFoundException('Contato não encontrado');
     await this.validateReferences(input);
@@ -163,6 +168,17 @@ export class ContactsService {
         }
       }
       if (validated) await this.customFields.syncValues(tx, 'contact', id, validated);
+
+      // gauge segue o ciclo de vida (ADR-032): arquivar libera vaga, reativar
+      // consome de novo — e reativar PODE esbarrar no teto, como criar
+      if (input.status && input.status !== existing.status) {
+        await this.usage.consume(
+          tx,
+          auth.workspaceId as string,
+          'contacts',
+          input.status === 'active' ? 1 : -1,
+        );
+      }
     });
     return this.get(id);
   }
@@ -204,11 +220,15 @@ export class ContactsService {
         `contact.deleted:${id}`,
       );
       await tx.contact.deleteMany({ where: { id } }); // junções/activities: cascade
+      // só quem contava é descontado: arquivado já tinha liberado a vaga
+      if (existing.status === 'active') {
+        await this.usage.consume(tx, auth.workspaceId as string, 'contacts', -1);
+      }
     });
   }
 
   /** Import simples (linhas já parseadas pelo cliente). source = 'import'. */
-  async import(input: ImportContactsInput): Promise<{ imported: number }> {
+  async import(auth: AuthContext, input: ImportContactsInput): Promise<{ imported: number }> {
     // import não carrega custom fields — com campo obrigatório definido, criar
     // sem ele furaria a invariante que o POST /contacts recusa com 400
     const required = await this.prisma.db.customFieldDefinition.count({
@@ -219,14 +239,22 @@ export class ContactsService {
         'Importação indisponível: há campos personalizados obrigatórios — importe pelo formulário ou torne-os opcionais',
       );
     }
-    const { count } = await this.prisma.db.contact.createMany({
-      data: input.rows.map((row) => ({
-        name: row.name,
-        emails: row.email ? [row.email] : [],
-        phones: row.phone ? [row.phone] : [],
-        source: 'import',
-      })),
-    } as never);
+    // o LOTE inteiro entra na mesma transação e consome a quota de uma vez: ou
+    // importa tudo, ou nada. Importação parcial por quota deixaria o usuário
+    // sem saber quais linhas entraram (ajuste da revisão da 8).
+    const count = await (this.prisma.db as unknown as TxRunner).$transaction(async (tx) => {
+      const created = await tx.contact.createMany({
+        data: input.rows.map((row) => ({
+          name: row.name,
+          emails: row.email ? [row.email] : [],
+          phones: row.phone ? [row.phone] : [],
+          source: 'import',
+        })),
+      } as never);
+      const imported = (created as unknown as { count: number }).count;
+      await this.usage.consume(tx, auth.workspaceId as string, 'contacts', imported);
+      return imported;
+    });
     return { imported: count };
   }
 

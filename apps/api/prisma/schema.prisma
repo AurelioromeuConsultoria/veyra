@@ -101,6 +101,9 @@ model Workspace {
   aiRuns                 AiRun[]
   aiProposals            AiProposal[]
   aiConsent              AiConsent?
+  subscription           Subscription?
+  usageCounters          UsageCounter[]
+  usageReservations      UsageReservation[]
 }
 
 /// Catálogo GLOBAL de permissões (ADR-004): chaves estáveis do sistema —
@@ -1114,4 +1117,102 @@ model AiConsent {
   workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   // FK composta: quem mudou o consentimento é membership DESTE workspace
   updatedBy Membership? @relation("ConsentAuthor", fields: [workspaceId, updatedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+// ─── Billing e uso (Entrega 8.1) ──────────────────────────────────────────────
+
+/**
+ * NATUREZA da métrica (ADR-032). `counter` acumula no período e zera na virada;
+ * `gauge` é nível atual — sobe ao criar, desce ao arquivar/excluir, sem período.
+ * Misturar as duas é o erro clássico de sistema de quota.
+ */
+enum UsageMetricKind {
+  counter
+  gauge
+}
+
+enum SubscriptionStatus {
+  active
+  past_due
+  canceled
+}
+
+/// Catálogo GLOBAL de planos (como Permission): não é dado de tenant.
+model Plan {
+  key        String   @id
+  name       String
+  /// preço em CENTAVOS DE DÓLAR (USD) — dinheiro é Int (§3.11, ADR-034)
+  priceCents Int
+  isDefault  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  limits        PlanLimit[]
+  subscriptions Subscription[]
+}
+
+/// Limite por métrica, em LINHAS consultáveis — nunca um JSON opaco.
+model PlanLimit {
+  planKey String
+  metric  String
+  kind    UsageMetricKind
+  /// teto no período (counter) ou nível máximo (gauge). BigInt porque bytes de
+  /// storage estouram int32 já em 2 GiB — e mudar a unidade para MiB faria
+  /// arquivo pequeno arredondar para cima e mentir sobre o consumo.
+  value   BigInt
+
+  plan Plan @relation(fields: [planKey], references: [key], onDelete: Cascade)
+
+  @@id([planKey, metric])
+}
+
+model Subscription {
+  workspaceId        String             @id @db.Uuid
+  planKey            String
+  status             SubscriptionStatus @default(active)
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  plan      Plan      @relation(fields: [planKey], references: [key])
+
+  @@index([planKey])
+}
+
+/// Uso consolidado. `period` é a chave do mês (YYYY-MM) para counters e string
+/// vazia para gauges — que não têm período por definição.
+model UsageCounter {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  metric      String
+  period      String
+  /// BigInt pelo mesmo motivo do PlanLimit.value
+  value       BigInt   @default(0)
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  // alvo do upsert atômico (ADR-032)
+  @@unique([workspaceId, metric, period])
+}
+
+/**
+ * RESERVA de custo de IA (ADR-033): o teto do run é reservado ANTES da chamada
+ * ao provedor e liquidado pelo custo real depois. Reserva órfã (processo morto
+ * no meio) expira por idade e é varrida.
+ */
+model UsageReservation {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  metric      String
+  period      String
+  amount      Int
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, metric, period])
+  @@index([expiresAt])
 }

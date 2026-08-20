@@ -18,4 +18,5 @@ export * from './permissions';
 export * from './pipelines';
 export * from './tags';
 export * from './tasks';
+export * from './usage';
 export * from './webhooks';

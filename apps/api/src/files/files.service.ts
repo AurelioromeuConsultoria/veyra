@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import type { FileObjectDto } from '@veyra/contracts';
@@ -11,6 +12,7 @@ import { AuditService } from '../audit/audit.service';
 import { AuthContext } from '../common/decorators';
 import { OutboxService } from '../outbox/outbox.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
+import { UsageService } from '../usage/usage.service';
 import { UnsupportedFileError, assertAllowedFile, extensionOf } from './file-type';
 import { STORAGE_DRIVER, type StorageDriver } from './storage.driver';
 
@@ -43,10 +45,13 @@ export interface UploadedFile {
 
 @Injectable()
 export class FilesService {
+  private readonly logger = new Logger(FilesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly outbox: OutboxService,
     private readonly audit: AuditService,
+    private readonly usage: UsageService,
     @Inject(STORAGE_DRIVER) private readonly storage: StorageDriver,
   ) {}
 
@@ -81,27 +86,40 @@ export class FilesService {
     await this.storage.put(key, file.buffer);
 
     const db = this.prisma.db as unknown as TxRunner;
-    const id = await db.$transaction(async (tx) => {
-      const created = await tx.fileObject.create({
-        data: {
-          key,
-          fileName: file.originalname.slice(0, 200),
-          mimeType: detected.mimeType,
-          sizeBytes: file.buffer.length,
-          uploadedByMembershipId: auth.membershipId as string,
-          // NUNCA nasce clean: marcar como limpo exige scanner real (§7.5)
-          scanStatus: 'pending',
-        },
-      } as never);
-      const fileId = (created as unknown as { id: string }).id;
-      await this.audit.record(tx, workspaceId, 'file.uploaded', {
-        entityType: 'file',
-        entityId: fileId,
-        actor: this.audit.actorFrom(auth),
-        after: { fileName: file.originalname, mimeType: detected.mimeType },
+    let id: string;
+    try {
+      id = await db.$transaction(async (tx) => {
+        const created = await tx.fileObject.create({
+          data: {
+            key,
+            fileName: file.originalname.slice(0, 200),
+            mimeType: detected.mimeType,
+            sizeBytes: file.buffer.length,
+            uploadedByMembershipId: auth.membershipId as string,
+            // NUNCA nasce clean: marcar como limpo exige scanner real (§7.5)
+            scanStatus: 'pending',
+          },
+        } as never);
+        const fileId = (created as unknown as { id: string }).id;
+        await this.usage.consume(tx, workspaceId, 'storage_bytes', file.buffer.length);
+        await this.audit.record(tx, workspaceId, 'file.uploaded', {
+          entityType: 'file',
+          entityId: fileId,
+          actor: this.audit.actorFrom(auth),
+          after: { fileName: file.originalname, mimeType: detected.mimeType },
+        });
+        return fileId;
       });
-      return fileId;
-    });
+    } catch (error) {
+      // os BYTES já estão no disco (gravados antes da transação, para que a
+      // linha nunca aponte para o nada). Se a quota recusa, apagar na hora é o
+      // que impede um excesso PREVISÍVEL de virar lixo permanente. Se a limpeza
+      // falhar, a chave fica órfã e cai na rotina de órfãos — dívida registrada.
+      await this.storage.delete(key).catch(() => {
+        this.logger.error(`Falha ao limpar arquivo recusado por quota: ${key}`);
+      });
+      throw error;
+    }
     return this.get(id);
   }
 
@@ -185,6 +203,7 @@ export class FilesService {
         after: null,
       });
       await tx.fileObject.deleteMany({ where: { id } });
+      await this.usage.consume(tx, workspaceId, 'storage_bytes', -existing.sizeBytes);
       await this.outbox.enqueue(
         tx,
         workspaceId,

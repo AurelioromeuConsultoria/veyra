@@ -6,6 +6,7 @@ import {
   Inbox,
   KanbanSquare,
   LogOut,
+  Gauge,
   ScrollText,
   Sparkles,
   Settings2,
@@ -28,6 +29,7 @@ const nav = [
   { to: '/settings/fields', label: 'Campos', icon: Settings2 },
   { to: '/settings/webhooks', label: 'Webhooks', icon: Webhook, permission: 'webhooks:manage' },
   { to: '/signals', label: 'Sinais', icon: Sparkles, permission: 'intelligence:use' },
+  { to: '/settings/usage', label: 'Uso e plano', icon: Gauge },
   { to: '/audit', label: 'Auditoria', icon: ScrollText, permission: 'audit:read' },
 ];
 

@@ -15,7 +15,8 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:seed": "tsx prisma/seed.ts",
     "check:fk": "tsx scripts/check-cross-tenant-fk.ts",
-    "provision": "tsx scripts/provision-workspace.ts"
+    "provision": "tsx scripts/provision-workspace.ts",
+    "plan": "tsx scripts/set-plan.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",

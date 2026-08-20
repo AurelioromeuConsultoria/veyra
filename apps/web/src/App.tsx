@@ -21,6 +21,7 @@ const PipelinePage = lazy(() =>
 const CalendarPage = lazy(() =>
   import('./pages/Calendar').then((m) => ({ default: m.CalendarPage })),
 );
+const UsagePage = lazy(() => import('./pages/Usage').then((m) => ({ default: m.UsagePage })));
 const SignalsPage = lazy(() => import('./pages/Signals').then((m) => ({ default: m.SignalsPage })));
 const InboxPage = lazy(() => import('./pages/Inbox').then((m) => ({ default: m.InboxPage })));
 const TasksPage = lazy(() => import('./pages/Tasks').then((m) => ({ default: m.TasksPage })));
@@ -67,6 +68,7 @@ export function App() {
           <Route path="/inbox" element={<InboxPage />} />
           <Route path="/calendar" element={<CalendarPage />} />
           <Route path="/signals" element={<SignalsPage />} />
+          <Route path="/settings/usage" element={<UsagePage />} />
           <Route path="/tasks" element={<TasksPage />} />
           <Route path="/tags" element={<TagsPage />} />
           <Route path="/settings/fields" element={<CustomFieldsPage />} />
