@@ -16,9 +16,13 @@ import { STORAGE_DRIVER, type StorageDriver } from './storage.driver';
 
 type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
 
+/**
+ * Teto por arquivo. O endpoint aceita UM arquivo por requisição (limite
+ * `files: 1` no multer), então este é também o teto do corpo inteiro — não há
+ * constante separada de requisição para não descrever um limite inexistente.
+ * O cliente anexa vários arquivos fazendo vários uploads.
+ */
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
-export const MAX_FILES_PER_REQUEST = 5;
-export const MAX_REQUEST_BYTES = 25 * 1024 * 1024;
 
 type FileRow = {
   id: string;

@@ -92,9 +92,9 @@ export class CalendarService {
         },
       });
 
-      // notifica o organizador QUANDO for outra pessoa: avisar quem acabou de
-      // criar o próprio evento seria ruído. dedupeKey pelo par (evento,
-      // destinatário) — retry não gera segunda notificação.
+      // ADR-026: notifica o organizador SÓ quando for outra pessoa — avisar
+      // quem acabou de criar o próprio evento é ruído. Quando há notificação,
+      // ela é única inclusive em retry: dedupeKey pelo par (evento, destinatário).
       if (organizerId !== auth.membershipId) {
         await this.notifications.emit(
           tx,

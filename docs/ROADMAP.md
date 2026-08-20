@@ -35,7 +35,7 @@ Pipelines/estágios configuráveis, deals com kanban, tarefas, notas, `Activity`
 ## Entrega 6 — Comunicação e organização ✅
 
 - **6.1 — Conversas ✅** canal interno único por workspace (ADR-023), inbox denso com keyset, mensagem manual nos dois sentidos com autor derivado da direção, `@Idempotent()` no envio, `Message` append-only e timeline integrada sem corpo de mensagem.
-- **6.2 — Agenda e notificações ✅** `CalendarEvent` com CHECK `endAt > startAt` no banco, FKs compostas e consulta por janela; `Notification` com `dedupeKey` idempotente e caixa pessoal (`@AuthenticatedOnly`); visão semanal e sino com polling de 60s.
+- **6.2 — Agenda e notificações ✅** `CalendarEvent` com CHECK `endAt > startAt` no banco, FKs compostas e consulta por janela; `Notification` com `dedupeKey` idempotente e caixa pessoal (`@AuthenticatedOnly`); visão semanal e sino com polling de 60s. **Notifica apenas quando atribuído a OUTRA pessoa** — quem age não se autonotifica (ADR-026); quando há notificação, ela é única inclusive em retry.
 - **6.3 — Arquivos ✅** allowlist com sniffer próprio (ADR-025), chave prefixada por workspace (ADR-024), download autenticado com `attachment`+`nosniff`, `scanStatus` com portão de saída externa, anexos em conversa e expurgo físico por evento interno do outbox.
 
 **Pronto quando:** conversa manual ponta a ponta com timeline integrada (✅ 6.1); upload rejeita tipo divergente (✅ 6.3).

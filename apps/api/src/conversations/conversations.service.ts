@@ -163,9 +163,10 @@ export class ConversationsService {
           assigneeMembershipId: input.assigneeMembershipId,
         },
       });
-      // atribuir a OUTRA pessoa avisa quem recebeu. dedupeKey pelo par
-      // (conversa, destinatário): reatribuir para quem já foi avisado não
-      // repete o aviso — evita tempestade de notificação ao alternar responsável
+      // ADR-026: atribuir a OUTRA pessoa avisa quem recebeu; quem atribui a si
+      // mesmo não se autonotifica. dedupeKey pelo par (conversa, destinatário):
+      // reatribuir para quem já foi avisado não repete o aviso — evita
+      // tempestade de notificação ao alternar responsável
       const assignee = input.assigneeMembershipId;
       if (
         assignee &&

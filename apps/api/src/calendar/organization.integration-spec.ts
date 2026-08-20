@@ -232,7 +232,7 @@ describe('Organização — agenda e notificações (integração)', () => {
 
   // ── Notificações ──────────────────────────────────────────────────────────
 
-  it('evento para OUTRO organizador notifica uma única vez, mesmo com retry', async () => {
+  it('ADR-026: evento para OUTRO organizador notifica uma única vez, mesmo com retry', async () => {
     const key = { 'idempotency-key': 'ev-1' };
     const body = evento({ organizerMembershipId: membershipColega });
     const primeiro = await post('/api/calendar/events', sessionA, body, key).expect(201);
@@ -269,7 +269,7 @@ describe('Organização — agenda e notificações (integração)', () => {
     expect((await get('/api/notifications', sessionColega).expect(200)).body.items).toHaveLength(1);
   });
 
-  it('quem cria o próprio evento não se autonotifica', async () => {
+  it('ADR-026: quem cria o próprio evento não se autonotifica', async () => {
     await post('/api/calendar/events', sessionA, evento()).expect(201);
     expect((await get('/api/notifications', sessionA).expect(200)).body.items).toEqual([]);
   });

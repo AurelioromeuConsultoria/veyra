@@ -101,7 +101,7 @@ Agenda e notificações implementadas na Entrega 6.2; arquivos entram na 6.3.
 | `Notification`  | recipientMembershipId (FK composta), type, payload (allowlist Zod `.strict()` por tipo), **dedupeKey**, readAt                                                      | `@@unique([workspaceId, dedupeKey])` — emissão idempotente. Caixa **pessoal**: o destinatário é sempre a membership da sessão, imposto no service                           |
 | `FileObject`    | key (storage prefixado por workspace), fileName, mimeType detectado por magic bytes, sizeBytes, uploadedById, scanStatus (pending/clean/quarantined)                | Entrega 6.3. Política completa em SECURITY.md §7                                                                                                                            |
 
-Emissão de notificação acontece **dentro da transação do fato que a origina** — notificação de evento que não existe é impossível. Hoje há dois produtores: evento agendado para outra pessoa e conversa atribuída a outra pessoa. Em ambos, quem age não se autonotifica, e o `dedupeKey` é o par (fato, destinatário).
+Emissão de notificação acontece **dentro da transação do fato que a origina** — notificação de evento que não existe é impossível. Hoje há dois produtores: evento agendado para outra pessoa e conversa atribuída a outra pessoa. Em ambos, quem age **não** se autonotifica (regra formalizada no ADR-026), e o `dedupeKey` é o par (fato, destinatário).
 
 ## 7. Plataforma
 
