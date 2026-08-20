@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import { PgBoss } from 'pg-boss';
 import { AuditService } from '../audit/audit.service';
+import { AutomationsService } from '../automations/automations.service';
 import { FilesService } from '../files/files.service';
 import { UsageService } from '../usage/usage.service';
 import { INTERNAL_EVENT_TYPES, OutboxService } from '../outbox/outbox.service';
@@ -28,6 +29,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     private readonly audit: AuditService,
     private readonly files: FilesService,
     private readonly usage: UsageService,
+    private readonly automations: AutomationsService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -82,6 +84,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
           // trabalho interno da plataforma: NUNCA vai para webhook de cliente
           await this.handleInternal(event);
         } else {
+          // automações ANTES dos webhooks (ADR-035): a ação pode gerar dado
+          // que o webhook deveria ver. Reentrega reaproveita a execução
+          // idempotente, então rodar de novo aqui é inofensivo.
+          await this.automations.runForEvent(event);
           await this.webhooks.deliver(event);
         }
         delivered += 1;

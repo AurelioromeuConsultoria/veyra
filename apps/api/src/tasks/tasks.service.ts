@@ -7,6 +7,7 @@ import type {
   UpdateTaskInput,
 } from '@veyra/contracts';
 import { ActivitiesService } from '../activities/activities.service';
+import { OutboxService } from '../outbox/outbox.service';
 import { AuthContext } from '../common/decorators';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 
@@ -31,6 +32,7 @@ export class TasksService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly activities: ActivitiesService,
+    private readonly outbox: OutboxService,
   ) {}
 
   async list(input: ListTasksInput): Promise<Paginated<TaskDto>> {
@@ -86,9 +88,14 @@ export class TasksService {
     workspaceId: string,
     input: CreateTaskInput,
     actor: { type: 'user' | 'ai'; membershipId: string | null },
+    /** cadeia de causalidade quando a tarefa nasce de automação (ADR-035) */
+    causality?: { chainId: string | null; depth: number; originAutomationId: string },
   ): Promise<string> {
     const task = await tx.task.create({
       data: {
+        // explícito: no db protegido é validado contra o CLS (igual = ok); numa
+        // transação `raw` — como a da automação — é o próprio carimbo
+        workspaceId,
         title: input.title,
         description: input.description ?? null,
         dueAt: input.dueAt ? new Date(input.dueAt) : null,
@@ -104,7 +111,17 @@ export class TasksService {
       payload: { title: input.title },
       targets: { taskId: task.id, contactId: input.contactId, dealId: input.dealId },
     });
-    return (task as unknown as { id: string }).id;
+    const taskId = (task as unknown as { id: string }).id;
+    // evento público (webhooks) e gatilho de automação, na MESMA transação
+    await this.outbox.enqueue(
+      tx,
+      workspaceId,
+      'task.created',
+      { id: taskId, title: input.title },
+      `task.created:${taskId}`,
+      causality,
+    );
+    return taskId;
   }
 
   async update(auth: AuthContext, id: string, input: UpdateTaskInput): Promise<TaskDto> {

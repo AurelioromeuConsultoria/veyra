@@ -31,6 +31,7 @@ export const OUTBOX_EVENTS = {
     .strict(),
   'deal.won': z.object({ id: z.string().uuid(), amountCents: z.number().int() }).strict(),
   'deal.lost': z.object({ id: z.string().uuid(), amountCents: z.number().int() }).strict(),
+  'task.created': z.object({ id: z.string().uuid(), title: z.string().max(200) }).strict(),
   'task.completed': z.object({ id: z.string().uuid(), title: z.string().max(200) }).strict(),
   /**
    * INTERNO (ADR-024): expurgo físico de arquivo. Carrega a CHAVE de storage e
@@ -70,6 +71,10 @@ export type ClaimedEvent = {
   payload: unknown;
   attempts: number;
   claimToken: string;
+  /** causalidade da cadeia de automação (ADR-035) */
+  chainId: string | null;
+  depth: number;
+  originAutomationId: string | null;
 };
 
 @Injectable()
@@ -88,6 +93,11 @@ export class OutboxService {
     eventType: OutboxEventType,
     payload: Record<string, unknown>,
     dedupeKey: string,
+    /**
+     * CAUSALIDADE (ADR-035): quando o evento nasce de uma automação, a cadeia
+     * viaja em COLUNAS — nunca no payload, que é o que sai para webhook.
+     */
+    causality?: { chainId: string | null; depth: number; originAutomationId: string },
   ): Promise<void> {
     const parsed = OUTBOX_EVENTS[eventType].safeParse(payload);
     if (!parsed.success) {
@@ -101,6 +111,9 @@ export class OutboxService {
           eventType,
           payload: parsed.data as object,
           dedupeKey,
+          chainId: causality?.chainId ?? null,
+          depth: causality?.depth ?? 0,
+          originAutomationId: causality?.originAutomationId ?? null,
         },
       } as never);
     } catch (error) {
@@ -148,7 +161,8 @@ export class OutboxService {
             LIMIT $1
             FOR UPDATE SKIP LOCKED
          )
-       RETURNING "id", "workspaceId", "eventType", "payload", "attempts", "claimToken"`,
+       RETURNING "id", "workspaceId", "eventType", "payload", "attempts", "claimToken",
+                 "chainId", "depth", "originAutomationId"`,
       limit,
       LEASE_MS,
     );

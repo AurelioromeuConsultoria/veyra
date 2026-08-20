@@ -59,6 +59,9 @@ export const WORKSPACE_MODELS = new Set<string>([
   'Subscription',
   'UsageCounter',
   'UsageReservation',
+  // Automações (Entrega 8.2)
+  'Automation',
+  'AutomationExecution',
 ]);
 
 /**
@@ -206,6 +209,20 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
   OutboxEvent: {
     workspace: 'Workspace',
     deliveries: 'WebhookDelivery',
+    originAutomation: 'Automation',
+    chain: 'OutboxEvent',
+    chainedEvents: 'OutboxEvent',
+    executions: 'AutomationExecution',
+  },
+  Automation: {
+    workspace: 'Workspace',
+    executions: 'AutomationExecution',
+    originatedEvents: 'OutboxEvent',
+  },
+  AutomationExecution: {
+    workspace: 'Workspace',
+    automation: 'Automation',
+    outboxEvent: 'OutboxEvent',
   },
   Webhook: {
     workspace: 'Workspace',

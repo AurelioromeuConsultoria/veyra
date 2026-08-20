@@ -40,6 +40,7 @@ export const AUDIT_FIELDS: Record<string, readonly string[]> = {
   // nome e tipo bastam para a trilha; a CHAVE de storage nunca é auditada
   file: ['fileName', 'mimeType', 'scanStatus'],
   aiConsent: ['conversationContent'],
+  automation: ['name', 'trigger', 'enabled', 'depth', 'chainId'],
   aiProposal: ['type', 'status'], // payload NUNCA — pode conter texto de terceiro
 };
 

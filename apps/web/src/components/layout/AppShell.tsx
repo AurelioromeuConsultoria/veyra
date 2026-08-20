@@ -13,6 +13,7 @@ import {
   Tags,
   Users,
   Webhook,
+  Workflow,
 } from 'lucide-react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { hasPermission, useLogout, useSession } from '../../lib/session';
@@ -27,6 +28,12 @@ const nav = [
   { to: '/tasks', label: 'Tarefas', icon: CheckSquare },
   { to: '/tags', label: 'Tags', icon: Tags },
   { to: '/settings/fields', label: 'Campos', icon: Settings2 },
+  {
+    to: '/settings/automations',
+    label: 'Automações',
+    icon: Workflow,
+    permission: 'automations:manage',
+  },
   { to: '/settings/webhooks', label: 'Webhooks', icon: Webhook, permission: 'webhooks:manage' },
   { to: '/signals', label: 'Sinais', icon: Sparkles, permission: 'intelligence:use' },
   { to: '/settings/usage', label: 'Uso e plano', icon: Gauge },

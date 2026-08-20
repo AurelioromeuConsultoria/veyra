@@ -250,11 +250,14 @@ export class WebhooksService {
         return;
       }
       const timestamp = Math.floor(Date.now() / 1000);
-      const secret = this.crypto.decrypt(webhook.secretCipher);
       let status: number | null = null;
       let error: string | null = null;
       let durationMs = 0;
       try {
+        // decrypt DENTRO do try: segredo corrompido é falha DESTE webhook, não
+        // do evento. Fora do try, um único segredo ilegível derrubava a entrega
+        // para todos os outros destinos e levava o evento a `dead`.
+        const secret = this.crypto.decrypt(webhook.secretCipher);
         const result = await this.transport(webhook.url, body, {
           'x-veyra-event': event.eventType,
           'x-veyra-delivery': event.id,

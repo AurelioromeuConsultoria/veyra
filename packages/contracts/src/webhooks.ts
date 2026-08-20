@@ -9,6 +9,7 @@ export const webhookEventSchema = z.enum([
   'deal.stage_changed',
   'deal.won',
   'deal.lost',
+  'task.created',
   'task.completed',
 ]);
 export type WebhookEvent = z.infer<typeof webhookEventSchema>;

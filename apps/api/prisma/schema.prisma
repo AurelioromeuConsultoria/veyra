@@ -104,6 +104,8 @@ model Workspace {
   subscription           Subscription?
   usageCounters          UsageCounter[]
   usageReservations      UsageReservation[]
+  automations            Automation[]
+  automationExecutions   AutomationExecution[]
 }
 
 /// Catálogo GLOBAL de permissões (ADR-004): chaves estáveis do sistema —
@@ -693,29 +695,43 @@ enum OutboxStatus {
 /// Outbox transacional: o efeito externo é gravado na MESMA transação do
 /// domínio e entregue depois pelo worker — nunca escapa se a transação abortar.
 model OutboxEvent {
-  id             String       @id @default(uuid()) @db.Uuid
-  workspaceId    String       @db.Uuid
-  eventType      String
-  payload        Json
-  dedupeKey      String
-  status         OutboxStatus @default(pending)
-  attempts       Int          @default(0)
-  nextRetryAt    DateTime     @default(now())
+  id                 String       @id @default(uuid()) @db.Uuid
+  workspaceId        String       @db.Uuid
+  eventType          String
+  payload            Json
+  dedupeKey          String
+  status             OutboxStatus @default(pending)
+  attempts           Int          @default(0)
+  nextRetryAt        DateTime     @default(now())
   /// LEASE: quando o worker reivindicou e até quando o claim vale. Worker que
   /// morre no meio libera o evento pela expiração — sem lease, o `SKIP LOCKED`
   /// só protege durante o UPDATE e outra instância entregaria em paralelo.
-  claimedAt      DateTime?
-  leaseExpiresAt DateTime?
+  claimedAt          DateTime?
+  leaseExpiresAt     DateTime?
   /// FENCING TOKEN: identifica QUEM detém o lease atual. Sem ele, um worker
   /// lento que perdeu o lease por expiração ainda conseguiria marcar o evento
   /// como delivered, sobrescrevendo o trabalho de quem o reivindicou depois.
-  claimToken     String?      @db.Uuid
-  lastError      String?
-  deliveredAt    DateTime?
-  createdAt      DateTime     @default(now())
+  claimToken         String?      @db.Uuid
+  lastError          String?
+  deliveredAt        DateTime?
+  /// CAUSALIDADE (ADR-035) em COLUNAS, nunca no payload: payload é o que sai
+  /// para webhook de cliente, e a topologia interna de automação não é assunto
+  /// dele. `chainId` é a raiz da cadeia; `depth` cresce a cada elo.
+  chainId            String?      @db.Uuid
+  depth              Int          @default(0)
+  originAutomationId String?      @db.Uuid
+  createdAt          DateTime     @default(now())
 
-  workspace  Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  deliveries WebhookDelivery[]
+  workspace        Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  deliveries       WebhookDelivery[]
+  // FK composta com NoAction: excluir uma automação NÃO pode levar eventos de
+  // domínio embora, então o service anula esta coluna antes de excluí-la
+  originAutomation Automation?           @relation(fields: [workspaceId, originAutomationId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  /// a raiz da cadeia é um evento REAL: auto-referência composta em vez de um
+  /// id solto de correlação (o check:fk cobrou isso, com razão)
+  chain            OutboxEvent?          @relation("OutboxChain", fields: [workspaceId, chainId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  chainedEvents    OutboxEvent[]         @relation("OutboxChain")
+  executions       AutomationExecution[]
 
   @@unique([workspaceId, dedupeKey])
   @@unique([workspaceId, id])
@@ -1215,4 +1231,65 @@ model UsageReservation {
 
   @@index([workspaceId, metric, period])
   @@index([expiresAt])
+}
+
+// ─── Automações (Entrega 8.2) ─────────────────────────────────────────────────
+
+/// Ações do CATÁLOGO FECHADO (ADR-035): não existe expressão arbitrária.
+enum AutomationAction {
+  create_task
+}
+
+enum AutomationExecutionStatus {
+  executed
+  skipped
+  failed
+}
+
+model Automation {
+  id           String           @id @default(uuid()) @db.Uuid
+  workspaceId  String           @db.Uuid
+  name         String
+  /// tipo de evento do outbox (catálogo público) que dispara a automação
+  trigger      String
+  /// predicados DECLARADOS: [{ field, op, value }] — validados por Zod estrito
+  conditions   Json             @default("[]")
+  action       AutomationAction
+  /// configuração da ação, validada pelo schema do tipo
+  actionConfig Json             @default("{}")
+  enabled      Boolean          @default(true)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  workspace        Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  executions       AutomationExecution[]
+  /// eventos que ESTA automação originou (rastro de causalidade)
+  originatedEvents OutboxEvent[]
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, name])
+  @@index([workspaceId, trigger, enabled])
+}
+
+/**
+ * Registro de execução. O unique por (automação, evento) é o que torna a
+ * reentrega do outbox inofensiva: a segunda tentativa colide e nada é
+ * executado de novo (ADR-035).
+ */
+model AutomationExecution {
+  id            String                    @id @default(uuid()) @db.Uuid
+  workspaceId   String                    @db.Uuid
+  automationId  String                    @db.Uuid
+  outboxEventId String                    @db.Uuid
+  status        AutomationExecutionStatus
+  /// motivo curto quando `skipped`/`failed` — nunca payload nem stack trace
+  reason        String?
+  createdAt     DateTime                  @default(now())
+
+  workspace   Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  automation  Automation  @relation(fields: [workspaceId, automationId], references: [workspaceId, id], onDelete: Cascade)
+  outboxEvent OutboxEvent @relation(fields: [workspaceId, outboxEventId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, automationId, outboxEventId])
+  @@index([workspaceId, createdAt(sort: Desc)])
 }
