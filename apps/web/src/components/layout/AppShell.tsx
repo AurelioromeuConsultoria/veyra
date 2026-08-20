@@ -2,6 +2,7 @@ import { clsx } from 'clsx';
 import {
   Building2,
   CheckSquare,
+  Inbox,
   KanbanSquare,
   LogOut,
   ScrollText,
@@ -17,6 +18,7 @@ const nav = [
   { to: '/pipeline', label: 'Pipeline', icon: KanbanSquare },
   { to: '/contacts', label: 'Contatos', icon: Users },
   { to: '/companies', label: 'Empresas', icon: Building2 },
+  { to: '/inbox', label: 'Inbox', icon: Inbox, permission: 'conversations:read' },
   { to: '/tasks', label: 'Tarefas', icon: CheckSquare },
   { to: '/tags', label: 'Tags', icon: Tags },
   { to: '/settings/fields', label: 'Campos', icon: Settings2 },

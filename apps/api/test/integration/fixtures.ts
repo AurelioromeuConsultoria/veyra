@@ -48,6 +48,10 @@ export async function createWorkspaceFixture(
     });
     roles[systemKey] = role.id;
   }
+  // canal interno de sistema, como o provisionamento real faz (ADR-023)
+  await prisma.raw.channel.create({
+    data: { workspaceId: workspace.id, type: 'internal', name: 'Interno', systemMark: true },
+  });
   // pipeline padrão, como o provisionamento real faz
   const pipeline = await prisma.raw.pipeline.create({
     data: { workspaceId: workspace.id, name: 'Vendas', defaultMark: true },

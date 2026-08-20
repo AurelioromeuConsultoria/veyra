@@ -49,6 +49,11 @@ const DOCUMENTED_LOOSE_COLUMNS = new Set([
   'AuditLog.actorId',
   // correlação de request (uuid/observabilidade), não referência a entidade
   'AuditLog.requestId',
+  // id da mensagem NO PROVEDOR externo (Message-ID de e-mail, wamid do
+  // WhatsApp): opaco, de outro sistema, sem tabela local para referenciar.
+  // A integridade que importa aqui é o unique de dedup por canal
+  // (workspaceId, channelId, externalId), que existe. ADR-023.
+  'Message.externalId',
 ]);
 
 interface FkRow {

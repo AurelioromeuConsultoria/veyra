@@ -15,6 +15,7 @@ import { PrismaExceptionFilter } from './common/prisma-exception.filter';
 import { RequestIdMiddleware } from './common/request-id.middleware';
 import { WorkspaceThrottleGuard } from './common/workspace-throttle.guard';
 import { CompaniesModule } from './companies/companies.module';
+import { ConversationsModule } from './conversations/conversations.module';
 import { ContactsModule } from './contacts/contacts.module';
 import { CustomFieldsModule } from './custom-fields/custom-fields.module';
 import { DealsModule } from './deals/deals.module';
@@ -63,6 +64,7 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
     DealsModule,
     TasksModule,
     NotesModule,
+    ConversationsModule,
   ],
   controllers: [HealthController],
   providers: [

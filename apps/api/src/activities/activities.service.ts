@@ -26,6 +26,9 @@ const ACTIVITY_PAYLOADS: Record<ActivityType, z.ZodType> = {
   task_completed: z.object({ title: z.string().max(200) }).strict(),
   note_added: z.object({}).strict(), // sem corpo, por design
   note_deleted: z.object({}).strict(),
+  // NUNCA o corpo da mensagem na timeline (LGPD/§5): a direção já está no tipo
+  message_sent: z.object({}).strict(),
+  message_received: z.object({}).strict(),
 };
 
 export interface ActivityTargets {
@@ -33,6 +36,7 @@ export interface ActivityTargets {
   companyId?: string | null;
   dealId?: string | null;
   taskId?: string | null;
+  conversationId?: string | null;
 }
 
 interface Cursor {
@@ -91,6 +95,7 @@ export class ActivitiesService {
         companyId: options.targets.companyId ?? null,
         dealId: options.targets.dealId ?? null,
         taskId: options.targets.taskId ?? null,
+        conversationId: options.targets.conversationId ?? null,
       },
     } as never);
   }

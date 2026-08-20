@@ -4,6 +4,7 @@ export * from './auth';
 export * from './common';
 export * from './companies';
 export * from './contacts';
+export * from './conversations';
 export * from './custom-fields';
 export * from './deals';
 export * from './health';

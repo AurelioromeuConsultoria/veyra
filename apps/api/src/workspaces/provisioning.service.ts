@@ -74,6 +74,12 @@ export class ProvisioningService {
         })),
       });
 
+      // canal interno de sistema (ADR-023): exatamente um por workspace, com a
+      // unicidade garantida pelo unique parcial — os antigos vieram do backfill
+      await tx.channel.create({
+        data: { workspaceId: workspace.id, type: 'internal', name: 'Interno', systemMark: true },
+      });
+
       let ownerRoleId = '';
       for (const [name, keys] of Object.entries(SYSTEM_ROLE_TEMPLATES)) {
         const systemKey = name.toLowerCase();

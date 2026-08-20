@@ -66,6 +66,12 @@ async function seed(): Promise<void> {
         }
         if (systemKey === 'owner') ownerRoleId = roleId;
       }
+      // canal interno de sistema (como o provisionamento real — ADR-023)
+      await db.query(
+        `INSERT INTO "Channel" ("id", "workspaceId", "type", "name", "systemMark")
+         VALUES ($1, $2, 'internal', 'Interno', true)`,
+        [randomUUID(), workspaceId],
+      );
       // pipeline padrão + stages (como o provisionamento real)
       const pipelineId = randomUUID();
       await db.query(

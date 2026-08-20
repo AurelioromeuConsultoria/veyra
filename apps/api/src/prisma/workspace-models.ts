@@ -39,6 +39,10 @@ export const WORKSPACE_MODELS = new Set<string>([
   'OutboxEvent',
   'Webhook',
   'WebhookDelivery',
+  // Comunicação (Entrega 6.1)
+  'Channel',
+  'Conversation',
+  'Message',
 ]);
 
 /**
@@ -48,7 +52,7 @@ export const WORKSPACE_MODELS = new Set<string>([
  * legítima acontece só por cascade do dono (LGPD) ou pelo job de retenção, que
  * usa `raw` com justificativa.
  */
-export const APPEND_ONLY_MODELS = new Set<string>(['Activity', 'AuditLog']);
+export const APPEND_ONLY_MODELS = new Set<string>(['Activity', 'AuditLog', 'Message']);
 
 /**
  * Mapa campo-de-relação → modelo alvo, para os modelos protegidos. Usado pelo
@@ -81,6 +85,8 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     authoredNotes: 'Note',
     activities: 'Activity',
     auditLogs: 'AuditLog',
+    assignedConversations: 'Conversation',
+    authoredMessages: 'Message',
     // alvo fora do perímetro: travessia via db é bloqueada (sessões só via raw)
     activeSessions: 'RefreshToken',
   },
@@ -106,6 +112,8 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     tasksList: 'Task',
     notes: 'Note',
     activities: 'Activity',
+    conversations: 'Conversation',
+    messages: 'Message',
   },
   Tag: {
     workspace: 'Workspace',
@@ -187,5 +195,26 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     company: 'Company',
     deal: 'Deal',
     task: 'Task',
+    conversation: 'Conversation',
+  },
+  Channel: {
+    workspace: 'Workspace',
+    conversations: 'Conversation',
+    messages: 'Message',
+  },
+  Conversation: {
+    workspace: 'Workspace',
+    channel: 'Channel',
+    contact: 'Contact',
+    assignee: 'Membership',
+    messages: 'Message',
+    activities: 'Activity',
+  },
+  Message: {
+    workspace: 'Workspace',
+    conversation: 'Conversation',
+    channel: 'Channel',
+    authorMembership: 'Membership',
+    authorContact: 'Contact',
   },
 };

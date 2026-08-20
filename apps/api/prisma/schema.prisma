@@ -92,6 +92,9 @@ model Workspace {
   idempotencyKeys        IdempotencyKey[]
   outboxEvents           OutboxEvent[]
   webhooks               Webhook[]
+  channels               Channel[]
+  conversations          Conversation[]
+  messages               Message[]
 }
 
 /// Catálogo GLOBAL de permissões (ADR-004): chaves estáveis do sistema —
@@ -163,14 +166,16 @@ model Membership {
   // FK composta (ADR-010): Membership não pode apontar para Role de outro workspace
   role      Role      @relation(fields: [workspaceId, roleId], references: [workspaceId, id])
 
-  ownedCompanies Company[]      @relation("CompanyOwner")
-  ownedContacts  Contact[]      @relation("ContactOwner")
-  activeSessions RefreshToken[] @relation("SessionActiveMembership")
-  ownedDeals     Deal[]         @relation("DealOwner")
-  assignedTasks  Task[]         @relation("TaskAssignee")
-  authoredNotes  Note[]         @relation("NoteAuthor")
-  activities     Activity[]     @relation("ActivityActor")
-  auditLogs      AuditLog[]     @relation("AuditActor")
+  ownedCompanies        Company[]      @relation("CompanyOwner")
+  ownedContacts         Contact[]      @relation("ContactOwner")
+  activeSessions        RefreshToken[] @relation("SessionActiveMembership")
+  ownedDeals            Deal[]         @relation("DealOwner")
+  assignedTasks         Task[]         @relation("TaskAssignee")
+  authoredNotes         Note[]         @relation("NoteAuthor")
+  activities            Activity[]     @relation("ActivityActor")
+  auditLogs             AuditLog[]     @relation("AuditActor")
+  assignedConversations Conversation[] @relation("ConversationAssignee")
+  authoredMessages      Message[]      @relation("MessageAuthorMembership")
 
   // Alvo de FK composta para Team/ownership futuros
   @@unique([workspaceId, id])
@@ -289,6 +294,9 @@ model Contact {
   tasksList  Task[]
   notes      Note[]
   activities Activity[]
+
+  conversations Conversation[]
+  messages      Message[]      @relation("MessageAuthorContact")
 
   @@unique([workspaceId, id])
   @@index([workspaceId, status, createdAt])
@@ -411,6 +419,8 @@ enum ActivityType {
   task_completed
   note_added
   note_deleted
+  message_sent
+  message_received
 }
 
 enum ActivityActor {
@@ -566,17 +576,20 @@ model Activity {
   companyId         String?       @db.Uuid
   dealId            String?       @db.Uuid
   taskId            String?       @db.Uuid
+  conversationId    String?       @db.Uuid
 
-  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  actor     Membership? @relation("ActivityActor", fields: [workspaceId, actorMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  contact   Contact?    @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
-  company   Company?    @relation(fields: [workspaceId, companyId], references: [workspaceId, id], onDelete: Cascade)
-  deal      Deal?       @relation(fields: [workspaceId, dealId], references: [workspaceId, id], onDelete: Cascade)
-  task      Task?       @relation(fields: [workspaceId, taskId], references: [workspaceId, id], onDelete: Cascade)
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  actor        Membership?   @relation("ActivityActor", fields: [workspaceId, actorMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  contact      Contact?      @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  company      Company?      @relation(fields: [workspaceId, companyId], references: [workspaceId, id], onDelete: Cascade)
+  deal         Deal?         @relation(fields: [workspaceId, dealId], references: [workspaceId, id], onDelete: Cascade)
+  task         Task?         @relation(fields: [workspaceId, taskId], references: [workspaceId, id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade)
 
   // cursor keyset (occurredAt, id) por alvo — paginação estável (ajuste #5)
   @@index([workspaceId, contactId, occurredAt(sort: Desc), id])
   @@index([workspaceId, dealId, occurredAt(sort: Desc), id])
+  @@index([workspaceId, conversationId, occurredAt(sort: Desc), id])
 }
 
 // ─── Plataforma de confiança (Entrega 5) ─────────────────────────────────────
@@ -729,4 +742,113 @@ model WebhookDelivery {
 
   @@unique([workspaceId, webhookId, outboxEventId, attempt])
   @@index([workspaceId, webhookId, createdAt(sort: Desc)])
+}
+
+// ─── Comunicação (Entrega 6.1) ────────────────────────────────────────────────
+
+/// Canal de comunicação. `email`/`whatsapp` estão reservados no enum, mas a API
+/// desta entrega aceita SOMENTE `internal` (ADR-023).
+enum ChannelType {
+  internal
+  email
+  whatsapp
+}
+
+enum ConversationStatus {
+  open
+  pending
+  closed
+}
+
+enum MessageDirection {
+  inbound
+  outbound
+}
+
+enum MessageAuthor {
+  contact
+  user
+  ai
+  system
+}
+
+model Channel {
+  id          String      @id @default(uuid()) @db.Uuid
+  workspaceId String      @db.Uuid
+  type        ChannelType
+  name        String
+  /// EXATAMENTE UM canal interno por workspace, garantido pelo banco: TRUE ou
+  /// NULL + unique composto (mesmo padrão de `Pipeline.defaultMark`). Nenhum
+  /// service precisa se lembrar da invariante.
+  systemMark  Boolean?
+  createdAt   DateTime    @default(now())
+
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversations Conversation[]
+  messages      Message[]
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, systemMark])
+  @@index([workspaceId, type])
+}
+
+model Conversation {
+  id                   String             @id @default(uuid()) @db.Uuid
+  workspaceId          String             @db.Uuid
+  channelId            String             @db.Uuid
+  contactId            String?            @db.Uuid
+  subject              String?
+  status               ConversationStatus @default(open)
+  assigneeMembershipId String?            @db.Uuid
+  /// SEMPRE preenchido (default now() na criação): o keyset do inbox não tem
+  /// caso especial de null.
+  lastMessageAt        DateTime           @default(now())
+  createdAt            DateTime           @default(now())
+
+  workspace  Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  channel    Channel     @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  contact    Contact?    @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  assignee   Membership? @relation("ConversationAssignee", fields: [workspaceId, assigneeMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  messages   Message[]
+  activities Activity[]
+
+  @@unique([workspaceId, id])
+  // alvo da FK TRIPLA de Message: o banco garante que a mensagem não pode
+  // apontar para a conversa A usando o canal B (mesma classe da FK tripla
+  // Deal→Stage, ADR-010)
+  @@unique([workspaceId, channelId, id])
+  // cursor keyset do inbox: (lastMessageAt, id) desc, por status
+  @@index([workspaceId, status, lastMessageAt(sort: Desc), id])
+  @@index([workspaceId, lastMessageAt(sort: Desc), id])
+  @@index([workspaceId, contactId])
+  @@index([workspaceId, assigneeMembershipId])
+}
+
+model Message {
+  id                 String           @id @default(uuid()) @db.Uuid
+  workspaceId        String           @db.Uuid
+  conversationId     String           @db.Uuid
+  /// derivado da conversa NO SERVIDOR (nunca do cliente) — existe para o unique
+  /// de dedup de ingestão externa, que é por canal
+  channelId          String           @db.Uuid
+  direction          MessageDirection
+  authorType         MessageAuthor
+  authorMembershipId String?          @db.Uuid
+  authorContactId    String?          @db.Uuid
+  body               String
+  externalId         String?
+  deliveredAt        DateTime?
+  createdAt          DateTime         @default(now())
+
+  workspace        Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  // FK TRIPLA: canal da mensagem = canal da conversa, garantido pelo banco
+  conversation     Conversation @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  channel          Channel      @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  authorMembership Membership?  @relation("MessageAuthorMembership", fields: [workspaceId, authorMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  authorContact    Contact?     @relation("MessageAuthorContact", fields: [workspaceId, authorContactId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, id])
+  // dedup de ingestão externa (nulos não colidem: mensagem interna não tem externalId)
+  @@unique([workspaceId, channelId, externalId])
+  @@index([workspaceId, conversationId, createdAt(sort: Desc), id])
 }
