@@ -45,17 +45,23 @@ model User {
 }
 
 /// Sessão global (ADR-008): token armazenado só como SHA-256, rotação real.
+/// activeMembershipId lembra o workspace ativo entre refreshes; a FK composta
+/// (userId, activeMembershipId) → Membership(userId, id) é adicionada em SQL
+/// manual na migration (Prisma não aceita relação com campos de nulidade
+/// mista) — o BANCO garante que a membership pertence ao dono do token.
 model RefreshToken {
-  id        String    @id @default(uuid()) @db.Uuid
-  userId    String    @db.Uuid
-  tokenHash String    @unique
-  expiresAt DateTime
-  revokedAt DateTime?
-  createdAt DateTime  @default(now())
+  id                 String    @id @default(uuid()) @db.Uuid
+  userId             String    @db.Uuid
+  tokenHash          String    @unique
+  activeMembershipId String?   @db.Uuid
+  expiresAt          DateTime
+  revokedAt          DateTime?
+  createdAt          DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+  @@index([userId, activeMembershipId])
 }
 
 /// Raiz do tenant: exclusão LGPD via cascade a partir daqui.
@@ -92,6 +98,10 @@ model Role {
   name        String
   description String?
   isSystem    Boolean  @default(false)
+  /// Papel de SISTEMA identificado por chave estável ('owner'|'admin'|'member'|
+  /// 'guest'), não por nome (ADR-004/017): invariantes de ciclo de vida (último
+  /// Owner) ramificam por systemKey; null para papéis customizados.
+  systemKey   String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -103,6 +113,7 @@ model Role {
   // Alvo de FK composta (ADR-010): quem referencia Role referencia (workspaceId, id)
   @@unique([workspaceId, id])
   @@unique([workspaceId, name])
+  @@unique([workspaceId, systemKey])
 }
 
 /// Junção Role↔Permission, tenant-scoped.
@@ -140,6 +151,9 @@ model Membership {
   // Alvo de FK composta para Team/ownership futuros
   @@unique([workspaceId, id])
   @@unique([workspaceId, userId])
+  // Alvo da FK composta de RefreshToken (userId, activeMembershipId): o banco
+  // garante que o workspace ativo de uma sessão pertence ao dono da sessão
+  @@unique([userId, id])
   @@index([workspaceId, roleId])
   @@index([userId])
 }
