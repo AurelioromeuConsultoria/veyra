@@ -7,6 +7,8 @@ import type {
   Paginated,
   UpdateContactInput,
 } from '@veyra/contracts';
+import { ActivitiesService } from '../activities/activities.service';
+import { AuthContext } from '../common/decorators';
 import { CustomFieldsService } from '../custom-fields/custom-fields.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { TagsService } from '../tags/tags.service';
@@ -39,6 +41,7 @@ export class ContactsService {
     private readonly prisma: PrismaService,
     private readonly tags: TagsService,
     private readonly customFields: CustomFieldsService,
+    private readonly activities: ActivitiesService,
   ) {}
 
   async list(input: ListContactsInput): Promise<Paginated<ContactDto>> {
@@ -84,7 +87,7 @@ export class ContactsService {
     return dto;
   }
 
-  async create(input: CreateContactInput): Promise<ContactDto> {
+  async create(auth: AuthContext, input: CreateContactInput): Promise<ContactDto> {
     await this.validateReferences(input);
     const validated = await this.customFields.validateValues('contact', input.customFields, {
       requireAll: true,
@@ -106,6 +109,12 @@ export class ContactsService {
         } as never);
       }
       await this.customFields.syncValues(tx, 'contact', contact.id, validated);
+      // ajuste #6: o tipo declarado no catálogo é emitido de fato
+      await this.activities.record(tx, auth.workspaceId as string, 'contact_created', {
+        actorMembershipId: auth.membershipId,
+        payload: { name: input.name },
+        targets: { contactId: contact.id, companyId: input.companyId },
+      });
       return contact.id;
     });
     return this.get(id);

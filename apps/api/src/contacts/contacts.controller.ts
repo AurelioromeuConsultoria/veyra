@@ -22,7 +22,7 @@ import {
   updateContactSchema,
 } from '@veyra/contracts';
 import { Throttle } from '@nestjs/throttler';
-import { RequirePermissions } from '../common/decorators';
+import { AuthContext, CurrentAuth, RequirePermissions } from '../common/decorators';
 import { ZodPipe } from '../common/zod.pipe';
 import { ContactsService } from './contacts.service';
 
@@ -46,8 +46,11 @@ export class ContactsController {
 
   @RequirePermissions('contacts:write')
   @Post()
-  create(@Body(new ZodPipe(createContactSchema)) body: CreateContactInput): Promise<ContactDto> {
-    return this.contacts.create(body);
+  create(
+    @CurrentAuth() auth: AuthContext,
+    @Body(new ZodPipe(createContactSchema)) body: CreateContactInput,
+  ): Promise<ContactDto> {
+    return this.contacts.create(auth, body);
   }
 
   @RequirePermissions('contacts:write')

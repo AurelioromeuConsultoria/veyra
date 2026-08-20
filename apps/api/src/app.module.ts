@@ -15,9 +15,11 @@ import { ContactsModule } from './contacts/contacts.module';
 import { CustomFieldsModule } from './custom-fields/custom-fields.module';
 import { DealsModule } from './deals/deals.module';
 import { HealthController } from './health/health.controller';
+import { NotesModule } from './notes/notes.module';
 import { PipelinesModule } from './pipelines/pipelines.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { TagsModule } from './tags/tags.module';
+import { TasksModule } from './tasks/tasks.module';
 import { WorkspacesModule } from './workspaces/workspaces.module';
 
 @Module({
@@ -48,6 +50,8 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
     ActivitiesModule,
     PipelinesModule,
     DealsModule,
+    TasksModule,
+    NotesModule,
   ],
   controllers: [HealthController],
   providers: [
