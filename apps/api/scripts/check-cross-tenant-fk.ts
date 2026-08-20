@@ -31,6 +31,14 @@ import { Client } from 'pg';
 
 const q = (ident: string): string => `"${ident.replace(/"/g, '""')}"`;
 
+/**
+ * Exceções DOCUMENTADAS à heurística de coluna *Id sem FK (DOMAIN_MODEL §9,
+ * ADR-011): polimórficos tenant-scoped NÃO-navegáveis por design — a limpeza é
+ * responsabilidade do service dono da entidade (coberto por teste). Adicionar
+ * aqui exige a mesma documentação no DOMAIN_MODEL e revisão de security.
+ */
+const DOCUMENTED_LOOSE_COLUMNS = new Set(['CustomFieldValue.entityId']);
+
 interface FkRow {
   constraint_name: string;
   child_table: string;
@@ -130,6 +138,10 @@ async function main(): Promise<void> {
       for (const { column_name } of cols) {
         if (column_name === 'workspaceId') continue;
         if (!fkColumnsByTable.get(table)?.has(column_name)) {
+          if (DOCUMENTED_LOOSE_COLUMNS.has(`${table}.${column_name}`)) {
+            console.log(`ok (exceção documentada, ADR-011): ${table}.${column_name}`);
+            continue;
+          }
           dirty = true;
           console.error(
             `SCHEMA: ${table}.${column_name} parece FK mas não tem constraint — relação solta ` +

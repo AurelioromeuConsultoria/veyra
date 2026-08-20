@@ -46,9 +46,10 @@ model User {
 
 /// Sessão global (ADR-008): token armazenado só como SHA-256, rotação real.
 /// activeMembershipId lembra o workspace ativo entre refreshes; a FK composta
-/// (userId, activeMembershipId) → Membership(userId, id) é adicionada em SQL
-/// manual na migration (Prisma não aceita relação com campos de nulidade
-/// mista) — o BANCO garante que a membership pertence ao dono do token.
+/// (userId, activeMembershipId) → Membership(userId, id) garante NO BANCO que a
+/// membership pertence ao dono do token (ADR-018). Nativa no schema (Prisma 7
+/// aceita nulidade mista) — a versão em SQL manual foi dropada por um migrate
+/// dev e recriada aqui, rastreada; o teste de integração da FK pegou o drift.
 model RefreshToken {
   id                 String    @id @default(uuid()) @db.Uuid
   userId             String    @db.Uuid
@@ -58,7 +59,8 @@ model RefreshToken {
   revokedAt          DateTime?
   createdAt          DateTime  @default(now())
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user             User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeMembership Membership? @relation("SessionActiveMembership", fields: [userId, activeMembershipId], references: [userId, id], onDelete: Cascade)
 
   @@index([userId])
   @@index([userId, activeMembershipId])
@@ -74,9 +76,13 @@ model Workspace {
   createdAt DateTime        @default(now())
   updatedAt DateTime        @updatedAt
 
-  roles       Role[]
-  memberships Membership[]
-  invites     Invite[]
+  roles                  Role[]
+  memberships            Membership[]
+  invites                Invite[]
+  companies              Company[]
+  contacts               Contact[]
+  tags                   Tag[]
+  customFieldDefinitions CustomFieldDefinition[]
 }
 
 /// Catálogo GLOBAL de permissões (ADR-004): chaves estáveis do sistema —
@@ -148,6 +154,10 @@ model Membership {
   // FK composta (ADR-010): Membership não pode apontar para Role de outro workspace
   role      Role      @relation(fields: [workspaceId, roleId], references: [workspaceId, id])
 
+  ownedCompanies Company[]      @relation("CompanyOwner")
+  ownedContacts  Contact[]      @relation("ContactOwner")
+  activeSessions RefreshToken[] @relation("SessionActiveMembership")
+
   // Alvo de FK composta para Team/ownership futuros
   @@unique([workspaceId, id])
   @@unique([workspaceId, userId])
@@ -175,4 +185,168 @@ model Invite {
   @@index([workspaceId, email])
   // custo do ON DELETE CASCADE da FK composta (exclusão de Role varre Invite)
   @@index([workspaceId, roleId])
+}
+
+// ─── CRM: relacionamento (Entrega 3) ─────────────────────────────────────────
+
+enum ContactStatus {
+  active
+  archived
+}
+
+enum CompanySize {
+  solo
+  small
+  medium
+  large
+  enterprise
+}
+
+enum TagColor {
+  slate
+  stone
+  accent
+  positive
+  negative
+  warning
+  info
+}
+
+enum CustomFieldEntity {
+  contact
+  company
+}
+
+enum CustomFieldType {
+  text
+  number
+  date
+  boolean
+  select
+  multiselect
+}
+
+model Company {
+  id                String      @id @default(uuid()) @db.Uuid
+  workspaceId       String      @db.Uuid
+  name              String
+  domain            String?
+  size              CompanySize?
+  ownerMembershipId String?     @db.Uuid
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  // FK composta com nulidade mista (MATCH SIMPLE ignora quando NULL). Restrict
+  // explícito: NoAction (diferido): protege contra delete direto mas deixa o cascade do Workspace concluir; SET NULL anularia TODAS as colunas (workspaceId!)
+  owner     Membership? @relation("CompanyOwner", fields: [workspaceId, ownerMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  contacts  Contact[]
+  tags      CompanyTag[]
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, domain])
+  @@index([workspaceId, name])
+}
+
+model Contact {
+  id                String        @id @default(uuid()) @db.Uuid
+  workspaceId       String        @db.Uuid
+  name              String
+  emails            String[]      @default([])
+  phones            String[]      @default([])
+  status            ContactStatus @default(active)
+  companyId         String?       @db.Uuid
+  ownerMembershipId String?       @db.Uuid
+  source            String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  company   Company?    @relation(fields: [workspaceId, companyId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  owner     Membership? @relation("ContactOwner", fields: [workspaceId, ownerMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  tags      ContactTag[]
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, status, createdAt])
+  @@index([workspaceId, name])
+  @@index([workspaceId, companyId])
+  @@index([workspaceId, ownerMembershipId])
+}
+
+model Tag {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  name        String
+  color       TagColor @default(slate)
+  createdAt   DateTime @default(now())
+
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contactTags ContactTag[]
+  companyTags CompanyTag[]
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, name])
+}
+
+model ContactTag {
+  id          String @id @default(uuid()) @db.Uuid
+  workspaceId String @db.Uuid
+  contactId   String @db.Uuid
+  tagId       String @db.Uuid
+
+  contact Contact @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  tag     Tag     @relation(fields: [workspaceId, tagId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, contactId, tagId])
+  @@index([workspaceId, tagId])
+}
+
+model CompanyTag {
+  id          String @id @default(uuid()) @db.Uuid
+  workspaceId String @db.Uuid
+  companyId   String @db.Uuid
+  tagId       String @db.Uuid
+
+  company Company @relation(fields: [workspaceId, companyId], references: [workspaceId, id], onDelete: Cascade)
+  tag     Tag     @relation(fields: [workspaceId, tagId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, companyId, tagId])
+  @@index([workspaceId, tagId])
+}
+
+model CustomFieldDefinition {
+  id          String            @id @default(uuid()) @db.Uuid
+  workspaceId String            @db.Uuid
+  entityType  CustomFieldEntity
+  /// chave estável (snake_case) usada nas APIs — imutável após criada
+  key         String
+  label       String
+  type        CustomFieldType
+  options     String[]          @default([])
+  required    Boolean           @default(false)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  workspace Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  values    CustomFieldValue[]
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, entityType, key])
+}
+
+/// Valor tipado pela definição. `entityId` NÃO tem FK — exceção documentada
+/// (DOMAIN_MODEL §9): tenant-scoped, não navegável; a limpeza é responsabilidade
+/// do service que exclui a entidade (delete de contato/empresa apaga os values).
+model CustomFieldValue {
+  id           String            @id @default(uuid()) @db.Uuid
+  workspaceId  String            @db.Uuid
+  definitionId String            @db.Uuid
+  entityType   CustomFieldEntity
+  entityId     String            @db.Uuid
+  value        Json
+
+  definition CustomFieldDefinition @relation(fields: [workspaceId, definitionId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, definitionId, entityId])
+  @@index([workspaceId, entityType, entityId])
 }

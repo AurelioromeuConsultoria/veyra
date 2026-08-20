@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { ClsModule } from 'nestjs-cls';
 import { AuthModule } from './auth/auth.module';
@@ -8,8 +8,13 @@ import { CsrfOriginGuard } from './auth/csrf-origin.guard';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { PermissionsGuard } from './auth/permissions.guard';
 import { validateEnv } from './common/env';
+import { PrismaExceptionFilter } from './common/prisma-exception.filter';
+import { CompaniesModule } from './companies/companies.module';
+import { ContactsModule } from './contacts/contacts.module';
+import { CustomFieldsModule } from './custom-fields/custom-fields.module';
 import { HealthController } from './health/health.controller';
 import { PrismaModule } from './prisma/prisma.module';
+import { TagsModule } from './tags/tags.module';
 import { WorkspacesModule } from './workspaces/workspaces.module';
 
 @Module({
@@ -33,9 +38,15 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
     PrismaModule,
     AuthModule,
     WorkspacesModule,
+    TagsModule,
+    CustomFieldsModule,
+    CompaniesModule,
+    ContactsModule,
   ],
   controllers: [HealthController],
   providers: [
+    // P2002 (unique) de criação concorrente → 409, nunca 500 com stack interno
+    { provide: APP_FILTER, useClass: PrismaExceptionFilter },
     // ordem importa: rate limit → autenticação → origem/CSRF → autorização
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },

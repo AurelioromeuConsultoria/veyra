@@ -245,6 +245,31 @@ describe('PrismaService — isolamento multi-workspace (integração)', () => {
     ).rejects.toThrow(/foreign key|Invite_workspaceId_roleId_fkey/i);
   });
 
+  it('db.$transaction preserva o isolamento (a extensão se aplica dentro da itx)', async () => {
+    cls.set('workspaceId', workspaceA);
+    await createRole('A-role');
+    cls.set('workspaceId', workspaceB);
+    await createRole('B-role');
+
+    cls.set('workspaceId', workspaceA);
+    const db = prisma.db as unknown as {
+      $transaction: <T>(fn: (tx: typeof prisma.db) => Promise<T>) => Promise<T>;
+    };
+    const { stamped, visible } = await db.$transaction(async (tx) => {
+      const created = await (tx.role.create as (arg: unknown) => Promise<{ workspaceId: string }>)({
+        data: { name: 'dentro-da-tx' },
+      });
+      const rows = await tx.role.findMany();
+      return { stamped: created.workspaceId, visible: rows.map((r) => r.name).sort() };
+    });
+    expect(stamped).toBe(workspaceA);
+    expect(visible).toEqual(['A-role', 'dentro-da-tx']); // B-role invisível
+    // modelos globais continuam proibidos dentro da tx
+    await expect(db.$transaction(async (tx) => tx.workspace.findMany())).rejects.toThrow(
+      /prisma\.raw/,
+    );
+  });
+
   it('FK composta impede Membership apontar para Role de outro workspace (ADR-010)', async () => {
     // raw justificado: montar cenário de identidade global no teste de segurança
     const user = await prisma.raw.user.create({

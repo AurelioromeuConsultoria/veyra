@@ -18,6 +18,14 @@ export const WORKSPACE_MODELS = new Set<string>([
   'RolePermission',
   'Membership',
   'Invite',
+  // CRM: relacionamento (Entrega 3)
+  'Company',
+  'Contact',
+  'Tag',
+  'ContactTag',
+  'CompanyTag',
+  'CustomFieldDefinition',
+  'CustomFieldValue',
 ]);
 
 /**
@@ -44,9 +52,45 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     workspace: 'Workspace',
     user: 'User',
     role: 'Role',
+    ownedCompanies: 'Company',
+    ownedContacts: 'Contact',
+    // alvo fora do perímetro: travessia via db é bloqueada (sessões só via raw)
+    activeSessions: 'RefreshToken',
   },
   Invite: {
     workspace: 'Workspace',
     role: 'Role',
+  },
+  Company: {
+    workspace: 'Workspace',
+    owner: 'Membership',
+    contacts: 'Contact',
+    tags: 'CompanyTag',
+  },
+  Contact: {
+    workspace: 'Workspace',
+    company: 'Company',
+    owner: 'Membership',
+    tags: 'ContactTag',
+  },
+  Tag: {
+    workspace: 'Workspace',
+    contactTags: 'ContactTag',
+    companyTags: 'CompanyTag',
+  },
+  ContactTag: {
+    contact: 'Contact',
+    tag: 'Tag',
+  },
+  CompanyTag: {
+    company: 'Company',
+    tag: 'Tag',
+  },
+  CustomFieldDefinition: {
+    workspace: 'Workspace',
+    values: 'CustomFieldValue',
+  },
+  CustomFieldValue: {
+    definition: 'CustomFieldDefinition',
   },
 };
