@@ -10,9 +10,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# Entrega 1: lint, typecheck/build (com migrate deploy em Postgres efêmero) e
-# testes unit + integração (P0 de isolamento) + check:fk. E2E (Playwright) e
-# build Docker entram nas próximas entregas (docs/ROADMAP.md).
+# Entrega 3: lint, typecheck/build, testes unit+integração (P0 de isolamento)
+# + check:fk, e E2E Playwright (banco próprio veyra_e2e). Build Docker entra
+# em entrega futura (docs/ROADMAP.md).
 jobs:
   lint:
     name: Lint & format
@@ -102,3 +102,34 @@ jobs:
         env:
           DATABASE_URL: postgresql://veyra:veyra_ci@localhost:5432/veyra_test
       - run: pnpm --filter @veyra/web test
+
+  e2e:
+    name: E2E (Playwright)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: veyra
+          POSTGRES_PASSWORD: veyra_ci
+          POSTGRES_DB: veyra
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U veyra" --health-interval 5s
+          --health-timeout 3s --health-retries 10
+    env:
+      E2E_DATABASE_URL: postgresql://veyra:veyra_ci@localhost:5432/veyra_e2e
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @veyra/api prisma:generate
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e

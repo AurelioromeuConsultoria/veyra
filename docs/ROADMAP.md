@@ -17,7 +17,7 @@ Prisma + primeira migration: `Workspace`, `User`, `Membership`, `Role`, `Permiss
 Provisionamento controlado de workspace (CLI, sem registro público — ADR-014), login, refresh rotativo em cookie httpOnly + CSRF + validação de Origin, convites transacionais (emissão/aceite/revogação), troca de workspace, revogação por `tokenVersion` (ADR-009), `PermissionsGuard` default-deny (ADR-016), invariantes de último Owner e anti-autoelevação (ADR-017).
 **Pronto quando:** ✅ fluxo de login/convite/revogação coberto por testes de integração HTTP (**supertest** — decisão aprovada: Playwright entra na Entrega 3 junto com as telas); remover/suspender membership derruba a sessão na request seguinte (testado).
 
-## Entrega 3 — Contatos, empresas, tags e custom fields 🔜
+## Entrega 3 — Contatos, empresas, tags e custom fields ✅
 
 CRUD completo (contracts → api → web), tabela densa (TanStack Table) com busca/filtro/ordenação, custom fields tipados. Primeira tela real seguindo DESIGN_DIRECTION (tokens, densidade operacional).
 **Pronto quando:** dois workspaces de teste não veem contatos um do outro (e2e); import básico por CSV.
