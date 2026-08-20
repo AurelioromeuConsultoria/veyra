@@ -24,8 +24,22 @@ export interface LlmResponse {
   outputTokens: number;
 }
 
+/**
+ * O resultado distingue três situações que têm consequências DIFERENTES para a
+ * quota de custo:
+ *
+ * - `ok`: houve resposta e o custo real é conhecido.
+ * - `no_provider`: **nenhuma chamada saiu** (sem API key). Nada foi gasto, então
+ *   a reserva é liberada por inteiro.
+ * - `unknown_after_dispatch`: a requisição já havia sido despachada quando algo
+ *   falhou (timeout, conexão caída, erro do provedor). Pode ter havido consumo
+ *   de tokens do lado de lá, e devolver o orçamento como se nada tivesse
+ *   acontecido é devolver dinheiro já gasto — a reserva é liquidada pelo TETO.
+ */
+export type LlmOutcome =
+  ({ kind: 'ok' } & LlmResponse) | { kind: 'no_provider' } | { kind: 'unknown_after_dispatch' };
+
 export interface LlmClient {
   readonly model: string;
-  /** `null` = provedor indisponível/sem chave: o chamador degrada com clareza */
-  complete(request: LlmRequest): Promise<LlmResponse | null>;
+  complete(request: LlmRequest): Promise<LlmOutcome>;
 }

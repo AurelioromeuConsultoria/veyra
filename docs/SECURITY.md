@@ -64,7 +64,7 @@ Ameaça número um: **vazamento entre workspaces** — um tenant ler/escrever da
 ## 6. Rate limit, quotas e idempotência
 
 - Rate limit por IP (throttler global) **e por workspace** (`WorkspaceThrottleGuard`, janela deslizante em memória, 429 com `Retry-After`) — um tenant abusivo não derruba os outros. Multi-instância exige Redis (dívida com gatilho).
-- Quotas por plano (`UsageLimit`/`UsageCounter`): contatos, mensagens, storage, runs de IA. Exceder = 429/402 com mensagem clara, nunca degradação silenciosa.
+- Quotas por plano (`PlanLimit`/`UsageCounter`): contatos e storage como **gauge**, runs e custo de IA como **counter** mensal. Exceder = **402** com `{ code: 'quota_exceeded', metric, limit, current, resetsAt }` — nunca 429 (que sugeriria "tente em instantes") e nunca degradação silenciosa. `messages_sent` está no catálogo **sem** enforcement enquanto o canal for interno/manual.
 - `Idempotency-Key` nas mutações marcadas com `@Idempotent()` (ADR-020): reserva atômica antes de executar, replay só com hash idêntico (método + rota + params + query + body), 409 para chave reutilizada com request diferente. Rota que devolve segredo NUNCA é idempotente.
 - **Quotas por workspace** (ADR-032/033): o incremento acontece dentro da transação de domínio e o limite é conferido sobre o valor já somado — estourou, o rollback desfaz tudo. Custo de IA é **reservado antes** da chamada ao provedor e liquidado pelo custo real. Estouro devolve **402** com `{ code: 'quota_exceeded', metric, limit, current, resetsAt }`. Rate limit (por instância, em memória) e quota (regra comercial, no banco) são mecanismos SEPARADOS de propósito.
 - Efeitos externos idempotentes via `dedupeKey` + unique tenant-scoped, entregues pelo outbox (ADR-021).

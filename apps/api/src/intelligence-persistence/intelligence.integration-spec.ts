@@ -9,10 +9,16 @@ import {
   createUserFixture,
   createWorkspaceFixture,
   seedPermissionCatalog,
+  setPlanLimit,
   type WorkspaceFixture,
 } from '../../test/integration/fixtures';
 import { resetDb } from '../../test/integration/harness';
-import { LLM_CLIENT, type LlmClient, type LlmRequest } from '../intelligence/llm/llm.client';
+import {
+  LLM_CLIENT,
+  type LlmClient,
+  type LlmOutcome,
+  type LlmRequest,
+} from '../intelligence/llm/llm.client';
 
 const ORIGIN = process.env.WEB_ORIGIN ?? 'http://localhost:5175';
 
@@ -29,14 +35,23 @@ interface Session {
 class FakeLlm implements LlmClient {
   readonly model = 'claude-sonnet-5';
   calls: LlmRequest[] = [];
+  /** `null` = sem provedor (nenhuma chamada sai) */
   nextText: string | null = '{}';
+  /** simula falha APÓS despacho: pode ter havido custo lá fora */
+  failAfterDispatch = false;
   inputTokens = 1000;
   outputTokens = 200;
 
-  async complete(request: LlmRequest) {
+  async complete(request: LlmRequest): Promise<LlmOutcome> {
     this.calls.push(request);
-    if (this.nextText === null) return null; // provedor indisponível
-    return { text: this.nextText, inputTokens: this.inputTokens, outputTokens: this.outputTokens };
+    if (this.failAfterDispatch) return { kind: 'unknown_after_dispatch' };
+    if (this.nextText === null) return { kind: 'no_provider' };
+    return {
+      kind: 'ok',
+      text: this.nextText,
+      inputTokens: this.inputTokens,
+      outputTokens: this.outputTokens,
+    };
   }
 }
 
@@ -113,6 +128,7 @@ describe('Intelligence v1 — consentimento, runs e propostas (integração)', (
   beforeEach(async () => {
     llm.calls = [];
     llm.nextText = RESUMO_OK;
+    llm.failAfterDispatch = false;
     await resetDb(prisma);
     await seedPermissionCatalog(prisma);
     wsA = await createWorkspaceFixture(prisma, 'acme');
@@ -373,6 +389,63 @@ describe('Intelligence v1 — consentimento, runs e propostas (integração)', (
     expect((await get('/api/intelligence/usage', sessionB).expect(200)).body.runs).toEqual([]);
     await post(`/api/intelligence/proposals/${proposalId}/approve`, sessionB).expect(404);
     await post(`/api/intelligence/conversations/${conversaA}/summary`, sessionB).expect(404);
+  });
+
+  // ── Custo em falha incerta (revisão da 8.1) ───────────────────────────────
+
+  it('sem provedor: nenhuma chamada saiu, então o orçamento é devolvido por inteiro', async () => {
+    await consentir().expect(200);
+    llm.nextText = null;
+    const res = await post(`/api/intelligence/conversations/${conversaA}/summary`, sessionA).expect(
+      201,
+    );
+    expect(res.body.status).toBe('unavailable');
+
+    const run = await prisma.raw.aiRun.findFirst({ where: { status: 'error' } });
+    expect(run!.reasonCode).toBe('provider_unavailable');
+    // nada reservado nem cobrado
+    const custo = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'ai_cost_cents' },
+    });
+    expect(Number(custo?.value ?? 0)).toBe(0);
+    expect(await prisma.raw.usageReservation.count()).toBe(0);
+  });
+
+  it('falha APÓS despacho cobra o teto reservado — não devolve dinheiro possivelmente gasto', async () => {
+    await consentir().expect(200);
+    llm.failAfterDispatch = true;
+    const res = await post(`/api/intelligence/conversations/${conversaA}/summary`, sessionA).expect(
+      201,
+    );
+    expect(res.body.status).toBe('unavailable');
+
+    const run = await prisma.raw.aiRun.findFirst({ where: { status: 'error' } });
+    expect(run!.reasonCode).toBe('provider_unknown_cost');
+
+    // o custo conservador FICOU cobrado, e a reserva não sobrou pendurada
+    const custo = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'ai_cost_cents' },
+    });
+    expect(Number(custo?.value ?? 0)).toBeGreaterThan(0);
+    const runs = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'ai_runs' },
+    });
+    expect(Number(runs?.value ?? 0)).toBe(1); // a tentativa conta
+    expect(await prisma.raw.usageReservation.count()).toBe(0);
+  });
+
+  it('quota de IA estourada recusa ANTES de chamar o provedor', async () => {
+    await consentir().expect(200);
+    await setPlanLimit(prisma, 'ai_runs', 0);
+    const chamadasAntes = llm.calls.length;
+
+    const res = await post(`/api/intelligence/conversations/${conversaA}/summary`, sessionA).expect(
+      201,
+    );
+    expect(res.body.status).toBe('quota_exceeded');
+    expect(llm.calls.length).toBe(chamadasAntes); // provedor não foi chamado
+    const run = await prisma.raw.aiRun.findFirst({ where: { reasonCode: 'quota_exceeded' } });
+    expect(run!.status).toBe('refused');
   });
 
   // ── Correções da revisão ──────────────────────────────────────────────────

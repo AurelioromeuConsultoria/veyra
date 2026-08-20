@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { LlmClient, LlmRequest, LlmResponse } from './llm.client';
+import type { LlmClient, LlmOutcome, LlmRequest } from './llm.client';
 
 /** Modelo padrão: equilíbrio de custo e qualidade para saída estruturada. */
 const DEFAULT_MODEL = 'claude-sonnet-5';
@@ -35,8 +35,10 @@ export class AnthropicClient implements LlmClient {
     this.client = apiKey ? new Anthropic({ apiKey }) : null;
   }
 
-  async complete(request: LlmRequest): Promise<LlmResponse | null> {
-    if (!this.client) return null;
+  async complete(request: LlmRequest): Promise<LlmOutcome> {
+    // sem chave, NENHUMA chamada sai — é o único caso em que se pode afirmar
+    // que não houve custo
+    if (!this.client) return { kind: 'no_provider' };
     const content = request.untrusted
       ? `${request.context}\n\n${wrapUntrusted(request.untrusted)}`
       : request.context;
@@ -51,14 +53,18 @@ export class AnthropicClient implements LlmClient {
         .map((block) => (block.type === 'text' ? block.text : ''))
         .join('');
       return {
+        kind: 'ok',
         text,
         inputTokens: response.usage.input_tokens,
         outputTokens: response.usage.output_tokens,
       };
     } catch (error) {
-      // NUNCA logar corpo do prompt nem mensagem crua do provedor: só o fato
-      this.logger.error(`Falha na chamada ao provedor (${(error as Error).name})`);
-      return null;
+      // A requisição JÁ foi despachada: timeout, conexão caída ou erro do
+      // provedor não provam que nada foi consumido. Tratar como incerto é o
+      // que impede devolver orçamento que talvez já tenha sido gasto.
+      // NUNCA logar corpo do prompt nem mensagem crua do provedor: só o fato.
+      this.logger.error(`Falha após despacho ao provedor (${(error as Error).name})`);
+      return { kind: 'unknown_after_dispatch' };
     }
   }
 }

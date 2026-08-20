@@ -8,7 +8,7 @@ import { ConversationsService } from '../conversations/conversations.service';
 import { DealsService } from '../deals/deals.service';
 import { estimateCostCents, estimateMaxCostCents } from './cost';
 import { computeLeadScore, type LeadScore, type ScoreSignals } from './lead-score';
-import { LLM_CLIENT, type LlmClient, type LlmRequest } from './llm/llm.client';
+import { LLM_CLIENT, type LlmClient, type LlmOutcome, type LlmRequest } from './llm/llm.client';
 import {
   AI_CONSENT_REPOSITORY,
   AI_PROPOSAL_REPOSITORY,
@@ -165,25 +165,26 @@ export class IntelligenceService {
       });
       return { status: 'quota_exceeded', runId };
     }
-    const response = call.outcome === 'ok' ? call.response : null;
-    if (!response) {
+    if (call.outcome !== 'ok') {
       const runId = await this.record(auth, {
         capability: CONVERSATION_SUMMARY_PROMPT.capability,
         promptVersionId,
         contextSummary,
         status: 'error',
-        reasonCode: 'provider_unavailable',
+        // distingue "não houve chamada" de "pode ter havido custo" (revisão 8.1)
+        reasonCode: call.reason,
         conversationId,
         latencyMs: Date.now() - started,
       });
       return { status: 'unavailable', runId };
     }
+    const response = call.response;
 
     const parsed = summarySchema.safeParse(this.parseJson(response.text));
     const usage = {
       inputTokens: response.inputTokens,
       outputTokens: response.outputTokens,
-      costCents: call.outcome === 'ok' ? call.costCents : 0,
+      costCents: call.costCents,
       latencyMs: Date.now() - started,
     };
     if (!parsed.success) {
@@ -243,24 +244,26 @@ export class IntelligenceService {
       });
       return { status: 'quota_exceeded', runId };
     }
-    const response = call.outcome === 'ok' ? call.response : null;
-    if (!response) {
+    if (call.outcome !== 'ok') {
       const runId = await this.record(auth, {
         capability: NEXT_ACTION_PROMPT.capability,
         promptVersionId,
         contextSummary,
         status: 'error',
-        reasonCode: 'provider_unavailable',
+        // distingue "não houve chamada" de "pode ter havido custo" (revisão 8.1)
+        reasonCode: call.reason,
+        contactId,
         latencyMs: Date.now() - started,
       });
       return { status: 'unavailable', runId };
     }
+    const response = call.response;
 
     const parsed = nextActionSchema.safeParse(this.parseJson(response.text));
     const usage = {
       inputTokens: response.inputTokens,
       outputTokens: response.outputTokens,
-      costCents: call.outcome === 'ok' ? call.costCents : 0,
+      costCents: call.costCents,
       latencyMs: Date.now() - started,
     };
     if (!parsed.success) {
@@ -502,7 +505,7 @@ export class IntelligenceService {
         costCents: number;
       }
     | { outcome: 'quota_exceeded' }
-    | { outcome: 'unavailable' }
+    | { outcome: 'unavailable'; reason: 'provider_unavailable' | 'provider_unknown_cost' }
   > {
     const promptChars =
       request.system.length + request.context.length + (request.untrusted?.length ?? 0);
@@ -516,29 +519,44 @@ export class IntelligenceService {
       return { outcome: 'quota_exceeded' };
     }
 
-    let response: Awaited<ReturnType<LlmClient['complete']>>;
+    let result: LlmOutcome;
     try {
-      response = await this.llm.complete(request);
+      result = await this.llm.complete(request);
     } catch {
-      await this.usage.release(runsReservation.reservationId);
-      await this.usage.release(costReservation.reservationId);
-      return { outcome: 'unavailable' };
-    }
-    if (!response) {
-      // nada foi gasto: libera as duas reservas por inteiro
-      await this.usage.release(runsReservation.reservationId);
-      await this.usage.release(costReservation.reservationId);
-      return { outcome: 'unavailable' };
+      // exceção que escapou do cliente: a requisição pode já ter sido
+      // despachada, então isto é INCERTO, não "não aconteceu"
+      result = { kind: 'unknown_after_dispatch' };
     }
 
-    const costCents = estimateCostCents(
-      this.llm.model,
-      response.inputTokens,
-      response.outputTokens,
-    );
+    if (result.kind === 'no_provider') {
+      // único caso COMPROVADO de custo zero (sem API key): libera tudo
+      await this.usage.release(runsReservation.reservationId);
+      await this.usage.release(costReservation.reservationId);
+      return { outcome: 'unavailable', reason: 'provider_unavailable' };
+    }
+
+    if (result.kind === 'unknown_after_dispatch') {
+      // pode ter havido consumo do outro lado: liquida o TETO reservado como
+      // custo conservador. Devolver o orçamento aqui seria devolver dinheiro
+      // possivelmente já gasto — o prejuízo da incerteza fica com a operação,
+      // não com a conta do cliente.
+      await this.usage.settle(workspaceId, runsReservation.reservationId, 'ai_runs', 1);
+      await this.usage.settle(workspaceId, costReservation.reservationId, 'ai_cost_cents', maxCost);
+      return { outcome: 'unavailable', reason: 'provider_unknown_cost' };
+    }
+
+    const costCents = estimateCostCents(this.llm.model, result.inputTokens, result.outputTokens);
     await this.usage.settle(workspaceId, runsReservation.reservationId, 'ai_runs', 1);
     await this.usage.settle(workspaceId, costReservation.reservationId, 'ai_cost_cents', costCents);
-    return { outcome: 'ok', response, costCents };
+    return {
+      outcome: 'ok',
+      response: {
+        text: result.text,
+        inputTokens: result.inputTokens,
+        outputTokens: result.outputTokens,
+      },
+      costCents,
+    };
   }
 
   /** Modelo às vezes embrulha JSON em cerca de código; nada além disso é tolerado. */
