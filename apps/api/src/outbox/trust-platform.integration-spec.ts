@@ -75,6 +75,16 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
   };
   const get = (path: string, s: Session) => request(http).get(path).set('Cookie', s.cookieHeader);
 
+  /**
+   * Reivindica como o worker faria — deliver() exige posse do lease (fencing),
+   * então teste algum não pode mais fabricar o evento na mão. `attempts`
+   * sobrescreve só o número passado adiante (decide retry vs dead).
+   */
+  async function claimAll(attempts?: number) {
+    const batch = await app.get(OutboxService).claimBatch(50);
+    return attempts === undefined ? batch : batch.map((e) => ({ ...e, attempts }));
+  }
+
   beforeEach(async () => {
     transportCalls.length = 0;
     await resetDb(prisma);
@@ -310,13 +320,8 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
     const pending = await prisma.raw.outboxEvent.findFirst({
       where: { status: 'pending', eventType: 'contact.created' },
     });
-    await webhooks.deliver({
-      id: pending!.id,
-      workspaceId: wsA.workspaceId,
-      eventType: 'contact.created',
-      payload: pending!.payload,
-      attempts: 1,
-    });
+    const [claimedFail] = await claimAll(1);
+    await webhooks.deliver(claimedFail);
     const afterFail = await prisma.raw.outboxEvent.findFirst({ where: { id: pending!.id } });
     expect(afterFail!.status).toBe('pending'); // reagendado
     expect(afterFail!.nextRetryAt.getTime()).toBeGreaterThan(Date.now());
@@ -326,14 +331,14 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
       1,
     );
 
-    // no limite de tentativas vira dead
-    await webhooks.deliver({
-      id: pending!.id,
-      workspaceId: wsA.workspaceId,
-      eventType: 'contact.created',
-      payload: pending!.payload,
-      attempts: MAX_ATTEMPTS,
+    // no limite de tentativas vira dead (o backoff acima já foi conferido;
+    // aqui só adiantamos o relógio para o evento voltar a ser reivindicável)
+    await prisma.raw.outboxEvent.updateMany({
+      where: { id: pending!.id },
+      data: { nextRetryAt: new Date() },
     });
+    const [claimedDying] = await claimAll(MAX_ATTEMPTS);
+    await webhooks.deliver(claimedDying);
     const dead = await prisma.raw.outboxEvent.findFirst({ where: { id: pending!.id } });
     expect(dead!.status).toBe('dead');
   });
@@ -349,14 +354,8 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
 
     // uma tentativa que apenas REAGENDA (não morta) não mexe no contador
     await post('/api/contacts', sessionA, { name: 'Falha 1' }).expect(201);
-    const ev = await prisma.raw.outboxEvent.findFirst({ where: { status: 'pending' } });
-    await webhooks.deliver({
-      id: ev!.id,
-      workspaceId: wsA.workspaceId,
-      eventType: 'contact.created',
-      payload: ev!.payload,
-      attempts: 1,
-    });
+    const [firstTry] = await claimAll(1);
+    await webhooks.deliver(firstTry);
     expect((await prisma.raw.webhook.findFirst({ where: { id: created.id } }))!.failureCount).toBe(
       0,
     );
@@ -364,17 +363,9 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
     // três entregas MORTAS → pausa
     for (let i = 0; i < 3; i += 1) {
       await post('/api/contacts', sessionA, { name: `Morta ${i}` }).expect(201);
-      const dying = await prisma.raw.outboxEvent.findFirst({
-        where: { status: 'pending', dedupeKey: { not: ev!.dedupeKey } },
-      });
+      const [dying] = await claimAll(MAX_ATTEMPTS);
       if (!dying) continue;
-      await webhooks.deliver({
-        id: dying.id,
-        workspaceId: wsA.workspaceId,
-        eventType: 'contact.created',
-        payload: dying.payload,
-        attempts: MAX_ATTEMPTS,
-      });
+      await webhooks.deliver(dying);
     }
     const webhook = await prisma.raw.webhook.findFirst({ where: { id: created.id } });
     expect(webhook!.failureCount).toBeGreaterThanOrEqual(3);
@@ -430,6 +421,83 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
     expect(recovered[0].attempts).toBe(2);
   });
 
+  it('P1 FENCING: worker que perdeu o lease não conclui o evento de quem o assumiu', async () => {
+    await post('/api/contacts', sessionA, { name: 'Fencing' }).expect(201);
+    const outbox = app.get(OutboxService);
+    const [antigo] = await outbox.claimBatch(10);
+
+    // o worker antigo trava; o lease vence e OUTRO worker assume o evento
+    await prisma.raw.outboxEvent.updateMany({
+      where: { id: antigo.id },
+      data: { leaseExpiresAt: new Date(Date.now() - 1000) },
+    });
+    const [atual] = await outbox.claimBatch(10);
+    expect(atual.id).toBe(antigo.id);
+    expect(atual.claimToken).not.toBe(antigo.claimToken); // token novo invalida o velho
+
+    // o antigo acorda e tenta concluir: RECUSADO — sem fencing ele sobrescreveria
+    // o trabalho do dono atual
+    expect(await outbox.markDelivered(antigo.id, antigo.claimToken)).toBe(false);
+    expect(await outbox.markFailed(antigo.id, antigo.claimToken, 1, 'tarde demais')).toBe('lost');
+    const intacto = await prisma.raw.outboxEvent.findFirst({ where: { id: antigo.id } });
+    expect(intacto!.status).toBe('processing'); // segue com o dono atual
+    expect(intacto!.claimToken).toBe(atual.claimToken);
+
+    // e o dono atual conclui normalmente
+    expect(await outbox.markDelivered(atual.id, atual.claimToken)).toBe(true);
+    const final = await prisma.raw.outboxEvent.findFirst({ where: { id: antigo.id } });
+    expect(final!.status).toBe('delivered');
+    expect(final!.claimToken).toBeNull();
+  });
+
+  it('P1 FENCING: heartbeat renova o lease do dono e abandona o fan-out se perdê-lo', async () => {
+    await post('/api/webhooks', sessionA, {
+      url: 'https://destino-ok.veyra.test/hook',
+      events: ['contact.created'],
+    }).expect(201);
+    await post('/api/contacts', sessionA, { name: 'Heartbeat' }).expect(201);
+    const outbox = app.get(OutboxService);
+    const [dono] = await outbox.claimBatch(10);
+
+    // entrega longa: o lease encolheria a ponto de vencer — o heartbeat o estende
+    await prisma.raw.outboxEvent.updateMany({
+      where: { id: dono.id },
+      data: { leaseExpiresAt: new Date(Date.now() + 1000) },
+    });
+    expect(await outbox.renewLease(dono.id, dono.claimToken)).toBe(true);
+    const renovado = await prisma.raw.outboxEvent.findFirst({ where: { id: dono.id } });
+    expect(renovado!.leaseExpiresAt!.getTime()).toBeGreaterThan(Date.now() + 60_000);
+
+    // agora o lease vence de fato e outro worker assume
+    await prisma.raw.outboxEvent.updateMany({
+      where: { id: dono.id },
+      data: { leaseExpiresAt: new Date(Date.now() - 1000) },
+    });
+    const [novoDono] = await outbox.claimBatch(10);
+    expect(novoDono.claimToken).not.toBe(dono.claimToken);
+    expect(await outbox.renewLease(dono.id, dono.claimToken)).toBe(false);
+
+    // o worker antigo tenta entregar com o token velho: nenhuma chamada sai
+    const antes = transportCalls.length;
+    await app.get(WebhooksService).deliver(dono);
+    expect(transportCalls.length).toBe(antes);
+    const evento = await prisma.raw.outboxEvent.findFirst({ where: { id: dono.id } });
+    expect(evento!.status).toBe('processing'); // continua com o dono atual
+  });
+
+  it('limite de webhooks por workspace mantém o fan-out dentro do lease', async () => {
+    for (let i = 0; i < 20; i += 1) {
+      await post('/api/webhooks', sessionA, {
+        url: `https://destino-${i}.veyra.test/hook`,
+        events: ['contact.created'],
+      }).expect(201);
+    }
+    await post('/api/webhooks', sessionA, {
+      url: 'https://destino-excedente.veyra.test/hook',
+      events: ['contact.created'],
+    }).expect(400);
+  });
+
   it('P1 RETRY PARCIAL: quem já recebeu não é reentregue na próxima tentativa', async () => {
     const ok = (
       await post('/api/webhooks', sessionA, {
@@ -457,13 +525,8 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
       },
     });
 
-    await app.get(WebhooksService).deliver({
-      id: event!.id,
-      workspaceId: wsA.workspaceId,
-      eventType: 'contact.created',
-      payload: event!.payload,
-      attempts: 2,
-    });
+    const [retry] = await claimAll(2);
+    await app.get(WebhooksService).deliver(retry);
 
     // o retry NÃO gerou nova entrega para quem já tinha recebido
     const deliveriesOk = await prisma.raw.webhookDelivery.count({
@@ -489,15 +552,9 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
 
     for (let i = 0; i < 3; i += 1) {
       await post('/api/contacts', sessionA, { name: `Evento ${i}` }).expect(201);
-      const event = await prisma.raw.outboxEvent.findFirst({ where: { status: 'pending' } });
+      const [event] = await claimAll(MAX_ATTEMPTS);
       if (!event) continue;
-      await webhooks.deliver({
-        id: event.id,
-        workspaceId: wsA.workspaceId,
-        eventType: 'contact.created',
-        payload: event.payload,
-        attempts: MAX_ATTEMPTS,
-      });
+      await webhooks.deliver(event);
     }
     const ok = await prisma.raw.webhook.findFirst({ where: { id: saudavel.id } });
     const bad = await prisma.raw.webhook.findFirst({ where: { id: quebrado.id } });

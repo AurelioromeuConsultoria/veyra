@@ -45,7 +45,17 @@ export const MAX_ATTEMPTS = 6;
  * (timeout de 5s × webhooks inscritos) com folga; expirado, outro worker
  * assume — é assim que um worker morto não trava o evento para sempre.
  */
-const LEASE_MS = 5 * 60_000;
+export const LEASE_MS = 5 * 60_000;
+
+/** Um evento reivindicado, com o token que prova a posse do lease. */
+export type ClaimedEvent = {
+  id: string;
+  workspaceId: string;
+  eventType: string;
+  payload: unknown;
+  attempts: number;
+  claimToken: string;
+};
 
 @Injectable()
 export class OutboxService {
@@ -101,19 +111,20 @@ export class OutboxService {
    * Elegíveis: `pending` no ponto ou `processing` com LEASE EXPIRADO (worker
    * que morreu no meio da entrega).
    *
+   * Cada claim gera um `claimToken` novo (FENCING): quem reivindica depois
+   * invalida o token anterior, então o worker antigo — lento, mas vivo — não
+   * consegue mais concluir o evento (ver `markDelivered`/`markFailed`).
+   *
    * prisma.raw justificado: worker é cross-workspace (SECURITY.md §2).
    */
-  async claimBatch(
-    limit = 20,
-  ): Promise<
-    { id: string; workspaceId: string; eventType: string; payload: unknown; attempts: number }[]
-  > {
+  async claimBatch(limit = 20): Promise<ClaimedEvent[]> {
     return this.prisma.raw.$queryRawUnsafe(
       `UPDATE "OutboxEvent"
           SET "attempts" = "attempts" + 1,
               "status" = 'processing',
               "claimedAt" = now(),
-              "leaseExpiresAt" = now() + ($2::int * interval '1 millisecond')
+              "leaseExpiresAt" = now() + ($2::int * interval '1 millisecond'),
+              "claimToken" = gen_random_uuid()
          WHERE "id" IN (
            SELECT "id" FROM "OutboxEvent"
             WHERE ("status" = 'pending' AND "nextRetryAt" <= now())
@@ -122,31 +133,59 @@ export class OutboxService {
             LIMIT $1
             FOR UPDATE SKIP LOCKED
          )
-       RETURNING "id", "workspaceId", "eventType", "payload", "attempts"`,
+       RETURNING "id", "workspaceId", "eventType", "payload", "attempts", "claimToken"`,
       limit,
       LEASE_MS,
     );
   }
 
-  /** Encerra o evento e libera o lease. */
-  async markDelivered(id: string): Promise<void> {
-    await this.prisma.raw.outboxEvent.updateMany({
-      where: { id },
+  /**
+   * Renova o lease DURANTE uma entrega longa (heartbeat). Retorna `false` se o
+   * lease já não é nosso — outro worker reivindicou o evento e este deve parar
+   * imediatamente, em vez de continuar entregando em duplicidade.
+   */
+  async renewLease(id: string, claimToken: string): Promise<boolean> {
+    const { count } = await this.prisma.raw.outboxEvent.updateMany({
+      where: { id, claimToken, status: 'processing' },
+      data: { leaseExpiresAt: new Date(Date.now() + LEASE_MS) },
+    });
+    return count > 0;
+  }
+
+  /**
+   * Encerra o evento e libera o lease. Só o DONO do lease conclui: `claimToken`
+   * + `status='processing'` no WHERE. Um worker que estourou o lease e acordou
+   * depois recebe `false` e não sobrescreve o trabalho de quem o assumiu.
+   */
+  async markDelivered(id: string, claimToken: string): Promise<boolean> {
+    const { count } = await this.prisma.raw.outboxEvent.updateMany({
+      where: { id, claimToken, status: 'processing' },
       data: {
         status: 'delivered',
         deliveredAt: new Date(),
         lastError: null,
         claimedAt: null,
         leaseExpiresAt: null,
+        claimToken: null,
       },
     });
+    if (count === 0) this.logger.warn(`Lease perdido ao concluir ${id} — conclusão ignorada`);
+    return count > 0;
   }
 
-  /** Falha: reagenda com backoff ou marca `dead` no limite de tentativas. */
-  async markFailed(id: string, attempts: number, error: string): Promise<'retry' | 'dead'> {
+  /**
+   * Falha: reagenda com backoff ou marca `dead` no limite de tentativas.
+   * `lost` = o lease não era mais nosso; quem o detém agora decide o destino.
+   */
+  async markFailed(
+    id: string,
+    claimToken: string,
+    attempts: number,
+    error: string,
+  ): Promise<'retry' | 'dead' | 'lost'> {
     const dead = attempts >= MAX_ATTEMPTS;
-    await this.prisma.raw.outboxEvent.updateMany({
-      where: { id },
+    const { count } = await this.prisma.raw.outboxEvent.updateMany({
+      where: { id, claimToken, status: 'processing' },
       data: {
         // volta para `pending` (com backoff) ou morre; nos dois casos o lease
         // é liberado — só o claim o define
@@ -155,8 +194,13 @@ export class OutboxService {
         nextRetryAt: dead ? undefined : new Date(Date.now() + BASE_DELAY_MS * 5 ** (attempts - 1)),
         claimedAt: null,
         leaseExpiresAt: null,
+        claimToken: null,
       },
     });
+    if (count === 0) {
+      this.logger.warn(`Lease perdido ao falhar ${id} — reagendamento ignorado`);
+      return 'lost';
+    }
     return dead ? 'dead' : 'retry';
   }
 }

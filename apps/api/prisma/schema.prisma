@@ -667,6 +667,10 @@ model OutboxEvent {
   /// só protege durante o UPDATE e outra instância entregaria em paralelo.
   claimedAt      DateTime?
   leaseExpiresAt DateTime?
+  /// FENCING TOKEN: identifica QUEM detém o lease atual. Sem ele, um worker
+  /// lento que perdeu o lease por expiração ainda conseguiria marcar o evento
+  /// como delivered, sobrescrevendo o trabalho de quem o reivindicou depois.
+  claimToken     String?      @db.Uuid
   lastError      String?
   deliveredAt    DateTime?
   createdAt      DateTime     @default(now())

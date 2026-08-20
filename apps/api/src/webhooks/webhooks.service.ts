@@ -5,7 +5,7 @@ import { AuditService } from '../audit/audit.service';
 import { AuthContext } from '../common/decorators';
 import { CryptoService } from '../common/crypto.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
-import { MAX_ATTEMPTS, OutboxService } from '../outbox/outbox.service';
+import { MAX_ATTEMPTS, OutboxService, type ClaimedEvent } from '../outbox/outbox.service';
 import { UnsafeUrlError, assertSafeWebhookUrl, type SafeFetchResult } from './safe-http';
 
 /**
@@ -25,6 +25,13 @@ type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
 
 /** 3 ENTREGAS MORTAS consecutivas pausam o webhook (ajuste #7). */
 const DEAD_DELIVERIES_TO_PAUSE = 3;
+
+/**
+ * Teto de destinos por workspace. O fan-out é sequencial, então ele limita a
+ * pior entrega possível (20 × 5s de timeout = 100s) bem abaixo do lease de
+ * 5min — junto com o heartbeat, nenhum evento perde a posse por lentidão.
+ */
+const MAX_WEBHOOKS_PER_WORKSPACE = 20;
 
 type WebhookRow = {
   id: string;
@@ -65,6 +72,12 @@ export class WebhooksService {
     } catch (error) {
       throw new BadRequestException(
         error instanceof UnsafeUrlError ? error.message : 'URL inválida',
+      );
+    }
+    const existing = await this.prisma.db.webhook.count();
+    if (existing >= MAX_WEBHOOKS_PER_WORKSPACE) {
+      throw new BadRequestException(
+        `Limite de ${MAX_WEBHOOKS_PER_WORKSPACE} webhooks por workspace atingido`,
       );
     }
     const secret = `whsec_${randomBytes(32).toString('base64url')}`;
@@ -171,13 +184,7 @@ export class WebhooksService {
    * Entrega um evento do outbox aos webhooks ativos inscritos. Chamado pelo
    * worker; `raw` justificado (cross-workspace, com workspaceId explícito).
    */
-  async deliver(event: {
-    id: string;
-    workspaceId: string;
-    eventType: string;
-    payload: unknown;
-    attempts: number;
-  }): Promise<void> {
+  async deliver(event: ClaimedEvent): Promise<void> {
     const webhooks = await this.prisma.raw.webhook.findMany({
       where: {
         workspaceId: event.workspaceId,
@@ -186,7 +193,7 @@ export class WebhooksService {
       },
     });
     if (webhooks.length === 0) {
-      await this.outbox.markDelivered(event.id); // ninguém inscrito: encerrado
+      await this.outbox.markDelivered(event.id, event.claimToken); // ninguém inscrito
       return;
     }
 
@@ -206,7 +213,7 @@ export class WebhooksService {
     const deliveredIds = new Set(alreadyDelivered.map((row) => row.webhookId));
     const pendingWebhooks = webhooks.filter((webhook) => !deliveredIds.has(webhook.id));
     if (pendingWebhooks.length === 0) {
-      await this.outbox.markDelivered(event.id); // todos já receberam
+      await this.outbox.markDelivered(event.id, event.claimToken); // todos já receberam
       return;
     }
 
@@ -221,6 +228,13 @@ export class WebhooksService {
     const succeededIds: string[] = [];
 
     for (const webhook of pendingWebhooks) {
+      // HEARTBEAT: fan-out longo pode ultrapassar o lease. Renovar antes de
+      // cada destino mantém a posse; se já a perdemos, outro worker assumiu o
+      // evento e continuar aqui duplicaria entregas — abandona sem concluir.
+      if (!(await this.outbox.renewLease(event.id, event.claimToken))) {
+        this.logger.warn(`Lease de ${event.id} perdido durante o fan-out — entrega abandonada`);
+        return;
+      }
       const timestamp = Math.floor(Date.now() / 1000);
       const secret = this.crypto.decrypt(webhook.secretCipher);
       let status: number | null = null;
@@ -265,11 +279,16 @@ export class WebhooksService {
       });
     }
     if (failures.length === 0) {
-      await this.outbox.markDelivered(event.id);
+      await this.outbox.markDelivered(event.id, event.claimToken);
       return;
     }
 
-    const outcome = await this.outbox.markFailed(event.id, event.attempts, failures.join('; '));
+    const outcome = await this.outbox.markFailed(
+      event.id,
+      event.claimToken,
+      event.attempts,
+      failures.join('; '),
+    );
     if (outcome === 'dead') {
       // AJUSTE #7: só a ENTREGA MORTA conta — instabilidade curta (retries) não
       // pausa webhook. Três eventos mortos consecutivos → pause automático.

@@ -72,6 +72,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         // falha do próprio dispatcher (não da entrega): reagenda com backoff
         await this.outbox.markFailed(
           event.id,
+          event.claimToken,
           event.attempts,
           error instanceof Error ? error.message : 'erro no dispatcher',
         );
