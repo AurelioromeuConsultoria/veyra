@@ -11,7 +11,16 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "db:up": "docker compose up -d postgres"
+    "db:up": "docker compose up -d postgres",
+    "db:migrate": "pnpm --filter @veyra/api prisma:migrate",
+    "db:seed": "pnpm --filter @veyra/api prisma:seed"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/engines",
+      "esbuild",
+      "prisma"
+    ]
   },
   "engines": {
     "node": ">=22"

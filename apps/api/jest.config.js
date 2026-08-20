@@ -11,7 +11,10 @@ module.exports = {
   testEnvironment: 'node',
   rootDir: 'src',
   testRegex: '.*\\.spec\\.ts$',
-  testPathIgnorePatterns: ['/node_modules/', '\\.integration-spec\\.ts$'],
+  // qualquer arquivo com "integration" no caminho fica fora do runner unit —
+  // um typo no sufixo (.integration.spec.ts) não pode cair aqui sem o setup
+  // de banco de teste (o resetDb tem guarda própria, defesa em profundidade)
+  testPathIgnorePatterns: ['/node_modules/', 'integration'],
   moduleFileExtensions: ['ts', 'js', 'json'],
   setupFiles: ['reflect-metadata'],
   transform: {

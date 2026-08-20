@@ -4,13 +4,13 @@ import { z } from 'zod';
  * Validação de ambiente no boot (fail-fast): se a env é inválida, a aplicação
  * não sobe — nunca "meio funcionando". Ver docs/SECURITY.md §8.
  *
- * DATABASE_URL vira obrigatória na Entrega 1 (fundação de tenancy); segredos
- * de auth entram na Entrega 2 — sempre com validação de formato.
+ * Segredos de auth (JWT_SECRET etc.) entram na Entrega 2 — sempre com
+ * validação de formato.
  */
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3001),
-  DATABASE_URL: z.string().url().startsWith('postgresql://').optional(),
+  DATABASE_URL: z.string().url().startsWith('postgresql://'),
 });
 
 export type Env = z.infer<typeof envSchema>;

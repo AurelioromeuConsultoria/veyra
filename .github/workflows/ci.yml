@@ -10,8 +10,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# Entrega 0: lint, typecheck/build e testes. Postgres efêmero, integração,
-# e2e (Playwright) e build Docker entram nas Entregas 1+ (docs/ROADMAP.md).
+# Entrega 1: lint, typecheck/build (com migrate deploy em Postgres efêmero) e
+# testes unit + integração (P0 de isolamento) + check:fk. E2E (Playwright) e
+# build Docker entram nas próximas entregas (docs/ROADMAP.md).
 jobs:
   lint:
     name: Lint & format
@@ -26,12 +27,27 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @veyra/api prisma:generate
       - run: pnpm lint
       - run: pnpm format:check
 
   build:
     name: Typecheck & build
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: veyra
+          POSTGRES_PASSWORD: veyra_ci
+          POSTGRES_DB: veyra
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U veyra" --health-interval 5s
+          --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://veyra:veyra_ci@localhost:5432/veyra
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -42,11 +58,27 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @veyra/api prisma:generate
+      - run: pnpm --filter @veyra/api prisma:deploy
       - run: pnpm build
 
   test:
     name: Testes
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: veyra
+          POSTGRES_PASSWORD: veyra_ci
+          POSTGRES_DB: veyra
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U veyra" --health-interval 5s
+          --health-timeout 3s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://veyra:veyra_ci@localhost:5432/veyra_test
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -58,5 +90,15 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @veyra/contracts build
+      - run: pnpm --filter @veyra/api prisma:generate
       - run: pnpm --filter @veyra/api test
+      - run: pnpm --filter @veyra/api test:integration
+      - name: seed do catálogo de permissões (contra o banco de teste migrado)
+        run: pnpm --filter @veyra/api prisma:seed
+        env:
+          DATABASE_URL: postgresql://veyra:veyra_ci@localhost:5432/veyra_test
+      - name: check:fk (valida o SCHEMA; scan de dados vale contra staging/prod)
+        run: pnpm --filter @veyra/api check:fk
+        env:
+          DATABASE_URL: postgresql://veyra:veyra_ci@localhost:5432/veyra_test
       - run: pnpm --filter @veyra/web test

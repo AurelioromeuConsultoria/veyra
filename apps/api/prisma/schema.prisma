@@ -1,0 +1,164 @@
+// Fundação de tenancy (Entrega 1). Convenções: docs/DOMAIN_MODEL.md §1;
+// isolamento: docs/SECURITY.md §2; FKs compostas: ADR-010.
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserStatus {
+  active
+  suspended
+}
+
+enum WorkspaceStatus {
+  active
+  suspended
+}
+
+enum MembershipStatus {
+  active
+  suspended
+  removed
+}
+
+// ─── Identidade global (fora do filtro de workspace — SECURITY.md §2) ───────
+
+/// Usuário GLOBAL (ADR-003): sem workspaceId; participa de workspaces via
+/// Membership. Acesso sempre via prisma.raw (auth/identidade), justificado.
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  email        String     @unique
+  name         String
+  passwordHash String
+  status       UserStatus @default(active)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  memberships   Membership[]
+  refreshTokens RefreshToken[]
+}
+
+/// Sessão global (ADR-008): token armazenado só como SHA-256, rotação real.
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// Raiz do tenant: exclusão LGPD via cascade a partir daqui.
+model Workspace {
+  id        String          @id @default(uuid()) @db.Uuid
+  name      String
+  slug      String          @unique
+  status    WorkspaceStatus @default(active)
+  settings  Json            @default("{}")
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+
+  roles       Role[]
+  memberships Membership[]
+  invites     Invite[]
+}
+
+/// Catálogo GLOBAL de permissões (ADR-004): chaves estáveis do sistema —
+/// exceção documentada à regra do workspaceId (é catálogo, não dado de tenant).
+model Permission {
+  key         String @id
+  description String
+
+  rolePermissions RolePermission[]
+}
+
+// ─── Dados de acesso por workspace (tenant-scoped, em WORKSPACE_MODELS) ─────
+
+/// Role SEMPRE pertence a um workspace (ADR-004); padrões semeados no
+/// provisionamento com isSystem=true. Não existe Role global.
+model Role {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  name        String
+  description String?
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace   Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  permissions RolePermission[]
+  memberships Membership[]
+  invites     Invite[]
+
+  // Alvo de FK composta (ADR-010): quem referencia Role referencia (workspaceId, id)
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, name])
+}
+
+/// Junção Role↔Permission, tenant-scoped.
+model RolePermission {
+  id            String @id @default(uuid()) @db.Uuid
+  workspaceId   String @db.Uuid
+  roleId        String @db.Uuid
+  permissionKey String
+
+  // FK composta: impede vincular permissão a role de OUTRO workspace no banco
+  role       Role       @relation(fields: [workspaceId, roleId], references: [workspaceId, id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionKey], references: [key])
+
+  @@unique([workspaceId, roleId, permissionKey])
+  @@index([workspaceId, roleId])
+}
+
+/// Ponte User↔Workspace (ADR-003), tenant-scoped. tokenVersion viaja no JWT e
+/// invalida sessões quando a membership muda (ADR-009).
+model Membership {
+  id           String           @id @default(uuid()) @db.Uuid
+  workspaceId  String           @db.Uuid
+  userId       String           @db.Uuid
+  roleId       String           @db.Uuid
+  status       MembershipStatus @default(active)
+  tokenVersion Int              @default(0)
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // FK composta (ADR-010): Membership não pode apontar para Role de outro workspace
+  role      Role      @relation(fields: [workspaceId, roleId], references: [workspaceId, id])
+
+  // Alvo de FK composta para Team/ownership futuros
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, userId])
+  @@index([workspaceId, roleId])
+  @@index([userId])
+}
+
+/// Convite: a porta de entrada sem registro público (ADR-014).
+model Invite {
+  id          String    @id @default(uuid()) @db.Uuid
+  workspaceId String    @db.Uuid
+  email       String
+  roleId      String    @db.Uuid
+  tokenHash   String    @unique
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  role      Role      @relation(fields: [workspaceId, roleId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@index([workspaceId, email])
+  // custo do ON DELETE CASCADE da FK composta (exclusão de Role varre Invite)
+  @@index([workspaceId, roleId])
+}

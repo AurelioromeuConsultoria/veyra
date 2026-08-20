@@ -2,12 +2,12 @@
 
 Cada entrega é pequena, verificável e termina com testes passando. Nenhuma entrega começa sem a anterior estar "done" pelo checklist do CLAUDE.md §6. Status: 🔜 planejado · 🚧 em andamento · ✅ concluído.
 
-## Entrega 0 — Scaffold e esteira 🔜
+## Entrega 0 — Scaffold e esteira ✅
 
 Monorepo pnpm (`apps/api`, `apps/web`, `packages/contracts`, `packages/config`), TypeScript strict, ESLint + Prettier, docker-compose (Postgres), CI com jobs paralelos (typecheck/build com Postgres efêmero, testes, e2e, docker build), guardas de banco de teste (`assertIsTestDb`/`assertIsE2eDb`).
 **Pronto quando:** CI verde num repo que não faz nada.
 
-## Entrega 1 — Fundação de tenancy 🔜
+## Entrega 1 — Fundação de tenancy ✅
 
 Prisma + primeira migration: `Workspace`, `User`, `Membership`, `Role`, `Permission`, `RolePermission`, `Invite`, `RefreshToken`. `PrismaService` com `db`/`raw`, `WORKSPACE_MODELS`, CLS. FKs compostas (Membership→Role). Seed do catálogo de permissões e roles de sistema.
 **Pronto quando:** teste de segurança P0 de isolamento cross-workspace passa (create carimba; A não lê B; updateMany não cruza; sem contexto = erro; unsafe op = bloqueada) + `check:fk` limpo.

@@ -15,7 +15,8 @@ Ameaça número um: **vazamento entre workspaces** — um tenant ler/escrever da
   - injeta `where: { AND: [{ workspaceId }, whereOriginal] }` em leituras e escritas;
   - **bloqueia** `findUnique`, `findUniqueOrThrow`, `update`, `delete`, `upsert` (operações por chave única não aceitam filtro extra — seriam bypass silencioso); use `findFirst`/`updateMany`/`deleteMany`;
   - **lança erro** se não houver `workspaceId` no CLS — sem contexto, nenhuma linha sai.
-- `prisma.raw` (excepcional, sempre com comentário justificando): identidade global (`User`, `RefreshToken`), autenticação (lookup por e-mail), provisionamento controlado de workspace, jobs cross-workspace (`runForAllWorkspaces` + `cls.run()`), rotinas administrativas explicitamente justificadas. **Membership, Role, Team, Invite e todo dado de acesso por workspace são tenant-scoped e usam `db`.**
+- `prisma.raw` (excepcional, sempre com comentário justificando): identidade global (`User`, `RefreshToken`), autenticação (lookup por e-mail), resolução de convite por `tokenHash` (o aceite acontece antes de existir workspace no contexto — resolve `tokenHash → workspaceId` via raw e abre `cls.run({ workspaceId })` para o restante), provisionamento controlado de workspace, jobs cross-workspace (`runForAllWorkspaces` + `cls.run()`), rotinas administrativas explicitamente justificadas. **Membership, Role, Team, Invite e todo dado de acesso por workspace são tenant-scoped e usam `db`.**
+- O `db` é fail-closed nos DOIS sentidos: modelo fora de `WORKSPACE_MODELS` (User, Workspace, Permission…) é **proibido** no `db` (erro apontando para `raw`), SQL cru é proibido no `db`, e travessias `include`/`select`/`where`/`orderBy` que saem do perímetro protegido (ex.: `membership → user → memberships`) são bloqueadas — o hook do Prisma não intercepta relações aninhadas, então o client valida a árvore inteira. Escrita aninhada por relação também é rejeitada (use FKs escalares) e `data.workspaceId` divergente do contexto é rejeitado.
 
 **Camada 2 — Integridade no banco (FKs compostas):** entidades referenciáveis declaram `@@unique([workspaceId, id])`; relações entre entidades de workspace usam `FOREIGN KEY (workspaceId, xId) REFERENCES X(workspaceId, id)`. Obrigatório em: Membership→Role, Team→Membership, Deal→Contact/Pipeline/Stage, Message→Conversation, Notification→Membership, extensões verticais→Contact — e default para toda relação futura entre entidades de workspace.
 
@@ -38,7 +39,7 @@ Ameaça número um: **vazamento entre workspaces** — um tenant ler/escrever da
 
 ## 4. Autorização — RBAC por permissões
 
-- `Permission` = catálogo global de chaves estáveis (`contacts:read`, `deals:write`, `settings:billing`, `intelligence:approve`…). Código só conhece chaves.
+- `Permission` = catálogo global de chaves estáveis (`contacts:read`, `deals:write`, `billing:manage`, `intelligence:approve`…). Código só conhece chaves.
 - `Role` sempre pertence a um workspace. Padrões (Owner/Admin/Member/Guest) semeados no provisionamento com `isSystem=true` — não editáveis nem deletáveis. Roles customizados pertencem ao workspace.
 - `PermissionsGuard` global (segundo APP_GUARD, depois do JwtAuthGuard) com **default-deny**: endpoint privado **sem** `@RequirePermissions(...)` é **negado** — estar autenticado não basta. Rota que legitimamente precise apenas de autenticação usa `@AuthenticatedOnly()` explícito, raro e revisável (ex.: `GET /me`, troca de workspace). `@Public()` continua sendo a única exceção para endpoint não autenticado. Endpoint privado sem nenhum decorator é achado de revisão P1 — P0 se expõe dado ou mutação sensível (ADR-016).
 - **Proibido** ramificar por nome de role. Auditoria de RBAC via skill `review-rbac`.
