@@ -237,8 +237,11 @@ model Company {
   updatedAt         DateTime    @updatedAt
 
   workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  // FK composta com nulidade mista (MATCH SIMPLE ignora quando NULL). Restrict
-  // explícito: NoAction (diferido): protege contra delete direto mas deixa o cascade do Workspace concluir; SET NULL anularia TODAS as colunas (workspaceId!)
+  // FK composta com nulidade mista (MATCH SIMPLE ignora quando NULL).
+  // NoAction ≠ Restrict: a checagem ocorre ao FIM do statement (não imediata),
+  // o que deixa o cascade do Workspace concluir. NÃO é DEFERRABLE (não adia ao
+  // commit) — comportamento coberto pelo teste de exclusão de workspace.
+  // SET NULL anularia TODAS as colunas da FK, inclusive workspaceId — proibido.
   owner     Membership? @relation("CompanyOwner", fields: [workspaceId, ownerMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
   contacts  Contact[]
   tags      CompanyTag[]
