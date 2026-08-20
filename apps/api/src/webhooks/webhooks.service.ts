@@ -1,12 +1,25 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import type { CreateWebhookInput, UpdateWebhookInput, WebhookDto } from '@veyra/contracts';
 import { AuditService } from '../audit/audit.service';
 import { AuthContext } from '../common/decorators';
 import { CryptoService } from '../common/crypto.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { MAX_ATTEMPTS, OutboxService } from '../outbox/outbox.service';
-import { UnsafeUrlError, assertSafeWebhookUrl, safePost } from './safe-http';
+import { UnsafeUrlError, assertSafeWebhookUrl, type SafeFetchResult } from './safe-http';
+
+/**
+ * TRANSPORTE INJETÁVEL (test seam, padrão do ADR-011 do Norteie): produção usa
+ * `safePost` (https.request com IP pinado); testes de integração injetam um
+ * fake, para que a suíte não dependa de DNS/rede real — a defesa SSRF em si é
+ * coberta pelos testes unitários de `safe-http`.
+ */
+export const WEBHOOK_TRANSPORT = Symbol('WEBHOOK_TRANSPORT');
+export type WebhookTransport = (
+  url: string,
+  body: string,
+  headers: Record<string, string>,
+) => Promise<SafeFetchResult>;
 
 type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
 
@@ -32,6 +45,7 @@ export class WebhooksService {
     private readonly crypto: CryptoService,
     private readonly outbox: OutboxService,
     private readonly audit: AuditService,
+    @Inject(WEBHOOK_TRANSPORT) private readonly transport: WebhookTransport,
   ) {}
 
   async list(): Promise<WebhookDto[]> {
@@ -176,6 +190,26 @@ export class WebhooksService {
       return;
     }
 
+    // RETRY PARCIAL (correção do P1): quem já recebeu ESTE outboxEventId com
+    // sucesso não é reentregue — o retry existe para os que falharam. Sem isso,
+    // uma falha parcial duplicaria a entrega nos destinos saudáveis a cada
+    // tentativa.
+    const alreadyDelivered = await this.prisma.raw.webhookDelivery.findMany({
+      where: {
+        workspaceId: event.workspaceId,
+        outboxEventId: event.id,
+        error: null,
+        responseStatus: { gte: 200, lt: 300 },
+      },
+      select: { webhookId: true },
+    });
+    const deliveredIds = new Set(alreadyDelivered.map((row) => row.webhookId));
+    const pendingWebhooks = webhooks.filter((webhook) => !deliveredIds.has(webhook.id));
+    if (pendingWebhooks.length === 0) {
+      await this.outbox.markDelivered(event.id); // todos já receberam
+      return;
+    }
+
     const body = JSON.stringify({
       id: event.id,
       type: event.eventType,
@@ -186,14 +220,14 @@ export class WebhooksService {
     const failedIds: string[] = [];
     const succeededIds: string[] = [];
 
-    for (const webhook of webhooks) {
+    for (const webhook of pendingWebhooks) {
       const timestamp = Math.floor(Date.now() / 1000);
       const secret = this.crypto.decrypt(webhook.secretCipher);
       let status: number | null = null;
       let error: string | null = null;
       let durationMs = 0;
       try {
-        const result = await safePost(webhook.url, body, {
+        const result = await this.transport(webhook.url, body, {
           'x-veyra-event': event.eventType,
           'x-veyra-delivery': event.id,
           'x-veyra-signature': this.sign(secret, timestamp, body),

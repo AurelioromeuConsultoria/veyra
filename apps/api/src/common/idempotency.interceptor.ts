@@ -10,7 +10,7 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { Request, Response } from 'express';
-import { Observable, from, of, switchMap, tap, catchError, throwError } from 'rxjs';
+import { Observable, catchError, from, mergeMap, of, switchMap, throwError } from 'rxjs';
 import { AuthContext } from './decorators';
 import { IDEMPOTENT_KEY } from './idempotency.decorator';
 import { PrismaService } from '../prisma/prisma.service';
@@ -77,19 +77,30 @@ export class IdempotencyInterceptor implements NestInterceptor {
           return of(reserved.body);
         }
         return next.handle().pipe(
-          tap((body) => {
-            // promise sem catch derrubaria o processo (unhandled rejection)
-            this.complete(workspaceId, key, endpoint, response.statusCode, body).catch((error) =>
-              this.logger.error(`Falha ao concluir idempotência ${key}: ${String(error)}`),
-            );
+          // AGUARDA a gravação ANTES de concluir a resposta (correção do P1):
+          // com fire-and-forget, o cliente podia receber 2xx e um retry imediato
+          // pegar a chave ainda em `processing` (409) ou até reexecutar.
+          mergeMap(async (body) => {
+            try {
+              await this.complete(workspaceId, key, endpoint, response.statusCode, body);
+            } catch (error) {
+              // gravar o replay é best-effort: a operação JÁ aconteceu e o
+              // cliente precisa receber a resposta. Libera a reserva para não
+              // deixar a chave presa e registra o incidente.
+              this.logger.error(`Falha ao concluir idempotência ${key}: ${String(error)}`);
+              await this.release(workspaceId, key, endpoint).catch(() => undefined);
+            }
+            return body;
           }),
-          catchError((error: unknown) => {
-            // libera a reserva: a operação não aconteceu, nova tentativa é válida
-            this.release(workspaceId, key, endpoint).catch((e) =>
-              this.logger.error(`Falha ao liberar idempotência ${key}: ${String(e)}`),
-            );
-            return throwError(() => error);
-          }),
+          catchError((error: unknown) =>
+            // libera a reserva ANTES de propagar: a operação não aconteceu e a
+            // próxima tentativa com a mesma chave precisa poder executar
+            from(
+              this.release(workspaceId, key, endpoint).catch((e) =>
+                this.logger.error(`Falha ao liberar idempotência ${key}: ${String(e)}`),
+              ),
+            ).pipe(mergeMap(() => throwError(() => error))),
+          ),
         );
       }),
     );

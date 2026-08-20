@@ -225,11 +225,12 @@ describe('Workspaces — membros, roles e provisionamento (integração)', () =>
         .set('Cookie', s2.cookieHeader)
         .set('x-csrf-token', s2.csrf),
     ]);
-    // o perdedor toma 403 (invariante do último Owner) ou 401 (foi removido
-    // antes de passar no guard — revogação imediata); nunca dois 200
+    // o perdedor toma 403 (invariante do último Owner), 401 (foi removido antes
+    // de passar no guard — revogação imediata) ou 404 (o alvo já saiu). Todos
+    // preservam a invariante; o que NÃO pode acontecer é dois 200.
     const statuses = [r1.status, r2.status].sort();
     expect(statuses[0]).toBe(200);
-    expect([401, 403]).toContain(statuses[1]);
+    expect([401, 403, 404]).toContain(statuses[1]);
     const remaining = await prisma.raw.membership.count({
       where: { workspaceId, status: 'active', role: { systemKey: 'owner' } },
     });

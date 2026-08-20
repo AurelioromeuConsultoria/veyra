@@ -108,8 +108,17 @@ export async function safePost(
   const agent = new Agent({
     keepAlive: false,
     // PINNING: a conexão usa o endereço JÁ validado — uma segunda resposta de
-    // DNS (rebinding) entre a checagem e o connect não tem efeito nenhum
-    lookup: (_hostname, _options, callback) => {
+    // DNS (rebinding) entre a checagem e o connect não tem efeito nenhum.
+    // Respeita o contrato do dns.lookup: com `all: true` o callback recebe uma
+    // LISTA; devolver string nesse caso corromperia a conexão.
+    lookup: (_hostname, options, callback) => {
+      const wantsAll = typeof options === 'object' && options !== null && options.all === true;
+      if (wantsAll) {
+        (callback as unknown as (err: Error | null, addresses: unknown) => void)(null, [
+          { address: pinned.address, family: pinned.family },
+        ]);
+        return;
+      }
       (callback as (err: Error | null, address: string, family: number) => void)(
         null,
         pinned.address,

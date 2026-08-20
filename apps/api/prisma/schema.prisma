@@ -644,6 +644,8 @@ model IdempotencyKey {
 
 enum OutboxStatus {
   pending
+  /// reivindicado por um worker: invisível para os demais até o lease expirar
+  processing
   delivered
   failed
   dead
@@ -652,17 +654,22 @@ enum OutboxStatus {
 /// Outbox transacional: o efeito externo é gravado na MESMA transação do
 /// domínio e entregue depois pelo worker — nunca escapa se a transação abortar.
 model OutboxEvent {
-  id          String       @id @default(uuid()) @db.Uuid
-  workspaceId String       @db.Uuid
-  eventType   String
-  payload     Json
-  dedupeKey   String
-  status      OutboxStatus @default(pending)
-  attempts    Int          @default(0)
-  nextRetryAt DateTime     @default(now())
-  lastError   String?
-  deliveredAt DateTime?
-  createdAt   DateTime     @default(now())
+  id             String       @id @default(uuid()) @db.Uuid
+  workspaceId    String       @db.Uuid
+  eventType      String
+  payload        Json
+  dedupeKey      String
+  status         OutboxStatus @default(pending)
+  attempts       Int          @default(0)
+  nextRetryAt    DateTime     @default(now())
+  /// LEASE: quando o worker reivindicou e até quando o claim vale. Worker que
+  /// morre no meio libera o evento pela expiração — sem lease, o `SKIP LOCKED`
+  /// só protege durante o UPDATE e outra instância entregaria em paralelo.
+  claimedAt      DateTime?
+  leaseExpiresAt DateTime?
+  lastError      String?
+  deliveredAt    DateTime?
+  createdAt      DateTime     @default(now())
 
   workspace  Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   deliveries WebhookDelivery[]
@@ -670,6 +677,7 @@ model OutboxEvent {
   @@unique([workspaceId, dedupeKey])
   @@unique([workspaceId, id])
   @@index([status, nextRetryAt])
+  @@index([status, leaseExpiresAt])
 }
 
 enum WebhookStatus {

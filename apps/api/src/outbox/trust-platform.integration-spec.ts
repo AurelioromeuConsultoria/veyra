@@ -3,7 +3,7 @@ import request from 'supertest';
 import { CryptoService } from '../common/crypto.service';
 import { JobsService } from '../jobs/jobs.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { WebhooksService } from '../webhooks/webhooks.service';
+import { WEBHOOK_TRANSPORT, WebhooksService } from '../webhooks/webhooks.service';
 import { createTestApp } from '../../test/integration/app';
 import {
   TEST_PASSWORD,
@@ -14,7 +14,7 @@ import {
   type WorkspaceFixture,
 } from '../../test/integration/fixtures';
 import { resetDb } from '../../test/integration/harness';
-import { MAX_ATTEMPTS } from './outbox.service';
+import { MAX_ATTEMPTS, OutboxService } from './outbox.service';
 
 const ORIGIN = process.env.WEB_ORIGIN ?? 'http://localhost:5175';
 
@@ -28,8 +28,20 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
   let prisma: PrismaService;
   let http: ReturnType<INestApplication['getHttpServer']>;
 
+  /**
+   * Transporte FAKE: a suíte não faz DNS nem rede (isso deixava o teste refém
+   * do resolver do sistema). Hosts contendo "falha" simulam destino fora do ar;
+   * os demais respondem 200. A defesa SSRF real é coberta em safe-http.spec.
+   */
+  const transportCalls: string[] = [];
+  const fakeTransport = async (url: string) => {
+    transportCalls.push(url);
+    if (url.includes('falha')) throw new Error('destino indisponível (fake)');
+    return { status: 200, durationMs: 5 };
+  };
+
   beforeAll(async () => {
-    app = await createTestApp();
+    app = await createTestApp([], [{ provide: WEBHOOK_TRANSPORT, useValue: fakeTransport }]);
     prisma = app.get(PrismaService);
     http = app.getHttpServer();
   });
@@ -64,6 +76,7 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
   const get = (path: string, s: Session) => request(http).get(path).set('Cookie', s.cookieHeader);
 
   beforeEach(async () => {
+    transportCalls.length = 0;
     await resetDb(prisma);
     await seedPermissionCatalog(prisma);
     wsA = await createWorkspaceFixture(prisma, 'acme');
@@ -197,6 +210,45 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
     expect(cached.some((row) => row.endpoint.includes('webhooks'))).toBe(false);
   });
 
+  it('P1: a resposta só volta DEPOIS de gravar o replay (nada de fire-and-forget)', async () => {
+    // atrasa a GRAVAÇÃO do replay (o que `complete` faz por baixo). Se o
+    // interceptor não aguardasse, a resposta voltaria antes desse delay.
+    const target = prisma.raw.idempotencyKey;
+    const original = target.updateMany.bind(target);
+    const spy = jest.spyOn(target, 'updateMany').mockImplementation(((args: never) => {
+      // devolve uma promise "comum": o Prisma só precisa que seja thenable
+      return new Promise((resolve) => setTimeout(resolve, 300)).then(() => original(args)) as never;
+    }) as never);
+
+    const started = Date.now();
+    await post(
+      '/api/contacts',
+      sessionA,
+      { name: 'Aguardado' },
+      {
+        'idempotency-key': 'k-await',
+      },
+    ).expect(201);
+    const elapsed = Date.now() - started;
+    spy.mockRestore();
+
+    expect(elapsed).toBeGreaterThanOrEqual(300);
+    // ao chegar ao cliente a chave JÁ está completed: replay imediato funciona
+    const row = await prisma.raw.idempotencyKey.findFirst({
+      where: { workspaceId: wsA.workspaceId, key: 'k-await' },
+    });
+    expect(row!.state).toBe('completed');
+    const replay = await post(
+      '/api/contacts',
+      sessionA,
+      { name: 'Aguardado' },
+      {
+        'idempotency-key': 'k-await',
+      },
+    ).expect(201);
+    expect(replay.headers['idempotent-replay']).toBe('true');
+  });
+
   it('chave é escopada por workspace: B pode usar a mesma chave de A', async () => {
     await post('/api/contacts', sessionA, { name: 'Do A' }, { 'idempotency-key': 'shared' }).expect(
       201,
@@ -249,7 +301,7 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
     await prisma.raw.webhook.create({
       data: {
         workspaceId: wsA.workspaceId,
-        url: 'https://destino-que-nao-existe.veyra-teste.invalid/hook',
+        url: 'https://destino-com-falha.veyra.test/hook',
         events: ['contact.created'],
         secretCipher: app.get(CryptoService).encrypt('whsec_teste'),
       },
@@ -289,7 +341,7 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
   it('AJUSTE #7: só ENTREGA MORTA conta; 3 mortas consecutivas pausam o webhook', async () => {
     const created = (
       await post('/api/webhooks', sessionA, {
-        url: 'https://destino-que-nao-existe.veyra-teste.invalid/hook',
+        url: 'https://destino-com-falha.veyra.test/hook',
         events: ['contact.created'],
       }).expect(201)
     ).body;
@@ -331,16 +383,105 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
 
   // ── Webhooks ──────────────────────────────────────────────────────────────
 
+  it('P1 LEASE: dois dispatchers paralelos entregam cada evento UMA vez; attempts não infla', async () => {
+    for (let i = 0; i < 5; i += 1) {
+      await post('/api/contacts', sessionA, { name: `Concorrente ${i}` }).expect(201);
+    }
+    const outbox = app.get(OutboxService);
+
+    // dois workers reivindicam AO MESMO TEMPO
+    const [batchA, batchB] = await Promise.all([outbox.claimBatch(10), outbox.claimBatch(10)]);
+    const idsA = batchA.map((e) => e.id);
+    const idsB = batchB.map((e) => e.id);
+    // nenhum evento aparece nos dois lotes (o lease torna invisível ao segundo)
+    expect(idsA.filter((id) => idsB.includes(id))).toEqual([]);
+    expect(new Set([...idsA, ...idsB]).size).toBe(idsA.length + idsB.length);
+
+    // um terceiro claim NUNCA rende um evento já reivindicado (é isso que o
+    // lease garante; quantos cada lote pegou depende do escalonamento)
+    const third = await outbox.claimBatch(10);
+    const claimed = new Set([...idsA, ...idsB]);
+    expect(third.filter((e) => claimed.has(e.id))).toEqual([]);
+
+    // attempts subiu exatamente 1 por evento (não inflou com a concorrência)
+    const events = await prisma.raw.outboxEvent.findMany({
+      where: { workspaceId: wsA.workspaceId },
+    });
+    expect(events.every((e) => e.attempts === 1)).toBe(true);
+    expect(events.every((e) => e.status === 'processing')).toBe(true);
+    expect(events.every((e) => e.leaseExpiresAt !== null)).toBe(true);
+  });
+
+  it('P1 LEASE: evento com lease EXPIRADO é recuperado (worker morto)', async () => {
+    await post('/api/contacts', sessionA, { name: 'Órfão' }).expect(201);
+    const outbox = app.get(OutboxService);
+    const [claimed] = await outbox.claimBatch(10);
+    expect(claimed).toBeTruthy();
+    // enquanto o lease vale, ninguém mais pega
+    expect(await outbox.claimBatch(10)).toEqual([]);
+
+    // simula o worker que morreu: lease vence
+    await prisma.raw.outboxEvent.updateMany({
+      where: { id: claimed.id },
+      data: { leaseExpiresAt: new Date(Date.now() - 1000) },
+    });
+    const recovered = await outbox.claimBatch(10);
+    expect(recovered.map((e) => e.id)).toEqual([claimed.id]);
+    expect(recovered[0].attempts).toBe(2);
+  });
+
+  it('P1 RETRY PARCIAL: quem já recebeu não é reentregue na próxima tentativa', async () => {
+    const ok = (
+      await post('/api/webhooks', sessionA, {
+        url: 'https://destino-ok.veyra.test/hook',
+        events: ['contact.created'],
+      }).expect(201)
+    ).body;
+    await post('/api/webhooks', sessionA, {
+      url: 'https://destino-com-falha.veyra.test/hook',
+      events: ['contact.created'],
+    }).expect(201);
+
+    await post('/api/contacts', sessionA, { name: 'Parcial' }).expect(201);
+    const event = await prisma.raw.outboxEvent.findFirst({ where: { status: 'pending' } });
+
+    // registra que `ok` JÁ recebeu com sucesso este outboxEventId
+    await prisma.raw.webhookDelivery.create({
+      data: {
+        workspaceId: wsA.workspaceId,
+        webhookId: ok.id,
+        outboxEventId: event!.id,
+        attempt: 1,
+        responseStatus: 200,
+        durationMs: 12,
+      },
+    });
+
+    await app.get(WebhooksService).deliver({
+      id: event!.id,
+      workspaceId: wsA.workspaceId,
+      eventType: 'contact.created',
+      payload: event!.payload,
+      attempts: 2,
+    });
+
+    // o retry NÃO gerou nova entrega para quem já tinha recebido
+    const deliveriesOk = await prisma.raw.webhookDelivery.count({
+      where: { webhookId: ok.id, outboxEventId: event!.id },
+    });
+    expect(deliveriesOk).toBe(1);
+  });
+
   it('P1: entrega morta NÃO pausa webhook saudável do mesmo workspace', async () => {
     const saudavel = (
       await post('/api/webhooks', sessionA, {
-        url: 'https://exemplo-ok.veyra.test/hook',
+        url: 'https://destino-ok.veyra.test/hook',
         events: ['contact.created'],
       }).expect(201)
     ).body;
     const quebrado = (
       await post('/api/webhooks', sessionA, {
-        url: 'https://nao-existe.veyra-teste.invalid/hook',
+        url: 'https://destino-com-falha.veyra.test/hook',
         events: ['contact.created'],
       }).expect(201)
     ).body;
@@ -360,10 +501,12 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
     }
     const ok = await prisma.raw.webhook.findFirst({ where: { id: saudavel.id } });
     const bad = await prisma.raw.webhook.findFirst({ where: { id: quebrado.id } });
-    // ambos falham (o "saudável" também aponta para host inalcançável no teste),
-    // mas o contador é POR WEBHOOK — nenhum é penalizado pelo erro do outro
-    expect(bad!.failureCount).toBeGreaterThan(0);
-    expect(ok!.failureCount).toBe(bad!.failureCount);
+    // o que falhou é penalizado e pausado…
+    expect(bad!.failureCount).toBeGreaterThanOrEqual(3);
+    expect(bad!.status).toBe('paused');
+    // …e o SAUDÁVEL do mesmo workspace segue intacto e ativo
+    expect(ok!.failureCount).toBe(0);
+    expect(ok!.status).toBe('active');
   });
 
   it('segredo aparece UMA vez na criação e nunca mais (nem cifrado no DTO)', async () => {
