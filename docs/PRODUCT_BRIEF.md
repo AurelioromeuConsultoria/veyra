@@ -9,7 +9,7 @@ Empresas de serviços que vendem por relacionamento (clínicas, imobiliárias, c
 O Veyra ataca isso com uma arquitetura de dois níveis:
 
 - **Veyra Core** — um CRM SaaS multi-tenant com as capacidades universais de relacionamento comercial, IA nativa e qualidade de engenharia de produto internacional.
-- **Verticais** — produtos completos construídos **sobre** o Core (o primeiro provável: **Veyra Clinics**), que adicionam o vocabulário e os fluxos do nicho sem reimplementar CRM.
+- **Verticais** — produtos completos construídos **sobre** o Core (o primeiro: **Veyra Clinics**, piloto decidido no ADR-036), que adicionam o vocabulário e os fluxos do nicho sem reimplementar CRM.
 
 A tese: construir o CRM uma vez, com isolamento de tenant e IA estruturais, e originar verticais rapidamente por extensão — nunca por fork ou duplicação.
 

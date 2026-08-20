@@ -52,8 +52,33 @@ Módulo com **portas e adaptadores** (ADR-027): `src/intelligence` não importa 
 
 **Pronto quando:** quota estourada degrada com mensagem clara (✅ 8.1); "contato criado → tarefa de follow-up" funciona ponta a ponta (✅ 8.2).
 
-As cinco capacidades de IA restantes (intenção, sugestão de resposta, oportunidade parada, limpeza de dados, previsão de pipeline) foram movidas para a **Entrega 9**: duas delas dependem de canal externo, que não existe, e empacotá-las aqui produziria uma entrega irrevisável.
+As cinco capacidades de IA restantes deixaram de ser uma entrega própria (**ADR-036**): passam a ser priorizadas por dependência de canal e evidência de uso do piloto.
+
+## Entrega 9 — Comunicação externa e privacidade operacional 🔜
+
+Primeiro canal externo REAL, com as restrições da plataforma tratadas como requisito — não como detalhe de integração.
+
+- **9.1 — WhatsApp oficial**: ingestão de mensagens, envio **sob aprovação humana**, status de entrega, **opt-in** registrado e janela de atendimento de 24h respeitada. Templates aprovados são pré-requisito do envio fora da janela. `messages_sent` ganha enforcement (a métrica já está no catálogo desde a 8.1).
+- **9.2 — Privacidade operacional**: retenção e expurgo de `AiRun.result` (dívida registrada na Entrega 7) e **scanner de antivírus** antes de qualquer arquivo sair para canal externo — hoje `scanStatus` nunca deixa `pending`, e o portão de saída externa já existe esperando por isso.
+- **9.3 — Sugestão de resposta**: a capacidade de IA entra AQUI, junto do canal, porque agora existe para onde enviar. Ação externa continua sendo `AiProposal` aprovada por humano.
+
+**Pronto quando:** conversa real de WhatsApp entra e sai do Veyra com opt-in verificado; arquivo sem scan não sai para canal externo; `AiRun.result` expira por idade.
+
+## Entrega 10 — Veyra Clinics (piloto vertical) 🔜
+
+Vertical como **extensão** do Core (ADR-036 e §3.8 do CLAUDE.md): o Core continua sem conhecer o vocabulário clínico.
+
+- Paciente (extension table 1:1 sobre `Contact`), profissional, agenda de consulta, procedimento, retorno e funil clínico.
+- **Sem prontuário médico completo** no piloto — dado clínico sensível exige decisão própria de retenção, cifra e acesso.
+- Fluxo comercial ponta a ponta: `lead → WhatsApp → agendamento → confirmação → consulta → retorno/reativação`.
+- Métricas do piloto: **faltas, conversão e pacientes recuperados**.
+
+**Pronto quando:** uma clínica opera o ciclo completo no Veyra e as três métricas são apuráveis.
+
+## IA além disso — por demanda, não por pacote
+
+`oportunidade parada` entra quando houver consultas e retornos reais para observar. `intenção`, `limpeza de dados` e `previsão de pipeline` nascem de sinais do piloto. Capacidade sem demanda observada não é roadmap (ADR-036).
 
 ## Fora do MVP (backlog consciente)
 
-Registro público/self-service (gatilho: ADR-014), RLS (ADR-013), canais externos reais (e-mail/WhatsApp providers), app do vertical Clinics (só após Core estável até a Entrega 6), relatórios avançados, mobile, i18n além de pt-BR, exportação LGPD self-service (endpoint administrativo primeiro).
+Registro público/self-service (gatilho: ADR-014), RLS (ADR-013), **canal de e-mail** (o WhatsApp vem primeiro — Entrega 9), prontuário médico completo no Clinics, relatórios avançados, mobile, i18n além de pt-BR, exportação LGPD self-service (endpoint administrativo primeiro).
