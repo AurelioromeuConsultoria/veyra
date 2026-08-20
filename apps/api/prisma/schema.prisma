@@ -89,6 +89,9 @@ model Workspace {
   notes                  Note[]
   activities             Activity[]
   auditLogs              AuditLog[]
+  idempotencyKeys        IdempotencyKey[]
+  outboxEvents           OutboxEvent[]
+  webhooks               Webhook[]
 }
 
 /// Catálogo GLOBAL de permissões (ADR-004): chaves estáveis do sistema —
@@ -610,4 +613,108 @@ model AuditLog {
 
   @@index([workspaceId, entityType, entityId, createdAt(sort: Desc)])
   @@index([workspaceId, createdAt(sort: Desc), id])
+}
+
+enum IdempotencyState {
+  processing
+  completed
+}
+
+/// Idempotência HTTP com RESERVA ATÔMICA (ajuste #3): a chave é reservada como
+/// `processing` ANTES de executar; dois requests idênticos concorrentes não
+/// executam duas vezes. requestHash cobre método + rota canônica + params +
+/// body normalizado. 5xx/rollback liberam a reserva (linha é apagada).
+model IdempotencyKey {
+  id             String           @id @default(uuid()) @db.Uuid
+  workspaceId    String           @db.Uuid
+  key            String
+  endpoint       String
+  requestHash    String
+  state          IdempotencyState @default(processing)
+  responseStatus Int?
+  responseBody   Json?
+  createdAt      DateTime         @default(now())
+  expiresAt      DateTime
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, key, endpoint])
+  @@index([expiresAt])
+}
+
+enum OutboxStatus {
+  pending
+  delivered
+  failed
+  dead
+}
+
+/// Outbox transacional: o efeito externo é gravado na MESMA transação do
+/// domínio e entregue depois pelo worker — nunca escapa se a transação abortar.
+model OutboxEvent {
+  id          String       @id @default(uuid()) @db.Uuid
+  workspaceId String       @db.Uuid
+  eventType   String
+  payload     Json
+  dedupeKey   String
+  status      OutboxStatus @default(pending)
+  attempts    Int          @default(0)
+  nextRetryAt DateTime     @default(now())
+  lastError   String?
+  deliveredAt DateTime?
+  createdAt   DateTime     @default(now())
+
+  workspace  Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  deliveries WebhookDelivery[]
+
+  @@unique([workspaceId, dedupeKey])
+  @@unique([workspaceId, id])
+  @@index([status, nextRetryAt])
+}
+
+enum WebhookStatus {
+  active
+  paused
+  disabled
+}
+
+model Webhook {
+  id           String        @id @default(uuid()) @db.Uuid
+  workspaceId  String        @db.Uuid
+  url          String
+  events       String[]      @default([])
+  /// segredo HMAC cifrado (AES-256-GCM) — JAMAIS em DTO, log ou auditoria
+  secretCipher String
+  status       WebhookStatus @default(active)
+  /// conta ENTREGAS MORTAS consecutivas (ajuste #7), não tentativas
+  failureCount Int           @default(0)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  workspace  Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  deliveries WebhookDelivery[]
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, status])
+}
+
+/// Histórico de entrega (ajuste #4): FKs COMPOSTAS para Webhook e OutboxEvent,
+/// com unicidade por tentativa — o banco impede registro cross-workspace e
+/// duplicidade de tentativa.
+model WebhookDelivery {
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String   @db.Uuid
+  webhookId      String   @db.Uuid
+  outboxEventId  String   @db.Uuid
+  attempt        Int
+  responseStatus Int?
+  error          String?
+  durationMs     Int
+  createdAt      DateTime @default(now())
+
+  webhook     Webhook     @relation(fields: [workspaceId, webhookId], references: [workspaceId, id], onDelete: Cascade)
+  outboxEvent OutboxEvent @relation(fields: [workspaceId, outboxEventId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, webhookId, outboxEventId, attempt])
+  @@index([workspaceId, webhookId, createdAt(sort: Desc)])
 }

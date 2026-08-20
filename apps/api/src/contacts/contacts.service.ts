@@ -9,6 +9,7 @@ import type {
 } from '@veyra/contracts';
 import { ActivitiesService } from '../activities/activities.service';
 import { AuditService } from '../audit/audit.service';
+import { OutboxService } from '../outbox/outbox.service';
 import { AuthContext } from '../common/decorators';
 import { CustomFieldsService } from '../custom-fields/custom-fields.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
@@ -44,6 +45,7 @@ export class ContactsService {
     private readonly customFields: CustomFieldsService,
     private readonly activities: ActivitiesService,
     private readonly audit: AuditService,
+    private readonly outbox: OutboxService,
   ) {}
 
   async list(input: ListContactsInput): Promise<Paginated<ContactDto>> {
@@ -117,6 +119,14 @@ export class ContactsService {
         payload: { name: input.name },
         targets: { contactId: contact.id, companyId: input.companyId },
       });
+      // outbox NA MESMA transação: se ela abortar, o evento externo some junto
+      await this.outbox.enqueue(
+        tx,
+        auth.workspaceId as string,
+        'contact.created',
+        { id: contact.id, name: input.name },
+        `contact.created:${contact.id}`,
+      );
       return contact.id;
     });
     return this.get(id);
@@ -186,6 +196,13 @@ export class ContactsService {
       await tx.note.deleteMany({ where: { contactId: id } });
       // CustomFieldValue.entityId não tem FK (exceção documentada): limpeza aqui
       await this.customFields.deleteValues(tx, 'contact', id);
+      await this.outbox.enqueue(
+        tx,
+        auth.workspaceId as string,
+        'contact.deleted',
+        { id },
+        `contact.deleted:${id}`,
+      );
       await tx.contact.deleteMany({ where: { id } }); // junções/activities: cascade
     });
   }

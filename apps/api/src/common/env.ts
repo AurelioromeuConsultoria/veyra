@@ -18,6 +18,12 @@ const envSchema = z.object({
   // Origem do front (CORS estrito + validação de Origin em mutações com cookie)
   WEB_ORIGIN: z.string().url().default('http://localhost:5175'),
   // Retenção da trilha de auditoria (SECURITY.md §5) — configurável por plano
+  // Cifra de segredos em repouso (SECURITY.md §8) — independente do JWT
+  TOKEN_ENCRYPTION_KEY: z
+    .string()
+    .min(32, 'TOKEN_ENCRYPTION_KEY precisa de ao menos 32 caracteres'),
+  // Kill switch dos jobs (worker do outbox)
+  DISABLE_JOBS: z.coerce.boolean().default(false),
   AUDIT_RETENTION_DAYS: z.coerce.number().int().min(30).max(3650).default(365),
 });
 

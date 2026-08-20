@@ -8,6 +8,7 @@ import type {
 } from '@veyra/contracts';
 import { ActivitiesService } from '../activities/activities.service';
 import { AuditService } from '../audit/audit.service';
+import { OutboxService } from '../outbox/outbox.service';
 import { AuthContext } from '../common/decorators';
 import type { Prisma } from '../generated/prisma/client';
 import { PipelinesService } from '../pipelines/pipelines.service';
@@ -47,6 +48,7 @@ export class DealsService {
     private readonly pipelines: PipelinesService,
     private readonly activities: ActivitiesService,
     private readonly audit: AuditService,
+    private readonly outbox: OutboxService,
   ) {}
 
   async board(pipelineId?: string): Promise<BoardDto> {
@@ -141,6 +143,18 @@ export class DealsService {
           payload: { title: input.title, amountCents: input.amountCents },
           targets: { dealId: deal.id, contactId: input.contactId, companyId: input.companyId },
         },
+      );
+      await this.outbox.enqueue(
+        tx as unknown as Db,
+        auth.workspaceId as string,
+        'deal.created',
+        {
+          id: deal.id,
+          title: input.title,
+          amountCents: input.amountCents,
+          currency: input.currency,
+        },
+        `deal.created:${deal.id}`,
       );
       return deal.id;
     });
@@ -294,6 +308,13 @@ export class DealsService {
           payload: { fromStage: fromStage?.name ?? '—', toStage: stage.name },
           targets: { dealId, contactId: deal.contactId, companyId: deal.companyId },
         });
+        await this.outbox.enqueue(
+          tx as unknown as Db,
+          workspaceId,
+          'deal.stage_changed',
+          { id: dealId, fromStage: fromStage?.name ?? '—', toStage: stage.name },
+          `deal.stage_changed:${dealId}:${stage.id}:${Date.now()}`,
+        );
         if (stage.type === 'won' || stage.type === 'lost') {
           await this.activities.record(
             tx as unknown as Db,
@@ -304,6 +325,13 @@ export class DealsService {
               payload: { amountCents: deal.amountCents },
               targets: { dealId, contactId: deal.contactId, companyId: deal.companyId },
             },
+          );
+          await this.outbox.enqueue(
+            tx as unknown as Db,
+            workspaceId,
+            stage.type === 'won' ? 'deal.won' : 'deal.lost',
+            { id: dealId, amountCents: deal.amountCents },
+            `deal.${stage.type}:${dealId}`,
           );
         }
       }

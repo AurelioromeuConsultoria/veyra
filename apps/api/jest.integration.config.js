@@ -11,6 +11,8 @@ module.exports = {
   rootDir: '.',
   testMatch: ['<rootDir>/src/**/*.integration-spec.ts'],
   moduleFileExtensions: ['ts', 'js', 'json'],
+  // pg-boss é ESM puro; o worker não roda em teste (ver test/pg-boss.stub.ts)
+  moduleNameMapper: { '^pg-boss$': '<rootDir>/test/pg-boss.stub.ts' },
   setupFiles: ['reflect-metadata', '<rootDir>/test/integration/env.ts'],
   globalSetup: '<rootDir>/test/integration/global-setup.ts',
   transform: {

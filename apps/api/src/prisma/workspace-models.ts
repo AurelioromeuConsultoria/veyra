@@ -34,6 +34,11 @@ export const WORKSPACE_MODELS = new Set<string>([
   'Note',
   'Activity',
   'AuditLog',
+  // Plataforma de confiança (Entrega 5)
+  'IdempotencyKey',
+  'OutboxEvent',
+  'Webhook',
+  'WebhookDelivery',
 ]);
 
 /**
@@ -159,6 +164,21 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
   AuditLog: {
     workspace: 'Workspace',
     actor: 'Membership',
+  },
+  IdempotencyKey: {
+    workspace: 'Workspace',
+  },
+  OutboxEvent: {
+    workspace: 'Workspace',
+    deliveries: 'WebhookDelivery',
+  },
+  Webhook: {
+    workspace: 'Workspace',
+    deliveries: 'WebhookDelivery',
+  },
+  WebhookDelivery: {
+    webhook: 'Webhook',
+    outboxEvent: 'OutboxEvent',
   },
   Activity: {
     workspace: 'Workspace',

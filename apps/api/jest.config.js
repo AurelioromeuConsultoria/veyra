@@ -16,6 +16,8 @@ module.exports = {
   // de banco de teste (o resetDb tem guarda própria, defesa em profundidade)
   testPathIgnorePatterns: ['/node_modules/', 'integration'],
   moduleFileExtensions: ['ts', 'js', 'json'],
+  // pg-boss é ESM puro; o worker não roda em teste (ver test/pg-boss.stub.ts)
+  moduleNameMapper: { '^pg-boss$': '<rootDir>/../test/pg-boss.stub.ts' },
   setupFiles: ['reflect-metadata'],
   transform: {
     '^.+\\.ts$': ['ts-jest', { tsconfig: '<rootDir>/../tsconfig.json' }],

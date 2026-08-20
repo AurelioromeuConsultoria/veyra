@@ -1,6 +1,6 @@
 import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { APP_FILTER, APP_GUARD } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { ClsModule } from 'nestjs-cls';
 import { AuthModule } from './auth/auth.module';
@@ -10,18 +10,23 @@ import { PermissionsGuard } from './auth/permissions.guard';
 import { ActivitiesModule } from './activities/activities.module';
 import { AuditModule } from './audit/audit.module';
 import { validateEnv } from './common/env';
+import { IdempotencyInterceptor } from './common/idempotency.interceptor';
 import { PrismaExceptionFilter } from './common/prisma-exception.filter';
 import { RequestIdMiddleware } from './common/request-id.middleware';
+import { WorkspaceThrottleGuard } from './common/workspace-throttle.guard';
 import { CompaniesModule } from './companies/companies.module';
 import { ContactsModule } from './contacts/contacts.module';
 import { CustomFieldsModule } from './custom-fields/custom-fields.module';
 import { DealsModule } from './deals/deals.module';
 import { HealthController } from './health/health.controller';
+import { JobsModule } from './jobs/jobs.module';
 import { NotesModule } from './notes/notes.module';
+import { OutboxModule } from './outbox/outbox.module';
 import { PipelinesModule } from './pipelines/pipelines.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { TagsModule } from './tags/tags.module';
 import { TasksModule } from './tasks/tasks.module';
+import { WebhooksModule } from './webhooks/webhooks.module';
 import { WorkspacesModule } from './workspaces/workspaces.module';
 
 @Module({
@@ -51,6 +56,9 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
     ContactsModule,
     ActivitiesModule,
     AuditModule,
+    OutboxModule,
+    WebhooksModule,
+    JobsModule,
     PipelinesModule,
     DealsModule,
     TasksModule,
@@ -65,6 +73,10 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: CsrfOriginGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
+    // rate limit POR WORKSPACE depois da autenticação (precisa do auth)
+    { provide: APP_GUARD, useClass: WorkspaceThrottleGuard },
+    // idempotência: reserva antes de executar, replay depois (ajuste #3)
+    { provide: APP_INTERCEPTOR, useClass: IdempotencyInterceptor },
   ],
 })
 export class AppModule implements NestModule {
