@@ -105,6 +105,19 @@ Política obrigatória para `FileObject`:
 7. **Execução atômica e autoria** (ADR-030): reivindicar → criar → registrar → concluir numa transação só; a mutação é registrada com `actorType='ai'` e `actorId=AiRun.id`, com o aprovador preservado como contexto.
 8. **Resultado persistido** (ADR-031): `AiRun.result` guarda a saída validada, servida apenas pelo endpoint do alvo com a permissão do domínio. A visão de custo (`workspace:manage`) não devolve resultado. A fila de propostas exige `intelligence:approve` + `contacts:read`: uma role só com `intelligence:use` não infere pelo feed de IA o que não pode ler no CRM.
 
+## 7-D. Canal externo: ingestão pública (Entrega 9.1)
+
+O webhook do WhatsApp é o **único caminho de escrita público e não autenticado** do produto. Regras (ADR-037):
+
+1. **Assinatura sobre o corpo bruto**: `X-Hub-Signature-256` verificada com HMAC-SHA256 e `timingSafeEqual` **antes de qualquer parse de domínio**. Reserializar o JSON invalidaria a conferência, então o corpo bruto é preservado pelo parser (configuração compartilhada entre bootstrap e harness de teste — divergir já produziu teste verde com produto quebrado).
+2. **Tenant nunca vem do cliente**: o `phone_number_id`, já coberto pela assinatura, localiza a `ChannelCredential` e daí o workspace. Sem sessão nem CLS, todo acesso usa `raw` com `workspaceId` explícito. O número é `@@unique` global: dois workspaces não podem reivindicá-lo.
+3. **`@ProviderWebhook()`**, e não `@Public()`, isenta a rota da validação de Origin/CSRF — o login também é público, mas estabelece cookie e **precisa** dessa validação contra login cross-site.
+4. **Resposta neutra**: `200` mesmo para assinatura inválida, número desconhecido ou payload que não sabemos tratar. `401`/`403` confirmaria a um sondador que o endpoint existe e valida assinatura; e a Meta reentrega o que não recebe `2xx`, então erro em evento desconhecido viraria reentrega infinita.
+5. **Throttle próprio** e teto de corpo; o `GET` de verificação compara o `verify_token` em tempo constante.
+6. **Mídia não é baixada no request público**: o webhook registra a referência e agenda a coleta autenticada (evento interno do outbox). Baixar ali daria a um chamador externo o poder de nos fazer buscar conteúdo arbitrário.
+7. **Segredos**: o app secret e o verify_token vivem no ambiente/keystore (um Meta App hoje); por canal ficam `phoneNumberId`, WABA e o token de envio **cifrado**. Nada disso entra em DTO, log, auditoria, cache ou idempotência.
+8. **Janela ≠ consentimento** (ADR-038): mensagem recebida abre a janela de 24h (`lastInboundAt`); consentimento é `ContactChannelConsent` com origem, data e revogação, **nunca criado automaticamente**.
+
 ## 8. Segredos e criptografia
 
 - Segredos **jamais** em DTOs, logs, front, commits ou mensagens de erro. Hook `guard-secrets.sh` **nega** commit de `.env`, chaves privadas e tokens reais (só `.env.example` com placeholders).

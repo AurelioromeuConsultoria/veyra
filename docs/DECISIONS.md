@@ -330,3 +330,27 @@ Continuar acumulando infraestrutura e IA sem canal de distribuição também é 
 O Core continua **não conhecendo o vertical** (§3.8): Clinics estende por extension tables, custom fields e composição no bootstrap. A inversão muda a ordem das entregas, não a arquitetura.
 
 **Consequências:** o próximo marco passa a ser um piloto que compra resultado — mais consultas realizadas, menos faltas, mais retornos — em vez de mais superfície genérica. Preço: o canal WhatsApp traz restrições de plataforma que não são nossas (janela de atendimento de 24h, templates aprovados, opt-in obrigatório) e que vão moldar o modelo de conversa; a Entrega 9 precisa tratá-las como requisito, não como detalhe de integração. E capacidade de IA sem demanda observada deixa de ser roadmap: se nenhum sinal do piloto pedir previsão de pipeline, ela não é construída.
+
+## ADR-037 — Ingestão de webhook público: assinatura sobre o corpo bruto
+
+**Status:** aceito · **Data:** 2026-08-20
+
+**Contexto:** o WhatsApp inverte a direção de todo dado que entrou no Veyra até aqui — a Meta faz `POST` num endpoint nosso, sem sessão, e o corpo diz de qual número é. É o primeiro caminho de **escrita público e não autenticado** do sistema. Nada no payload pode ser tratado como confiável, porque payload é justamente o que o atacante controla.
+**Decisão:** (a) A assinatura `X-Hub-Signature-256` é verificada sobre o **corpo bruto**, com `timingSafeEqual`, **antes de qualquer parse de domínio** — reserializar o JSON para conferir mudaria bytes e invalidaria a comparação. (b) O `phone_number_id` só serve para **roteamento de leitura depois** da assinatura conferir: é ele que localiza o canal e, por consequência, o workspace. Tenant nunca vem do cliente. (c) O endpoint tem teto de corpo próprio, throttle próprio e responde `200` também para eventos que ignora — a Meta reentrega o que não recebe `2xx`, e reentrega de evento desconhecido não deve virar fila de erro. (d) O `GET` de verificação usa `verify_token`, comparado em tempo constante. (e) O **app secret vive no ambiente/keystore do servidor**, não por canal: hoje há um Meta App. Se houver vários, isso vira entidade própria — não uma abstração genérica de integrações.
+**Consequências:** o endpoint é a superfície mais exposta do produto e passa a exigir revisão de segurança em qualquer mudança. Preço: precisamos guardar o corpo bruto na requisição (parser configurado com `verify`), o que é uma exceção deliberada ao parse padrão.
+
+## ADR-038 — Janela de atendimento e consentimento são coisas SEPARADAS
+
+**Status:** aceito · **Data:** 2026-08-20
+
+**Contexto:** é tentador tratar "o paciente me mandou mensagem" como consentimento. A política do WhatsApp trata os dois casos separadamente, e a LGPD também: uma mensagem recebida abre uma **janela de atendimento**; consentimento é **evidência**, com origem, data e possibilidade de revogação.
+**Decisão:** dois conceitos distintos, nenhum derivado do outro. (a) `Conversation.lastInboundAt` é alimentado pela ingestão e define a janela de 24h — **resposta livre dentro dela é permitida**. (b) `ContactChannelConsent` registra opt-in com `source`, `grantedAt` e `revokedAt`, e **nunca é criado automaticamente** por mensagem recebida. (c) Mensagem **iniciada pelo negócio** ou **fora da janela** exige template aprovado **e** consentimento válido. A checagem mora no service de domínio, não no adaptador do canal: no adaptador, todo caminho de envio novo esqueceria a regra.
+**Consequências:** o produto não pode "conquistar" consentimento por acidente, e a diferença aparece na interface — dentro da janela o compositor é livre, fora dela é seleção de template. Preço: registrar opt-in passa a ser um ato explícito do negócio, com tela e trilha próprias.
+
+## ADR-039 — Envio: reserva de dispatch e o caso incerto
+
+**Status:** aceito · **Data:** 2026-08-20
+
+**Contexto:** a Meta não oferece chave de idempotência no envio. Com o outbox sendo ao-menos-uma-vez, uma resposta perdida no meio do caminho ("o provedor recebeu, nossa resposta caiu") faria a mesma mensagem ser enviada duas vezes — e mensagem duplicada para um paciente é dano visível, não ruído interno.
+**Decisão:** o mesmo raciocínio que já usamos para custo de IA (ADR-033), aplicado a entrega. (a) O dispatch é **reservado antes da chamada** (`MessageDispatch` com unique por mensagem). (b) Retentativa automática **só** para falhas comprovadamente **anteriores ao envio** — recusa de validação, credencial inválida, erro de conexão antes do despacho. (c) Timeout ou queda **após possível despacho** marca `unknown_after_dispatch`: **não reenvia**, e fica visível para resolução humana com trilha. (d) `Message` é append-only (ADR-023), então recibo não é `UPDATE`: `MessageStatusEvent` guarda cada fato com o **timestamp do provedor**, deduplicado, e o estado atual é **derivado** — recibos chegam repetidos e fora de ordem, e a interface nunca deve "voltar" de `read` para `delivered`.
+**Consequências:** no pior caso uma mensagem fica pendente de decisão humana em vez de ser duplicada — a escolha é assumida: duplicar é pior. Preço: existe uma fila de casos incertos para alguém resolver, e ela precisa ser visível o suficiente para não acumular em silêncio.

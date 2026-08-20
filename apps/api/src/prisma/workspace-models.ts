@@ -62,6 +62,11 @@ export const WORKSPACE_MODELS = new Set<string>([
   // Automações (Entrega 8.2)
   'Automation',
   'AutomationExecution',
+  // Canal externo: WhatsApp (Entrega 9.1)
+  'ChannelCredential',
+  'ContactChannelConsent',
+  'MessageDispatch',
+  'MessageStatusEvent',
 ]);
 
 /**
@@ -112,6 +117,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     aiRuns: 'AiRun',
     reviewedProposals: 'AiProposal',
     consentChanges: 'AiConsent',
+    grantedConsents: 'ContactChannelConsent',
     // alvo fora do perímetro: travessia via db é bloqueada (sessões só via raw)
     activeSessions: 'RefreshToken',
   },
@@ -142,6 +148,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     calendarEvents: 'CalendarEvent',
     aiProposals: 'AiProposal',
     aiRuns: 'AiRun',
+    contactChannelConsents: 'ContactChannelConsent',
   },
   Tag: {
     workspace: 'Workspace',
@@ -224,6 +231,23 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     automation: 'Automation',
     outboxEvent: 'OutboxEvent',
   },
+  ChannelCredential: {
+    workspace: 'Workspace',
+    channel: 'Channel',
+  },
+  ContactChannelConsent: {
+    workspace: 'Workspace',
+    contact: 'Contact',
+    grantedBy: 'Membership',
+  },
+  MessageDispatch: {
+    workspace: 'Workspace',
+    message: 'Message',
+  },
+  MessageStatusEvent: {
+    workspace: 'Workspace',
+    message: 'Message',
+  },
   Webhook: {
     workspace: 'Workspace',
     deliveries: 'WebhookDelivery',
@@ -246,6 +270,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     workspace: 'Workspace',
     conversations: 'Conversation',
     messages: 'Message',
+    credential: 'ChannelCredential',
   },
   Conversation: {
     workspace: 'Workspace',
@@ -316,5 +341,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     authorMembership: 'Membership',
     authorContact: 'Contact',
     attachments: 'MessageAttachment',
+    messageDispatches: 'MessageDispatch',
+    messageStatusEvents: 'MessageStatusEvent',
   },
 };

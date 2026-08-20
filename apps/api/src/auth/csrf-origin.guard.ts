@@ -1,8 +1,9 @@
 import { timingSafeEqual } from 'node:crypto';
 import { CanActivate, ExecutionContext, ForbiddenException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
-import { AuthContext } from '../common/decorators';
+import { AuthContext, PROVIDER_WEBHOOK_KEY } from '../common/decorators';
 import { CSRF_COOKIE, CSRF_HEADER } from './tokens';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -35,7 +36,10 @@ function constantTimeEqual(a: string, b: string): boolean {
  */
 @Injectable()
 export class CsrfOriginGuard implements CanActivate {
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly reflector: Reflector,
+  ) {}
 
   canActivate(context: ExecutionContext): boolean {
     const request = context
@@ -43,6 +47,19 @@ export class CsrfOriginGuard implements CanActivate {
       .getRequest<Request & { auth?: AuthContext; authVia?: 'header' | 'cookie' }>();
     if (SAFE_METHODS.has(request.method)) return true;
     if (request.authVia === 'header') return true;
+    /**
+     * Webhook de PROVEDOR (e só ele): sem cookie, autenticado por assinatura
+     * HMAC sobre o corpo bruto (ADR-037). CSRF não se aplica porque não há
+     * credencial nossa para o navegador anexar, e provedores não mandam Origin.
+     *
+     * NÃO vale para `@Public()` em geral: o login é público, estabelece cookie
+     * e precisa da validação de Origin contra login cross-site.
+     */
+    const isProviderWebhook = this.reflector.getAllAndOverride<boolean>(PROVIDER_WEBHOOK_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (isProviderWebhook) return true;
 
     const webOrigin = new URL(this.config.getOrThrow<string>('WEB_ORIGIN')).origin;
     const origin = safeOrigin(request.headers.origin);

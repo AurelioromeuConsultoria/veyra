@@ -1,7 +1,7 @@
 import { type INestApplication, type Type } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import cookieParser from 'cookie-parser';
 import { AppModule } from '../../src/app.module';
+import { configureHttp } from '../../src/bootstrap';
 
 /**
  * App Nest REAL para testes de integração HTTP (supertest): mesmos guards
@@ -21,10 +21,10 @@ export async function createTestApp(
   }
   const moduleRef = await builder.compile();
 
-  const app = moduleRef.createNestApplication();
-  app.setGlobalPrefix('api');
-  app.use(cookieParser());
-  app.enableCors({ origin: process.env.WEB_ORIGIN, credentials: true });
+  const app = moduleRef.createNestApplication({ bodyParser: false });
+  // MESMA configuração do bootstrap de produção: o parser com `verify` (corpo
+  // bruto para a assinatura do webhook) precisa existir aqui também
+  configureHttp(app, process.env.WEB_ORIGIN as string);
   await app.init();
   // ESCUTA UMA VEZ, aqui: sem isso o supertest chama server.listen(0) a cada
   // request e, com requests em Promise.all (testes de concorrência), dois

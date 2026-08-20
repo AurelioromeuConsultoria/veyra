@@ -36,6 +36,14 @@ const envSchema = z.object({
   // degrada com clareza (score continua, explicação some)
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
   AI_MODEL: z.string().min(1).default('claude-sonnet-5'),
+  /**
+   * Canal WhatsApp (Entrega 9.1). O APP SECRET vive aqui, no ambiente, e não
+   * por canal (ADR-037): hoje há um único Meta App. Ausentes, o canal
+   * simplesmente não pode ser configurado — o resto do produto segue.
+   */
+  META_APP_SECRET: z.string().min(16).optional(),
+  META_WEBHOOK_VERIFY_TOKEN: z.string().min(16).optional(),
+  META_GRAPH_VERSION: z.string().min(2).default('v21.0'),
 });
 
 export type Env = z.infer<typeof envSchema>;

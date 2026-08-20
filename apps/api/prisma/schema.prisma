@@ -106,6 +106,10 @@ model Workspace {
   usageReservations      UsageReservation[]
   automations            Automation[]
   automationExecutions   AutomationExecution[]
+  channelCredentials     ChannelCredential[]
+  channelConsents        ContactChannelConsent[]
+  messageDispatches      MessageDispatch[]
+  messageStatusEvents    MessageStatusEvent[]
 }
 
 /// Catálogo GLOBAL de permissões (ADR-004): chaves estáveis do sistema —
@@ -177,22 +181,23 @@ model Membership {
   // FK composta (ADR-010): Membership não pode apontar para Role de outro workspace
   role      Role      @relation(fields: [workspaceId, roleId], references: [workspaceId, id])
 
-  ownedCompanies        Company[]       @relation("CompanyOwner")
-  ownedContacts         Contact[]       @relation("ContactOwner")
-  activeSessions        RefreshToken[]  @relation("SessionActiveMembership")
-  ownedDeals            Deal[]          @relation("DealOwner")
-  assignedTasks         Task[]          @relation("TaskAssignee")
-  authoredNotes         Note[]          @relation("NoteAuthor")
-  activities            Activity[]      @relation("ActivityActor")
-  auditLogs             AuditLog[]      @relation("AuditActor")
-  assignedConversations Conversation[]  @relation("ConversationAssignee")
-  authoredMessages      Message[]       @relation("MessageAuthorMembership")
-  organizedEvents       CalendarEvent[] @relation("EventOrganizer")
-  notifications         Notification[]  @relation("NotificationRecipient")
-  uploadedFiles         FileObject[]    @relation("FileUploader")
-  aiRuns                AiRun[]         @relation("AiRunTrigger")
-  reviewedProposals     AiProposal[]    @relation("ProposalReviewer")
-  consentChanges        AiConsent[]     @relation("ConsentAuthor")
+  ownedCompanies        Company[]               @relation("CompanyOwner")
+  ownedContacts         Contact[]               @relation("ContactOwner")
+  activeSessions        RefreshToken[]          @relation("SessionActiveMembership")
+  ownedDeals            Deal[]                  @relation("DealOwner")
+  assignedTasks         Task[]                  @relation("TaskAssignee")
+  authoredNotes         Note[]                  @relation("NoteAuthor")
+  activities            Activity[]              @relation("ActivityActor")
+  auditLogs             AuditLog[]              @relation("AuditActor")
+  assignedConversations Conversation[]          @relation("ConversationAssignee")
+  authoredMessages      Message[]               @relation("MessageAuthorMembership")
+  organizedEvents       CalendarEvent[]         @relation("EventOrganizer")
+  notifications         Notification[]          @relation("NotificationRecipient")
+  uploadedFiles         FileObject[]            @relation("FileUploader")
+  aiRuns                AiRun[]                 @relation("AiRunTrigger")
+  reviewedProposals     AiProposal[]            @relation("ProposalReviewer")
+  consentChanges        AiConsent[]             @relation("ConsentAuthor")
+  grantedConsents       ContactChannelConsent[] @relation("ConsentGranter")
 
   // Alvo de FK composta para Team/ownership futuros
   @@unique([workspaceId, id])
@@ -312,11 +317,12 @@ model Contact {
   notes      Note[]
   activities Activity[]
 
-  conversations  Conversation[]
-  messages       Message[]       @relation("MessageAuthorContact")
-  calendarEvents CalendarEvent[]
-  aiProposals    AiProposal[]
-  aiRuns         AiRun[]
+  conversations          Conversation[]
+  messages               Message[]               @relation("MessageAuthorContact")
+  calendarEvents         CalendarEvent[]
+  aiProposals            AiProposal[]
+  aiRuns                 AiRun[]
+  contactChannelConsents ContactChannelConsent[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, status, createdAt])
@@ -825,9 +831,10 @@ model Channel {
   systemMark  Boolean?
   createdAt   DateTime    @default(now())
 
-  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace     Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   conversations Conversation[]
   messages      Message[]
+  credential    ChannelCredential?
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, systemMark])
@@ -845,6 +852,9 @@ model Conversation {
   /// SEMPRE preenchido (default now() na criação): o keyset do inbox não tem
   /// caso especial de null.
   lastMessageAt        DateTime           @default(now())
+  /// Última mensagem DO CONTATO: define a janela de atendimento de 24h
+  /// (ADR-038). Não é consentimento — este é evidência separada.
+  lastInboundAt        DateTime?
   createdAt            DateTime           @default(now())
 
   workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -884,13 +894,15 @@ model Message {
   deliveredAt        DateTime?
   createdAt          DateTime         @default(now())
 
-  workspace        Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace           Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   // FK TRIPLA: canal da mensagem = canal da conversa, garantido pelo banco
-  conversation     Conversation        @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: Cascade)
-  channel          Channel             @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
-  authorMembership Membership?         @relation("MessageAuthorMembership", fields: [workspaceId, authorMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  authorContact    Contact?            @relation("MessageAuthorContact", fields: [workspaceId, authorContactId], references: [workspaceId, id], onDelete: Cascade)
-  attachments      MessageAttachment[]
+  conversation        Conversation         @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  channel             Channel              @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  authorMembership    Membership?          @relation("MessageAuthorMembership", fields: [workspaceId, authorMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  authorContact       Contact?             @relation("MessageAuthorContact", fields: [workspaceId, authorContactId], references: [workspaceId, id], onDelete: Cascade)
+  attachments         MessageAttachment[]
+  messageDispatches   MessageDispatch[]
+  messageStatusEvents MessageStatusEvent[]
 
   @@unique([workspaceId, id])
   // dedup de ingestão externa (nulos não colidem: mensagem interna não tem externalId)
@@ -1292,4 +1304,132 @@ model AutomationExecution {
 
   @@unique([workspaceId, automationId, outboxEventId])
   @@index([workspaceId, createdAt(sort: Desc)])
+}
+
+// ─── Canal externo: WhatsApp (Entrega 9.1) ────────────────────────────────────
+
+/**
+ * Credencial DO CANAL (ADR-037). O **app secret** NÃO fica aqui: vive no
+ * ambiente/keystore do servidor, porque hoje há um único Meta App. Aqui ficam
+ * os dados do número e o token de envio, cifrado (AES-256-GCM). Nada disto
+ * aparece em DTO, log, auditoria, cache ou idempotência.
+ */
+model ChannelCredential {
+  channelId         String   @id @db.Uuid
+  workspaceId       String   @db.Uuid
+  /// id do número no provedor — é a chave de ROTEAMENTO da ingestão
+  phoneNumberId     String
+  /// id da conta business (WABA), para diagnóstico e templates
+  businessAccountId String
+  /// token de envio CIFRADO — jamais em claro
+  tokenCipher       String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  channel   Channel   @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+
+  /// o número é global no provedor: dois workspaces não podem reivindicá-lo
+  @@unique([phoneNumberId])
+  // 1:1 com o canal, e a FK é composta
+  @@unique([workspaceId, channelId])
+  @@index([workspaceId])
+}
+
+enum ConsentSource {
+  /// formulário/landing com aceite explícito
+  form
+  /// registrado por um atendente, com evidência fora do sistema
+  agent
+  /// importado de base anterior, com evidência documentada
+  import
+}
+
+/**
+ * CONSENTIMENTO (ADR-038): evidência com origem, data e revogação. NUNCA é
+ * criado por mensagem recebida — mensagem abre janela de atendimento, que é
+ * outra coisa. Exigido para mensagem iniciada pelo negócio ou fora da janela.
+ */
+model ContactChannelConsent {
+  id                    String        @id @default(uuid()) @db.Uuid
+  workspaceId           String        @db.Uuid
+  contactId             String        @db.Uuid
+  channelType           ChannelType
+  source                ConsentSource
+  /// nota curta de evidência (onde/como) — nunca dado sensível
+  evidence              String?
+  grantedAt             DateTime      @default(now())
+  revokedAt             DateTime?
+  grantedByMembershipId String?       @db.Uuid
+
+  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contact   Contact     @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  grantedBy Membership? @relation("ConsentGranter", fields: [workspaceId, grantedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+
+  /// um consentimento VIGENTE por (contato, canal) — histórico fica pelas
+  /// linhas revogadas, que saem do unique parcial
+  @@index([workspaceId, contactId, channelType])
+}
+
+enum DispatchState {
+  /// reservado ANTES da chamada ao provedor (ADR-039)
+  reserved
+  sent
+  /// falha COMPROVADAMENTE anterior ao envio: retentável
+  failed_before_send
+  /// timeout/queda após possível despacho: NÃO reenviar, resolver com humano
+  unknown_after_dispatch
+}
+
+/**
+ * RESERVA de envio (ADR-039). O unique por mensagem é o que impede o outbox de
+ * mandar a mesma mensagem duas vezes quando a resposta do provedor se perde.
+ */
+model MessageDispatch {
+  messageId   String        @id @db.Uuid
+  workspaceId String        @db.Uuid
+  state       DispatchState @default(reserved)
+  /// id no provedor (wamid), conhecido só depois do envio bem-sucedido
+  externalId  String?
+  /// código curto do provedor — nunca corpo de resposta nem stack trace
+  errorCode   String?
+  attempts    Int           @default(0)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  message   Message   @relation(fields: [workspaceId, messageId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, externalId])
+  @@index([workspaceId, state])
+}
+
+enum MessageStatus {
+  sent
+  delivered
+  read
+  failed
+}
+
+/**
+ * RECIBOS (ADR-039): `Message` é append-only, então status não é UPDATE. Cada
+ * fato é uma linha com o timestamp DO PROVEDOR; recibos chegam repetidos e fora
+ * de ordem, então o unique deduplica e o estado atual é DERIVADO na leitura.
+ */
+model MessageStatusEvent {
+  id          String        @id @default(uuid()) @db.Uuid
+  workspaceId String        @db.Uuid
+  messageId   String        @db.Uuid
+  status      MessageStatus
+  /// timestamp informado pelo provedor — a ordem é dele, não a de chegada
+  occurredAt  DateTime
+  errorCode   String?
+  createdAt   DateTime      @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  message   Message   @relation(fields: [workspaceId, messageId], references: [workspaceId, id], onDelete: Cascade)
+
+  /// reentrega do mesmo recibo não duplica o fato
+  @@unique([workspaceId, messageId, status])
+  @@index([workspaceId, messageId, occurredAt])
 }

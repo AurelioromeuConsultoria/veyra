@@ -12,4 +12,6 @@ process.env.JWT_SECRET ??= 'jwt-secret-de-teste-de-integracao-32ch';
 process.env.WEB_ORIGIN ??= 'http://localhost:5175';
 process.env.TOKEN_ENCRYPTION_KEY ??= 'chave-de-cifra-de-teste-de-integracao-32';
 // storage isolado por worker: os bytes dos testes nunca tocam o .storage de dev
+process.env.META_APP_SECRET ??= 'app-secret-de-teste-de-integracao';
+process.env.META_WEBHOOK_VERIFY_TOKEN ??= 'verify-token-de-teste-integracao';
 process.env.STORAGE_ROOT ??= `.storage-test/${process.env.JEST_WORKER_ID ?? '1'}`;

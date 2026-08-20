@@ -54,6 +54,13 @@ const DOCUMENTED_LOOSE_COLUMNS = new Set([
   // A integridade que importa aqui é o unique de dedup por canal
   // (workspaceId, channelId, externalId), que existe. ADR-023.
   'Message.externalId',
+  // identificadores DO PROVEDOR (Meta), não referências locais: número,
+  // conta business e id da mensagem enviada (wamid). Não há tabela nossa para
+  // referenciar; a integridade que importa é o unique de roteamento
+  // (phoneNumberId) e o unique de dedupe do dispatch. ADR-037/039.
+  'ChannelCredential.phoneNumberId',
+  'ChannelCredential.businessAccountId',
+  'MessageDispatch.externalId',
 ]);
 
 interface FkRow {

@@ -16,6 +16,7 @@ import { RequestIdMiddleware } from './common/request-id.middleware';
 import { WorkspaceThrottleGuard } from './common/workspace-throttle.guard';
 import { CompaniesModule } from './companies/companies.module';
 import { ConversationsModule } from './conversations/conversations.module';
+import { ChannelsModule } from './channels/channels.module';
 import { AutomationsModule } from './automations/automations.module';
 import { UsageModule } from './usage/usage.module';
 import { IntelligenceModule } from './intelligence/intelligence.module';
@@ -76,6 +77,7 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
     FilesModule,
     UsageModule,
     AutomationsModule,
+    ChannelsModule,
     IntelligenceModule,
   ],
   controllers: [HealthController],
