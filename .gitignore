@@ -30,3 +30,7 @@ test-results/
 # Claude Code — estado local de sessão
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
+
+# storage local de arquivos (ADR-024)
+.storage/
+.storage-test/

@@ -16,6 +16,7 @@ import { RequestIdMiddleware } from './common/request-id.middleware';
 import { WorkspaceThrottleGuard } from './common/workspace-throttle.guard';
 import { CompaniesModule } from './companies/companies.module';
 import { ConversationsModule } from './conversations/conversations.module';
+import { FilesModule } from './files/files.module';
 import { CalendarModule } from './calendar/calendar.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { ContactsModule } from './contacts/contacts.module';
@@ -69,6 +70,7 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
     ConversationsModule,
     NotificationsModule,
     CalendarModule,
+    FilesModule,
   ],
   controllers: [HealthController],
   providers: [

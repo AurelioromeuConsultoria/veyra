@@ -45,6 +45,8 @@ export type ListConversationsInput = z.infer<typeof listConversationsSchema>;
 export const createMessageSchema = z.object({
   direction: messageDirectionSchema,
   body: z.string().trim().min(1).max(10000),
+  /** ids de FileObject já enviados; anexar é parte da criação (append-only) */
+  attachmentIds: z.array(z.string().uuid()).max(5).optional(),
 });
 export type CreateMessageInput = z.infer<typeof createMessageSchema>;
 
@@ -67,12 +69,21 @@ export interface ConversationDto {
   createdAt: string;
 }
 
+export interface MessageAttachmentDto {
+  fileObjectId: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  scanStatus: 'pending' | 'clean' | 'quarantined';
+}
+
 export interface MessageDto {
   id: string;
   direction: MessageDirection;
   authorType: MessageAuthorType;
   authorName: string | null;
   body: string;
+  attachments: MessageAttachmentDto[];
   deliveredAt: string | null;
   createdAt: string;
 }

@@ -32,13 +32,13 @@ Pipelines/estágios configuráveis, deals com kanban, tarefas, notas, `Activity`
 `AuditLog` com allowlist/redaction, rate limit (auth + API), `Idempotency-Key`, `OutboxEvent` + worker pg-boss, webhooks out com HMAC e retry.
 **Pronto quando:** toda mutação relevante audita; webhook entrega com retry e dedupe; replay de Idempotency-Key devolve a mesma resposta.
 
-## Entrega 6 — Comunicação e organização 🚧
+## Entrega 6 — Comunicação e organização ✅
 
 - **6.1 — Conversas ✅** canal interno único por workspace (ADR-023), inbox denso com keyset, mensagem manual nos dois sentidos com autor derivado da direção, `@Idempotent()` no envio, `Message` append-only e timeline integrada sem corpo de mensagem.
 - **6.2 — Agenda e notificações ✅** `CalendarEvent` com CHECK `endAt > startAt` no banco, FKs compostas e consulta por janela; `Notification` com `dedupeKey` idempotente e caixa pessoal (`@AuthenticatedOnly`); visão semanal e sino com polling de 60s.
-- **6.3 — Arquivos 🔜** política do SECURITY.md §7 (magic bytes, prefixo por workspace, download autorizado, `scanStatus`), anexos em conversa, exclusão física pelo outbox.
+- **6.3 — Arquivos ✅** allowlist com sniffer próprio (ADR-025), chave prefixada por workspace (ADR-024), download autenticado com `attachment`+`nosniff`, `scanStatus` com portão de saída externa, anexos em conversa e expurgo físico por evento interno do outbox.
 
-**Pronto quando:** conversa manual ponta a ponta com timeline integrada (✅ 6.1); upload rejeita tipo divergente.
+**Pronto quando:** conversa manual ponta a ponta com timeline integrada (✅ 6.1); upload rejeita tipo divergente (✅ 6.3).
 
 ## Entrega 7 — `intelligence` v1 🔜
 

@@ -46,6 +46,9 @@ export const WORKSPACE_MODELS = new Set<string>([
   // Organização (Entrega 6.2)
   'CalendarEvent',
   'Notification',
+  // Arquivos (Entrega 6.3)
+  'FileObject',
+  'MessageAttachment',
 ]);
 
 /**
@@ -92,6 +95,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     authoredMessages: 'Message',
     organizedEvents: 'CalendarEvent',
     notifications: 'Notification',
+    uploadedFiles: 'FileObject',
     // alvo fora do perímetro: travessia via db é bloqueada (sessões só via raw)
     activeSessions: 'RefreshToken',
   },
@@ -229,11 +233,21 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     workspace: 'Workspace',
     recipient: 'Membership',
   },
+  FileObject: {
+    workspace: 'Workspace',
+    uploadedBy: 'Membership',
+    attachments: 'MessageAttachment',
+  },
+  MessageAttachment: {
+    message: 'Message',
+    file: 'FileObject',
+  },
   Message: {
     workspace: 'Workspace',
     conversation: 'Conversation',
     channel: 'Channel',
     authorMembership: 'Membership',
     authorContact: 'Contact',
+    attachments: 'MessageAttachment',
   },
 };

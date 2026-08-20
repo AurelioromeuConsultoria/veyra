@@ -66,8 +66,30 @@ async function run<T>(method: string, path: string, body?: unknown, retried = fa
   return (await res.json()) as T;
 }
 
+/**
+ * Upload é o único caminho que NÃO manda JSON: o browser precisa montar o
+ * boundary do multipart sozinho, então não definimos Content-Type aqui.
+ */
+async function upload<T>(path: string, file: File, retried = false): Promise<T> {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await fetch(path, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'x-csrf-token': csrfToken() },
+    body: form,
+  });
+  if (res.status === 401 && !retried && (await tryRefresh())) return upload<T>(path, file, true);
+  if (!res.ok) {
+    const payload = (await res.json().catch(() => null)) as { message?: string } | null;
+    throw new ApiError(res.status, payload?.message ?? `Erro ${res.status}`);
+  }
+  return (await res.json()) as T;
+}
+
 export const api = {
   get: <T>(path: string) => run<T>('GET', path),
+  upload,
   post: <T>(path: string, body?: unknown) => run<T>('POST', path, body),
   patch: <T>(path: string, body?: unknown) => run<T>('PATCH', path, body),
   delete: <T>(path: string) => run<T>('DELETE', path),

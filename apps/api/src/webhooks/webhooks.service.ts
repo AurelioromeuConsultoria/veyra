@@ -5,7 +5,12 @@ import { AuditService } from '../audit/audit.service';
 import { AuthContext } from '../common/decorators';
 import { CryptoService } from '../common/crypto.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
-import { MAX_ATTEMPTS, OutboxService, type ClaimedEvent } from '../outbox/outbox.service';
+import {
+  INTERNAL_EVENT_TYPES,
+  MAX_ATTEMPTS,
+  OutboxService,
+  type ClaimedEvent,
+} from '../outbox/outbox.service';
 import { UnsafeUrlError, assertSafeWebhookUrl, type SafeFetchResult } from './safe-http';
 
 /**
@@ -185,6 +190,15 @@ export class WebhooksService {
    * worker; `raw` justificado (cross-workspace, com workspaceId explícito).
    */
   async deliver(event: ClaimedEvent): Promise<void> {
+    // defesa em profundidade: o dispatcher já roteia eventos internos para o
+    // handler próprio e o contrato de webhook nem os lista — mas um evento
+    // interno carrega dado de infraestrutura (chave de storage) e não pode
+    // sair para cliente por nenhum caminho
+    if (INTERNAL_EVENT_TYPES.has(event.eventType)) {
+      this.logger.error(`Evento interno ${event.eventType} chegou ao entregador de webhook`);
+      await this.outbox.markDelivered(event.id, event.claimToken);
+      return;
+    }
     const webhooks = await this.prisma.raw.webhook.findMany({
       where: {
         workspaceId: event.workspaceId,

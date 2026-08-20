@@ -30,6 +30,8 @@ const envSchema = z.object({
     .default('false')
     .transform((value) => value === 'true'),
   AUDIT_RETENTION_DAYS: z.coerce.number().int().min(30).max(3650).default(365),
+  // raiz do storage local (ADR-024); com S3 vira bucket + credencial cifrada
+  STORAGE_ROOT: z.string().min(1).default('.storage'),
 });
 
 export type Env = z.infer<typeof envSchema>;

@@ -97,6 +97,7 @@ model Workspace {
   messages               Message[]
   calendarEvents         CalendarEvent[]
   notifications          Notification[]
+  files                  FileObject[]
 }
 
 /// Catálogo GLOBAL de permissões (ADR-004): chaves estáveis do sistema —
@@ -180,6 +181,7 @@ model Membership {
   authoredMessages      Message[]       @relation("MessageAuthorMembership")
   organizedEvents       CalendarEvent[] @relation("EventOrganizer")
   notifications         Notification[]  @relation("NotificationRecipient")
+  uploadedFiles         FileObject[]    @relation("FileUploader")
 
   // Alvo de FK composta para Team/ownership futuros
   @@unique([workspaceId, id])
@@ -849,12 +851,13 @@ model Message {
   deliveredAt        DateTime?
   createdAt          DateTime         @default(now())
 
-  workspace        Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace        Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   // FK TRIPLA: canal da mensagem = canal da conversa, garantido pelo banco
-  conversation     Conversation @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: Cascade)
-  channel          Channel      @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
-  authorMembership Membership?  @relation("MessageAuthorMembership", fields: [workspaceId, authorMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  authorContact    Contact?     @relation("MessageAuthorContact", fields: [workspaceId, authorContactId], references: [workspaceId, id], onDelete: Cascade)
+  conversation     Conversation        @relation(fields: [workspaceId, channelId, conversationId], references: [workspaceId, channelId, id], onDelete: Cascade)
+  channel          Channel             @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  authorMembership Membership?         @relation("MessageAuthorMembership", fields: [workspaceId, authorMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  authorContact    Contact?            @relation("MessageAuthorContact", fields: [workspaceId, authorContactId], references: [workspaceId, id], onDelete: Cascade)
+  attachments      MessageAttachment[]
 
   @@unique([workspaceId, id])
   // dedup de ingestão externa (nulos não colidem: mensagem interna não tem externalId)
@@ -919,4 +922,52 @@ model Notification {
   @@unique([workspaceId, dedupeKey])
   // caixa pessoal: não lidas primeiro, mais recentes no topo
   @@index([workspaceId, recipientMembershipId, readAt, createdAt(sort: Desc)])
+}
+
+// ─── Arquivos (Entrega 6.3) ───────────────────────────────────────────────────
+
+/// pending → nunca saiu para canal externo; clean → liberado; quarantined →
+/// nem download interno. Marcar clean exige scanner real (SECURITY.md §7.5).
+enum FileScanStatus {
+  pending
+  clean
+  quarantined
+}
+
+model FileObject {
+  id                     String         @id @default(uuid()) @db.Uuid
+  workspaceId            String         @db.Uuid
+  /// chave no storage, SEMPRE derivada no servidor: {workspaceId}/{uuid}{ext}
+  key                    String
+  fileName               String
+  /// MIME DETECTADO por magic bytes — nunca o declarado pelo cliente (ADR-025)
+  mimeType               String
+  sizeBytes              Int
+  uploadedByMembershipId String         @db.Uuid
+  scanStatus             FileScanStatus @default(pending)
+  createdAt              DateTime       @default(now())
+
+  workspace   Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  uploadedBy  Membership          @relation("FileUploader", fields: [workspaceId, uploadedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  attachments MessageAttachment[]
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, key])
+  @@index([workspaceId, createdAt(sort: Desc)])
+  @@index([workspaceId, scanStatus])
+}
+
+/// Anexo de mensagem: as DUAS pontas em FK composta — anexo não alcança
+/// mensagem nem arquivo de outro workspace.
+model MessageAttachment {
+  id           String @id @default(uuid()) @db.Uuid
+  workspaceId  String @db.Uuid
+  messageId    String @db.Uuid
+  fileObjectId String @db.Uuid
+
+  message Message    @relation(fields: [workspaceId, messageId], references: [workspaceId, id], onDelete: Cascade)
+  file    FileObject @relation(fields: [workspaceId, fileObjectId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, messageId, fileObjectId])
+  @@index([workspaceId, fileObjectId])
 }

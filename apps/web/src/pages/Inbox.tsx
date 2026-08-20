@@ -3,11 +3,12 @@ import type {
   ConversationDto,
   ConversationPageDto,
   ConversationStatus,
+  FileObjectDto,
   MessageDto,
   MessagePageDto,
 } from '@veyra/contracts';
 import { clsx } from 'clsx';
-import { MessageSquarePlus, Send } from 'lucide-react';
+import { MessageSquarePlus, Paperclip, Send, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '../components/ui/button';
 import { Input, Select } from '../components/ui/input';
@@ -30,6 +31,7 @@ export function InboxPage() {
   const [status, setStatus] = useState<'open' | 'pending' | 'closed' | 'all'>('open');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  const [attachments, setAttachments] = useState<FileObjectDto[]>([]);
   const [subject, setSubject] = useState('');
   const [error, setError] = useState<string | null>(null);
 
@@ -64,14 +66,25 @@ export function InboxPage() {
     onError: (e) => setError(e instanceof ApiError ? e.message : 'Falha ao criar conversa'),
   });
 
+  const attach = useMutation({
+    mutationFn: (file: File) => api.upload<FileObjectDto>('/api/files', file),
+    onSuccess: (file) => {
+      setAttachments((current) => [...current, file]);
+      setError(null);
+    },
+    onError: (e) => setError(e instanceof ApiError ? e.message : 'Falha ao enviar arquivo'),
+  });
+
   const send = useMutation({
     mutationFn: (direction: 'inbound' | 'outbound') =>
       api.post<MessageDto>(`/api/conversations/${selectedId}/messages`, {
         direction,
         body: draft.trim(),
+        attachmentIds: attachments.map((file) => file.id),
       }),
     onSuccess: () => {
       setDraft('');
+      setAttachments([]);
       setError(null);
       invalidate();
     },
@@ -226,6 +239,25 @@ export function InboxPage() {
                 </div>
                 {/* React escapa por padrão: corpo de mensagem nunca vira HTML */}
                 <p className="mt-1 whitespace-pre-wrap text-[13px]">{message.body}</p>
+                {message.attachments.length > 0 ? (
+                  <ul className="mt-1.5 space-y-0.5">
+                    {message.attachments.map((file) => (
+                      <li key={file.fileObjectId}>
+                        {/* download passa pelo endpoint autorizado, nunca por URL pública */}
+                        <a
+                          className="flex items-center gap-1 text-[11px] text-accent hover:underline"
+                          href={`/api/files/${file.fileObjectId}/content`}
+                        >
+                          <Paperclip size={11} />
+                          <span className="truncate">{file.fileName}</span>
+                          <span className="font-mono tabular-nums text-muted-fg">
+                            {Math.ceil(file.sizeBytes / 1024)} kB
+                          </span>
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
               </div>
             ))}
             {messages.data && thread.length === 0 ? (
@@ -243,42 +275,81 @@ export function InboxPage() {
 
           {canWrite ? (
             <form
-              className="flex items-end gap-2 border-t border-border px-5 py-3"
+              className="border-t border-border px-5 py-3"
               onSubmit={(e) => {
                 e.preventDefault();
                 if (draft.trim()) send.mutate('outbound');
               }}
             >
-              <textarea
-                className="min-h-[38px] flex-1 resize-y rounded-md border border-border bg-background px-3 py-2 text-[13px] outline-none focus:border-accent"
-                rows={1}
-                placeholder="Registrar mensagem…"
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                aria-label="Corpo da mensagem"
-              />
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                disabled={!draft.trim() || send.isPending || !selected.contactId}
-                onClick={() => send.mutate('inbound')}
-                title={
-                  selected.contactId
-                    ? 'Registrar como recebida do contato'
-                    : 'Vincule um contato para registrar mensagens recebidas'
-                }
-              >
-                Recebida
-              </Button>
-              <Button
-                type="submit"
-                variant="primary"
-                size="sm"
-                disabled={!draft.trim() || send.isPending}
-              >
-                <Send size={13} /> Enviada
-              </Button>
+              {attachments.length > 0 ? (
+                <ul className="mb-2 flex flex-wrap gap-1.5">
+                  {attachments.map((file) => (
+                    <li
+                      key={file.id}
+                      className="flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[11px]"
+                    >
+                      <Paperclip size={10} />
+                      <span className="max-w-40 truncate">{file.fileName}</span>
+                      <button
+                        type="button"
+                        aria-label={`Remover ${file.fileName}`}
+                        onClick={() =>
+                          setAttachments((current) => current.filter((f) => f.id !== file.id))
+                        }
+                      >
+                        <X size={10} className="text-muted-fg hover:text-negative" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              <div className="flex items-end gap-2">
+                <textarea
+                  className="min-h-[38px] flex-1 resize-y rounded-md border border-border bg-background px-3 py-2 text-[13px] outline-none focus:border-accent"
+                  rows={1}
+                  placeholder="Registrar mensagem…"
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  aria-label="Corpo da mensagem"
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  disabled={!draft.trim() || send.isPending || !selected.contactId}
+                  onClick={() => send.mutate('inbound')}
+                  title={
+                    selected.contactId
+                      ? 'Registrar como recebida do contato'
+                      : 'Vincule um contato para registrar mensagens recebidas'
+                  }
+                >
+                  Recebida
+                </Button>
+                <label className="cursor-pointer rounded px-2 py-1.5 text-muted-fg hover:bg-surface-2">
+                  <Paperclip size={14} />
+                  <span className="sr-only">Anexar arquivo</span>
+                  <input
+                    type="file"
+                    className="hidden"
+                    aria-label="Anexar arquivo"
+                    disabled={attach.isPending || attachments.length >= 5}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) attach.mutate(file);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+                <Button
+                  type="submit"
+                  variant="primary"
+                  size="sm"
+                  disabled={!draft.trim() || send.isPending}
+                >
+                  <Send size={13} /> Enviada
+                </Button>
+              </div>
             </form>
           ) : null}
         </div>

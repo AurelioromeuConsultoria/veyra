@@ -37,6 +37,8 @@ export const AUDIT_FIELDS: Record<string, readonly string[]> = {
   pipeline: ['name', 'defaultMark'],
   stage: ['name', 'order', 'probability', 'type'],
   webhook: ['url', 'events', 'status'], // secretCipher JAMAIS
+  // nome e tipo bastam para a trilha; a CHAVE de storage nunca é auditada
+  file: ['fileName', 'mimeType', 'scanStatus'],
 };
 
 export interface AuditActorInput {

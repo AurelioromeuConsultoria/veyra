@@ -32,10 +32,25 @@ export const OUTBOX_EVENTS = {
   'deal.won': z.object({ id: z.string().uuid(), amountCents: z.number().int() }).strict(),
   'deal.lost': z.object({ id: z.string().uuid(), amountCents: z.number().int() }).strict(),
   'task.completed': z.object({ id: z.string().uuid(), title: z.string().max(200) }).strict(),
+  /**
+   * INTERNO (ADR-024): expurgo físico de arquivo. Carrega a CHAVE de storage e
+   * por isso NUNCA pode ser entregue a webhook de cliente — o dispatcher o
+   * roteia para o handler interno e `INTERNAL_EVENT_TYPES` o mantém fora da
+   * lista de eventos assináveis.
+   */
+  'file.purge': z.object({ key: z.string().max(200) }).strict(),
 } as const;
+
+/** Eventos que NUNCA saem para webhook: são trabalho interno da plataforma. */
+export const INTERNAL_EVENT_TYPES = new Set<string>(['file.purge']);
 
 export type OutboxEventType = keyof typeof OUTBOX_EVENTS;
 export const OUTBOX_EVENT_TYPES = Object.keys(OUTBOX_EVENTS) as OutboxEventType[];
+
+/** Só estes podem ser assinados por webhook (contrato público). */
+export const WEBHOOK_EVENT_TYPES = OUTBOX_EVENT_TYPES.filter(
+  (type) => !INTERNAL_EVENT_TYPES.has(type),
+);
 
 /** Backoff exponencial: 1min, 5min, 25min… até MAX_ATTEMPTS → dead. */
 const BASE_DELAY_MS = 60_000;

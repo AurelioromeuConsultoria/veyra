@@ -80,7 +80,9 @@ Política obrigatória para `FileObject`:
 3. **Storage prefixado por workspace** (`{workspaceId}/...`) — o prefixo é derivado do CLS, nunca de input do cliente.
 4. **Autorização no download**: URL nunca é pública; download passa por endpoint autenticado (ou URL assinada de curtíssima duração) que checa permissão + workspace.
 5. **Antivírus/quarentena**: `scanStatus` (pending/clean/quarantined) no modelo desde o início; arquivo só é servível a terceiros/canais externos quando `clean`. Integração de scanning pode ser adiada, o estado não.
-6. Cifra na borda para conteúdo sensível (cifrar bytes antes do `put`).
+6. Cifra na borda para conteúdo sensível (cifrar bytes antes do `put`). **Ainda não implementado** — dívida com gatilho em `docs/MEMORY/technical-debt.md`.
+
+**Como está implementado (Entrega 6.3):** allowlist fechada de sete tipos com sniffer próprio (ADR-025) — PNG, JPEG, GIF, WebP, PDF, ZIP/OOXML e texto; **SVG fora**, por ser XML executável. Texto só passa se for UTF-8 válido **sem bytes de controle** (só NUL não basta: um binário pequeno pode não ter nenhum). Extensão que diverge do conteúdo é rejeitada. Chave `{workspaceId}/{uuid}{ext}` derivada do CLS e validada contra travessia. `FileObject` **nunca nasce `clean`**; `quarantined` não é servido nem internamente; `pending` baixa internamente mas **não sai para canal externo** (`assertSendableExternally`, no caminho por onde o primeiro provider vai passar). Download é sempre autenticado + `files:read`, com `Content-Disposition: attachment`, `X-Content-Type-Options: nosniff`, CSP `sandbox` e o **MIME detectado**. Limites: 10 MB por arquivo, 1 arquivo por requisição. Exclusão física sai da transação e vai pelo evento **interno** `file.purge` do outbox, que nunca é entregue a webhook de cliente (a chave de storage não vaza).
 
 ## 7-B. Webhooks de saída (ADR-021)
 

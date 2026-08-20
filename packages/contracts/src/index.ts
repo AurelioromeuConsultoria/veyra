@@ -8,6 +8,7 @@ export * from './contacts';
 export * from './conversations';
 export * from './custom-fields';
 export * from './deals';
+export * from './files';
 export * from './health';
 export * from './members';
 export * from './notes';

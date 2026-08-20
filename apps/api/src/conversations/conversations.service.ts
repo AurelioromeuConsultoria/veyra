@@ -6,11 +6,13 @@ import type {
   CreateMessageInput,
   ListConversationsInput,
   ListMessagesInput,
+  MessageAttachmentDto,
   MessageDto,
   MessagePageDto,
   UpdateConversationInput,
 } from '@veyra/contracts';
 import { ActivitiesService } from '../activities/activities.service';
+import { FilesService } from '../files/files.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { AuthContext } from '../common/decorators';
 import { PrismaService, type Db } from '../prisma/prisma.service';
@@ -20,6 +22,7 @@ type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
 type ConversationRow = {
   id: string;
   channelId: string;
+  channelType?: 'internal' | 'email' | 'whatsapp';
   contactId: string | null;
   subject: string | null;
   status: 'open' | 'pending' | 'closed';
@@ -63,6 +66,7 @@ export class ConversationsService {
     private readonly prisma: PrismaService,
     private readonly activities: ActivitiesService,
     private readonly notifications: NotificationsService,
+    private readonly files: FilesService,
   ) {}
 
   /**
@@ -200,6 +204,20 @@ export class ConversationsService {
       );
     }
 
+    // anexos: precisam existir NESTE workspace (o findMany filtrado garante) e,
+    // se a conversa for de canal EXTERNO, precisam estar `clean` — arquivo
+    // pendente de verificação não sai do Veyra (§7.5)
+    const attachments = await this.files.loadForAttachment(input.attachmentIds ?? []);
+    if (attachments.length > 0) {
+      const channel = await this.prisma.db.channel.findFirst({
+        where: { id: conversation.channelId },
+        select: { type: true },
+      });
+      if (channel?.type !== 'internal') {
+        this.files.assertSendableExternally(attachments);
+      }
+    }
+
     const db = this.prisma.db as unknown as TxRunner;
     const id = await db.$transaction(async (tx) => {
       const message = await tx.message.create({
@@ -216,6 +234,16 @@ export class ConversationsService {
           deliveredAt: new Date(),
         },
       } as never);
+
+      if (attachments.length > 0) {
+        await tx.messageAttachment.createMany({
+          data: attachments.map((file) => ({
+            workspaceId: auth.workspaceId as string,
+            messageId: (message as unknown as { id: string }).id,
+            fileObjectId: file.id,
+          })),
+        } as never);
+      }
 
       await tx.conversation.updateMany({
         where: { id: conversationId },
@@ -324,9 +352,10 @@ export class ConversationsService {
   }
 
   private async toMessageDtos(rows: MessageRow[]): Promise<MessageDto[]> {
-    const [memberNames, contactNames] = await Promise.all([
+    const [memberNames, contactNames, attachments] = await Promise.all([
       this.resolveMemberNames(rows.map((r) => r.authorMembershipId)),
       this.resolveContactNames(rows.map((r) => r.authorContactId)),
+      this.resolveAttachments(rows.map((r) => r.id)),
     ]);
     return rows.map((row) => ({
       id: row.id,
@@ -338,9 +367,46 @@ export class ConversationsService {
           ? (contactNames.get(row.authorContactId) ?? null)
           : null,
       body: row.body,
+      attachments: attachments.get(row.id) ?? [],
       deliveredAt: row.deliveredAt?.toISOString() ?? null,
       createdAt: row.createdAt.toISOString(),
     }));
+  }
+
+  private async resolveAttachments(
+    messageIds: string[],
+  ): Promise<Map<string, MessageAttachmentDto[]>> {
+    if (messageIds.length === 0) return new Map();
+    const links = (await this.prisma.db.messageAttachment.findMany({
+      where: { messageId: { in: messageIds } },
+    } as never)) as unknown as { messageId: string; fileObjectId: string }[];
+    if (links.length === 0) return new Map();
+    const files = (await this.prisma.db.fileObject.findMany({
+      where: { id: { in: [...new Set(links.map((l) => l.fileObjectId))] } },
+    } as never)) as unknown as {
+      id: string;
+      fileName: string;
+      mimeType: string;
+      sizeBytes: number;
+      scanStatus: 'pending' | 'clean' | 'quarantined';
+    }[];
+    const byId = new Map(files.map((f) => [f.id, f]));
+    const result = new Map<string, MessageAttachmentDto[]>();
+    for (const link of links) {
+      const file = byId.get(link.fileObjectId);
+      if (!file) continue;
+      result.set(link.messageId, [
+        ...(result.get(link.messageId) ?? []),
+        {
+          fileObjectId: file.id,
+          fileName: file.fileName,
+          mimeType: file.mimeType,
+          sizeBytes: file.sizeBytes,
+          scanStatus: file.scanStatus,
+        },
+      ]);
+    }
+    return result;
   }
 
   private async resolveContactNames(ids: (string | null)[]): Promise<Map<string, string>> {

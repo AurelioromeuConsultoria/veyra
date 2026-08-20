@@ -2,7 +2,8 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import { PgBoss } from 'pg-boss';
 import { AuditService } from '../audit/audit.service';
-import { OutboxService } from '../outbox/outbox.service';
+import { FilesService } from '../files/files.service';
+import { INTERNAL_EVENT_TYPES, OutboxService } from '../outbox/outbox.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
 
 const OUTBOX_QUEUE = 'outbox-dispatch';
@@ -23,6 +24,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     private readonly outbox: OutboxService,
     private readonly webhooks: WebhooksService,
     private readonly audit: AuditService,
+    private readonly files: FilesService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -65,7 +67,12 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     let failed = 0;
     for (const event of batch) {
       try {
-        await this.webhooks.deliver(event);
+        if (INTERNAL_EVENT_TYPES.has(event.eventType)) {
+          // trabalho interno da plataforma: NUNCA vai para webhook de cliente
+          await this.handleInternal(event);
+        } else {
+          await this.webhooks.deliver(event);
+        }
         delivered += 1;
       } catch (error) {
         failed += 1;
@@ -79,5 +86,23 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       }
     }
     return { delivered, failed };
+  }
+
+  /**
+   * Handler dos eventos internos. Hoje só `file.purge`: apaga os bytes depois
+   * que a linha já saiu do banco (ADR-024), com o lease/fencing do outbox
+   * garantindo que um worker lento não apague o arquivo de outra tentativa.
+   */
+  private async handleInternal(event: {
+    id: string;
+    eventType: string;
+    payload: unknown;
+    claimToken: string;
+  }): Promise<void> {
+    if (event.eventType === 'file.purge') {
+      const { key } = event.payload as { key: string };
+      await this.files.purge(key);
+    }
+    await this.outbox.markDelivered(event.id, event.claimToken);
   }
 }
