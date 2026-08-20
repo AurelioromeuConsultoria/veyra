@@ -1,4 +1,4 @@
-import { INestApplication, Type } from '@nestjs/common';
+import { type INestApplication, type Type } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import cookieParser from 'cookie-parser';
 import { AppModule } from '../../src/app.module';

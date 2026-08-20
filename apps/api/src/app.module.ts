@@ -10,6 +10,7 @@ import { PermissionsGuard } from './auth/permissions.guard';
 import { validateEnv } from './common/env';
 import { HealthController } from './health/health.controller';
 import { PrismaModule } from './prisma/prisma.module';
+import { WorkspacesModule } from './workspaces/workspaces.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { PrismaModule } from './prisma/prisma.module';
     }),
     PrismaModule,
     AuthModule,
+    WorkspacesModule,
   ],
   controllers: [HealthController],
   providers: [

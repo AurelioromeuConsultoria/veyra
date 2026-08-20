@@ -14,7 +14,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
     "prisma:seed": "tsx prisma/seed.ts",
-    "check:fk": "tsx scripts/check-cross-tenant-fk.ts"
+    "check:fk": "tsx scripts/check-cross-tenant-fk.ts",
+    "provision": "tsx scripts/provision-workspace.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.28",
