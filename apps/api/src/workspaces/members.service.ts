@@ -1,7 +1,11 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import type { MemberDto, RoleDto } from '@veyra/contracts';
 import { AuthContext } from '../common/decorators';
+import type { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+
+/** Cliente de transação raw (sem filtro de workspace — escopo manual explícito). */
+type Tx = Prisma.TransactionClient;
 
 @Injectable()
 export class MembersService {
@@ -53,24 +57,30 @@ export class MembersService {
         'Você não pode alterar a própria função — peça a outro administrador',
       );
     }
-    const target = await this.prisma.db.membership.findFirst({
-      where: { id: membershipId, status: { not: 'removed' } },
-      include: { role: true },
-    });
-    if (!target) throw new NotFoundException('Membro não encontrado');
-    const newRole = await this.prisma.db.role.findFirst({ where: { id: roleId } });
-    if (!newRole) throw new NotFoundException('Função não encontrada');
+    const workspaceId = this.requireWorkspace(auth);
+    await this.runWorkspaceLocked(workspaceId, async (tx) => {
+      const actorPerms = await this.actorPermissions(tx, workspaceId, auth.membershipId);
+      const target = await tx.membership.findFirst({
+        where: { id: membershipId, workspaceId, status: { not: 'removed' } },
+        include: { role: true },
+      });
+      if (!target) throw new NotFoundException('Membro não encontrado');
+      const newRole = await tx.role.findFirst({ where: { id: roleId, workspaceId } });
+      if (!newRole) throw new NotFoundException('Função não encontrada');
 
-    await this.assertNoPrivilegeEscalation(auth, roleId);
-    const targetRole = (target as unknown as { role: { systemKey: string | null } }).role;
-    if (targetRole.systemKey === 'owner' && newRole.systemKey !== 'owner') {
-      await this.assertNotLastActiveOwner();
-    }
+      // não se toca em quem é mais poderoso, nem se concede o que não se tem
+      await this.assertRoleWithinActor(tx, workspaceId, actorPerms, target.roleId);
+      await this.assertRoleWithinActor(tx, workspaceId, actorPerms, roleId);
 
-    // tokenVersion++: permissões mudaram → sessões existentes caem (ADR-009)
-    await this.prisma.db.membership.updateMany({
-      where: { id: membershipId },
-      data: { roleId, tokenVersion: { increment: 1 } },
+      const targetRole = (target as unknown as { role: { systemKey: string | null } }).role;
+      if (targetRole.systemKey === 'owner' && newRole.systemKey !== 'owner') {
+        await this.assertNotLastActiveOwner(tx, workspaceId);
+      }
+      // tokenVersion++: permissões mudaram → sessões existentes caem (ADR-009)
+      await tx.membership.updateMany({
+        where: { id: membershipId, workspaceId },
+        data: { roleId, tokenVersion: { increment: 1 } },
+      });
     });
   }
 
@@ -78,46 +88,103 @@ export class MembersService {
     if (membershipId === auth.membershipId) {
       throw new ForbiddenException('Você não pode remover a si mesmo — peça a outro administrador');
     }
-    const target = await this.prisma.db.membership.findFirst({
-      where: { id: membershipId, status: { not: 'removed' } },
-      include: { role: true },
-    });
-    if (!target) throw new NotFoundException('Membro não encontrado');
-    const targetRole = (target as unknown as { role: { systemKey: string | null } }).role;
-    if (targetRole.systemKey === 'owner') {
-      await this.assertNotLastActiveOwner();
-    }
-    await this.prisma.db.membership.updateMany({
-      where: { id: membershipId },
-      data: { status: 'removed', tokenVersion: { increment: 1 } },
+    const workspaceId = this.requireWorkspace(auth);
+    await this.runWorkspaceLocked(workspaceId, async (tx) => {
+      const actorPerms = await this.actorPermissions(tx, workspaceId, auth.membershipId);
+      const target = await tx.membership.findFirst({
+        where: { id: membershipId, workspaceId, status: { not: 'removed' } },
+        include: { role: true },
+      });
+      if (!target) throw new NotFoundException('Membro não encontrado');
+      // não se remove quem é mais poderoso que o ator (P1-5)
+      await this.assertRoleWithinActor(tx, workspaceId, actorPerms, target.roleId);
+      const targetRole = (target as unknown as { role: { systemKey: string | null } }).role;
+      if (targetRole.systemKey === 'owner') {
+        await this.assertNotLastActiveOwner(tx, workspaceId);
+      }
+      await tx.membership.updateMany({
+        where: { id: membershipId, workspaceId },
+        data: { status: 'removed', tokenVersion: { increment: 1 } },
+      });
     });
   }
 
   /**
-   * Anti-autoelevação (ajuste #6): só se atribui a terceiros um papel cujas
-   * permissões sejam SUBCONJUNTO das do ator — ninguém concede o que não tem.
-   * Público: convites (InvitesService) aplicam a MESMA regra.
+   * Anti-autoelevação (ajuste #6, público — reusado por InvitesService): as
+   * permissões do papel `roleId` devem ser SUBCONJUNTO das do ator. Roda fora
+   * de transação (leitura), fail-closed se o ator não resolver.
    */
-  async assertNoPrivilegeEscalation(auth: AuthContext, newRoleId: string): Promise<void> {
-    const actorMembership = await this.prisma.db.membership.findFirst({
-      where: { id: auth.membershipId ?? '' },
-      select: { roleId: true },
+  async assertNoPrivilegeEscalation(auth: AuthContext, roleId: string): Promise<void> {
+    const workspaceId = this.requireWorkspace(auth);
+    const actorPerms = await this.actorPermissions(this.prisma.raw, workspaceId, auth.membershipId);
+    await this.assertRoleWithinActor(this.prisma.raw, workspaceId, actorPerms, roleId);
+  }
+
+  // ── internos ───────────────────────────────────────────────────────────────
+
+  private requireWorkspace(auth: AuthContext): string {
+    if (!auth.workspaceId || !auth.membershipId) {
+      throw new ForbiddenException('Nenhum workspace ativo nesta sessão');
+    }
+    return auth.workspaceId;
+  }
+
+  /**
+   * Seção crítica serializada por workspace (advisory lock transacional):
+   * fecha o TOCTOU do último Owner e de trocas concorrentes (P1-4). raw
+   * justificado: invariante de acesso concorrente, escopo manual por workspaceId.
+   */
+  private runWorkspaceLocked<T>(workspaceId: string, fn: (tx: Tx) => Promise<T>): Promise<T> {
+    return this.prisma.raw.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+        'veyra_members',
+        workspaceId,
+      );
+      return fn(tx);
     });
-    const [actorPerms, newRolePerms] = await Promise.all([
-      this.prisma.db.rolePermission.findMany({ where: { roleId: actorMembership?.roleId } }),
-      this.prisma.db.rolePermission.findMany({ where: { roleId: newRoleId } }),
-    ]);
-    const actorSet = new Set(actorPerms.map((p) => p.permissionKey));
-    const escalation = newRolePerms.some((p) => !actorSet.has(p.permissionKey));
-    if (escalation) {
-      throw new ForbiddenException('Você não pode atribuir um papel com permissões que não possui');
+  }
+
+  private async actorPermissions(
+    client: Tx | PrismaService['raw'],
+    workspaceId: string,
+    actorMembershipId: string | null,
+  ): Promise<Set<string>> {
+    const actor = actorMembershipId
+      ? await client.membership.findFirst({
+          where: { id: actorMembershipId, workspaceId, status: 'active' },
+          select: { roleId: true },
+        })
+      : null;
+    // fail-closed: ator sem membership/role válido não pode conceder nada
+    if (!actor?.roleId) {
+      throw new ForbiddenException('Ação indisponível para esta sessão');
+    }
+    const rows = await client.rolePermission.findMany({
+      where: { workspaceId, roleId: actor.roleId },
+      select: { permissionKey: true },
+    });
+    return new Set(rows.map((r) => r.permissionKey));
+  }
+
+  private async assertRoleWithinActor(
+    client: Tx | PrismaService['raw'],
+    workspaceId: string,
+    actorPerms: Set<string>,
+    roleId: string,
+  ): Promise<void> {
+    const rolePerms = await client.rolePermission.findMany({
+      where: { workspaceId, roleId },
+      select: { permissionKey: true },
+    });
+    if (rolePerms.some((p) => !actorPerms.has(p.permissionKey))) {
+      throw new ForbiddenException('Ação exige permissões que você não possui');
     }
   }
 
-  /** Invariante (ajuste #6): o workspace nunca fica sem Owner ativo. */
-  private async assertNotLastActiveOwner(): Promise<void> {
-    const activeOwners = await this.prisma.db.membership.count({
-      where: { status: 'active', role: { systemKey: 'owner' } },
+  private async assertNotLastActiveOwner(client: Tx, workspaceId: string): Promise<void> {
+    const activeOwners = await client.membership.count({
+      where: { workspaceId, status: 'active', role: { systemKey: 'owner' } },
     });
     if (activeOwners <= 1) {
       throw new ForbiddenException('O workspace precisa de ao menos um Owner ativo');

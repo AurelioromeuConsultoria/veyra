@@ -1,10 +1,17 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import type { AcceptInviteInput, InviteCreatedDto, InviteDto } from '@veyra/contracts';
-import { hash } from 'bcryptjs';
+import { compare, hash } from 'bcryptjs';
 import { generateOpaqueToken, sha256 } from '../auth/tokens';
 import { AuthContext } from '../common/decorators';
 import { PrismaService } from '../prisma/prisma.service';
 import { MembersService } from './members.service';
+
+/** Erro do Prisma para violação de unique — tratado como convite inválido. */
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === 'object' && error !== null && (error as { code?: string }).code === 'P2002'
+  );
+}
 
 const INVITE_TTL_DAYS = 7;
 /** Mensagem ÚNICA para toda falha de aceite: não revela se token/e-mail existe (ajuste #4). */
@@ -54,67 +61,80 @@ export class InvitesService {
   }
 
   /**
-   * Aceite (@Public + token): transacional e à prova de corrida (ajuste #4) —
-   * validação de expiresAt/acceptedAt, marcação condicional de aceito e criação
-   * de conta/membership acontecem na MESMA transação; o updateMany condicional
-   * (acceptedAt: null) garante que só UM aceite concorrente vence.
+   * Aceite (@Public + token): transacional e à prova de corrida (ajuste #4).
+   *
+   * PROVA DE IDENTIDADE (correção do P0 — takeover): o token NÃO autentica
+   * sozinho. Conta existente → exige a SENHA da conta (o token, que o criador
+   * do convite conhece, não basta para assumir uma conta e pivotar entre
+   * workspaces). Conta nova → exige nome + senha (única porta de entrada,
+   * ADR-014). Falha de senha = mensagem única de convite inválido.
+   *
    * prisma.raw justificado: resolução de tokenHash → workspace acontece antes
    * de existir workspace no contexto (exceção documentada, SECURITY.md §2).
    */
   async accept(input: AcceptInviteInput): Promise<{ userId: string; membershipId: string }> {
-    // hash de senha FORA da transação (caro); só usado se a conta for nova
-    const passwordHash = input.password ? await hash(input.password, 10) : null;
+    // hash FORA da transação (caro); usado só se a conta for nova
+    const newAccountHash = input.name && input.password ? await hash(input.password, 10) : null;
+    try {
+      return await this.prisma.raw.$transaction(async (tx) => {
+        const invite = await tx.invite.findUnique({ where: { tokenHash: sha256(input.token) } });
+        if (!invite || invite.acceptedAt || invite.expiresAt < new Date()) {
+          throw new BadRequestException(INVALID_INVITE);
+        }
 
-    return this.prisma.raw.$transaction(async (tx) => {
-      const invite = await tx.invite.findUnique({ where: { tokenHash: sha256(input.token) } });
-      if (!invite || invite.acceptedAt || invite.expiresAt < new Date()) {
-        throw new BadRequestException(INVALID_INVITE);
-      }
-
-      let user = await tx.user.findUnique({ where: { email: invite.email } });
-      if (!user) {
-        // portador de token VÁLIDO pode saber que precisa criar a conta — o
-        // convite permanece intacto (ainda não foi marcado como aceito)
-        if (!input.name || !passwordHash) {
+        const user = await tx.user.findUnique({ where: { email: invite.email } });
+        if (user) {
+          // conta existente: exige a senha da própria conta — o token não basta
+          if (!input.password || !(await compare(input.password, user.passwordHash))) {
+            throw new BadRequestException(INVALID_INVITE);
+          }
+        } else if (!newAccountHash) {
+          // e-mail sem conta: precisa criar (nome + senha). O convite permanece
+          // intacto (ainda não marcado) para o portador completar o cadastro.
           throw new BadRequestException('Informe nome e senha para criar sua conta');
         }
-      }
 
-      // marcação condicional: corrida entre dois aceites → só um vence
-      const marked = await tx.invite.updateMany({
-        where: { id: invite.id, acceptedAt: null },
-        data: { acceptedAt: new Date() },
-      });
-      if (marked.count !== 1) throw new BadRequestException(INVALID_INVITE);
-
-      if (!user) {
-        user = await tx.user.create({
-          data: {
-            email: invite.email,
-            name: input.name as string,
-            passwordHash: passwordHash as string,
-          },
+        // marcação condicional: corrida entre dois aceites do MESMO convite → um só vence
+        const marked = await tx.invite.updateMany({
+          where: { id: invite.id, acceptedAt: null },
+          data: { acceptedAt: new Date() },
         });
-      }
+        if (marked.count !== 1) throw new BadRequestException(INVALID_INVITE);
 
-      const existing = await tx.membership.findFirst({
-        where: { workspaceId: invite.workspaceId, userId: user.id },
-      });
-      if (existing) {
-        if (existing.status !== 'removed') throw new BadRequestException(INVALID_INVITE);
-        // ex-membro reconvidado: reativa com o papel do convite e derruba sessões antigas
-        await tx.membership.update({
-          where: { id: existing.id },
-          data: { status: 'active', roleId: invite.roleId, tokenVersion: { increment: 1 } },
+        const account =
+          user ??
+          (await tx.user.create({
+            data: {
+              email: invite.email,
+              name: input.name as string,
+              passwordHash: newAccountHash as string,
+            },
+          }));
+
+        const existing = await tx.membership.findFirst({
+          where: { workspaceId: invite.workspaceId, userId: account.id },
         });
-        return { userId: user.id, membershipId: existing.id };
-      }
+        if (existing) {
+          if (existing.status !== 'removed') throw new BadRequestException(INVALID_INVITE);
+          // ex-membro reconvidado: reativa com o papel do convite e derruba sessões antigas
+          await tx.membership.update({
+            where: { id: existing.id },
+            data: { status: 'active', roleId: invite.roleId, tokenVersion: { increment: 1 } },
+          });
+          return { userId: account.id, membershipId: existing.id };
+        }
 
-      const membership = await tx.membership.create({
-        data: { workspaceId: invite.workspaceId, userId: user.id, roleId: invite.roleId },
+        const membership = await tx.membership.create({
+          data: { workspaceId: invite.workspaceId, userId: account.id, roleId: invite.roleId },
+        });
+        return { userId: account.id, membershipId: membership.id };
       });
-      return { userId: user.id, membershipId: membership.id };
-    });
+    } catch (error) {
+      // dois convites DIFERENTES para o mesmo user+workspace em paralelo →
+      // @@unique([workspaceId, userId]) → P2002; converte em 400, nunca 500
+      if (isUniqueViolation(error)) throw new BadRequestException(INVALID_INVITE);
+      throw error;
+    }
   }
 
   private toDto(

@@ -5,7 +5,14 @@ import type { AuthUserDto, MembershipSummaryDto, PermissionKey } from '@veyra/co
 import { compare } from 'bcryptjs';
 import { AuthContext } from '../common/decorators';
 import { PrismaService } from '../prisma/prisma.service';
-import { generateCsrfToken, generateOpaqueToken, sha256, SessionCookies } from './tokens';
+import {
+  JWT_AUDIENCE,
+  JWT_ISSUER,
+  SessionCookies,
+  generateCsrfToken,
+  generateOpaqueToken,
+  sha256,
+} from './tokens';
 
 export interface AccessTokenPayload {
   sub: string;
@@ -68,24 +75,36 @@ export class AuthService {
       await this.revokeAllUserSessions(row.userId);
       throw new UnauthorizedException('Sessão inválida');
     }
-    // rotação real: o token usado morre na mesma transação que cria o próximo
+    // suspensão global vale imediatamente também no refresh
+    const user = await this.prisma.raw.user.findFirst({
+      where: { id: row.userId, status: 'active' },
+      select: { id: true },
+    });
+    if (!user) throw new UnauthorizedException('Sessão inválida');
+
+    // rotação ATÔMICA e condicional: o update só casa se o token ainda estiver
+    // vivo. Dois refreshes concorrentes do mesmo token → só um faz count=1; o
+    // outro trata como reuso (derruba tudo). Sem isso, dois vencedores.
     const membershipId = await this.validateActiveMembership(row.userId, row.activeMembershipId);
     const opaque = generateOpaqueToken();
     const expiresAt = new Date(Date.now() + this.refreshTtlDays() * 24 * 60 * 60 * 1000);
-    const [, created] = await this.prisma.raw.$transaction([
-      this.prisma.raw.refreshToken.update({
-        where: { id: row.id },
+    const created = await this.prisma.raw.$transaction(async (tx) => {
+      const revoked = await tx.refreshToken.updateMany({
+        where: { id: row.id, revokedAt: null },
         data: { revokedAt: new Date() },
-      }),
-      this.prisma.raw.refreshToken.create({
+      });
+      if (revoked.count !== 1) {
+        throw new UnauthorizedException('Sessão inválida');
+      }
+      return tx.refreshToken.create({
         data: {
           userId: row.userId,
           tokenHash: sha256(opaque),
           activeMembershipId: membershipId,
           expiresAt,
         },
-      }),
-    ]);
+      });
+    });
     return this.buildSessionResult(row.userId, membershipId, created.id, opaque);
   }
 
@@ -107,11 +126,18 @@ export class AuthService {
     });
     if (!membership) throw new ForbiddenException('Workspace indisponível');
     // atualiza a sessão atual (updateMany com userId: nunca sessão de terceiro;
-    // a FK composta (userId, activeMembershipId) garante o mesmo no banco)
-    await this.prisma.raw.refreshToken.updateMany({
-      where: { id: auth.sessionId, userId: auth.userId, revokedAt: null },
+    // a FK composta (userId, activeMembershipId) garante o mesmo no banco). Se a
+    // sessão não estiver mais viva (logout/reuso), count=0 → não emite token.
+    const updated = await this.prisma.raw.refreshToken.updateMany({
+      where: {
+        id: auth.sessionId,
+        userId: auth.userId,
+        revokedAt: null,
+        expiresAt: { gt: new Date() },
+      },
       data: { activeMembershipId: membership.id },
     });
+    if (updated.count !== 1) throw new UnauthorizedException('Sessão inválida');
     const opaque = null; // refresh não rotaciona na troca — só o access muda
     return this.buildSessionResult(auth.userId, membership.id, auth.sessionId, opaque);
   }
@@ -194,6 +220,8 @@ export class AuthService {
     };
     const access = await this.jwt.signAsync(payload, {
       expiresIn: this.accessTtlSeconds(),
+      issuer: JWT_ISSUER,
+      audience: JWT_AUDIENCE,
     });
     return {
       user,

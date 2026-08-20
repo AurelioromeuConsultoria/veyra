@@ -51,6 +51,11 @@ export class PermissionsGuard implements CanActivate {
       throw new ForbiddenException('Nenhum workspace ativo nesta sessão');
     }
     const roleId = this.cls.get<string>('roleId');
+    // fail-closed: roleId ausente no CLS jamais vira where:{roleId:undefined}
+    // (que o Prisma ignoraria, concedendo TODAS as permissões do workspace)
+    if (typeof roleId !== 'string' || roleId.length === 0) {
+      throw new ForbiddenException('Permissão insuficiente');
+    }
     // db (tenant-safe): RolePermission é protegido e o CLS já tem o workspace
     const rows = await this.prisma.db.rolePermission.findMany({
       where: { roleId },

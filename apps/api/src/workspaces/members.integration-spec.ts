@@ -174,6 +174,64 @@ describe('Workspaces — membros, roles e provisionamento (integração)', () =>
       .expect(200);
   });
 
+  it('Admin não mexe em Owner mesmo com 2+ Owners (P1-5: papel do alvo é checado)', async () => {
+    // dois Owners para o invariante de último Owner não interferir
+    const owner2Id = await createUserFixture(prisma, 'owner2@veyra.test');
+    await createMembershipFixture(prisma, workspaceId, owner2Id, roles.owner);
+    const adminId = await createUserFixture(prisma, 'admin@veyra.test');
+    await createMembershipFixture(prisma, workspaceId, adminId, roles.admin);
+
+    const session = await loginAs('admin@veyra.test');
+    const ownerMembership = await prisma.raw.membership.findFirst({
+      where: { userId: owner2Id },
+    });
+    // Admin (sem billing:manage) não pode rebaixar nem remover um Owner
+    await request(http)
+      .patch(`/api/members/${ownerMembership!.id}/role`)
+      .set('Origin', ORIGIN)
+      .set('Cookie', session.cookieHeader)
+      .set('x-csrf-token', session.csrf)
+      .send({ roleId: roles.member })
+      .expect(403);
+    await request(http)
+      .delete(`/api/members/${ownerMembership!.id}`)
+      .set('Origin', ORIGIN)
+      .set('Cookie', session.cookieHeader)
+      .set('x-csrf-token', session.csrf)
+      .expect(403);
+  });
+
+  it('corrida: dois Owners removendo um ao outro deixa exatamente um (TOCTOU fechado)', async () => {
+    const owner2Id = await createUserFixture(prisma, 'owner2@veyra.test');
+    const owner2Membership = await createMembershipFixture(
+      prisma,
+      workspaceId,
+      owner2Id,
+      roles.owner,
+    );
+    const s1 = await loginAs('owner@veyra.test');
+    const s2 = await loginAs('owner2@veyra.test');
+    // owner remove owner2 e owner2 remove owner AO MESMO TEMPO: sem serialização
+    // ambos leriam count=2 e zerariam os Owners. O advisory lock garante 1 e 403.
+    const [r1, r2] = await Promise.all([
+      request(http)
+        .delete(`/api/members/${owner2Membership}`)
+        .set('Origin', ORIGIN)
+        .set('Cookie', s1.cookieHeader)
+        .set('x-csrf-token', s1.csrf),
+      request(http)
+        .delete(`/api/members/${ownerMembershipId}`)
+        .set('Origin', ORIGIN)
+        .set('Cookie', s2.cookieHeader)
+        .set('x-csrf-token', s2.csrf),
+    ]);
+    expect([r1.status, r2.status].sort()).toEqual([200, 403]);
+    const remaining = await prisma.raw.membership.count({
+      where: { workspaceId, status: 'active', role: { systemKey: 'owner' } },
+    });
+    expect(remaining).toBe(1);
+  });
+
   describe('ProvisioningService (rotina administrativa)', () => {
     it('owner com conta existente → membership Owner; roles de sistema semeados', async () => {
       await createUserFixture(prisma, 'dona@nova.test');

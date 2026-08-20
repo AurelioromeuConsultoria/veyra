@@ -6,6 +6,10 @@ export const REFRESH_COOKIE = 'veyra_refresh';
 export const CSRF_COOKIE = 'veyra_csrf';
 export const CSRF_HEADER = 'x-csrf-token';
 
+/** Escopo do JWT: rejeita tokens assinados com o mesmo segredo para outros fins. */
+export const JWT_ISSUER = 'veyra';
+export const JWT_AUDIENCE = 'veyra-api';
+
 /** Refresh/invite tokens nunca são persistidos em claro — só o SHA-256. */
 export function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');

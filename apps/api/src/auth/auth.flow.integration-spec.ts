@@ -1,4 +1,5 @@
 import { Controller, Get, INestApplication, Post } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
 import request from 'supertest';
 import { AuthenticatedOnly, RequirePermissions } from '../common/decorators';
 import { PrismaService } from '../prisma/prisma.service';
@@ -268,5 +269,85 @@ describe('Auth — fluxo completo (integração HTTP)', () => {
   it('sem sessão: rotas privadas retornam 401', async () => {
     await request(http).get('/api/auth/me').expect(401);
     await request(http).get('/api/_test/readable').expect(401);
+  });
+
+  it('refresh concorrente do mesmo token: exatamente um vence; a família cai', async () => {
+    const session = extractSession(await login().expect(201));
+    const [a, b] = await Promise.all([
+      request(http)
+        .post('/api/auth/refresh')
+        .set('Origin', ORIGIN)
+        .set('Cookie', session.cookieHeader),
+      request(http)
+        .post('/api/auth/refresh')
+        .set('Origin', ORIGIN)
+        .set('Cookie', session.cookieHeader),
+    ]);
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual([201, 401]);
+  });
+
+  it('switch-workspace após logout falha (sessão morta não ressuscita via access token)', async () => {
+    const session = extractSession(await login().expect(201));
+    await request(http)
+      .post('/api/auth/logout')
+      .set('Origin', ORIGIN)
+      .set('Cookie', session.cookieHeader)
+      .set('x-csrf-token', session.csrf)
+      .expect(201);
+    // access token antigo ainda no cookie, mas a sessão foi revogada
+    await request(http)
+      .post('/api/auth/switch-workspace')
+      .set('Origin', ORIGIN)
+      .set('Cookie', session.cookieHeader)
+      .set('x-csrf-token', session.csrf)
+      .send({ membershipId: ownerMembershipId })
+      .expect(401);
+    await request(http).get('/api/auth/me').set('Cookie', session.cookieHeader).expect(401);
+  });
+
+  it('usuário suspenso: access token vivo e refresh param de funcionar na hora', async () => {
+    const session = extractSession(await login().expect(201));
+    const owner = await prisma.raw.user.findUnique({ where: { email: OWNER_EMAIL } });
+    await prisma.raw.user.update({ where: { id: owner!.id }, data: { status: 'suspended' } });
+    await request(http).get('/api/auth/me').set('Cookie', session.cookieHeader).expect(401);
+    await request(http)
+      .post('/api/auth/refresh')
+      .set('Origin', ORIGIN)
+      .set('Cookie', session.cookieHeader)
+      .expect(401);
+  });
+
+  it('workspace suspenso: a sessão perde acesso às rotas do workspace', async () => {
+    const session = extractSession(await login().expect(201));
+    await prisma.raw.workspace.update({
+      where: { id: workspaceId },
+      data: { status: 'suspended' },
+    });
+    await request(http).get('/api/auth/me').set('Cookie', session.cookieHeader).expect(401);
+  });
+
+  it('Referer malformado em mutação sem Origin → 403, não 500', async () => {
+    await request(http)
+      .post('/api/auth/login')
+      .set('Referer', '::::')
+      .send({ email: OWNER_EMAIL, password: TEST_PASSWORD })
+      .expect(403);
+  });
+
+  it('token sem issuer/audience (assinado com o segredo certo) é rejeitado', async () => {
+    const jwtService = app.get(JwtService);
+    const noScope = await jwtService.signAsync(
+      {
+        sub: '00000000-0000-0000-0000-000000000000',
+        email: 'x@x.test',
+        membershipId: null,
+        workspaceId: null,
+        tokenVersion: null,
+        sessionId: '00000000-0000-0000-0000-000000000000',
+      },
+      { expiresIn: 900 },
+    );
+    await request(http).get('/api/auth/me').set('Cookie', `veyra_access=${noScope}`).expect(401);
   });
 });

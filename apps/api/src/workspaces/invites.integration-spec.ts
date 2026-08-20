@@ -110,11 +110,29 @@ describe('Invites — emissão, revogação e aceite transacional (integração)
     await request(http).get('/api/auth/me').set('Cookie', cookieHeader).expect(200);
   });
 
-  it('aceite com conta existente não pede senha e vincula a membership', async () => {
-    await createUserFixture(prisma, 'ja-existe@veyra.test');
+  it('aceite com conta existente EXIGE a senha da conta (P0: token não basta)', async () => {
+    await createUserFixture(prisma, 'ja-existe@veyra.test'); // senha = TEST_PASSWORD
     const token = await createInvite('ja-existe@veyra.test', roles.guest);
-    const res = await accept({ token }).expect(201);
+    // token sozinho não autentica
+    await accept({ token }).expect(400);
+    // senha errada = mensagem genérica de convite inválido
+    await accept({ token, password: 'senha-errada-999' }).expect(400);
+    // senha correta vincula a membership
+    const res = await accept({ token, password: TEST_PASSWORD }).expect(201);
     expect(res.body.activeMembership.roleName).toBe('Guest');
+  });
+
+  it('P0: quem cria o convite NÃO assume a conta de um usuário existente de outro workspace', async () => {
+    // vítima é Owner do workspace beta
+    const beta = await createWorkspaceFixture(prisma, 'beta');
+    const victimId = await createUserFixture(prisma, 'victima@veyra.test');
+    await createMembershipFixture(prisma, beta.workspaceId, victimId, beta.roles.owner);
+
+    // owner do acme convida o e-mail da vítima como Guest e pega o token
+    const token = await createInvite('victima@veyra.test', roles.guest);
+    // sem a senha da vítima, o aceite falha — nada de takeover nem pivô cross-tenant
+    await accept({ token }).expect(400);
+    await accept({ token, name: 'X', password: 'chute-qualquer-123' }).expect(400);
   });
 
   it('e-mail novo sem nome/senha: pede os dados SEM queimar o convite', async () => {
@@ -166,7 +184,8 @@ describe('Invites — emissão, revogação e aceite transacional (integração)
       data: { status: 'removed', tokenVersion: { increment: 1 } },
     });
     const token = await createInvite('ex@veyra.test', roles.guest);
-    const res = await accept({ token }).expect(201);
+    // ex-membro tem conta → aceite exige a senha (P0)
+    const res = await accept({ token, password: TEST_PASSWORD }).expect(201);
     expect(res.body.activeMembership.roleName).toBe('Guest');
     const reactivated = await prisma.raw.membership.findFirst({ where: { id: exMembership } });
     expect(reactivated?.status).toBe('active');
