@@ -1,0 +1,328 @@
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import type {
+  BoardDto,
+  CreateDealInput,
+  DealDto,
+  MoveDealInput,
+  UpdateDealInput,
+} from '@veyra/contracts';
+import { ActivitiesService } from '../activities/activities.service';
+import { AuthContext } from '../common/decorators';
+import type { Prisma } from '../generated/prisma/client';
+import { PipelinesService } from '../pipelines/pipelines.service';
+import { PrismaService, type Db } from '../prisma/prisma.service';
+
+type Tx = Prisma.TransactionClient;
+type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
+
+/** Gaps de 1024 entre posições: milhares de inserções sem rebalancear. */
+const POSITION_GAP = 1024;
+
+type DealRow = {
+  id: string;
+  title: string;
+  pipelineId: string;
+  stageId: string;
+  contactId: string | null;
+  companyId: string | null;
+  ownerMembershipId: string | null;
+  amountCents: number;
+  currency: string;
+  expectedCloseDate: Date | null;
+  status: 'open' | 'won' | 'lost';
+  position: number;
+  stageEnteredAt: Date;
+  createdAt: Date;
+  contact: { name: string } | null;
+  company: { name: string } | null;
+};
+
+const DEAL_INCLUDE = { contact: true, company: true } as const;
+
+@Injectable()
+export class DealsService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly pipelines: PipelinesService,
+    private readonly activities: ActivitiesService,
+  ) {}
+
+  async board(pipelineId?: string): Promise<BoardDto> {
+    const id = pipelineId ?? (await this.pipelines.resolveDefault());
+    const pipeline = (await this.prisma.db.pipeline.findFirst({
+      where: { id },
+      include: { stages: { orderBy: { order: 'asc' } } },
+    } as never)) as unknown as {
+      id: string;
+      name: string;
+      stages: { id: string; name: string; type: 'open' | 'won' | 'lost' }[];
+    } | null;
+    if (!pipeline) throw new NotFoundException('Pipeline não encontrado');
+
+    const deals = (await this.prisma.db.deal.findMany({
+      where: { pipelineId: id },
+      include: DEAL_INCLUDE,
+      orderBy: [{ stageId: 'asc' }, { position: 'asc' }],
+    } as never)) as unknown as DealRow[];
+    const ownerNames = await this.resolveOwnerNames(deals.map((d) => d.ownerMembershipId));
+
+    return {
+      pipelineId: pipeline.id,
+      pipelineName: pipeline.name,
+      columns: pipeline.stages.map((stage) => {
+        const columnDeals = deals.filter((deal) => deal.stageId === stage.id);
+        return {
+          stageId: stage.id,
+          stageName: stage.name,
+          stageType: stage.type,
+          totalCents: columnDeals.reduce((sum, deal) => sum + deal.amountCents, 0),
+          deals: columnDeals.map((deal) => this.toDto(deal, ownerNames)),
+        };
+      }),
+    };
+  }
+
+  async get(id: string): Promise<DealDto> {
+    const row = (await this.prisma.db.deal.findFirst({
+      where: { id },
+      include: DEAL_INCLUDE,
+    } as never)) as unknown as DealRow | null;
+    if (!row) throw new NotFoundException('Oportunidade não encontrada');
+    return this.toDto(row, await this.resolveOwnerNames([row.ownerMembershipId]));
+  }
+
+  async create(auth: AuthContext, input: CreateDealInput): Promise<DealDto> {
+    const pipelineId = input.pipelineId ?? (await this.pipelines.resolveDefault());
+    const stage = input.stageId
+      ? await this.prisma.db.stage.findFirst({ where: { id: input.stageId, pipelineId } })
+      : await this.prisma.db.stage.findFirst({
+          where: { pipelineId, type: 'open' },
+          orderBy: { order: 'asc' },
+        });
+    // stage de OUTRO pipeline (mesmo workspace) → rejeitado aqui e, em última
+    // instância, pela FK tripla no banco (ajuste #1)
+    if (!stage) throw new BadRequestException('Estágio inválido para este pipeline');
+    await this.validateReferences(input);
+
+    const last = await this.prisma.db.deal.findFirst({
+      where: { pipelineId, stageId: stage.id },
+      orderBy: { position: 'desc' },
+    });
+    const db = this.prisma.db as unknown as TxRunner;
+    const id = await db.$transaction(async (tx) => {
+      const deal = await tx.deal.create({
+        data: {
+          title: input.title,
+          pipelineId,
+          stageId: stage.id,
+          contactId: input.contactId ?? null,
+          companyId: input.companyId ?? null,
+          ownerMembershipId: input.ownerMembershipId ?? null,
+          amountCents: input.amountCents,
+          currency: input.currency,
+          expectedCloseDate: input.expectedCloseDate ? new Date(input.expectedCloseDate) : null,
+          status: stage.type === 'open' ? 'open' : stage.type,
+          position: (last?.position ?? 0) + POSITION_GAP,
+        },
+      } as never);
+      await this.activities.record(
+        tx as unknown as Db,
+        auth.workspaceId as string,
+        'deal_created',
+        {
+          actorMembershipId: auth.membershipId,
+          payload: { title: input.title, amountCents: input.amountCents },
+          targets: { dealId: deal.id, contactId: input.contactId, companyId: input.companyId },
+        },
+      );
+      return deal.id;
+    });
+    return this.get(id);
+  }
+
+  async update(id: string, input: UpdateDealInput): Promise<DealDto> {
+    const existing = await this.prisma.db.deal.findFirst({ where: { id } });
+    if (!existing) throw new NotFoundException('Oportunidade não encontrada');
+    await this.validateReferences(input);
+    await this.prisma.db.deal.updateMany({
+      where: { id },
+      data: {
+        title: input.title,
+        contactId: input.contactId,
+        companyId: input.companyId,
+        ownerMembershipId: input.ownerMembershipId,
+        amountCents: input.amountCents,
+        currency: input.currency,
+        expectedCloseDate:
+          input.expectedCloseDate === undefined
+            ? undefined
+            : input.expectedCloseDate === null
+              ? null
+              : new Date(input.expectedCloseDate),
+      },
+    });
+    return this.get(id);
+  }
+
+  async remove(id: string): Promise<void> {
+    const { count } = await this.prisma.db.deal.deleteMany({ where: { id } });
+    if (count === 0) throw new NotFoundException('Oportunidade não encontrada');
+  }
+
+  /**
+   * Mover no kanban (ajuste #3): a seção crítica inteira roda sob ADVISORY LOCK
+   * por (workspace, pipeline) — leitura das posições, cálculo e escrita. Dois
+   * arrastos simultâneos serializam, então a ordem final é estável e sem
+   * posições duplicadas. Sem o lock, ambos leriam o mesmo estado e colidiriam.
+   */
+  async move(auth: AuthContext, dealId: string, input: MoveDealInput): Promise<DealDto> {
+    const workspaceId = auth.workspaceId as string;
+    await this.prisma.raw.$transaction(async (tx) => {
+      const deal = await this.findScoped(tx, workspaceId, dealId);
+      if (!deal) throw new NotFoundException('Oportunidade não encontrada');
+
+      await tx.$executeRawUnsafe(
+        'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+        'veyra_board',
+        `${workspaceId}:${deal.pipelineId}`,
+      );
+
+      // stage precisa ser do MESMO pipeline (a FK tripla garante no banco)
+      const stage = await tx.stage.findFirst({
+        where: { id: input.stageId, workspaceId, pipelineId: deal.pipelineId },
+      });
+      if (!stage) throw new BadRequestException('Estágio inválido para este pipeline');
+
+      // recalcula posições da coluna-alvo DENTRO do lock
+      const columnDeals = await tx.deal.findMany({
+        where: { workspaceId, pipelineId: deal.pipelineId, stageId: stage.id, id: { not: dealId } },
+        orderBy: { position: 'asc' },
+        select: { id: true },
+      });
+      const index = Math.min(input.index ?? columnDeals.length, columnDeals.length);
+      const ordered = [
+        ...columnDeals.slice(0, index).map((d) => d.id),
+        dealId,
+        ...columnDeals.slice(index).map((d) => d.id),
+      ];
+      for (const [slot, id] of ordered.entries()) {
+        await tx.deal.updateMany({
+          where: { id, workspaceId },
+          data: { position: (slot + 1) * POSITION_GAP },
+        });
+      }
+
+      const movedStage = deal.stageId !== stage.id;
+      if (movedStage) {
+        const fromStage = await tx.stage.findFirst({
+          where: { id: deal.stageId, workspaceId },
+          select: { name: true },
+        });
+        await tx.deal.updateMany({
+          where: { id: dealId, workspaceId },
+          data: {
+            stageId: stage.id,
+            status: stage.type === 'open' ? 'open' : stage.type,
+            stageEnteredAt: new Date(),
+          },
+        });
+        await this.activities.record(tx as unknown as Db, workspaceId, 'deal_stage_changed', {
+          actorMembershipId: auth.membershipId,
+          payload: { fromStage: fromStage?.name ?? '—', toStage: stage.name },
+          targets: { dealId, contactId: deal.contactId, companyId: deal.companyId },
+        });
+        if (stage.type === 'won' || stage.type === 'lost') {
+          await this.activities.record(
+            tx as unknown as Db,
+            workspaceId,
+            stage.type === 'won' ? 'deal_won' : 'deal_lost',
+            {
+              actorMembershipId: auth.membershipId,
+              payload: { amountCents: deal.amountCents },
+              targets: { dealId, contactId: deal.contactId, companyId: deal.companyId },
+            },
+          );
+        }
+      }
+    });
+    return this.get(dealId);
+  }
+
+  // ── internos ───────────────────────────────────────────────────────────────
+
+  /** raw dentro do lock: escopo por workspaceId SEMPRE explícito no where. */
+  private findScoped(tx: Tx, workspaceId: string, dealId: string) {
+    return tx.deal.findFirst({
+      where: { id: dealId, workspaceId },
+      select: {
+        id: true,
+        pipelineId: true,
+        stageId: true,
+        amountCents: true,
+        contactId: true,
+        companyId: true,
+      },
+    });
+  }
+
+  private async validateReferences(input: {
+    contactId?: string | null;
+    companyId?: string | null;
+    ownerMembershipId?: string | null;
+  }): Promise<void> {
+    if (input.contactId) {
+      const contact = await this.prisma.db.contact.findFirst({ where: { id: input.contactId } });
+      if (!contact) throw new BadRequestException('Contato inválido');
+    }
+    if (input.companyId) {
+      const company = await this.prisma.db.company.findFirst({ where: { id: input.companyId } });
+      if (!company) throw new BadRequestException('Empresa inválida');
+    }
+    if (input.ownerMembershipId) {
+      const owner = await this.prisma.db.membership.findFirst({
+        where: { id: input.ownerMembershipId, status: 'active' },
+      });
+      if (!owner) throw new BadRequestException('Responsável inválido');
+    }
+  }
+
+  private toDto(row: DealRow, ownerNames: Map<string, string>): DealDto {
+    const days = Math.floor((Date.now() - row.stageEnteredAt.getTime()) / 86_400_000);
+    return {
+      id: row.id,
+      title: row.title,
+      pipelineId: row.pipelineId,
+      stageId: row.stageId,
+      contactId: row.contactId,
+      contactName: row.contact?.name ?? null,
+      companyId: row.companyId,
+      companyName: row.company?.name ?? null,
+      ownerMembershipId: row.ownerMembershipId,
+      ownerName: row.ownerMembershipId ? (ownerNames.get(row.ownerMembershipId) ?? null) : null,
+      amountCents: row.amountCents,
+      currency: row.currency,
+      expectedCloseDate: row.expectedCloseDate?.toISOString() ?? null,
+      status: row.status,
+      position: row.position,
+      daysInStage: Math.max(0, days),
+      createdAt: row.createdAt.toISOString(),
+    };
+  }
+
+  private async resolveOwnerNames(membershipIds: (string | null)[]): Promise<Map<string, string>> {
+    const ids = [...new Set(membershipIds.filter((id): id is string => id !== null))];
+    if (ids.length === 0) return new Map();
+    const memberships = await this.prisma.db.membership.findMany({
+      where: { id: { in: ids }, status: { not: 'removed' } },
+      select: { id: true, userId: true },
+    });
+    // raw justificado: nome (User global) para exibição, restrito aos userIds
+    // das memberships DESTE workspace (já filtradas pelo db)
+    const users = await this.prisma.raw.user.findMany({
+      where: { id: { in: memberships.map((m) => m.userId) } },
+      select: { id: true, name: true },
+    });
+    const byUser = new Map(users.map((u) => [u.id, u.name]));
+    return new Map(memberships.map((m) => [m.id, byUser.get(m.userId) ?? '']));
+  }
+}

@@ -7,12 +7,15 @@ import { AuthModule } from './auth/auth.module';
 import { CsrfOriginGuard } from './auth/csrf-origin.guard';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { PermissionsGuard } from './auth/permissions.guard';
+import { ActivitiesModule } from './activities/activities.module';
 import { validateEnv } from './common/env';
 import { PrismaExceptionFilter } from './common/prisma-exception.filter';
 import { CompaniesModule } from './companies/companies.module';
 import { ContactsModule } from './contacts/contacts.module';
 import { CustomFieldsModule } from './custom-fields/custom-fields.module';
+import { DealsModule } from './deals/deals.module';
 import { HealthController } from './health/health.controller';
+import { PipelinesModule } from './pipelines/pipelines.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { TagsModule } from './tags/tags.module';
 import { WorkspacesModule } from './workspaces/workspaces.module';
@@ -42,6 +45,9 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
     CustomFieldsModule,
     CompaniesModule,
     ContactsModule,
+    ActivitiesModule,
+    PipelinesModule,
+    DealsModule,
   ],
   controllers: [HealthController],
   providers: [

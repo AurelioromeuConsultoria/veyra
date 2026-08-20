@@ -26,6 +26,13 @@ export const WORKSPACE_MODELS = new Set<string>([
   'CompanyTag',
   'CustomFieldDefinition',
   'CustomFieldValue',
+  // CRM: vendas e trabalho (Entrega 4)
+  'Pipeline',
+  'Stage',
+  'Deal',
+  'Task',
+  'Note',
+  'Activity',
 ]);
 
 /**
@@ -54,6 +61,10 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     role: 'Role',
     ownedCompanies: 'Company',
     ownedContacts: 'Contact',
+    ownedDeals: 'Deal',
+    assignedTasks: 'Task',
+    authoredNotes: 'Note',
+    activities: 'Activity',
     // alvo fora do perímetro: travessia via db é bloqueada (sessões só via raw)
     activeSessions: 'RefreshToken',
   },
@@ -66,12 +77,19 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     owner: 'Membership',
     contacts: 'Contact',
     tags: 'CompanyTag',
+    deals: 'Deal',
+    notes: 'Note',
+    activities: 'Activity',
   },
   Contact: {
     workspace: 'Workspace',
     company: 'Company',
     owner: 'Membership',
     tags: 'ContactTag',
+    deals: 'Deal',
+    tasksList: 'Task',
+    notes: 'Note',
+    activities: 'Activity',
   },
   Tag: {
     workspace: 'Workspace',
@@ -92,5 +110,47 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
   },
   CustomFieldValue: {
     definition: 'CustomFieldDefinition',
+  },
+  Pipeline: {
+    workspace: 'Workspace',
+    stages: 'Stage',
+    deals: 'Deal',
+  },
+  Stage: {
+    pipeline: 'Pipeline',
+    deals: 'Deal',
+  },
+  Deal: {
+    workspace: 'Workspace',
+    pipeline: 'Pipeline',
+    stage: 'Stage',
+    contact: 'Contact',
+    company: 'Company',
+    owner: 'Membership',
+    tasks: 'Task',
+    notes: 'Note',
+    activities: 'Activity',
+  },
+  Task: {
+    workspace: 'Workspace',
+    assignee: 'Membership',
+    contact: 'Contact',
+    deal: 'Deal',
+    activities: 'Activity',
+  },
+  Note: {
+    workspace: 'Workspace',
+    author: 'Membership',
+    contact: 'Contact',
+    company: 'Company',
+    deal: 'Deal',
+  },
+  Activity: {
+    workspace: 'Workspace',
+    actor: 'Membership',
+    contact: 'Contact',
+    company: 'Company',
+    deal: 'Deal',
+    task: 'Task',
   },
 };

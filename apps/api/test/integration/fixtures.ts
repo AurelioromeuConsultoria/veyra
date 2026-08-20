@@ -1,5 +1,6 @@
 import { PERMISSION_CATALOG, SYSTEM_ROLE_TEMPLATES } from '@veyra/contracts';
 import { hash } from 'bcryptjs';
+import { DEFAULT_STAGES } from '../../src/pipelines/pipelines.service';
 import type { PrismaService } from '../../src/prisma/prisma.service';
 
 /**
@@ -21,6 +22,8 @@ export async function seedPermissionCatalog(prisma: PrismaService): Promise<void
 export interface WorkspaceFixture {
   workspaceId: string;
   roles: Record<string, string>; // systemKey → roleId
+  pipelineId: string;
+  stages: Record<string, string>; // nome → stageId
 }
 
 export async function createWorkspaceFixture(
@@ -45,7 +48,18 @@ export async function createWorkspaceFixture(
     });
     roles[systemKey] = role.id;
   }
-  return { workspaceId: workspace.id, roles };
+  // pipeline padrão, como o provisionamento real faz
+  const pipeline = await prisma.raw.pipeline.create({
+    data: { workspaceId: workspace.id, name: 'Vendas', defaultMark: true },
+  });
+  const stages: Record<string, string> = {};
+  for (const stage of DEFAULT_STAGES) {
+    const created = await prisma.raw.stage.create({
+      data: { ...stage, workspaceId: workspace.id, pipelineId: pipeline.id },
+    });
+    stages[stage.name] = created.id;
+  }
+  return { workspaceId: workspace.id, roles, pipelineId: pipeline.id, stages };
 }
 
 export const TEST_PASSWORD = 'senha-de-teste-123';

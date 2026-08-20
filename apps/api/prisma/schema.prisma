@@ -83,6 +83,11 @@ model Workspace {
   contacts               Contact[]
   tags                   Tag[]
   customFieldDefinitions CustomFieldDefinition[]
+  pipelines              Pipeline[]
+  deals                  Deal[]
+  tasksList              Task[]
+  notes                  Note[]
+  activities             Activity[]
 }
 
 /// Catálogo GLOBAL de permissões (ADR-004): chaves estáveis do sistema —
@@ -157,6 +162,10 @@ model Membership {
   ownedCompanies Company[]      @relation("CompanyOwner")
   ownedContacts  Contact[]      @relation("ContactOwner")
   activeSessions RefreshToken[] @relation("SessionActiveMembership")
+  ownedDeals     Deal[]         @relation("DealOwner")
+  assignedTasks  Task[]         @relation("TaskAssignee")
+  authoredNotes  Note[]         @relation("NoteAuthor")
+  activities     Activity[]     @relation("ActivityActor")
 
   // Alvo de FK composta para Team/ownership futuros
   @@unique([workspaceId, id])
@@ -227,24 +236,27 @@ enum CustomFieldType {
 }
 
 model Company {
-  id                String      @id @default(uuid()) @db.Uuid
-  workspaceId       String      @db.Uuid
+  id                String       @id @default(uuid()) @db.Uuid
+  workspaceId       String       @db.Uuid
   name              String
   domain            String?
   size              CompanySize?
-  ownerMembershipId String?     @db.Uuid
-  createdAt         DateTime    @default(now())
-  updatedAt         DateTime    @updatedAt
+  ownerMembershipId String?      @db.Uuid
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
 
-  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace  Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   // FK composta com nulidade mista (MATCH SIMPLE ignora quando NULL).
   // NoAction ≠ Restrict: a checagem ocorre ao FIM do statement (não imediata),
   // o que deixa o cascade do Workspace concluir. NÃO é DEFERRABLE (não adia ao
   // commit) — comportamento coberto pelo teste de exclusão de workspace.
   // SET NULL anularia TODAS as colunas da FK, inclusive workspaceId — proibido.
-  owner     Membership? @relation("CompanyOwner", fields: [workspaceId, ownerMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  contacts  Contact[]
-  tags      CompanyTag[]
+  owner      Membership?  @relation("CompanyOwner", fields: [workspaceId, ownerMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  contacts   Contact[]
+  tags       CompanyTag[]
+  deals      Deal[]
+  notes      Note[]
+  activities Activity[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, domain])
@@ -264,10 +276,14 @@ model Contact {
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
-  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  company   Company?    @relation(fields: [workspaceId, companyId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  owner     Membership? @relation("ContactOwner", fields: [workspaceId, ownerMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  tags      ContactTag[]
+  workspace  Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  company    Company?     @relation(fields: [workspaceId, companyId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  owner      Membership?  @relation("ContactOwner", fields: [workspaceId, ownerMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  tags       ContactTag[]
+  deals      Deal[]
+  tasksList  Task[]
+  notes      Note[]
+  activities Activity[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, status, createdAt])
@@ -352,4 +368,207 @@ model CustomFieldValue {
 
   @@unique([workspaceId, definitionId, entityId])
   @@index([workspaceId, entityType, entityId])
+}
+
+// ─── CRM: vendas e trabalho (Entrega 4) ──────────────────────────────────────
+
+enum StageType {
+  open
+  won
+  lost
+}
+
+enum DealStatus {
+  open
+  won
+  lost
+}
+
+enum TaskStatus {
+  open
+  done
+}
+
+enum TaskPriority {
+  low
+  normal
+  high
+}
+
+enum ActivityType {
+  contact_created
+  deal_created
+  deal_stage_changed
+  deal_won
+  deal_lost
+  task_created
+  task_completed
+  note_added
+  note_deleted
+}
+
+enum ActivityActor {
+  user
+  system
+}
+
+model Pipeline {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  name        String
+  /// Unique parcial ESTRUTURAL (ajuste #2): TRUE ou NULL, nunca false — o
+  /// @@unique([workspaceId, defaultMark]) garante no banco um só default por
+  /// workspace (NULLs não colidem), sem SQL manual e sem risco de drift.
+  defaultMark Boolean?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  stages    Stage[]
+  deals     Deal[]
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, name])
+  @@unique([workspaceId, defaultMark])
+}
+
+model Stage {
+  id          String    @id @default(uuid()) @db.Uuid
+  workspaceId String    @db.Uuid
+  pipelineId  String    @db.Uuid
+  name        String
+  order       Int
+  probability Int?
+  type        StageType @default(open)
+
+  pipeline Pipeline @relation(fields: [workspaceId, pipelineId], references: [workspaceId, id], onDelete: Cascade)
+  deals    Deal[]
+
+  @@unique([workspaceId, id])
+  // Alvo da FK TRIPLA do Deal (ajuste #1): o banco garante stage∈pipeline
+  @@unique([workspaceId, pipelineId, id])
+  @@unique([workspaceId, pipelineId, name])
+  @@index([workspaceId, pipelineId, order])
+}
+
+model Deal {
+  id                String     @id @default(uuid()) @db.Uuid
+  workspaceId       String     @db.Uuid
+  pipelineId        String     @db.Uuid
+  stageId           String     @db.Uuid
+  title             String
+  contactId         String?    @db.Uuid
+  companyId         String?    @db.Uuid
+  ownerMembershipId String?    @db.Uuid
+  amountCents       Int        @default(0)
+  currency          String     @default("BRL")
+  expectedCloseDate DateTime?
+  status            DealStatus @default(open)
+  /// ordenação na coluna do kanban (gaps de 1024, rebalanceado sob lock)
+  position          Int
+  /// atualizado ao mover de stage — insumo do "oportunidade parada" (E7)
+  stageEnteredAt    DateTime   @default(now())
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  pipeline  Pipeline    @relation(fields: [workspaceId, pipelineId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  // FK TRIPLA (ajuste #1): stage do MESMO pipeline, garantido no banco —
+  // deal com pipelineId de A e stageId de B é violação de FK, não bug de service
+  stage     Stage       @relation(fields: [workspaceId, pipelineId, stageId], references: [workspaceId, pipelineId, id], onDelete: NoAction, onUpdate: NoAction)
+  contact   Contact?    @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  company   Company?    @relation(fields: [workspaceId, companyId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  owner     Membership? @relation("DealOwner", fields: [workspaceId, ownerMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+
+  tasks      Task[]
+  notes      Note[]
+  activities Activity[]
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, pipelineId, stageId, position])
+  @@index([workspaceId, contactId])
+  @@index([workspaceId, companyId])
+  @@index([workspaceId, ownerMembershipId])
+  @@index([workspaceId, status])
+}
+
+model Task {
+  id                   String       @id @default(uuid()) @db.Uuid
+  workspaceId          String       @db.Uuid
+  title                String
+  description          String?
+  dueAt                DateTime?
+  assigneeMembershipId String?      @db.Uuid
+  status               TaskStatus   @default(open)
+  priority             TaskPriority @default(normal)
+  contactId            String?      @db.Uuid
+  dealId               String?      @db.Uuid
+  completedAt          DateTime?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+
+  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  assignee  Membership? @relation("TaskAssignee", fields: [workspaceId, assigneeMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  contact   Contact?    @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  deal      Deal?       @relation(fields: [workspaceId, dealId], references: [workspaceId, id], onDelete: Cascade)
+
+  activities Activity[]
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, status, dueAt])
+  @@index([workspaceId, assigneeMembershipId])
+  @@index([workspaceId, contactId])
+  @@index([workspaceId, dealId])
+}
+
+model Note {
+  id                 String   @id @default(uuid()) @db.Uuid
+  workspaceId        String   @db.Uuid
+  body               String
+  authorMembershipId String   @db.Uuid
+  contactId          String?  @db.Uuid
+  companyId          String?  @db.Uuid
+  dealId             String?  @db.Uuid
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  author    Membership @relation("NoteAuthor", fields: [workspaceId, authorMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  contact   Contact?   @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  company   Company?   @relation(fields: [workspaceId, companyId], references: [workspaceId, id], onDelete: Cascade)
+  deal      Deal?      @relation(fields: [workspaceId, dealId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@index([workspaceId, contactId, createdAt])
+  @@index([workspaceId, companyId])
+  @@index([workspaceId, dealId, createdAt])
+  @@index([workspaceId, authorMembershipId])
+}
+
+/// Timeline (ADR-011): APPEND-ONLY, sem API de escrita — só ActivitiesService
+/// emite, com payload validado por mapa fechado ActivityType→Zod (ajuste #4).
+/// Referências por FKs EXPLÍCITAS compostas, com Cascade: o histórico morre com
+/// a entidade (LGPD) — nunca par genérico entityType/entityId.
+model Activity {
+  id                String        @id @default(uuid()) @db.Uuid
+  workspaceId       String        @db.Uuid
+  type              ActivityType
+  actorType         ActivityActor @default(user)
+  actorMembershipId String?       @db.Uuid
+  payload           Json
+  occurredAt        DateTime      @default(now())
+  contactId         String?       @db.Uuid
+  companyId         String?       @db.Uuid
+  dealId            String?       @db.Uuid
+  taskId            String?       @db.Uuid
+
+  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  actor     Membership? @relation("ActivityActor", fields: [workspaceId, actorMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  contact   Contact?    @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  company   Company?    @relation(fields: [workspaceId, companyId], references: [workspaceId, id], onDelete: Cascade)
+  deal      Deal?       @relation(fields: [workspaceId, dealId], references: [workspaceId, id], onDelete: Cascade)
+  task      Task?       @relation(fields: [workspaceId, taskId], references: [workspaceId, id], onDelete: Cascade)
+
+  // cursor keyset (occurredAt, id) por alvo — paginação estável (ajuste #5)
+  @@index([workspaceId, contactId, occurredAt(sort: Desc), id])
+  @@index([workspaceId, dealId, occurredAt(sort: Desc), id])
 }

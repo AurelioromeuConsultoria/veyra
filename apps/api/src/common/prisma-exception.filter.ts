@@ -19,6 +19,12 @@ export class PrismaExceptionFilter extends BaseExceptionFilter implements Except
       super.catch(new ConflictException('Registro duplicado'), host);
       return;
     }
+    // P2003: FK violada por corrida (ex.: delete de stage que acabou de receber
+    // um deal) — 409 claro, nunca 500 (ajuste #7 da revisão da Entrega 4)
+    if (code === 'P2003') {
+      super.catch(new ConflictException('Registro em uso por outros dados'), host);
+      return;
+    }
     super.catch(exception, host);
   }
 }

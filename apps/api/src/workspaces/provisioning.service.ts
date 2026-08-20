@@ -1,6 +1,7 @@
 import { ConflictException, Injectable } from '@nestjs/common';
 import { PERMISSION_CATALOG, SYSTEM_ROLE_TEMPLATES } from '@veyra/contracts';
 import { generateOpaqueToken, sha256 } from '../auth/tokens';
+import { DEFAULT_STAGES } from '../pipelines/pipelines.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 export interface ProvisionInput {
@@ -58,6 +59,19 @@ export class ProvisioningService {
     return this.prisma.raw.$transaction(async (tx) => {
       const workspace = await tx.workspace.create({
         data: { name: input.name, slug: input.slug },
+      });
+
+      // pipeline padrão (ajuste #2): workspace novo nasce com fluxo utilizável —
+      // os antigos receberam pelo backfill idempotente da migration
+      const pipeline = await tx.pipeline.create({
+        data: { workspaceId: workspace.id, name: 'Vendas', defaultMark: true },
+      });
+      await tx.stage.createMany({
+        data: DEFAULT_STAGES.map((stage) => ({
+          ...stage,
+          workspaceId: workspace.id,
+          pipelineId: pipeline.id,
+        })),
       });
 
       let ownerRoleId = '';
