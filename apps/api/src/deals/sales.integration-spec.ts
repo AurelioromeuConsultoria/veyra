@@ -247,6 +247,89 @@ describe('Vendas — pipelines, deals e timeline (integração)', () => {
     await del(`/api/stages/${outro.stages[0].id}`, sessionA).expect(200);
   });
 
+  it('mover para o MESMO stage reordena sem emitir deal_stage_changed', async () => {
+    const d1 = (await post('/api/deals', sessionA, { title: 'R1' }).expect(201)).body;
+    const d2 = (await post('/api/deals', sessionA, { title: 'R2' }).expect(201)).body;
+    const stage = d1.stageId;
+
+    await post(`/api/deals/${d2.id}/move`, sessionA, { stageId: stage, index: 0 }).expect(201);
+    const board = (await get('/api/deals/board', sessionA).expect(200)).body;
+    const column = board.columns.find((c: { stageId: string }) => c.stageId === stage);
+    expect(column.deals.map((d: { title: string }) => d.title)).toEqual(['R2', 'R1']);
+
+    const timeline = (await get(`/api/activities?dealId=${d2.id}`, sessionA).expect(200)).body;
+    expect(
+      timeline.items.filter((a: { type: string }) => a.type === 'deal_stage_changed'),
+    ).toHaveLength(0);
+  });
+
+  it('dois moves concorrentes do MESMO deal geram UM deal_stage_changed correto', async () => {
+    const deal = (await post('/api/deals', sessionA, { title: 'Disputado' }).expect(201)).body;
+    const target = wsA.stages['Qualificado'];
+    await Promise.all([
+      post(`/api/deals/${deal.id}/move`, sessionA, { stageId: target }),
+      post(`/api/deals/${deal.id}/move`, sessionA, { stageId: target }),
+    ]);
+    const timeline = (await get(`/api/activities?dealId=${deal.id}`, sessionA).expect(200)).body;
+    const changes = timeline.items.filter((a: { type: string }) => a.type === 'deal_stage_changed');
+    // a releitura DENTRO do lock impede o segundo evento (fromStage obsoleto)
+    expect(changes).toHaveLength(1);
+    expect(changes[0].payload).toEqual({ fromStage: 'Novo', toStage: 'Qualificado' });
+  });
+
+  it('RBAC: papel só com contacts:read não lê timeline de oportunidade', async () => {
+    // papel custom: leitura de contatos, SEM pipelines:read
+    const roleId = wsA.roles.guest;
+    await prisma.raw.rolePermission.deleteMany({
+      where: { workspaceId: wsA.workspaceId, roleId, permissionKey: 'pipelines:read' },
+    });
+    const guestId = await createUserFixture(prisma, 'guest-a@veyra.test');
+    await createMembershipFixture(prisma, wsA.workspaceId, guestId, roleId);
+    const guest = await loginAs('guest-a@veyra.test');
+
+    const contact = (await post('/api/contacts', sessionA, { name: 'Alvo' }).expect(201)).body;
+    const deal = (
+      await post('/api/deals', sessionA, {
+        title: 'Contrato sigiloso',
+        contactId: contact.id,
+        amountCents: 25_000_000,
+      }).expect(201)
+    ).body;
+
+    // timeline do DEAL: negada
+    await get(`/api/activities?dealId=${deal.id}`, guest).expect(403);
+    // timeline do CONTATO: permitida, mas SEM os eventos de oportunidade
+    const contactTimeline = (
+      await get(`/api/activities?contactId=${contact.id}`, guest).expect(200)
+    ).body;
+    expect(JSON.stringify(contactTimeline)).not.toContain('Contrato sigiloso');
+    expect(JSON.stringify(contactTimeline)).not.toContain('25000000');
+    expect(contactTimeline.items.every((a: { type: string }) => !a.type.startsWith('deal_'))).toBe(
+      true,
+    );
+  });
+
+  it('PATCH do deal não troca pipeline/stage (campos são ignorados)', async () => {
+    const deal = (await post('/api/deals', sessionA, { title: 'Fixo' }).expect(201)).body;
+    const outro = (await post('/api/pipelines', sessionA, { name: 'Outro' }).expect(201)).body;
+    await request(http)
+      .patch(`/api/deals/${deal.id}`)
+      .set('Origin', ORIGIN)
+      .set('Cookie', sessionA.cookieHeader)
+      .set('x-csrf-token', sessionA.csrf)
+      .send({ title: 'Renomeado', pipelineId: outro.id, stageId: outro.stages[1].id })
+      .expect(200);
+    const after = (await get(`/api/deals/${deal.id}`, sessionA).expect(200)).body;
+    expect(after.title).toBe('Renomeado');
+    expect(after.pipelineId).toBe(deal.pipelineId); // inalterado
+    expect(after.stageId).toBe(deal.stageId);
+  });
+
+  it('cursor inválido → 400; cursor de outro workspace não vaza', async () => {
+    const deal = (await post('/api/deals', sessionA, { title: 'C' }).expect(201)).body;
+    await get(`/api/activities?dealId=${deal.id}&cursor=lixo-nao-base64`, sessionA).expect(400);
+  });
+
   it('P0: workspace B não vê board, deals nem timeline de A', async () => {
     const deal = (await post('/api/deals', sessionA, { title: 'Segredo A' }).expect(201)).body;
 

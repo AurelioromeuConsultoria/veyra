@@ -62,7 +62,8 @@ export class DealsService {
     const deals = (await this.prisma.db.deal.findMany({
       where: { pipelineId: id },
       include: DEAL_INCLUDE,
-      orderBy: [{ stageId: 'asc' }, { position: 'asc' }],
+      // tiebreak por id: ordem estável mesmo com positions empatadas
+      orderBy: [{ stageId: 'asc' }, { position: 'asc' }, { id: 'asc' }],
     } as never)) as unknown as DealRow[];
     const ownerNames = await this.resolveOwnerNames(deals.map((d) => d.ownerMembershipId));
 
@@ -104,12 +105,16 @@ export class DealsService {
     if (!stage) throw new BadRequestException('Estágio inválido para este pipeline');
     await this.validateReferences(input);
 
-    const last = await this.prisma.db.deal.findFirst({
-      where: { pipelineId, stageId: stage.id },
-      orderBy: { position: 'desc' },
-    });
     const db = this.prisma.db as unknown as TxRunner;
     const id = await db.$transaction(async (tx) => {
+      // creates concorrentes na mesma coluna podem ler o mesmo `last` e gravar
+      // a MESMA position; a ordenação do board tem tiebreak determinístico
+      // (position, id), então a ordem é estável mesmo com empate — e o próximo
+      // move normaliza as posições da coluna sob o advisory lock.
+      const last = await tx.deal.findFirst({
+        where: { pipelineId, stageId: stage.id },
+        orderBy: { position: 'desc' },
+      });
       const deal = await tx.deal.create({
         data: {
           title: input.title,
@@ -178,14 +183,24 @@ export class DealsService {
   async move(auth: AuthContext, dealId: string, input: MoveDealInput): Promise<DealDto> {
     const workspaceId = auth.workspaceId as string;
     await this.prisma.raw.$transaction(async (tx) => {
-      const deal = await this.findScoped(tx, workspaceId, dealId);
-      if (!deal) throw new NotFoundException('Oportunidade não encontrada');
+      // pipelineId é IMUTÁVEL: pode ser lido antes só para compor a chave do lock
+      const pipelineOf = await tx.deal.findFirst({
+        where: { id: dealId, workspaceId },
+        select: { pipelineId: true },
+      });
+      if (!pipelineOf) throw new NotFoundException('Oportunidade não encontrada');
 
       await tx.$executeRawUnsafe(
         'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
         'veyra_board',
-        `${workspaceId}:${deal.pipelineId}`,
+        `${workspaceId}:${pipelineOf.pipelineId}`,
       );
+
+      // RELEITURA dentro da seção crítica: stageId/amount não podem vir de um
+      // snapshot pré-lock — dois moves do MESMO deal gerariam Activity com
+      // fromStage obsoleto (a timeline é append-only: evento errado é para sempre)
+      const deal = await this.findScoped(tx, workspaceId, dealId);
+      if (!deal) throw new NotFoundException('Oportunidade não encontrada');
 
       // stage precisa ser do MESMO pipeline (a FK tripla garante no banco)
       const stage = await tx.stage.findFirst({
@@ -196,7 +211,7 @@ export class DealsService {
       // recalcula posições da coluna-alvo DENTRO do lock
       const columnDeals = await tx.deal.findMany({
         where: { workspaceId, pipelineId: deal.pipelineId, stageId: stage.id, id: { not: dealId } },
-        orderBy: { position: 'asc' },
+        orderBy: [{ position: 'asc' }, { id: 'asc' }],
         select: { id: true },
       });
       const index = Math.min(input.index ?? columnDeals.length, columnDeals.length);

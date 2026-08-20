@@ -22,7 +22,7 @@ Provisionamento controlado de workspace (CLI, sem registro público — ADR-014)
 CRUD completo (contracts → api → web), tabela densa (TanStack Table) com busca/filtro/ordenação, custom fields tipados. Primeira tela real seguindo DESIGN_DIRECTION (tokens, densidade operacional).
 **Pronto quando:** dois workspaces de teste não veem contatos um do outro (e2e); import básico por CSV.
 
-## Entrega 4 — Pipelines, oportunidades e trabalho 🔜
+## Entrega 4 — Pipelines, oportunidades e trabalho ✅
 
 Pipelines/estágios configuráveis, deals com kanban, tarefas, notas, `Activity` com timeline por contato/deal (ADR-011).
 **Pronto quando:** mover deal gera Activity; timeline consulta só por FKs explícitas; kanban denso e usável por teclado.

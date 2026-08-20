@@ -9,6 +9,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { Client } from 'pg';
 import { PERMISSION_CATALOG, SYSTEM_ROLE_TEMPLATES } from '../packages/contracts/src/permissions';
+import { DEFAULT_STAGES } from '../apps/api/src/pipelines/pipelines.service';
 import { E2E_DATABASE_URL, E2E_PASSWORD_HASH, OWNER_A, OWNER_B, assertIsE2eDb } from './env';
 
 async function recreateDatabase(dbName: string): Promise<void> {
@@ -65,6 +66,29 @@ async function seed(): Promise<void> {
         }
         if (systemKey === 'owner') ownerRoleId = roleId;
       }
+      // pipeline padrão + stages (como o provisionamento real)
+      const pipelineId = randomUUID();
+      await db.query(
+        `INSERT INTO "Pipeline" ("id", "workspaceId", "name", "defaultMark", "updatedAt")
+         VALUES ($1, $2, 'Vendas', true, now())`,
+        [pipelineId, workspaceId],
+      );
+      for (const stage of DEFAULT_STAGES) {
+        await db.query(
+          `INSERT INTO "Stage" ("id", "workspaceId", "pipelineId", "name", "order", "probability", "type")
+           VALUES ($1, $2, $3, $4, $5, $6, $7::"StageType")`,
+          [
+            randomUUID(),
+            workspaceId,
+            pipelineId,
+            stage.name,
+            stage.order,
+            stage.probability,
+            stage.type,
+          ],
+        );
+      }
+
       const userId = randomUUID();
       await db.query(
         `INSERT INTO "User" ("id", "email", "name", "passwordHash", "updatedAt")

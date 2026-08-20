@@ -1,11 +1,13 @@
 import { clsx } from 'clsx';
-import { Building2, LogOut, Settings2, Tags, Users } from 'lucide-react';
+import { Building2, CheckSquare, KanbanSquare, LogOut, Settings2, Tags, Users } from 'lucide-react';
 import { NavLink, Outlet } from 'react-router-dom';
 import { useLogout, useSession } from '../../lib/session';
 
 const nav = [
+  { to: '/pipeline', label: 'Pipeline', icon: KanbanSquare },
   { to: '/contacts', label: 'Contatos', icon: Users },
   { to: '/companies', label: 'Empresas', icon: Building2 },
+  { to: '/tasks', label: 'Tarefas', icon: CheckSquare },
   { to: '/tags', label: 'Tags', icon: Tags },
   { to: '/settings/fields', label: 'Campos', icon: Settings2 },
 ];

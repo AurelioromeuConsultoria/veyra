@@ -116,7 +116,10 @@ export class JwtAuthGuard implements CanActivate {
       userId: payload.sub,
       email: payload.email,
       membershipId: payload.membershipId,
-      workspaceId: payload.membershipId ? payload.workspaceId : null,
+      // FONTE ÚNICA: o workspace vem da membership REVALIDADA no banco, nunca
+      // do claim do JWT — services que usam prisma.raw (ex.: move do kanban sob
+      // advisory lock) escopam por este valor, sem a rede da extension.
+      workspaceId: membership?.workspaceId ?? null,
       sessionId: payload.sessionId,
     };
     return true;

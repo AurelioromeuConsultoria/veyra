@@ -1,43 +1,66 @@
+import { Suspense, lazy } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './components/layout/AppShell';
 import { useSession } from './lib/session';
-import { CompaniesPage } from './pages/Companies';
-import { ContactsPage } from './pages/Contacts';
-import { CustomFieldsPage } from './pages/CustomFields';
 import { LoginPage } from './pages/Login';
-import { TagsPage } from './pages/Tags';
+
+/**
+ * Code-splitting por rota: o chunk inicial carrega só login + shell; kanban,
+ * tabelas e timeline chegam sob demanda (dívida técnica da Entrega 3 quitada
+ * antes de o board entrar).
+ */
+const ContactsPage = lazy(() =>
+  import('./pages/Contacts').then((m) => ({ default: m.ContactsPage })),
+);
+const CompaniesPage = lazy(() =>
+  import('./pages/Companies').then((m) => ({ default: m.CompaniesPage })),
+);
+const PipelinePage = lazy(() =>
+  import('./pages/Pipeline').then((m) => ({ default: m.PipelinePage })),
+);
+const TasksPage = lazy(() => import('./pages/Tasks').then((m) => ({ default: m.TasksPage })));
+const TagsPage = lazy(() => import('./pages/Tags').then((m) => ({ default: m.TagsPage })));
+const CustomFieldsPage = lazy(() =>
+  import('./pages/CustomFields').then((m) => ({ default: m.CustomFieldsPage })),
+);
+
+function Loading() {
+  return (
+    <main className="flex min-h-screen items-center justify-center text-sm text-muted-fg">
+      Carregando…
+    </main>
+  );
+}
 
 function Protected({ children }: { children: React.ReactNode }) {
   const { data: user, isLoading } = useSession();
-  if (isLoading) {
-    return (
-      <main className="flex min-h-screen items-center justify-center text-sm text-muted-fg">
-        Carregando…
-      </main>
-    );
-  }
+  if (isLoading) return <Loading />;
   if (!user) return <Navigate to="/login" replace />;
   return <>{children}</>;
 }
 
 export function App() {
   return (
-    <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route
-        element={
-          <Protected>
-            <AppShell />
-          </Protected>
-        }
-      >
-        <Route path="/" element={<Navigate to="/contacts" replace />} />
-        <Route path="/contacts" element={<ContactsPage />} />
-        <Route path="/companies" element={<CompaniesPage />} />
-        <Route path="/tags" element={<TagsPage />} />
-        <Route path="/settings/fields" element={<CustomFieldsPage />} />
-      </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    <Suspense fallback={<Loading />}>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route
+          element={
+            <Protected>
+              <AppShell />
+            </Protected>
+          }
+        >
+          <Route path="/" element={<Navigate to="/pipeline" replace />} />
+          <Route path="/pipeline" element={<PipelinePage />} />
+          <Route path="/contacts" element={<ContactsPage />} />
+          <Route path="/companies" element={<CompaniesPage />} />
+          <Route path="/tasks" element={<TasksPage />} />
+          <Route path="/tags" element={<TagsPage />} />
+          <Route path="/settings/fields" element={<CustomFieldsPage />} />
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </Suspense>
   );
 }

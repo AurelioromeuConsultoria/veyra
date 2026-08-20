@@ -99,13 +99,21 @@ export class ActivitiesService {
     target: { contactId?: string; dealId?: string },
     limit: number,
     rawCursor?: string,
+    options: { includeDealEvents?: boolean } = {},
   ): Promise<ActivityPageDto> {
     const targetWhere = target.contactId
       ? { contactId: target.contactId }
       : { dealId: target.dealId };
+    // sem pipelines:read, eventos de oportunidade (que carregam valores) não
+    // entram nem na timeline do contato
+    const visibilityWhere =
+      options.includeDealEvents === false
+        ? { type: { notIn: ['deal_created', 'deal_stage_changed', 'deal_won', 'deal_lost'] } }
+        : {};
     const cursor = rawCursor ? decodeCursor(rawCursor) : null;
     const where = {
       ...targetWhere,
+      ...visibilityWhere,
       ...(cursor
         ? {
             OR: [

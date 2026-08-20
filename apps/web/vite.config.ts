@@ -6,6 +6,21 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  build: {
+    rolldownOptions: {
+      output: {
+        // vendors em chunks próprios: mudança de código do app não invalida o
+        // cache de react/query/form no navegador (Rolldown: função, não mapa)
+        manualChunks: (id: string) => {
+          if (!id.includes('node_modules')) return undefined;
+          if (/react-router|react-dom|[\\/]react[\\/]/.test(id)) return 'vendor-react';
+          if (id.includes('@tanstack')) return 'vendor-data';
+          if (/react-hook-form|hookform|[\\/]zod[\\/]/.test(id)) return 'vendor-form';
+          return undefined;
+        },
+      },
+    },
+  },
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),

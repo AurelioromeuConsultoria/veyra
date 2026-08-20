@@ -18,6 +18,7 @@ import { ArrowDown, ArrowUp, Plus, Search, Upload } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
+import { Timeline } from '../components/Timeline';
 import { Button } from '../components/ui/button';
 import { Drawer } from '../components/ui/drawer';
 import { Field, Input, Select } from '../components/ui/input';
@@ -484,6 +485,15 @@ function ContactForm({
         <p role="alert" className="text-sm text-negative">
           {error}
         </p>
+      ) : null}
+
+      {contact ? (
+        <section className="border-t border-border pt-4">
+          <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-fg">
+            Histórico
+          </h3>
+          <Timeline contactId={contact.id} />
+        </section>
       ) : null}
 
       {canWrite ? (
