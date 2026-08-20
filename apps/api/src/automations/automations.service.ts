@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import type {
   AutomationCondition,
   AutomationDto,
@@ -10,7 +10,7 @@ import type {
 import { createTaskConfigSchema } from '@veyra/contracts';
 import { AuditService } from '../audit/audit.service';
 import { AuthContext } from '../common/decorators';
-import type { ClaimedEvent } from '../outbox/outbox.service';
+import { MAX_ATTEMPTS, OUTBOX_EVENTS, type ClaimedEvent } from '../outbox/outbox.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { TasksService } from '../tasks/tasks.service';
 
@@ -21,6 +21,18 @@ type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
  * mais longa que isto é sinal de modelagem errada, não de necessidade.
  */
 export const MAX_CHAIN_DEPTH = 3;
+
+/**
+ * Campos condicionáveis por gatilho, derivados da ALLOWLIST DE PAYLOAD do
+ * próprio evento (fonte única). Sem isto, `field` aceitaria qualquer string e a
+ * condição leria `undefined` para sempre — uma automação silenciosamente
+ * inválida, que é pior que uma recusada: parece configurada e nunca dispara.
+ */
+export function allowedFieldsFor(trigger: string): string[] {
+  const schema = (OUTBOX_EVENTS as Record<string, unknown>)[trigger];
+  const shape = (schema as { shape?: Record<string, unknown> } | undefined)?.shape;
+  return shape ? Object.keys(shape) : [];
+}
 
 type AutomationRow = {
   id: string;
@@ -53,6 +65,7 @@ export class AutomationsService {
   }
 
   async create(auth: AuthContext, input: CreateAutomationInput): Promise<AutomationDto> {
+    this.assertConditionFields(input.trigger, input.conditions);
     const db = this.prisma.db as unknown as TxRunner;
     const id = await db.$transaction(async (tx) => {
       const created = await tx.automation.create({
@@ -94,6 +107,7 @@ export class AutomationsService {
       where: { id },
     })) as unknown as AutomationRow | null;
     if (!existing) throw new NotFoundException('Automação não encontrada');
+    if (input.conditions) this.assertConditionFields(existing.trigger, input.conditions);
     const db = this.prisma.db as unknown as TxRunner;
     await db.$transaction(async (tx) => {
       await tx.automation.updateMany({
@@ -194,6 +208,7 @@ export class AutomationsService {
       },
     });
 
+    const falhas: string[] = [];
     for (const automation of automations) {
       // AUTO-RETRIGGER: evento que ESTA automação originou não a reativa.
       // Sozinha, esta defesa não impede duas automações em ping-pong — é por
@@ -207,12 +222,26 @@ export class AutomationsService {
       try {
         await this.execute(event, automation.id, automation.actionConfig, payload, matches);
       } catch (error) {
-        // uma automação com defeito não derruba as outras nem o evento
+        // uma automação com defeito não impede as OUTRAS de rodar…
         this.logger.error(
           `Automação ${automation.id} falhou no evento ${event.id} (${(error as Error).name})`,
         );
-        await this.recordExecution(event, automation.id, 'failed', 'action_error');
+        falhas.push(automation.id);
+        // …mas na ÚLTIMA tentativa o fracasso fica visível no histórico. Antes
+        // disso, nada é gravado: uma linha de execução ocuparia o unique e
+        // impediria a nova tentativa de fazer a ação.
+        if (event.attempts >= MAX_ATTEMPTS) {
+          await this.recordExecution(event, automation.id, 'failed', 'action_error');
+        }
       }
+    }
+
+    // PROPAGA a falha: o dispatcher devolve o evento ao outbox, que tenta de
+    // novo com backoff. Engolir aqui significava zero tarefa criada e nenhuma
+    // nova tentativa — a falha transitória virava perda silenciosa. As
+    // execuções que já deram certo seguem protegidas pelo unique.
+    if (falhas.length > 0) {
+      throw new Error(`Automação(ões) falharam no evento ${event.id}: ${falhas.join(', ')}`);
     }
   }
 
@@ -248,11 +277,12 @@ export class AutomationsService {
 
       const config = createTaskConfigSchema.parse(rawConfig);
       const dueAt = new Date(Date.now() + config.dueInDays * 24 * 60 * 60 * 1000);
-      await this.tasks.createWithin(
+      const title = this.renderTitle(config.title, payload);
+      const taskId = await this.tasks.createWithin(
         tx as unknown as Db,
         event.workspaceId,
         {
-          title: this.renderTitle(config.title, payload),
+          title,
           dueAt: dueAt.toISOString(),
           contactId:
             typeof payload.id === 'string' && event.eventType.startsWith('contact.')
@@ -260,12 +290,26 @@ export class AutomationsService {
               : undefined,
           priority: 'normal',
         },
-        // ator system: automação não é pessoa nem IA
-        { type: 'user', membershipId: null },
+        // ator SYSTEM: automação não é pessoa nem IA. `user` com membership
+        // nula fazia a timeline mentir sobre quem agiu.
+        { type: 'system', membershipId: null },
         {
           chainId: event.chainId ?? event.id,
           depth: event.depth + 1,
           originAutomationId: automationId,
+        },
+      );
+
+      // a trilha diz QUAL automação agiu (actorId) e sobre o que
+      await this.audit.record(
+        tx as unknown as Db,
+        event.workspaceId,
+        'task.created_by_automation',
+        {
+          entityType: 'task',
+          entityId: taskId,
+          actor: { type: 'system', id: automationId },
+          after: { title, status: 'open' },
         },
       );
     });
@@ -305,6 +349,20 @@ export class AutomationsService {
         },
       })
       .catch(() => undefined); // registro de falha é best-effort
+  }
+
+  /**
+   * O catálogo só é FECHADO de verdade se o campo também for: operador restrito
+   * com campo livre ainda permite condição que nunca casa.
+   */
+  private assertConditionFields(trigger: string, conditions: AutomationCondition[]): void {
+    const allowed = allowedFieldsFor(trigger);
+    const invalido = conditions.find((condition) => !allowed.includes(condition.field));
+    if (invalido) {
+      throw new BadRequestException(
+        `Campo "${invalido.field}" não existe no evento ${trigger}. Disponíveis: ${allowed.join(', ')}`,
+      );
+    }
   }
 
   /** Predicado DECLARADO — nada de expressão avaliada. */

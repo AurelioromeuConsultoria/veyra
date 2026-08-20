@@ -87,7 +87,7 @@ export class TasksService {
     tx: Db,
     workspaceId: string,
     input: CreateTaskInput,
-    actor: { type: 'user' | 'ai'; membershipId: string | null },
+    actor: { type: 'user' | 'ai' | 'system'; membershipId: string | null },
     /** cadeia de causalidade quando a tarefa nasce de automação (ADR-035) */
     causality?: { chainId: string | null; depth: number; originAutomationId: string },
   ): Promise<string> {

@@ -14,6 +14,7 @@ import {
   type WorkspaceFixture,
 } from '../../test/integration/fixtures';
 import { resetDb } from '../../test/integration/harness';
+import { MAX_ATTEMPTS } from '../outbox/outbox.service';
 import { MAX_CHAIN_DEPTH } from './automations.service';
 
 const ORIGIN = process.env.WEB_ORIGIN ?? 'http://localhost:5175';
@@ -61,6 +62,13 @@ describe('Automações (integração)', () => {
   const post = (path: string, s: Session, body?: unknown) =>
     request(http)
       .post(path)
+      .set('Origin', ORIGIN)
+      .set('Cookie', s.cookieHeader)
+      .set('x-csrf-token', s.csrf)
+      .send((body ?? {}) as object);
+  const patch = (path: string, s: Session, body?: unknown) =>
+    request(http)
+      .patch(path)
       .set('Origin', ORIGIN)
       .set('Cookie', s.cookieHeader)
       .set('x-csrf-token', s.csrf)
@@ -241,6 +249,131 @@ describe('Automações (integração)', () => {
     });
     expect(corte).toBeTruthy();
     expect(corte!.actorType).toBe('system');
+  });
+
+  // ── Correções da revisão ──────────────────────────────────────────────────
+
+  it('a tarefa da automação é registrada como SYSTEM, com a automação na trilha', async () => {
+    const criada = (await post('/api/automations', sessionA, followUp()).expect(201)).body;
+    await post('/api/contacts', sessionA, { name: 'Autoria' }).expect(201);
+    await drain();
+
+    const task = await prisma.raw.task.findFirst({ where: { title: 'Ligar para Autoria' } });
+    expect(task).toBeTruthy();
+
+    // timeline: o ator é o sistema, não uma pessoa com membership nula
+    const activity = await prisma.raw.activity.findFirst({
+      where: { taskId: task!.id, type: 'task_created' },
+    });
+    expect(activity!.actorType).toBe('system');
+    expect(activity!.actorMembershipId).toBeNull();
+
+    // auditoria: diz QUAL automação agiu
+    const log = await prisma.raw.auditLog.findFirst({
+      where: { action: 'task.created_by_automation' },
+    });
+    expect(log).toBeTruthy();
+    expect(log!.actorType).toBe('system');
+    expect(log!.actorId).toBe(criada.id);
+    expect(log!.entityId).toBe(task!.id);
+    expect(log!.after).toMatchObject({ title: 'Ligar para Autoria' });
+  });
+
+  it('falha na ação devolve o evento ao outbox para nova tentativa', async () => {
+    const criada = (await post('/api/automations', sessionA, followUp()).expect(201)).body;
+    // config inválida na base: a ação falha no parse dentro da transação
+    await prisma.raw.automation.updateMany({
+      where: { id: criada.id },
+      data: { actionConfig: { titulo_errado: 'x' } },
+    });
+    await post('/api/contacts', sessionA, { name: 'Retentativa' }).expect(201);
+    await drain(1);
+
+    // nenhuma tarefa, nenhuma execução registrada (linha de execução ocuparia o
+    // unique e impediria a nova tentativa)…
+    expect(await prisma.raw.task.count()).toBe(0);
+    expect(await prisma.raw.automationExecution.count()).toBe(0);
+    // …e o evento voltou para pending com backoff, em vez de ser marcado entregue
+    const evento = await prisma.raw.outboxEvent.findFirst({
+      where: { eventType: 'contact.created' },
+    });
+    expect(evento!.status).toBe('pending');
+    expect(evento!.attempts).toBe(1);
+    expect(evento!.lastError).toBeTruthy();
+    expect(evento!.nextRetryAt.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it('consertada a automação, a nova tentativa cria a tarefa', async () => {
+    const criada = (await post('/api/automations', sessionA, followUp()).expect(201)).body;
+    await prisma.raw.automation.updateMany({
+      where: { id: criada.id },
+      data: { actionConfig: { titulo_errado: 'x' } },
+    });
+    await post('/api/contacts', sessionA, { name: 'Conserto' }).expect(201);
+    await drain(1);
+    expect(await prisma.raw.task.count()).toBe(0);
+
+    // conserta e adianta o relógio do retry
+    await prisma.raw.automation.updateMany({
+      where: { id: criada.id },
+      data: { actionConfig: { title: 'Ligar para {{name}}', dueInDays: 1 } },
+    });
+    await prisma.raw.outboxEvent.updateMany({
+      where: { eventType: 'contact.created' },
+      data: { nextRetryAt: new Date() },
+    });
+    await drain();
+
+    const tasks = await prisma.raw.task.findMany();
+    expect(tasks.map((t) => t.title)).toEqual(['Ligar para Conserto']);
+  });
+
+  it('falha persistente registra o fracasso no histórico ao esgotar as tentativas', async () => {
+    const criada = (await post('/api/automations', sessionA, followUp()).expect(201)).body;
+    await prisma.raw.automation.updateMany({
+      where: { id: criada.id },
+      data: { actionConfig: { titulo_errado: 'x' } },
+    });
+    await post('/api/contacts', sessionA, { name: 'Sem conserto' }).expect(201);
+
+    // simula a ÚLTIMA tentativa
+    await prisma.raw.outboxEvent.updateMany({
+      where: { eventType: 'contact.created' },
+      data: { attempts: MAX_ATTEMPTS - 1, nextRetryAt: new Date() },
+    });
+    await drain(1);
+
+    const execucao = await prisma.raw.automationExecution.findFirst();
+    expect(execucao).toMatchObject({ status: 'failed', reason: 'action_error' });
+    const evento = await prisma.raw.outboxEvent.findFirst({
+      where: { eventType: 'contact.created' },
+    });
+    expect(evento!.status).toBe('dead');
+  });
+
+  it('campo de condição é allowlistado pelo gatilho', async () => {
+    // `amountCents` existe em deal.won, não em contact.created
+    const res = await post(
+      '/api/automations',
+      sessionA,
+      followUp({ conditions: [{ field: 'amountCents', op: 'gt', value: 100 }] }),
+    );
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/não existe no evento contact\.created/i);
+
+    // e o campo certo passa
+    await post(
+      '/api/automations',
+      sessionA,
+      followUp({ conditions: [{ field: 'name', op: 'contains', value: 'Premium' }] }),
+    ).expect(201);
+  });
+
+  it('condição inválida também é recusada no update', async () => {
+    const criada = (await post('/api/automations', sessionA, followUp()).expect(201)).body;
+    await patch(`/api/automations/${criada.id}`, sessionA, {
+      conditions: [{ field: 'campo_inventado', op: 'equals', value: 'x' }],
+    }).expect(400);
   });
 
   // ── P0: isolamento e RBAC ─────────────────────────────────────────────────
