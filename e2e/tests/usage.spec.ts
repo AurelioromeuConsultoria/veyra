@@ -24,8 +24,12 @@ test.describe('Uso e plano (UI)', () => {
   test('criar contato move o medidor de contatos', async ({ page }) => {
     await login(page, OWNER_A);
     await page.getByRole('link', { name: 'Uso e plano' }).click();
-    const usados = () => page.getByTestId('usage-contacts-used');
-    const antes = Number((await usados().textContent()) ?? '0');
+    // pt-BR insere ponto de milhar: sanitiza antes de comparar
+    const lerUsados = async () =>
+      Number(
+        ((await page.getByTestId('usage-contacts-used').textContent()) ?? '0').replace(/\D/g, ''),
+      );
+    const antes = await lerUsados();
 
     await page.getByRole('link', { name: 'Contatos' }).click();
     await page.getByRole('button', { name: 'Novo contato' }).click();
@@ -33,7 +37,8 @@ test.describe('Uso e plano (UI)', () => {
     await page.getByRole('button', { name: 'Salvar' }).click();
 
     await page.getByRole('link', { name: 'Uso e plano' }).click();
-    const depois = Number((await usados().textContent()) ?? '0');
-    expect(depois).toBe(antes + 1);
+    // asserção com RETRY: ao voltar para a tela, o TanStack Query serve o valor
+    // em cache antes de o refetch chegar — ler uma vez é uma corrida perdida
+    await expect.poll(lerUsados, { timeout: 10_000 }).toBe(antes + 1);
   });
 });
