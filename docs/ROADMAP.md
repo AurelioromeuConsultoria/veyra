@@ -27,7 +27,7 @@ CRUD completo (contracts → api → web), tabela densa (TanStack Table) com bus
 Pipelines/estágios configuráveis, deals com kanban, tarefas, notas, `Activity` com timeline por contato/deal (ADR-011).
 **Pronto quando:** mover deal gera Activity; timeline consulta só por FKs explícitas; kanban denso e usável por teclado.
 
-## Entrega 5 — Plataforma de confiança 🔜
+## Entrega 5 — Plataforma de confiança ✅
 
 `AuditLog` com allowlist/redaction, rate limit (auth + API), `Idempotency-Key`, `OutboxEvent` + worker pg-boss, webhooks out com HMAC e retry.
 **Pronto quando:** toda mutação relevante audita; webhook entrega com retry e dedupe; replay de Idempotency-Key devolve a mesma resposta.

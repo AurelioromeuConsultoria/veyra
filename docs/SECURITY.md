@@ -56,13 +56,17 @@ Ameaça número um: **vazamento entre workspaces** — um tenant ler/escrever da
 - `AuditLog(workspaceId, actorType[user|ai|system|api], actorId, action, entityType, entityId, before, after, requestId)` — append-only, gravado nos services de mutação relevante.
 - **Minimização obrigatória**: `before/after` seguem **allowlist de campos auditáveis por entidade** (ex.: Deal: stage, amount, owner, status). Nunca entram: conteúdo de mensagens/conversas, corpo de anexos, segredos/hashes/tokens, dados clínicos de verticais futuros. Campos fora da allowlist aparecem como `"[changed]"`.
 - Ações de IA sempre auditadas (`actorType: 'ai'` + link para `AiRun`).
-- **Retenção**: 12 meses online por padrão (configurável por plano); depois, expurgo ou arquivamento frio. Export LGPD não inclui audit log de outros atores.
+- **Retenção**: 365 dias online por padrão (`AUDIT_RETENTION_DAYS`, faixa 30–3650), com job diário de expurgo (`audit-retention`, 04:00). Arquivamento frio fica para depois.
+- **Append-only imposto tecnicamente** (ADR-019): `Activity` e `AuditLog` estão em `APPEND_ONLY_MODELS` e o client protegido rejeita `update*/delete*/upsert`. Exclusão só por cascade do dono (LGPD) ou pelo job de retenção via `raw`.
+- **Ator**: `actorMembershipId` (FK composta) para usuário do workspace; `actorId` para origem não-usuária (API key, job, AiRun) — nunca token, sempre identificador.
+- **Fidelidade**: `before`/`after` registram apenas as chaves que a mutação enviou; campo não enviado não aparece. Trilha com falso positivo é pior que trilha ausente. Export LGPD não inclui audit log de outros atores.
 
 ## 6. Rate limit, quotas e idempotência
 
-- Rate limit por workspace e por IP nos endpoints públicos e de auth (login/refresh/convite) desde o MVP.
+- Rate limit por IP (throttler global) **e por workspace** (`WorkspaceThrottleGuard`, janela deslizante em memória, 429 com `Retry-After`) — um tenant abusivo não derruba os outros. Multi-instância exige Redis (dívida com gatilho).
 - Quotas por plano (`UsageLimit`/`UsageCounter`): contatos, mensagens, storage, runs de IA. Exceder = 429/402 com mensagem clara, nunca degradação silenciosa.
-- `Idempotency-Key` nas mutações da API pública; efeitos externos idempotentes via `dedupeKey` + unique tenant-scoped.
+- `Idempotency-Key` nas mutações marcadas com `@Idempotent()` (ADR-020): reserva atômica antes de executar, replay só com hash idêntico (método + rota + params + query + body), 409 para chave reutilizada com request diferente. Rota que devolve segredo NUNCA é idempotente.
+- Efeitos externos idempotentes via `dedupeKey` + unique tenant-scoped, entregues pelo outbox (ADR-021).
 - Outbox transacional para todo efeito externo (webhooks out, e-mail, mensagens) — retry com backoff, sem efeito dentro da transação de domínio.
 
 ## 7. Arquivos
@@ -75,6 +79,14 @@ Política obrigatória para `FileObject`:
 4. **Autorização no download**: URL nunca é pública; download passa por endpoint autenticado (ou URL assinada de curtíssima duração) que checa permissão + workspace.
 5. **Antivírus/quarentena**: `scanStatus` (pending/clean/quarantined) no modelo desde o início; arquivo só é servível a terceiros/canais externos quando `clean`. Integração de scanning pode ser adiada, o estado não.
 6. Cifra na borda para conteúdo sensível (cifrar bytes antes do `put`).
+
+## 7-B. Webhooks de saída (ADR-021)
+
+1. Só `https`, sem credenciais na URL, sem redirects, timeout de 5s, corpo descartado com teto.
+2. **Anti-SSRF com pinning**: todos os IPs resolvidos são classificados por `ipaddr.js` (loopback, privado, link-local, CGNAT, ULA, IPv4-mapeado e metadata de nuvem são recusados) e a conexão usa exatamente o IP validado — `fetch`/undici ignoraria o `agent`, então a entrega usa `https.request`.
+3. Assinatura `x-veyra-signature: t=<ts>,v1=HMAC_SHA256(secret, "<ts>.<body>")`; o timestamp na assinatura impede replay.
+4. Segredo cifrado (AES-256-GCM, chave independente do JWT) e exibido **uma única vez** na criação — nunca em DTO, log ou auditoria.
+5. Payload por allowlist do evento; 3 entregas mortas consecutivas pausam **apenas** o webhook que falhou.
 
 ## 8. Segredos e criptografia
 

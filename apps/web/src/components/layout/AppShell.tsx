@@ -1,7 +1,17 @@
 import { clsx } from 'clsx';
-import { Building2, CheckSquare, KanbanSquare, LogOut, Settings2, Tags, Users } from 'lucide-react';
+import {
+  Building2,
+  CheckSquare,
+  KanbanSquare,
+  LogOut,
+  ScrollText,
+  Settings2,
+  Tags,
+  Users,
+  Webhook,
+} from 'lucide-react';
 import { NavLink, Outlet } from 'react-router-dom';
-import { useLogout, useSession } from '../../lib/session';
+import { hasPermission, useLogout, useSession } from '../../lib/session';
 
 const nav = [
   { to: '/pipeline', label: 'Pipeline', icon: KanbanSquare },
@@ -10,6 +20,8 @@ const nav = [
   { to: '/tasks', label: 'Tarefas', icon: CheckSquare },
   { to: '/tags', label: 'Tags', icon: Tags },
   { to: '/settings/fields', label: 'Campos', icon: Settings2 },
+  { to: '/settings/webhooks', label: 'Webhooks', icon: Webhook, permission: 'webhooks:manage' },
+  { to: '/audit', label: 'Auditoria', icon: ScrollText, permission: 'audit:read' },
 ];
 
 export function AppShell() {
@@ -27,23 +39,25 @@ export function AppShell() {
           </p>
         </div>
         <nav className="flex-1 space-y-0.5 p-2" aria-label="Principal">
-          {nav.map(({ to, label, icon: Icon }) => (
-            <NavLink
-              key={to}
-              to={to}
-              className={({ isActive }) =>
-                clsx(
-                  'flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors',
-                  isActive
-                    ? 'bg-surface-2 font-medium text-foreground'
-                    : 'text-muted-fg hover:bg-surface-2 hover:text-foreground',
-                )
-              }
-            >
-              <Icon size={15} strokeWidth={1.75} />
-              {label}
-            </NavLink>
-          ))}
+          {nav
+            .filter((item) => !item.permission || hasPermission(user, item.permission))
+            .map(({ to, label, icon: Icon }) => (
+              <NavLink
+                key={to}
+                to={to}
+                className={({ isActive }) =>
+                  clsx(
+                    'flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors',
+                    isActive
+                      ? 'bg-surface-2 font-medium text-foreground'
+                      : 'text-muted-fg hover:bg-surface-2 hover:text-foreground',
+                  )
+                }
+              >
+                <Icon size={15} strokeWidth={1.75} />
+                {label}
+              </NavLink>
+            ))}
         </nav>
         <div className="border-t border-border p-3">
           <p className="truncate text-xs font-medium">{user?.name}</p>

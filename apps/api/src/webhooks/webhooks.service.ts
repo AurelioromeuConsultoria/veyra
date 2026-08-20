@@ -183,6 +183,8 @@ export class WebhooksService {
       data: event.payload,
     });
     const failures: string[] = [];
+    const failedIds: string[] = [];
+    const succeededIds: string[] = [];
 
     for (const webhook of webhooks) {
       const timestamp = Math.floor(Date.now() / 1000);
@@ -213,16 +215,23 @@ export class WebhooksService {
           durationMs,
         },
       });
-      if (error) failures.push(`${webhook.id}: ${error}`);
+      if (error) {
+        failures.push(`${webhook.id}: ${error}`);
+        failedIds.push(webhook.id);
+      } else {
+        succeededIds.push(webhook.id);
+      }
     }
 
-    if (failures.length === 0) {
-      await this.outbox.markDelivered(event.id);
-      // sucesso zera o contador de entregas mortas (ajuste #7)
+    // sucesso zera o contador de quem entregou, mesmo em lote parcialmente falho
+    if (succeededIds.length > 0) {
       await this.prisma.raw.webhook.updateMany({
-        where: { workspaceId: event.workspaceId, id: { in: webhooks.map((w) => w.id) } },
+        where: { workspaceId: event.workspaceId, id: { in: succeededIds } },
         data: { failureCount: 0 },
       });
+    }
+    if (failures.length === 0) {
+      await this.outbox.markDelivered(event.id);
       return;
     }
 
@@ -230,18 +239,20 @@ export class WebhooksService {
     if (outcome === 'dead') {
       // AJUSTE #7: só a ENTREGA MORTA conta — instabilidade curta (retries) não
       // pausa webhook. Três eventos mortos consecutivos → pause automático.
-      for (const webhook of webhooks) {
+      // SÓ quem falhou é penalizado: um webhook saudável não pode ser pausado
+      // porque OUTRO do mesmo workspace está fora do ar
+      for (const webhookId of failedIds) {
         const updated = await this.prisma.raw.webhook.update({
-          where: { id: webhook.id },
+          where: { id: webhookId },
           data: { failureCount: { increment: 1 } },
         });
         if (updated.failureCount >= DEAD_DELIVERIES_TO_PAUSE) {
           await this.prisma.raw.webhook.updateMany({
-            where: { id: webhook.id },
+            where: { id: webhookId, workspaceId: event.workspaceId },
             data: { status: 'paused' },
           });
           this.logger.warn(
-            `Webhook ${webhook.id} pausado após ${updated.failureCount} entregas mortas`,
+            `Webhook ${webhookId} pausado após ${updated.failureCount} entregas mortas`,
           );
         }
       }

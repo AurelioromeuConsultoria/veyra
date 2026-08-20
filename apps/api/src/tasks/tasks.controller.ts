@@ -20,6 +20,7 @@ import {
   updateTaskSchema,
 } from '@veyra/contracts';
 import { AuthContext, CurrentAuth, RequirePermissions } from '../common/decorators';
+import { Idempotent } from '../common/idempotency.decorator';
 import { ZodPipe } from '../common/zod.pipe';
 import { TasksService } from './tasks.service';
 
@@ -34,6 +35,7 @@ export class TasksController {
   }
 
   @RequirePermissions('tasks:write')
+  @Idempotent()
   @Post()
   create(
     @CurrentAuth() auth: AuthContext,

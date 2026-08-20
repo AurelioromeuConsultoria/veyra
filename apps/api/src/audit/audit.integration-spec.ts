@@ -180,6 +180,23 @@ describe('Auditoria e append-only (integração)', () => {
     expect(await prisma.raw.activity.count({ where: { dealId: deal.id } })).toBe(0);
   });
 
+  it('P1: PATCH parcial audita SÓ o que mudou (sem [changed] nem "→ —" falsos)', async () => {
+    const deal = (
+      await post('/api/deals', sessionA, { title: 'Original', amountCents: 500_000 }).expect(201)
+    ).body;
+    await patch(`/api/deals/${deal.id}`, sessionA, { title: 'Só o título' }).expect(200);
+
+    const audit = (await get('/api/audit?entityType=deal', sessionA).expect(200)).body;
+    const entry = audit.items.find((a: { action: string }) => a.action === 'deal.updated');
+    expect(Object.keys(entry.after)).toEqual(['title']);
+    expect(Object.keys(entry.before)).toEqual(['title']);
+    expect(entry.before.title).toBe('Original');
+    expect(entry.after.title).toBe('Só o título');
+    // campos não enviados NÃO aparecem como alterados
+    expect(JSON.stringify(entry)).not.toContain('[changed]');
+    expect(entry.after.amountCents).toBeUndefined();
+  });
+
   it('mudanças de acesso são auditadas (role e remoção)', async () => {
     const membership = await prisma.raw.membership.findFirst({
       where: { workspaceId: wsA.workspaceId, roleId: wsA.roles.member },

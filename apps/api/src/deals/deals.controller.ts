@@ -22,6 +22,7 @@ import {
   updateDealSchema,
 } from '@veyra/contracts';
 import { AuthContext, CurrentAuth, RequirePermissions } from '../common/decorators';
+import { Idempotent } from '../common/idempotency.decorator';
 import { ZodPipe } from '../common/zod.pipe';
 import { DealsService } from './deals.service';
 
@@ -42,6 +43,7 @@ export class DealsController {
   }
 
   @RequirePermissions('deals:write')
+  @Idempotent()
   @Post()
   create(
     @CurrentAuth() auth: AuthContext,

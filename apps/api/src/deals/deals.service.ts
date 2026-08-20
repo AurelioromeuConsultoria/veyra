@@ -196,17 +196,19 @@ export class DealsService {
           targets: { dealId: id, contactId: existing.contactId, companyId: existing.companyId },
         },
       );
+      // before/after ESPELHADOS: só as chaves que o PATCH realmente enviou
+      const changedKeys = Object.entries(data)
+        .filter(([, value]) => value !== undefined)
+        .map(([key]) => key);
+      const snapshot = existing as unknown as Record<string, unknown>;
       await this.audit.record(tx, auth.workspaceId as string, 'deal.updated', {
         entityType: 'deal',
         entityId: id,
         actor: this.audit.actorFrom(auth),
-        before: {
-          title: existing.title,
-          amountCents: existing.amountCents,
-          currency: existing.currency,
-          ownerMembershipId: existing.ownerMembershipId,
-        },
-        after: { ...data, expectedCloseDate: undefined },
+        before: Object.fromEntries(changedKeys.map((key) => [key, snapshot[key] ?? null])),
+        after: Object.fromEntries(
+          changedKeys.map((key) => [key, (data as Record<string, unknown>)[key]]),
+        ),
       });
     });
     return this.get(id);

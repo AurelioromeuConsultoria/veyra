@@ -23,6 +23,7 @@ import {
 } from '@veyra/contracts';
 import { Throttle } from '@nestjs/throttler';
 import { AuthContext, CurrentAuth, RequirePermissions } from '../common/decorators';
+import { Idempotent } from '../common/idempotency.decorator';
 import { ZodPipe } from '../common/zod.pipe';
 import { ContactsService } from './contacts.service';
 
@@ -45,6 +46,7 @@ export class ContactsController {
   }
 
   @RequirePermissions('contacts:write')
+  @Idempotent()
   @Post()
   create(
     @CurrentAuth() auth: AuthContext,
@@ -55,6 +57,7 @@ export class ContactsController {
 
   @RequirePermissions('contacts:write')
   @Throttle({ default: { limit: 5, ttl: 60_000 } }) // até 5k contatos/min por IP
+  @Idempotent()
   @Post('import')
   import(
     @Body(new ZodPipe(importContactsSchema)) body: ImportContactsInput,

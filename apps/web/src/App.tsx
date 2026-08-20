@@ -23,6 +23,10 @@ const TagsPage = lazy(() => import('./pages/Tags').then((m) => ({ default: m.Tag
 const CustomFieldsPage = lazy(() =>
   import('./pages/CustomFields').then((m) => ({ default: m.CustomFieldsPage })),
 );
+const AuditPage = lazy(() => import('./pages/Audit').then((m) => ({ default: m.AuditPage })));
+const WebhooksPage = lazy(() =>
+  import('./pages/Webhooks').then((m) => ({ default: m.WebhooksPage })),
+);
 
 function Loading() {
   return (
@@ -58,6 +62,8 @@ export function App() {
           <Route path="/tasks" element={<TasksPage />} />
           <Route path="/tags" element={<TagsPage />} />
           <Route path="/settings/fields" element={<CustomFieldsPage />} />
+          <Route path="/settings/webhooks" element={<WebhooksPage />} />
+          <Route path="/audit" element={<AuditPage />} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

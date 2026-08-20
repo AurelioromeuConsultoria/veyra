@@ -1,5 +1,5 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
-import { Agent } from 'node:https';
+import { Agent, request as httpsRequest } from 'node:https';
 import ipaddr from 'ipaddr.js';
 
 /**
@@ -80,9 +80,18 @@ export interface SafeFetchResult {
   durationMs: number;
 }
 
+const MAX_RESPONSE_BYTES = 64 * 1024; // resposta é descartada; só o status importa
+
 /**
- * POST com IP pinado. Resolve o host, valida TODOS os endereços retornados
- * (um só reprovado já derruba a entrega) e conecta no endereço aprovado.
+ * POST com IP PINADO. Resolve o host, valida TODOS os endereços retornados (um
+ * só reprovado derruba a entrega) e conecta EXATAMENTE no endereço aprovado.
+ *
+ * Usa `https.request` (não `fetch`): o `fetch` do Node roda sobre undici, que
+ * IGNORA a opção `agent` — o pinning seria silenciosamente descartado e o
+ * rebinding continuaria possível. Com `https.request`, o `lookup` do Agent é
+ * de fato usado na conexão.
+ *
+ * Redirects não são seguidos (cada hop seria um alvo novo, não validado).
  */
 export async function safePost(
   rawUrl: string,
@@ -97,8 +106,9 @@ export async function safePost(
   const pinned = resolved[0];
 
   const agent = new Agent({
-    // PINNING: a conexão usa exatamente o endereço validado — DNS rebinding
-    // entre a checagem e o connect não tem efeito
+    keepAlive: false,
+    // PINNING: a conexão usa o endereço JÁ validado — uma segunda resposta de
+    // DNS (rebinding) entre a checagem e o connect não tem efeito nenhum
     lookup: (_hostname, _options, callback) => {
       (callback as (err: Error | null, address: string, family: number) => void)(
         null,
@@ -109,21 +119,53 @@ export async function safePost(
   });
 
   const started = Date.now();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, {
-      method: 'POST',
-      body,
-      headers: { 'content-type': 'application/json', ...headers },
-      redirect: 'error', // cada redirect seria um alvo novo, não validado
-      signal: controller.signal,
-      // @ts-expect-error dispatcher/agent do runtime Node
-      agent,
+  return new Promise<SafeFetchResult>((resolve, reject) => {
+    const request = httpsRequest(
+      {
+        protocol: url.protocol,
+        hostname: url.hostname, // mantém SNI/Host corretos; o IP vem do lookup
+        port: url.port || 443,
+        path: `${url.pathname}${url.search}`,
+        method: 'POST',
+        agent,
+        timeout: timeoutMs,
+        headers: {
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(body),
+          ...headers,
+        },
+      },
+      (response) => {
+        const status = response.statusCode ?? 0;
+        if (status >= 300 && status < 400) {
+          response.destroy();
+          agent.destroy();
+          reject(new UnsafeUrlError('Redirect não é seguido em webhook'));
+          return;
+        }
+        // descarta o corpo com teto: endpoint malicioso não segura o socket
+        let received = 0;
+        response.on('data', (chunk: Buffer) => {
+          received += chunk.length;
+          if (received > MAX_RESPONSE_BYTES) response.destroy();
+        });
+        response.on('end', () => {
+          agent.destroy();
+          resolve({ status, durationMs: Date.now() - started });
+        });
+        response.on('close', () => {
+          agent.destroy();
+          resolve({ status, durationMs: Date.now() - started });
+        });
+      },
+    );
+    request.on('timeout', () => {
+      request.destroy(new Error(`Timeout de ${timeoutMs}ms na entrega`));
     });
-    return { status: response.status, durationMs: Date.now() - started };
-  } finally {
-    clearTimeout(timer);
-    agent.destroy();
-  }
+    request.on('error', (error) => {
+      agent.destroy();
+      reject(error);
+    });
+    request.end(body);
+  });
 }

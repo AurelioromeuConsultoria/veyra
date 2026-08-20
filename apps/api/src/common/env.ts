@@ -23,7 +23,12 @@ const envSchema = z.object({
     .string()
     .min(32, 'TOKEN_ENCRYPTION_KEY precisa de ao menos 32 caracteres'),
   // Kill switch dos jobs (worker do outbox)
-  DISABLE_JOBS: z.coerce.boolean().default(false),
+  // z.coerce.boolean() faria DISABLE_JOBS='false' virar TRUE (Boolean('false')),
+  // desligando o worker em silêncio — comparação explícita
+  DISABLE_JOBS: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
   AUDIT_RETENTION_DAYS: z.coerce.number().int().min(30).max(3650).default(365),
 });
 

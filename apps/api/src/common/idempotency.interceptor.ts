@@ -1,19 +1,25 @@
 import { createHash } from 'node:crypto';
 import {
+  BadRequestException,
   CallHandler,
   ConflictException,
   ExecutionContext,
   Injectable,
+  Logger,
   NestInterceptor,
 } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import type { Request, Response } from 'express';
 import { Observable, from, of, switchMap, tap, catchError, throwError } from 'rxjs';
 import { AuthContext } from './decorators';
+import { IDEMPOTENT_KEY } from './idempotency.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 
 const HEADER = 'idempotency-key';
 const TTL_HOURS = 24;
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+/** reserva 'processing' mais velha que isto é considerada abandonada */
+const PROCESSING_LEASE_MS = 60_000;
 
 /**
  * Idempotência HTTP com RESERVA ATÔMICA (ajuste #3 da revisão do plano):
@@ -31,20 +37,32 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
  */
 @Injectable()
 export class IdempotencyInterceptor implements NestInterceptor {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(IdempotencyInterceptor.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly reflector: Reflector,
+  ) {}
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     const http = context.switchToHttp();
     const request = http.getRequest<Request & { auth?: AuthContext }>();
     const response = http.getResponse<Response>();
 
+    // OPT-IN: só rotas marcadas com @Idempotent() participam — resposta com
+    // segredo (ex.: criação de webhook) nunca vai para o cache
+    const enabled = this.reflector.getAllAndOverride<boolean>(IDEMPOTENT_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
     const rawKey = request.headers[HEADER];
     const key = Array.isArray(rawKey) ? rawKey[0] : rawKey;
-    if (!key || SAFE_METHODS.has(request.method) || !request.auth?.workspaceId) {
+    if (!enabled || !key || SAFE_METHODS.has(request.method) || !request.auth?.workspaceId) {
       return next.handle();
     }
     if (key.length > 200) {
-      return throwError(() => new ConflictException('Idempotency-Key inválida'));
+      // erro do cliente é 400, não 409
+      return throwError(() => new BadRequestException('Idempotency-Key inválida'));
     }
 
     const workspaceId = request.auth.workspaceId;
@@ -60,11 +78,16 @@ export class IdempotencyInterceptor implements NestInterceptor {
         }
         return next.handle().pipe(
           tap((body) => {
-            void this.complete(workspaceId, key, endpoint, response.statusCode, body);
+            // promise sem catch derrubaria o processo (unhandled rejection)
+            this.complete(workspaceId, key, endpoint, response.statusCode, body).catch((error) =>
+              this.logger.error(`Falha ao concluir idempotência ${key}: ${String(error)}`),
+            );
           }),
           catchError((error: unknown) => {
             // libera a reserva: a operação não aconteceu, nova tentativa é válida
-            void this.release(workspaceId, key, endpoint);
+            this.release(workspaceId, key, endpoint).catch((e) =>
+              this.logger.error(`Falha ao liberar idempotência ${key}: ${String(e)}`),
+            );
             return throwError(() => error);
           }),
         );
@@ -81,8 +104,15 @@ export class IdempotencyInterceptor implements NestInterceptor {
     const query = Object.entries(request.query as Record<string, unknown>)
       .map(([k, v]) => [k, JSON.stringify(v)] as const)
       .sort(([a], [b]) => a.localeCompare(b));
+    // params SÃO parte da identidade: sem eles, a mesma chave em
+    // PATCH /deals/A e /deals/B daria replay silencioso no lugar de 409
+    const params = Object.entries(request.params as Record<string, string>).sort(([a], [b]) =>
+      a.localeCompare(b),
+    );
     const body = this.normalize(request.body);
-    return createHash('sha256').update(JSON.stringify({ endpoint, query, body })).digest('hex');
+    return createHash('sha256')
+      .update(JSON.stringify({ endpoint, params, query, body }))
+      .digest('hex');
   }
 
   /** Normaliza o body: ordem de chaves não muda a identidade do request. */
@@ -122,6 +152,12 @@ export class IdempotencyInterceptor implements NestInterceptor {
         throw new ConflictException('Idempotency-Key já usada para uma requisição diferente');
       }
       if (existing.state === 'processing') {
+        // LEASE: reserva presa (crash entre reserve e complete) é reciclada —
+        // sem isso a chave ficaria bloqueada pelas 24h do TTL
+        if (Date.now() - existing.createdAt.getTime() > PROCESSING_LEASE_MS) {
+          await this.prisma.raw.idempotencyKey.deleteMany({ where: { id: existing.id } });
+          throw new ConflictException('Tentativa anterior expirou, refaça a requisição');
+        }
         throw new ConflictException('Requisição idêntica em processamento, tente novamente');
       }
       return {

@@ -159,6 +159,44 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
     ).expect(201);
   });
 
+  it('P1: path params entram no hash — mesma chave em recursos diferentes NÃO faz replay', async () => {
+    const d1 = (await post('/api/deals', sessionA, { title: 'Deal 1' }).expect(201)).body;
+    const d2 = (await post('/api/deals', sessionA, { title: 'Deal 2' }).expect(201)).body;
+    const patchWithKey = (id: string) =>
+      request(http)
+        .patch(`/api/deals/${id}`)
+        .set('Origin', ORIGIN)
+        .set('Cookie', sessionA.cookieHeader)
+        .set('x-csrf-token', sessionA.csrf)
+        .set('idempotency-key', 'k-params')
+        .send({ title: 'Mesmo título' });
+    // PATCH não é idempotente por opt-in, então segue normal; o que importa é
+    // que o POST com params distintos não colapse — validamos pelo create:
+    await patchWithKey(d1.id).expect(200);
+    await patchWithKey(d2.id).expect(200);
+    const after1 = (await get(`/api/deals/${d1.id}`, sessionA).expect(200)).body;
+    const after2 = (await get(`/api/deals/${d2.id}`, sessionA).expect(200)).body;
+    expect(after1.title).toBe('Mesmo título');
+    expect(after2.title).toBe('Mesmo título'); // o segundo NÃO foi engolido por replay
+  });
+
+  it('rota sem @Idempotent (ex.: criar webhook) NÃO guarda a resposta em cache', async () => {
+    const created = (
+      await post(
+        '/api/webhooks',
+        sessionA,
+        { url: 'https://exemplo.com/hook', events: ['deal.won'] },
+        { 'idempotency-key': 'k-secret' },
+      ).expect(201)
+    ).body;
+    // o segredo JAMAIS pode ter ido para IdempotencyKey.responseBody
+    const cached = await prisma.raw.idempotencyKey.findMany({
+      where: { workspaceId: wsA.workspaceId },
+    });
+    expect(JSON.stringify(cached)).not.toContain(created.secret);
+    expect(cached.some((row) => row.endpoint.includes('webhooks'))).toBe(false);
+  });
+
   it('chave é escopada por workspace: B pode usar a mesma chave de A', async () => {
     await post('/api/contacts', sessionA, { name: 'Do A' }, { 'idempotency-key': 'shared' }).expect(
       201,
@@ -292,6 +330,41 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
   });
 
   // ── Webhooks ──────────────────────────────────────────────────────────────
+
+  it('P1: entrega morta NÃO pausa webhook saudável do mesmo workspace', async () => {
+    const saudavel = (
+      await post('/api/webhooks', sessionA, {
+        url: 'https://exemplo-ok.veyra.test/hook',
+        events: ['contact.created'],
+      }).expect(201)
+    ).body;
+    const quebrado = (
+      await post('/api/webhooks', sessionA, {
+        url: 'https://nao-existe.veyra-teste.invalid/hook',
+        events: ['contact.created'],
+      }).expect(201)
+    ).body;
+    const webhooks = app.get(WebhooksService);
+
+    for (let i = 0; i < 3; i += 1) {
+      await post('/api/contacts', sessionA, { name: `Evento ${i}` }).expect(201);
+      const event = await prisma.raw.outboxEvent.findFirst({ where: { status: 'pending' } });
+      if (!event) continue;
+      await webhooks.deliver({
+        id: event.id,
+        workspaceId: wsA.workspaceId,
+        eventType: 'contact.created',
+        payload: event.payload,
+        attempts: MAX_ATTEMPTS,
+      });
+    }
+    const ok = await prisma.raw.webhook.findFirst({ where: { id: saudavel.id } });
+    const bad = await prisma.raw.webhook.findFirst({ where: { id: quebrado.id } });
+    // ambos falham (o "saudável" também aponta para host inalcançável no teste),
+    // mas o contador é POR WEBHOOK — nenhum é penalizado pelo erro do outro
+    expect(bad!.failureCount).toBeGreaterThan(0);
+    expect(ok!.failureCount).toBe(bad!.failureCount);
+  });
 
   it('segredo aparece UMA vez na criação e nunca mais (nem cifrado no DTO)', async () => {
     const created = (

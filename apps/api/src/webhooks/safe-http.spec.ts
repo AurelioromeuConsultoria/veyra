@@ -1,4 +1,4 @@
-import { UnsafeUrlError, assertPublicIp, assertSafeWebhookUrl } from './safe-http';
+import { UnsafeUrlError, assertPublicIp, assertSafeWebhookUrl, safePost } from './safe-http';
 
 /** Defesa SSRF (ajuste #6): classificação por ipaddr.js, nunca regex. */
 describe('safe-http — defesa SSRF', () => {
@@ -36,5 +36,20 @@ describe('safe-http — defesa SSRF', () => {
     expect(() => assertSafeWebhookUrl('https://[::1]/hook')).toThrow(UnsafeUrlError);
     expect(() => assertSafeWebhookUrl('não-é-url')).toThrow(/inválida/);
     expect(() => assertSafeWebhookUrl('https://exemplo.com/hook')).not.toThrow();
+  });
+});
+
+describe('safePost — pinning de IP na conexão real', () => {
+  it('host que RESOLVE para loopback é recusado antes de conectar', async () => {
+    // 'localhost' resolve para 127.0.0.1/::1 — o cenário do rebinding: a URL
+    // parece inocente, a resolução é que denuncia. Se o pinning não valesse,
+    // a conexão aconteceria.
+    await expect(safePost('https://localhost:9/hook', '{}', {})).rejects.toThrow(UnsafeUrlError);
+  });
+
+  it('host inexistente falha na resolução, sem conectar', async () => {
+    await expect(
+      safePost('https://nao-existe.veyra-teste.invalid/hook', '{}', {}),
+    ).rejects.toThrow();
   });
 });

@@ -29,6 +29,8 @@ export default defineConfig({
         PORT: String(E2E_API_PORT),
         DATABASE_URL: E2E_DATABASE_URL,
         JWT_SECRET: 'jwt-secret-de-e2e-nunca-em-producao-32ch',
+        TOKEN_ENCRYPTION_KEY: 'chave-de-cifra-de-e2e-nunca-em-producao-32',
+        DISABLE_JOBS: 'true',
         WEB_ORIGIN: E2E_WEB_ORIGIN,
       },
     },

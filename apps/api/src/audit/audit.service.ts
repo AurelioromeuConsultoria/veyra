@@ -183,9 +183,13 @@ export class AuditService {
     if (!data) return null;
     const projected: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(data)) {
+      // `undefined` = campo NÃO enviado na mutação: não entra na trilha.
+      // Sem isso, um PATCH parcial registraria "[changed]" e "→ —" em campos
+      // intactos — trilha com falso positivo é pior que trilha ausente.
+      if (value === undefined) continue;
       projected[key] = allowlist.includes(key) ? value : REDACTED;
     }
-    return projected;
+    return Object.keys(projected).length > 0 ? projected : null;
   }
 
   private async resolveActorNames(ids: (string | null)[]): Promise<Map<string, string>> {
