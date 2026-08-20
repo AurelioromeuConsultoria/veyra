@@ -96,8 +96,9 @@ export class MembersService {
   /**
    * Anti-autoelevação (ajuste #6): só se atribui a terceiros um papel cujas
    * permissões sejam SUBCONJUNTO das do ator — ninguém concede o que não tem.
+   * Público: convites (InvitesService) aplicam a MESMA regra.
    */
-  private async assertNoPrivilegeEscalation(auth: AuthContext, newRoleId: string): Promise<void> {
+  async assertNoPrivilegeEscalation(auth: AuthContext, newRoleId: string): Promise<void> {
     const actorMembership = await this.prisma.db.membership.findFirst({
       where: { id: auth.membershipId ?? '' },
       select: { roleId: true },

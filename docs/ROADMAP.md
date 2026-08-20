@@ -12,10 +12,10 @@ Monorepo pnpm (`apps/api`, `apps/web`, `packages/contracts`, `packages/config`),
 Prisma + primeira migration: `Workspace`, `User`, `Membership`, `Role`, `Permission`, `RolePermission`, `Invite`, `RefreshToken`. `PrismaService` com `db`/`raw`, `WORKSPACE_MODELS`, CLS. FKs compostas (Membership→Role). Seed do catálogo de permissões e roles de sistema.
 **Pronto quando:** teste de segurança P0 de isolamento cross-workspace passa (create carimba; A não lê B; updateMany não cruza; sem contexto = erro; unsafe op = bloqueada) + `check:fk` limpo.
 
-## Entrega 2 — Auth e RBAC 🔜
+## Entrega 2 — Auth e RBAC ✅
 
-Provisionamento controlado de workspace (rotina administrativa, sem registro público — ADR-014), login, refresh rotativo em cookie httpOnly + CSRF, convites (emissão/aceite), troca de workspace, revogação por `tokenVersion` (ADR-009). `PermissionsGuard` + `@RequirePermissions` + skill `review-rbac` aplicada.
-**Pronto quando:** e2e de login/convite/revogação passa; remover membership derruba a sessão na request seguinte.
+Provisionamento controlado de workspace (CLI, sem registro público — ADR-014), login, refresh rotativo em cookie httpOnly + CSRF + validação de Origin, convites transacionais (emissão/aceite/revogação), troca de workspace, revogação por `tokenVersion` (ADR-009), `PermissionsGuard` default-deny (ADR-016), invariantes de último Owner e anti-autoelevação (ADR-017).
+**Pronto quando:** ✅ fluxo de login/convite/revogação coberto por testes de integração HTTP (**supertest** — decisão aprovada: Playwright entra na Entrega 3 junto com as telas); remover/suspender membership derruba a sessão na request seguinte (testado).
 
 ## Entrega 3 — Contatos, empresas, tags e custom fields 🔜
 

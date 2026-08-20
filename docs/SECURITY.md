@@ -30,7 +30,10 @@ Ameaça número um: **vazamento entre workspaces** — um tenant ler/escrever da
 ## 3. Autenticação e sessões
 
 - **Access token**: JWT curto (15 min), claims `sub`, `membershipId`, `workspaceId`, `tokenVersion`, `email`.
-- **Refresh token**: aleatório (48 bytes), armazenado **só como SHA-256**, TTL 30 dias, **rotação real** (refresh usado é revogado; reuso de token revogado invalida a família).
+- **Refresh token**: aleatório (48 bytes), armazenado **só como SHA-256**, TTL 30 dias, **rotação real**. **Reuso de token revogado = sessão comprometida**: revoga todos os refresh tokens do usuário **e incrementa `tokenVersion` de todas as memberships ativas** — access tokens já emitidos caem na request seguinte.
+- **Workspace ativo da sessão**: `RefreshToken.activeMembershipId` com **FK composta `(userId, activeMembershipId) → Membership(userId, id)`** (SQL manual na migration) — o banco garante que a membership pertence ao dono do token; validação de serviço não basta.
+- **Origin + CSRF**: além do double-submit (`x-csrf-token` = cookie), toda mutação sem `Authorization: Bearer` valida `Origin` (ou `Referer`) contra `WEB_ORIGIN` — inclusive as `@Public` que usam/emitem cookies (login/refresh/aceite); CORS sozinho não impede formulário cross-site. `POST /auth/logout` é `@AuthenticatedOnly()`.
+- **Convites**: aceite transacional e à prova de corrida (marcação condicional `acceptedAt: null` na mesma transação que cria conta/membership); mensagem de erro **única** para token inválido/expirado/reutilizado/já-membro — nada revela se token ou e-mail existem. Provisionamento com owner sem conta cria **Invite Owner** (nunca User incompleto); o token aparece uma única vez no CLI e só o hash persiste.
 - **Transporte**: cookies `httpOnly` + `Secure` + `SameSite=Lax` (nunca localStorage). Mutações protegidas por token CSRF (double-submit).
 - **Senhas**: hash com custo adequado (argon2id preferido; bcrypt aceitável), política mínima de tamanho, sem regra de composição arbitrária.
 - **Guard global**: endpoints privados por padrão; `@Public()` é opt-out explícito e revisável.
@@ -42,7 +45,8 @@ Ameaça número um: **vazamento entre workspaces** — um tenant ler/escrever da
 - `Permission` = catálogo global de chaves estáveis (`contacts:read`, `deals:write`, `billing:manage`, `intelligence:approve`…). Código só conhece chaves.
 - `Role` sempre pertence a um workspace. Padrões (Owner/Admin/Member/Guest) semeados no provisionamento com `isSystem=true` — não editáveis nem deletáveis. Roles customizados pertencem ao workspace.
 - `PermissionsGuard` global (segundo APP_GUARD, depois do JwtAuthGuard) com **default-deny**: endpoint privado **sem** `@RequirePermissions(...)` é **negado** — estar autenticado não basta. Rota que legitimamente precise apenas de autenticação usa `@AuthenticatedOnly()` explícito, raro e revisável (ex.: `GET /me`, troca de workspace). `@Public()` continua sendo a única exceção para endpoint não autenticado. Endpoint privado sem nenhum decorator é achado de revisão P1 — P0 se expõe dado ou mutação sensível (ADR-016).
-- **Proibido** ramificar por nome de role. Auditoria de RBAC via skill `review-rbac`.
+- **Proibido** ramificar por nome de role. Invariantes de ciclo de vida usam `Role.systemKey` (`'owner'|'admin'|'member'|'guest'`, ADR-017), nunca o nome. Auditoria de RBAC via skill `review-rbac`.
+- **Invariantes de gestão de acesso** (Entrega 2): ninguém altera/remove a própria membership; papel atribuído (troca de role ou convite) deve ser **subconjunto** das permissões do ator — ninguém concede o que não tem; o **último Owner ativo** não pode ser rebaixado nem removido; toda mudança de role/status incrementa `tokenVersion` (revogação imediata).
 - API pública: `ApiKey` com `scopes` = subconjunto de permission keys; mesmo guard.
 
 ## 5. Auditoria (com minimização)

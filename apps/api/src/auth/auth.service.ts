@@ -164,7 +164,8 @@ export class AuthService {
     return m?.id ?? null;
   }
 
-  private async createSession(userId: string, membershipId: string | null): Promise<SessionResult> {
+  /** Público: o aceite de convite (InvitesController) emite sessão pós-aceite. */
+  async createSession(userId: string, membershipId: string | null): Promise<SessionResult> {
     const opaque = generateOpaqueToken();
     const expiresAt = new Date(Date.now() + this.refreshTtlDays() * 24 * 60 * 60 * 1000);
     const row = await this.prisma.raw.refreshToken.create({
