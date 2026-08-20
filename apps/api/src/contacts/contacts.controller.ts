@@ -73,8 +73,11 @@ export class ContactsController {
 
   @RequirePermissions('contacts:write')
   @Delete(':id')
-  async remove(@Param('id', new ParseUUIDPipe()) id: string): Promise<{ ok: true }> {
-    await this.contacts.remove(id);
+  async remove(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<{ ok: true }> {
+    await this.contacts.remove(auth, id);
     return { ok: true };
   }
 }

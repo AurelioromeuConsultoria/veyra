@@ -19,6 +19,7 @@ const ACTIVITY_PAYLOADS: Record<ActivityType, z.ZodType> = {
   deal_stage_changed: z
     .object({ fromStage: z.string().max(60), toStage: z.string().max(60) })
     .strict(),
+  deal_updated: z.object({ title: z.string().max(160) }).strict(),
   deal_won: z.object({ amountCents: z.number().int() }).strict(),
   deal_lost: z.object({ amountCents: z.number().int() }).strict(),
   task_created: z.object({ title: z.string().max(200) }).strict(),
@@ -108,7 +109,17 @@ export class ActivitiesService {
     // entram nem na timeline do contato
     const visibilityWhere =
       options.includeDealEvents === false
-        ? { type: { notIn: ['deal_created', 'deal_stage_changed', 'deal_won', 'deal_lost'] } }
+        ? {
+            type: {
+              notIn: [
+                'deal_created',
+                'deal_stage_changed',
+                'deal_updated',
+                'deal_won',
+                'deal_lost',
+              ],
+            },
+          }
         : {};
     const cursor = rawCursor ? decodeCursor(rawCursor) : null;
     const where = {

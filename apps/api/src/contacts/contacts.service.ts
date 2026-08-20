@@ -8,6 +8,7 @@ import type {
   UpdateContactInput,
 } from '@veyra/contracts';
 import { ActivitiesService } from '../activities/activities.service';
+import { AuditService } from '../audit/audit.service';
 import { AuthContext } from '../common/decorators';
 import { CustomFieldsService } from '../custom-fields/custom-fields.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
@@ -42,6 +43,7 @@ export class ContactsService {
     private readonly tags: TagsService,
     private readonly customFields: CustomFieldsService,
     private readonly activities: ActivitiesService,
+    private readonly audit: AuditService,
   ) {}
 
   async list(input: ListContactsInput): Promise<Paginated<ContactDto>> {
@@ -155,13 +157,36 @@ export class ContactsService {
     return this.get(id);
   }
 
-  async remove(id: string): Promise<void> {
-    const existing = await this.prisma.db.contact.findFirst({ where: { id } });
+  /**
+   * Exclusão de contato — POLÍTICA EXPLÍCITA (ajuste #9, LGPD/SECURITY.md §9):
+   *  - Deals e Tasks são PRESERVADOS, apenas desvinculados (contactId = null):
+   *    são registro comercial/operacional do workspace, não dado do titular;
+   *  - Notes e CustomFieldValues do contato são REMOVIDOS (conteúdo sobre ele);
+   *  - Activities caem por cascade (histórico morre com o titular);
+   *  - a exclusão em si é registrada em AuditLog (fica após o expurgo).
+   * Nada de 409 genérico: o contato sempre pode ser excluído.
+   */
+  async remove(auth: AuthContext, id: string): Promise<void> {
+    const existing = (await this.prisma.db.contact.findFirst({
+      where: { id },
+    })) as unknown as ContactRow | null;
     if (!existing) throw new NotFoundException('Contato não encontrado');
     await (this.prisma.db as unknown as TxRunner).$transaction(async (tx) => {
+      await this.audit.record(tx, auth.workspaceId as string, 'contact.deleted', {
+        entityType: 'contact',
+        entityId: id,
+        actor: this.audit.actorFrom(auth),
+        before: { name: existing.name, status: existing.status },
+        after: null,
+      });
+      // preserva o registro comercial, desvinculando o titular
+      await tx.deal.updateMany({ where: { contactId: id }, data: { contactId: null } });
+      await tx.task.updateMany({ where: { contactId: id }, data: { contactId: null } });
+      // remove o que é conteúdo SOBRE o titular
+      await tx.note.deleteMany({ where: { contactId: id } });
       // CustomFieldValue.entityId não tem FK (exceção documentada): limpeza aqui
       await this.customFields.deleteValues(tx, 'contact', id);
-      await tx.contact.deleteMany({ where: { id } }); // junções caem por cascade
+      await tx.contact.deleteMany({ where: { id } }); // junções/activities: cascade
     });
   }
 

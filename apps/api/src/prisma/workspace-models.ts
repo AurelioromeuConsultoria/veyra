@@ -33,7 +33,17 @@ export const WORKSPACE_MODELS = new Set<string>([
   'Task',
   'Note',
   'Activity',
+  'AuditLog',
 ]);
+
+/**
+ * Modelos APPEND-ONLY: histórico que não se reescreve (ADR-011 e SECURITY.md §5).
+ * O client protegido BLOQUEIA update/updateMany/delete/deleteMany/upsert neles —
+ * "append-only" deixa de ser convenção e vira invariante técnica. A exclusão
+ * legítima acontece só por cascade do dono (LGPD) ou pelo job de retenção, que
+ * usa `raw` com justificativa.
+ */
+export const APPEND_ONLY_MODELS = new Set<string>(['Activity', 'AuditLog']);
 
 /**
  * Mapa campo-de-relação → modelo alvo, para os modelos protegidos. Usado pelo
@@ -65,6 +75,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     assignedTasks: 'Task',
     authoredNotes: 'Note',
     activities: 'Activity',
+    auditLogs: 'AuditLog',
     // alvo fora do perímetro: travessia via db é bloqueada (sessões só via raw)
     activeSessions: 'RefreshToken',
   },
@@ -144,6 +155,10 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     contact: 'Contact',
     company: 'Company',
     deal: 'Deal',
+  },
+  AuditLog: {
+    workspace: 'Workspace',
+    actor: 'Membership',
   },
   Activity: {
     workspace: 'Workspace',

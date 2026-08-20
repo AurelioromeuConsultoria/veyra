@@ -37,7 +37,19 @@ const q = (ident: string): string => `"${ident.replace(/"/g, '""')}"`;
  * responsabilidade do service dono da entidade (coberto por teste). Adicionar
  * aqui exige a mesma documentação no DOMAIN_MODEL e revisão de security.
  */
-const DOCUMENTED_LOOSE_COLUMNS = new Set(['CustomFieldValue.entityId']);
+const DOCUMENTED_LOOSE_COLUMNS = new Set([
+  // valor de campo personalizado: polimórfico tenant-scoped, não navegável;
+  // limpeza no service dono da entidade (DOMAIN_MODEL §9, testado)
+  'CustomFieldValue.entityId',
+  // AuditLog é a trilha: por definição SOBREVIVE ao registro auditado (uma FK
+  // apagaria a prova junto com o dado). SECURITY.md §5.
+  'AuditLog.entityId',
+  // origem NÃO-usuária do evento (id de API key, nome de job, AiRun) — texto
+  // livre por natureza; o ator usuário usa actorMembershipId, que TEM FK composta
+  'AuditLog.actorId',
+  // correlação de request (uuid/observabilidade), não referência a entidade
+  'AuditLog.requestId',
+]);
 
 interface FkRow {
   constraint_name: string;

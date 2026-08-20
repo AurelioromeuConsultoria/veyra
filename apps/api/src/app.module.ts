@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
@@ -8,8 +8,10 @@ import { CsrfOriginGuard } from './auth/csrf-origin.guard';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { PermissionsGuard } from './auth/permissions.guard';
 import { ActivitiesModule } from './activities/activities.module';
+import { AuditModule } from './audit/audit.module';
 import { validateEnv } from './common/env';
 import { PrismaExceptionFilter } from './common/prisma-exception.filter';
+import { RequestIdMiddleware } from './common/request-id.middleware';
 import { CompaniesModule } from './companies/companies.module';
 import { ContactsModule } from './contacts/contacts.module';
 import { CustomFieldsModule } from './custom-fields/custom-fields.module';
@@ -48,6 +50,7 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
     CompaniesModule,
     ContactsModule,
     ActivitiesModule,
+    AuditModule,
     PipelinesModule,
     DealsModule,
     TasksModule,
@@ -64,4 +67,9 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
     { provide: APP_GUARD, useClass: PermissionsGuard },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    // requestId antes de tudo: correlaciona log, resposta e AuditLog
+    consumer.apply(RequestIdMiddleware).forRoutes('*path');
+  }
+}

@@ -53,10 +53,11 @@ export class DealsController {
   @RequirePermissions('deals:write')
   @Patch(':id')
   update(
+    @CurrentAuth() auth: AuthContext,
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body(new ZodPipe(updateDealSchema)) body: UpdateDealInput,
   ): Promise<DealDto> {
-    return this.deals.update(id, body);
+    return this.deals.update(auth, id, body);
   }
 
   @RequirePermissions('deals:write')
@@ -71,8 +72,11 @@ export class DealsController {
 
   @RequirePermissions('deals:write')
   @Delete(':id')
-  async remove(@Param('id', new ParseUUIDPipe()) id: string): Promise<{ ok: true }> {
-    await this.deals.remove(id);
+  async remove(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<{ ok: true }> {
+    await this.deals.remove(auth, id);
     return { ok: true };
   }
 }

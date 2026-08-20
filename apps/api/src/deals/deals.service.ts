@@ -7,6 +7,7 @@ import type {
   UpdateDealInput,
 } from '@veyra/contracts';
 import { ActivitiesService } from '../activities/activities.service';
+import { AuditService } from '../audit/audit.service';
 import { AuthContext } from '../common/decorators';
 import type { Prisma } from '../generated/prisma/client';
 import { PipelinesService } from '../pipelines/pipelines.service';
@@ -45,6 +46,7 @@ export class DealsService {
     private readonly prisma: PrismaService,
     private readonly pipelines: PipelinesService,
     private readonly activities: ActivitiesService,
+    private readonly audit: AuditService,
   ) {}
 
   async board(pipelineId?: string): Promise<BoardDto> {
@@ -145,33 +147,79 @@ export class DealsService {
     return this.get(id);
   }
 
-  async update(id: string, input: UpdateDealInput): Promise<DealDto> {
-    const existing = await this.prisma.db.deal.findFirst({ where: { id } });
+  async update(auth: AuthContext, id: string, input: UpdateDealInput): Promise<DealDto> {
+    const existing = (await this.prisma.db.deal.findFirst({
+      where: { id },
+    })) as unknown as DealRow | null;
     if (!existing) throw new NotFoundException('Oportunidade não encontrada');
     await this.validateReferences(input);
-    await this.prisma.db.deal.updateMany({
-      where: { id },
-      data: {
-        title: input.title,
-        contactId: input.contactId,
-        companyId: input.companyId,
-        ownerMembershipId: input.ownerMembershipId,
-        amountCents: input.amountCents,
-        currency: input.currency,
-        expectedCloseDate:
-          input.expectedCloseDate === undefined
-            ? undefined
-            : input.expectedCloseDate === null
-              ? null
-              : new Date(input.expectedCloseDate),
-      },
+    const data = {
+      title: input.title,
+      contactId: input.contactId,
+      companyId: input.companyId,
+      ownerMembershipId: input.ownerMembershipId,
+      amountCents: input.amountCents,
+      currency: input.currency,
+      expectedCloseDate:
+        input.expectedCloseDate === undefined
+          ? undefined
+          : input.expectedCloseDate === null
+            ? null
+            : new Date(input.expectedCloseDate),
+    };
+    const db = this.prisma.db as unknown as TxRunner;
+    await db.$transaction(async (tx) => {
+      await tx.deal.updateMany({ where: { id }, data });
+      // ajuste #8: alteração vira Activity (payload mínimo) E AuditLog
+      // (before/after por allowlist) — o AuditLog é o registro de "o que mudou"
+      await this.activities.record(
+        tx as unknown as Db,
+        auth.workspaceId as string,
+        'deal_updated',
+        {
+          actorMembershipId: auth.membershipId,
+          payload: { title: input.title ?? existing.title },
+          targets: { dealId: id, contactId: existing.contactId, companyId: existing.companyId },
+        },
+      );
+      await this.audit.record(tx, auth.workspaceId as string, 'deal.updated', {
+        entityType: 'deal',
+        entityId: id,
+        actor: this.audit.actorFrom(auth),
+        before: {
+          title: existing.title,
+          amountCents: existing.amountCents,
+          currency: existing.currency,
+          ownerMembershipId: existing.ownerMembershipId,
+        },
+        after: { ...data, expectedCloseDate: undefined },
+      });
     });
     return this.get(id);
   }
 
-  async remove(id: string): Promise<void> {
-    const { count } = await this.prisma.db.deal.deleteMany({ where: { id } });
-    if (count === 0) throw new NotFoundException('Oportunidade não encontrada');
+  async remove(auth: AuthContext, id: string): Promise<void> {
+    const existing = (await this.prisma.db.deal.findFirst({
+      where: { id },
+    })) as unknown as DealRow | null;
+    if (!existing) throw new NotFoundException('Oportunidade não encontrada');
+    const db = this.prisma.db as unknown as TxRunner;
+    await db.$transaction(async (tx) => {
+      // ajuste #8: exclusão é SÓ AuditLog — uma Activity ligada ao Deal morreria
+      // no cascade e não deixaria histórico útil
+      await this.audit.record(tx, auth.workspaceId as string, 'deal.deleted', {
+        entityType: 'deal',
+        entityId: id,
+        actor: this.audit.actorFrom(auth),
+        before: {
+          title: existing.title,
+          amountCents: existing.amountCents,
+          status: existing.status,
+        },
+        after: null,
+      });
+      await tx.deal.deleteMany({ where: { id } });
+    });
   }
 
   /**

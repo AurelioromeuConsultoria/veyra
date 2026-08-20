@@ -4,6 +4,7 @@ export const activityTypeSchema = z.enum([
   'contact_created',
   'deal_created',
   'deal_stage_changed',
+  'deal_updated',
   'deal_won',
   'deal_lost',
   'task_created',

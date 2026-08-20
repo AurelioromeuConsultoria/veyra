@@ -17,6 +17,8 @@ const envSchema = z.object({
   REFRESH_TTL_DAYS: z.coerce.number().int().positive().default(30),
   // Origem do front (CORS estrito + validação de Origin em mutações com cookie)
   WEB_ORIGIN: z.string().url().default('http://localhost:5175'),
+  // Retenção da trilha de auditoria (SECURITY.md §5) — configurável por plano
+  AUDIT_RETENTION_DAYS: z.coerce.number().int().min(30).max(3650).default(365),
 });
 
 export type Env = z.infer<typeof envSchema>;

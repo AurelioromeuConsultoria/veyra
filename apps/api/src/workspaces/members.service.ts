@@ -1,5 +1,6 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import type { MemberDto, RoleDto } from '@veyra/contracts';
+import { AuditService } from '../audit/audit.service';
 import { AuthContext } from '../common/decorators';
 import type { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -9,7 +10,10 @@ type Tx = Prisma.TransactionClient;
 
 @Injectable()
 export class MembersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
 
   async listRoles(): Promise<RoleDto[]> {
     const roles = await this.prisma.db.role.findMany({ orderBy: { createdAt: 'asc' } });
@@ -81,6 +85,13 @@ export class MembersService {
         where: { id: membershipId, workspaceId },
         data: { roleId, tokenVersion: { increment: 1 } },
       });
+      await this.audit.record(tx, workspaceId, 'member.role_changed', {
+        entityType: 'membership',
+        entityId: membershipId,
+        actor: this.audit.actorFrom(auth),
+        before: { roleId: target.roleId },
+        after: { roleId },
+      });
     });
   }
 
@@ -105,6 +116,13 @@ export class MembersService {
       await tx.membership.updateMany({
         where: { id: membershipId, workspaceId },
         data: { status: 'removed', tokenVersion: { increment: 1 } },
+      });
+      await this.audit.record(tx, workspaceId, 'member.removed', {
+        entityType: 'membership',
+        entityId: membershipId,
+        actor: this.audit.actorFrom(auth),
+        before: { roleId: target.roleId, status: 'active' },
+        after: { status: 'removed' },
       });
     });
   }

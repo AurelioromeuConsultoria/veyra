@@ -88,6 +88,7 @@ model Workspace {
   tasksList              Task[]
   notes                  Note[]
   activities             Activity[]
+  auditLogs              AuditLog[]
 }
 
 /// Catálogo GLOBAL de permissões (ADR-004): chaves estáveis do sistema —
@@ -166,6 +167,7 @@ model Membership {
   assignedTasks  Task[]         @relation("TaskAssignee")
   authoredNotes  Note[]         @relation("NoteAuthor")
   activities     Activity[]     @relation("ActivityActor")
+  auditLogs      AuditLog[]     @relation("AuditActor")
 
   // Alvo de FK composta para Team/ownership futuros
   @@unique([workspaceId, id])
@@ -399,6 +401,7 @@ enum ActivityType {
   contact_created
   deal_created
   deal_stage_changed
+  deal_updated
   deal_won
   deal_lost
   task_created
@@ -571,4 +574,40 @@ model Activity {
   // cursor keyset (occurredAt, id) por alvo — paginação estável (ajuste #5)
   @@index([workspaceId, contactId, occurredAt(sort: Desc), id])
   @@index([workspaceId, dealId, occurredAt(sort: Desc), id])
+}
+
+// ─── Plataforma de confiança (Entrega 5) ─────────────────────────────────────
+
+enum AuditActor {
+  user
+  api
+  system
+  ai
+}
+
+/// Trilha de auditoria: APPEND-ONLY (bloqueado no PrismaService) e MINIMIZADA —
+/// before/after passam por allowlist de campos por entidade, com redaction
+/// (SECURITY.md §5). Retenção de 12 meses via job (prisma.raw justificado).
+model AuditLog {
+  id                String     @id @default(uuid()) @db.Uuid
+  workspaceId       String     @db.Uuid
+  actorType         AuditActor @default(user)
+  /// membership do ator quando é usuário do workspace (FK composta)
+  actorMembershipId String?    @db.Uuid
+  /// identificador da ORIGEM quando não é usuário: id da API key, nome do job,
+  /// serviço ou AiRun (ajuste #2) — actorMembershipId não serve para esses casos
+  actorId           String?
+  action            String
+  entityType        String
+  entityId          String     @db.Uuid
+  before            Json?
+  after             Json?
+  requestId         String?
+  createdAt         DateTime   @default(now())
+
+  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  actor     Membership? @relation("AuditActor", fields: [workspaceId, actorMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([workspaceId, entityType, entityId, createdAt(sort: Desc)])
+  @@index([workspaceId, createdAt(sort: Desc), id])
 }

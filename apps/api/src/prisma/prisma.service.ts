@@ -2,7 +2,7 @@ import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { ClsService } from 'nestjs-cls';
 import { PrismaClient } from '../generated/prisma/client';
-import { RELATION_TARGETS, WORKSPACE_MODELS } from './workspace-models';
+import { APPEND_ONLY_MODELS, RELATION_TARGETS, WORKSPACE_MODELS } from './workspace-models';
 
 /**
  * Operações por chave única não aceitam filtro extra de workspace no where —
@@ -14,6 +14,16 @@ const UNSAFE_OPERATIONS = new Set<string>([
   'findUniqueOrThrow',
   'update',
   'delete',
+  'upsert',
+]);
+
+/** Mutações proibidas em modelos append-only (histórico não se reescreve). */
+const MUTATING_OPERATIONS = new Set<string>([
+  'update',
+  'updateMany',
+  'updateManyAndReturn',
+  'delete',
+  'deleteMany',
   'upsert',
 ]);
 
@@ -171,6 +181,14 @@ function createWorkspaceClient(base: PrismaClient, getWorkspaceId: () => unknown
           if (UNSAFE_OPERATIONS.has(operation)) {
             throw new Error(
               `${operation} não é tenant-safe em ${model}; use findFirst/updateMany/deleteMany.`,
+            );
+          }
+
+          // append-only: histórico não se reescreve nem se apaga por aqui
+          if (APPEND_ONLY_MODELS.has(model) && MUTATING_OPERATIONS.has(operation)) {
+            throw new Error(
+              `${model} é append-only: ${operation} é proibido. Exclusão só por cascade do dono ` +
+                `(LGPD) ou pelo job de retenção (prisma.raw justificado).`,
             );
           }
 
