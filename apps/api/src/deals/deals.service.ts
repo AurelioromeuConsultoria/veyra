@@ -334,6 +334,10 @@ export class DealsService {
           `deal.stage_changed:${dealId}:${stage.id}:${Date.now()}`,
         );
         if (stage.type === 'won' || stage.type === 'lost') {
+          // o instante identifica a TRANSIÇÃO, não o deal: reabrir e ganhar de
+          // novo é fato novo e merece evento novo. A chave fixa por deal fazia a
+          // segunda vitória ser engolida pelo dedupe (dívida registrada).
+          const occurredAt = new Date();
           await this.activities.record(
             tx as unknown as Db,
             workspaceId,
@@ -349,7 +353,7 @@ export class DealsService {
             workspaceId,
             stage.type === 'won' ? 'deal.won' : 'deal.lost',
             { id: dealId, amountCents: deal.amountCents },
-            `deal.${stage.type}:${dealId}`,
+            `deal.${stage.type}:${dealId}:${occurredAt.toISOString()}`,
           );
         }
       }

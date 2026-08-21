@@ -39,10 +39,21 @@ export class UsageService {
     workspaceId: string,
     metric: MetricKey,
     delta: number,
+    /**
+     * Teto já resolvido por quem chama, FORA da transação. Resolver aqui pedia
+     * uma segunda conexão do pool com a transação aberta — o mesmo defeito que
+     * já corrigimos em `ensureCounterRow`: com N transações concorrentes e pool
+     * de N, ninguém progride até o timeout e todas falham em bloco.
+     */
+    knownLimit?: number | null,
   ): Promise<void> {
     const definition = USAGE_METRICS[metric];
     const period = periodKeyFor(definition.kind);
-    const limit = definition.enforced ? await this.limitFor(workspaceId, metric) : null;
+    const limit = definition.enforced
+      ? knownLimit !== undefined
+        ? knownLimit
+        : await this.limitFor(workspaceId, metric)
+      : null;
     // a linha do contador é garantida ANTES da transação, por quem chama
     // (`ensureCounterRow`). Fazer isso aqui abriria uma conexão NOVA dentro da
     // transação de domínio — sob concorrência, isso esgota o pool e as
@@ -184,23 +195,28 @@ export class UsageService {
     reservationId: string,
     metric: MetricKey,
     actualAmount: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const db = this.prisma.db as unknown as {
       $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T>;
     };
-    await db.$transaction(async (tx) => {
+    return db.$transaction(async (tx) => {
       const reservation = (await tx.usageReservation.findFirst({
         where: { id: reservationId },
         select: { amount: true, metric: true, period: true },
       })) as unknown as { amount: number; metric: string; period: string } | null;
-      // já varrida por expiração: o valor reservado voltou ao orçamento e
-      // cobrar agora seria cobrar duas vezes
-      if (!reservation) return;
+      /**
+       * Já varrida por expiração: o valor reservado voltou ao orçamento. Devolve
+       * `false` para que quem teve um efeito EXTERNO bem-sucedido possa cobrar o
+       * valor real — antes isto era um `return` silencioso, e o envio saía sem
+       * consumir quota nenhuma.
+       */
+      if (!reservation) return false;
       await tx.usageReservation.deleteMany({ where: { id: reservationId } });
       const difference = actualAmount - reservation.amount;
       if (difference !== 0) {
         await this.applyDelta(tx, reservation.metric, reservation.period, difference);
       }
+      return true;
     });
   }
 
@@ -252,6 +268,27 @@ export class UsageService {
     return expired.length;
   }
 
+  /**
+   * Exceção 402 estruturada para uma métrica (ADR-033). Existe para que quem
+   * recusa um envio por quota devolva o MESMO contrato de erro do resto do
+   * sistema, em vez de um 400 genérico.
+   */
+  async quotaExceeded(workspaceId: string, metric: MetricKey): Promise<QuotaExceededException> {
+    const definition = USAGE_METRICS[metric];
+    const period = periodKeyFor(definition.kind);
+    const limit = (await this.limitFor(workspaceId, metric)) ?? 0;
+    const row = await this.prisma.raw.usageCounter.findFirst({
+      where: { workspaceId, metric, period },
+      select: { value: true },
+    });
+    return new QuotaExceededException(
+      metric,
+      limit,
+      Number(row?.value ?? 0),
+      definition.kind === 'counter' ? periodEnd() : null,
+    );
+  }
+
   async snapshot(workspaceId: string): Promise<UsageSnapshot[]> {
     const limits = await this.limitsFor(workspaceId);
     const counters = (await this.prisma.db.usageCounter.findMany({})) as unknown as {
@@ -282,6 +319,18 @@ export class UsageService {
    * dentro da transação a aborta por inteiro — não há retry possível ali.
    * Criar a linha zerada é inofensivo mesmo se a transação de domínio abortar.
    */
+  /**
+   * Prepara o consumo FORA da transação: garante a linha do contador e resolve o
+   * teto do plano numa só passada. Quem consome DENTRO de uma transação deve
+   * chamar isto antes e repassar o limite — resolver o teto lá dentro pedia uma
+   * segunda conexão do pool, e sob concorrência isso derruba as requisições em
+   * bloco (o mesmo defeito já corrigido em `ensureCounterRow`).
+   */
+  async prepareConsume(workspaceId: string, metric: MetricKey): Promise<number | null> {
+    await this.ensureCounterRow(workspaceId, metric);
+    return this.limitFor(workspaceId, metric);
+  }
+
   /**
    * Garante a linha do contador com `workspaceId` EXPLÍCITO, para caminhos sem
    * CLS — a ingestão de canal externo não tem sessão (ADR-037). Precisa rodar

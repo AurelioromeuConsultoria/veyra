@@ -373,10 +373,11 @@ export class ConversationsService {
   }
 
   private async toMessageDtos(rows: MessageRow[]): Promise<MessageDto[]> {
-    const [memberNames, contactNames, attachments] = await Promise.all([
+    const [memberNames, contactNames, attachments, dispatches] = await Promise.all([
       this.resolveMemberNames(rows.map((r) => r.authorMembershipId)),
       this.resolveContactNames(rows.map((r) => r.authorContactId)),
       this.resolveAttachments(rows.map((r) => r.id)),
+      this.resolveDispatches(rows.map((r) => r.id)),
     ]);
     return rows.map((row) => ({
       id: row.id,
@@ -389,9 +390,29 @@ export class ConversationsService {
           : null,
       body: row.body,
       attachments: attachments.get(row.id) ?? [],
+      dispatchState: (dispatches.get(row.id)?.state ?? null) as MessageDto['dispatchState'],
+      dispatchError: dispatches.get(row.id)?.errorCode ?? null,
       deliveredAt: row.deliveredAt?.toISOString() ?? null,
       createdAt: row.createdAt.toISOString(),
     }));
+  }
+
+  /**
+   * Estado do despacho por mensagem. É o que torna visível a fila de casos
+   * incertos e de falhas definitivas — sem isso, uma mensagem aceita com 201
+   * morria em `failed_permanent` sem nada aparecer para quem a enviou.
+   */
+  private async resolveDispatches(
+    messageIds: string[],
+  ): Promise<Map<string, { state: string; errorCode: string | null }>> {
+    if (messageIds.length === 0) return new Map();
+    const rows = (await this.prisma.db.messageDispatch.findMany({
+      where: { messageId: { in: messageIds } },
+      select: { messageId: true, state: true, errorCode: true },
+    } as never)) as unknown as { messageId: string; state: string; errorCode: string | null }[];
+    return new Map(
+      rows.map((row) => [row.messageId, { state: row.state, errorCode: row.errorCode }]),
+    );
   }
 
   private async resolveAttachments(

@@ -95,8 +95,9 @@ export class ContactsService {
 
   async create(auth: AuthContext, input: CreateContactInput): Promise<ContactDto> {
     await this.validateReferences(input);
-    // fora da transação, de propósito (ver UsageService.consume)
-    await this.usage.ensureCounterRow(auth.workspaceId as string, 'contacts');
+    // fora da transação, de propósito (ver UsageService.consume): garante a
+    // linha E resolve o teto sem pedir conexão com a transação aberta
+    const contactsLimit = await this.usage.prepareConsume(auth.workspaceId as string, 'contacts');
     const validated = await this.customFields.validateValues('contact', input.customFields, {
       requireAll: true,
     });
@@ -119,7 +120,7 @@ export class ContactsService {
       await this.customFields.syncValues(tx, 'contact', contact.id, validated);
       // quota DENTRO da transação (ADR-032): estourou, o 402 derruba tudo e o
       // contador volta pelo rollback — contato nasce sempre `active`
-      await this.usage.consume(tx, auth.workspaceId as string, 'contacts', 1);
+      await this.usage.consume(tx, auth.workspaceId as string, 'contacts', 1, contactsLimit);
       // ajuste #6: o tipo declarado no catálogo é emitido de fato
       await this.activities.record(tx, auth.workspaceId as string, 'contact_created', {
         actorMembershipId: auth.membershipId,
@@ -185,7 +186,7 @@ export class ContactsService {
   async update(auth: AuthContext, id: string, input: UpdateContactInput): Promise<ContactDto> {
     const existing = await this.prisma.db.contact.findFirst({ where: { id } });
     if (!existing) throw new NotFoundException('Contato não encontrado');
-    await this.usage.ensureCounterRow(auth.workspaceId as string, 'contacts');
+    const contactsLimit = await this.usage.prepareConsume(auth.workspaceId as string, 'contacts');
     await this.validateReferences(input);
     const validated = input.customFields
       ? await this.customFields.validateValues('contact', input.customFields, {
@@ -223,6 +224,7 @@ export class ContactsService {
           auth.workspaceId as string,
           'contacts',
           input.status === 'active' ? 1 : -1,
+          contactsLimit,
         );
       }
     });
@@ -243,7 +245,7 @@ export class ContactsService {
       where: { id },
     })) as unknown as ContactRow | null;
     if (!existing) throw new NotFoundException('Contato não encontrado');
-    await this.usage.ensureCounterRow(auth.workspaceId as string, 'contacts');
+    const contactsLimit = await this.usage.prepareConsume(auth.workspaceId as string, 'contacts');
     await (this.prisma.db as unknown as TxRunner).$transaction(async (tx) => {
       await this.audit.record(tx, auth.workspaceId as string, 'contact.deleted', {
         entityType: 'contact',
@@ -269,7 +271,7 @@ export class ContactsService {
       await tx.contact.deleteMany({ where: { id } }); // junções/activities: cascade
       // só quem contava é descontado: arquivado já tinha liberado a vaga
       if (existing.status === 'active') {
-        await this.usage.consume(tx, auth.workspaceId as string, 'contacts', -1);
+        await this.usage.consume(tx, auth.workspaceId as string, 'contacts', -1, contactsLimit);
       }
     });
   }
@@ -286,7 +288,7 @@ export class ContactsService {
         'Importação indisponível: há campos personalizados obrigatórios — importe pelo formulário ou torne-os opcionais',
       );
     }
-    await this.usage.ensureCounterRow(auth.workspaceId as string, 'contacts');
+    const contactsLimit = await this.usage.prepareConsume(auth.workspaceId as string, 'contacts');
     // o LOTE inteiro entra na mesma transação e consome a quota de uma vez: ou
     // importa tudo, ou nada. Importação parcial por quota deixaria o usuário
     // sem saber quais linhas entraram (ajuste da revisão da 8).
@@ -300,7 +302,7 @@ export class ContactsService {
         })),
       } as never);
       const imported = (created as unknown as { count: number }).count;
-      await this.usage.consume(tx, auth.workspaceId as string, 'contacts', imported);
+      await this.usage.consume(tx, auth.workspaceId as string, 'contacts', imported, contactsLimit);
       return imported;
     });
     return { imported: count };

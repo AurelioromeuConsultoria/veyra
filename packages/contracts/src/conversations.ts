@@ -88,6 +88,20 @@ export interface MessageAttachmentDto {
   scanStatus: 'pending' | 'clean' | 'quarantined';
 }
 
+/**
+ * Estado do despacho em canal externo. `unknown_after_dispatch` e
+ * `failed_permanent` precisam ser VISÍVEIS: são mensagens que o atendente
+ * enviou e que não chegaram — ou talvez tenham chegado. Fila invisível acumula
+ * em silêncio (ADR-039).
+ */
+export type MessageDispatchState =
+  | 'reserved'
+  | 'sending'
+  | 'sent'
+  | 'failed_before_send'
+  | 'failed_permanent'
+  | 'unknown_after_dispatch';
+
 export interface MessageDto {
   id: string;
   direction: MessageDirection;
@@ -95,6 +109,10 @@ export interface MessageDto {
   authorName: string | null;
   body: string;
   attachments: MessageAttachmentDto[];
+  /** null em canal interno (não há despacho externo) */
+  dispatchState: MessageDispatchState | null;
+  /** código curto do provedor quando o despacho falhou */
+  dispatchError: string | null;
   deliveredAt: string | null;
   createdAt: string;
 }

@@ -352,4 +352,25 @@ describe('Vendas — pipelines, deals e timeline (integração)', () => {
       pipelineId: wsB.pipelineId,
     }).expect(400);
   });
+
+  it('P1: ganhar, reabrir e ganhar DE NOVO não envenena a transação', async () => {
+    const deal = (await post('/api/deals', sessionA, { title: 'Vai e volta' }).expect(201)).body;
+    const ganho = wsA.stages['Ganhou'];
+    const aberto = wsA.stages['Qualificado'];
+
+    await post(`/api/deals/${deal.id}/move`, sessionA, { stageId: ganho }).expect(201);
+    await post(`/api/deals/${deal.id}/move`, sessionA, { stageId: aberto }).expect(201);
+    /**
+     * Antes, o `dedupeKey` fixo por deal repetia na segunda vitória e o `catch`
+     * de P2002 dentro da transação a envenenava (25P02): a movimentação voltava
+     * com 500 e aquele deal NUNCA MAIS podia ser marcado como ganho.
+     */
+    await post(`/api/deals/${deal.id}/move`, sessionA, { stageId: ganho }).expect(201);
+
+    const atual = await prisma.raw.deal.findFirst({ where: { id: deal.id } });
+    expect(atual!.status).toBe('won');
+    // e a segunda vitória é um FATO NOVO: gera evento próprio
+    const eventos = await prisma.raw.outboxEvent.findMany({ where: { eventType: 'deal.won' } });
+    expect(eventos).toHaveLength(2);
+  });
 });

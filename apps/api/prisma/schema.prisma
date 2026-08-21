@@ -1387,6 +1387,10 @@ model ContactChannelConsent {
 enum DispatchState {
   /// reservado ANTES da chamada ao provedor (ADR-039)
   reserved
+  /// EM VOO: reivindicado por um worker, com lease e fencing token. Dois
+  /// workers não podem chamar a Meta para a mesma mensagem — mensagem
+  /// duplicada para um paciente é dano visível.
+  sending
   sent
   /// falha comprovadamente anterior ao envio e TRANSITÓRIA (429, rede): o
   /// outbox tenta de novo, e a nova tentativa reserva quota outra vez
@@ -1410,6 +1414,17 @@ model MessageDispatch {
   /// e a retentativa reserva de novo antes de chamar o provedor — senão o teto
   /// não valeria para retentativa.
   reservationId    String?       @db.Uuid
+  /// LEASE + FENCING do envio: só o dono do token conclui.
+  leaseExpiresAt   DateTime?
+  claimToken       String?       @db.Uuid
+  /**
+   * MARCADOR DE DESPACHO, gravado IMEDIATAMENTE ANTES da chamada ao provedor.
+   * É o que distingue "o worker morreu antes de chamar" (seguro reassumir) de
+   * "morreu depois de chamar" (pode ter sido entregue — nunca reenviar). Sem
+   * ele, lease expirado reenviaria mensagem possivelmente já entregue, que é
+   * exatamente o que o ADR-039 existe para impedir.
+   */
+  dispatchedAt     DateTime?
   /// TEMPLATE pedido no envio, guardado aqui porque o worker REVALIDA a política
   /// imediatamente antes de chamar o provedor (a janela pode fechar e o
   /// consentimento pode ser revogado no caminho). Sem isto o worker não saberia
@@ -1430,6 +1445,7 @@ model MessageDispatch {
 
   @@unique([workspaceId, externalId])
   @@index([workspaceId, state])
+  @@index([state, leaseExpiresAt])
 }
 
 enum MessageStatus {

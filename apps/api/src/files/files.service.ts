@@ -77,7 +77,7 @@ export class FilesService {
     }
 
     const workspaceId = auth.workspaceId as string;
-    await this.usage.ensureCounterRow(workspaceId, 'storage_bytes');
+    const storageLimit = await this.usage.prepareConsume(workspaceId, 'storage_bytes');
     const extension = extensionOf(file.originalname);
     const key = `${workspaceId}/${randomUUID()}${extension ? `.${extension}` : ''}`;
 
@@ -102,7 +102,13 @@ export class FilesService {
           },
         } as never);
         const fileId = (created as unknown as { id: string }).id;
-        await this.usage.consume(tx, workspaceId, 'storage_bytes', file.buffer.length);
+        await this.usage.consume(
+          tx,
+          workspaceId,
+          'storage_bytes',
+          file.buffer.length,
+          storageLimit,
+        );
         await this.audit.record(tx, workspaceId, 'file.uploaded', {
           entityType: 'file',
           entityId: fileId,
@@ -191,6 +197,27 @@ export class FilesService {
     return membership.id;
   }
 
+  /**
+   * Descarte COMPENSATÓRIO de um arquivo que ficou órfão (a coleta perdeu a
+   * posse do lease depois de gravar). Devolve a quota, remove a linha e apaga os
+   * bytes na hora — deixar para o expurgo do outbox seria manter consumo de
+   * storage que ninguém referencia.
+   */
+  async discardOrphan(workspaceId: string, fileId: string): Promise<void> {
+    const existing = (await this.prisma.db.fileObject.findFirst({
+      where: { id: fileId },
+    })) as unknown as FileRow | null;
+    if (!existing) return;
+    const db = this.prisma.db as unknown as TxRunner;
+    await db.$transaction(async (tx) => {
+      await tx.fileObject.deleteMany({ where: { id: fileId } });
+      await this.usage.consumeOverLimit(tx, workspaceId, 'storage_bytes', -existing.sizeBytes);
+    });
+    await this.storage.delete(existing.key).catch(() => {
+      this.logger.error(`Falha ao apagar bytes de arquivo órfão: ${existing.key}`);
+    });
+  }
+
   async list(): Promise<FileObjectDto[]> {
     const rows = (await this.prisma.db.fileObject.findMany({
       orderBy: { createdAt: 'desc' },
@@ -261,7 +288,7 @@ export class FilesService {
     if (!existing) throw new NotFoundException('Arquivo não encontrado');
 
     const workspaceId = auth.workspaceId as string;
-    await this.usage.ensureCounterRow(workspaceId, 'storage_bytes');
+    const storageLimit = await this.usage.prepareConsume(workspaceId, 'storage_bytes');
     const db = this.prisma.db as unknown as TxRunner;
     await db.$transaction(async (tx) => {
       await this.audit.record(tx, workspaceId, 'file.deleted', {
@@ -272,7 +299,7 @@ export class FilesService {
         after: null,
       });
       await tx.fileObject.deleteMany({ where: { id } });
-      await this.usage.consume(tx, workspaceId, 'storage_bytes', -existing.sizeBytes);
+      await this.usage.consume(tx, workspaceId, 'storage_bytes', -existing.sizeBytes, storageLimit);
       await this.outbox.enqueue(
         tx,
         workspaceId,

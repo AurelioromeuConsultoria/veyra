@@ -15,7 +15,11 @@ import {
   type WorkspaceFixture,
 } from '../../test/integration/fixtures';
 import { resetDb } from '../../test/integration/harness';
+import { FilesService } from '../files/files.service';
+import { MAX_ATTEMPTS } from '../outbox/outbox.service';
+import { UsageService } from '../usage/usage.service';
 import { MediaCollectorService } from './media-collector.service';
+import { WhatsappSendService } from './whatsapp-send.service';
 import {
   META_TRANSPORT,
   type FetchOutcome,
@@ -396,12 +400,9 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     });
     expect(evento!.status).toBe('pending');
 
-    // consertado o provedor, a retentativa reserva OUTRA VEZ e envia
+    // consertado o provedor, a retentativa acontece SEM ninguém mexer no
+    // dispatch: só o relógio do backoff é adiantado, como o tempo faria
     transport.nextSend = { ok: true, externalId: 'wamid.NA_SEGUNDA' };
-    await prisma.raw.messageDispatch.updateMany({
-      where: { messageId: criada.body.id },
-      data: { state: 'reserved' },
-    });
     await prisma.raw.outboxEvent.updateMany({
       where: { eventType: 'whatsapp.send_pending' },
       data: { nextRetryAt: new Date() },
@@ -426,7 +427,10 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
       ),
     );
     expect(resultados.filter((r) => r.status === 201)).toHaveLength(3);
-    expect(resultados.filter((r) => r.status === 400)).toHaveLength(2);
+    // as recusadas vêm com o 402 estruturado, não com 400 genérico
+    const recusadas = resultados.filter((r) => r.status === 402);
+    expect(recusadas).toHaveLength(2);
+    expect(recusadas[0].body).toMatchObject({ code: 'quota_exceeded', metric: 'messages_sent' });
     expect(await prisma.raw.messageDispatch.count()).toBe(3);
   });
 
@@ -438,6 +442,220 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     const replay = await sendMessage({ direction: 'outbound', body: 'Uma só' }, chave).expect(201);
     expect(replay.body.id).toBe(primeira.body.id);
     expect(await prisma.raw.message.count({ where: { direction: 'outbound' } })).toBe(1);
+  });
+
+  // ── Correções da revisão ──────────────────────────────────────────────────
+
+  it('quota estourada devolve 402 estruturado, não 400', async () => {
+    await setPlanLimit(prisma, 'messages_sent', 0);
+    const res = await sendMessage({ direction: 'outbound', body: 'Sem cota' });
+    expect(res.status).toBe(402);
+    expect(res.body).toMatchObject({
+      code: 'quota_exceeded',
+      metric: 'messages_sent',
+      limit: 0,
+    });
+    expect(res.body.resetsAt).toBeTruthy();
+  });
+
+  it('P0: dois despachos concorrentes chamam a Meta UMA vez', async () => {
+    const criada = await sendMessage({ direction: 'outbound', body: 'Uma vez só' }).expect(201);
+
+    // dois workers pegando o mesmo evento (lease do outbox expirado): sem o
+    // claim próprio do dispatch, ambos chamariam a Meta
+    const evento = await prisma.raw.outboxEvent.findFirst({
+      where: { eventType: 'whatsapp.send_pending' },
+    });
+    const service = app.get(WhatsappSendService);
+    const claimado = {
+      id: evento!.id,
+      workspaceId: wsA.workspaceId,
+      eventType: 'whatsapp.send_pending',
+      payload: { messageId: criada.body.id },
+      attempts: 1,
+      claimToken: 'token-de-teste',
+      chainId: null,
+      depth: 0,
+      originAutomationId: null,
+    };
+    await Promise.all([service.dispatch(claimado), service.dispatch(claimado)]);
+
+    expect(transport.sends).toHaveLength(1);
+    const dispatch = await prisma.raw.messageDispatch.findFirst({
+      where: { messageId: criada.body.id },
+    });
+    expect(dispatch).toMatchObject({ state: 'sent', claimToken: null });
+    const contador = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },
+    });
+    expect(Number(contador?.value ?? 0)).toBe(1);
+  });
+
+  it('P0: lease expirado APÓS despacho vira incerto — jamais reenvia', async () => {
+    const criada = await sendMessage({ direction: 'outbound', body: 'Já pode ter chegado' }).expect(
+      201,
+    );
+    /**
+     * Worker que morreu DEPOIS de chamar a Meta: o marcador `dispatchedAt` é a
+     * única coisa que distingue este caso de "morreu antes". Sem ele, o claim
+     * reassumia e reenviava — mensagem duplicada para o paciente, exatamente o
+     * que o ADR-039 existe para impedir.
+     */
+    await prisma.raw.messageDispatch.updateMany({
+      where: { messageId: criada.body.id },
+      data: {
+        state: 'sending',
+        claimToken: '11111111-1111-4111-8111-111111111111',
+        leaseExpiresAt: new Date(Date.now() - 1000),
+        dispatchedAt: new Date(Date.now() - 30_000),
+      },
+    });
+    await drain();
+
+    // NENHUMA chamada nova ao provedor
+    expect(transport.sends).toEqual([]);
+    const dispatch = await prisma.raw.messageDispatch.findFirst({
+      where: { messageId: criada.body.id },
+    });
+    expect(dispatch).toMatchObject({
+      state: 'unknown_after_dispatch',
+      errorCode: 'lease_expired_in_flight',
+      claimToken: null,
+    });
+    // e a quota é cobrada: pode ter sido entregue
+    const contador = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },
+    });
+    expect(Number(contador?.value ?? 0)).toBe(1);
+  });
+
+  it('lease expirado ANTES do despacho é reassumido e envia uma vez', async () => {
+    const criada = await sendMessage({
+      direction: 'outbound',
+      body: 'Ninguém chamou ainda',
+    }).expect(201);
+    // morreu ANTES de chamar: sem marcador, é seguro reassumir
+    await prisma.raw.messageDispatch.updateMany({
+      where: { messageId: criada.body.id },
+      data: {
+        state: 'sending',
+        claimToken: '11111111-1111-4111-8111-111111111111',
+        leaseExpiresAt: new Date(Date.now() - 1000),
+        dispatchedAt: null,
+      },
+    });
+    await drain();
+
+    expect(transport.sends).toHaveLength(1);
+    const dispatch = await prisma.raw.messageDispatch.findFirst({
+      where: { messageId: criada.body.id },
+    });
+    expect(dispatch).toMatchObject({ state: 'sent' });
+  });
+
+  it('reserva EXPURGADA na retentativa não deixa o envio sair de graça', async () => {
+    const criada = await sendMessage({ direction: 'outbound', body: 'Reserva sumiu' }).expect(201);
+    // a reserva expira e o job a devolve ao orçamento, como aconteceria após 10min
+    await prisma.raw.usageReservation.updateMany({
+      where: {},
+      data: { expiresAt: new Date(Date.now() - 1000) },
+    });
+    await app.get(UsageService).purgeExpiredReservations();
+    expect(await prisma.raw.usageReservation.count()).toBe(0);
+
+    await drain();
+
+    // enviou E cobrou: antes o `settle` silencioso deixava a mensagem sair sem
+    // consumir quota nenhuma, e o teto deixava de valer para toda retentativa
+    expect(transport.sends).toHaveLength(1);
+    const contador = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },
+    });
+    expect(Number(contador?.value ?? 0)).toBe(1);
+    const dispatch = await prisma.raw.messageDispatch.findFirst({
+      where: { messageId: criada.body.id },
+    });
+    expect(dispatch).toMatchObject({ state: 'sent' });
+  });
+
+  it('evento morto no outbox marca o dispatch terminal, sem estado que mente', async () => {
+    transport.nextSend = { ok: false, failure: { status: 429 } };
+    const criada = await sendMessage({ direction: 'outbound', body: 'Esgota' }).expect(201);
+    // última tentativa do outbox
+    await prisma.raw.outboxEvent.updateMany({
+      where: { eventType: 'whatsapp.send_pending' },
+      data: { attempts: MAX_ATTEMPTS - 1 },
+    });
+    await drain();
+
+    const evento = await prisma.raw.outboxEvent.findFirst({
+      where: { eventType: 'whatsapp.send_pending' },
+    });
+    expect(evento!.status).toBe('dead');
+    const dispatch = await prisma.raw.messageDispatch.findFirst({
+      where: { messageId: criada.body.id },
+    });
+    // `failed_before_send` prometeria retentativa que não vem
+    expect(dispatch).toMatchObject({ state: 'failed_permanent', errorCode: 'retries_exhausted' });
+  });
+
+  it('o estado do despacho é VISÍVEL na thread', async () => {
+    transport.nextSend = { ok: false, failure: { networkFailure: true } };
+    await sendMessage({ direction: 'outbound', body: 'Incerta' }).expect(201);
+    await drain();
+
+    const thread = await request(http)
+      .get(`/api/conversations/${conversationId}/messages`)
+      .set('Cookie', session.cookieHeader)
+      .expect(200);
+    const saida = thread.body.items.find((m: { direction: string }) => m.direction === 'outbound');
+    // sem isto, a mensagem morria em silêncio para quem a enviou
+    expect(saida.dispatchState).toBe('unknown_after_dispatch');
+    expect(saida.dispatchError).toBe('network');
+  });
+
+  it('coleta perde a posse ANTES de gravar e não deixa resíduo', async () => {
+    const mensagem = await prisma.raw.message.findFirst({ where: { direction: 'inbound' } });
+    const media = await prisma.raw.inboundMedia.create({
+      data: {
+        workspaceId: wsA.workspaceId,
+        messageId: mensagem!.id,
+        providerMediaId: 'media-perdida',
+        mimeType: 'image/png',
+        fileName: 'exame.png',
+      },
+    });
+    // outro worker assume enquanto o download acontece: o token muda
+    transport.nextFetch = { ok: true, bytes: PNG, mimeType: 'image/png' };
+    const collector = app.get(MediaCollectorService);
+    const original = transport.fetchMedia.bind(transport);
+    transport.fetchMedia = async (c: unknown, id: string) => {
+      await prisma.raw.inboundMedia.updateMany({
+        where: { id: media.id },
+        data: { claimToken: '22222222-2222-4222-8222-222222222222' },
+      });
+      return original(c, id);
+    };
+
+    const resultado = await collector.collectPending();
+    transport.fetchMedia = original;
+
+    expect(resultado.collected).toBe(0);
+    // o download ACONTECEU (não é o caminho de falha do transporte): o que
+    // barrou foi a verificação de posse antes de gravar
+    expect(transport.fetches).toEqual(['media-perdida']);
+    const linha = await prisma.raw.inboundMedia.findFirst({ where: { id: media.id } });
+    expect(linha).toMatchObject({
+      state: 'pending',
+      claimToken: '22222222-2222-4222-8222-222222222222',
+    });
+    // nenhum arquivo, nenhum anexo, nenhuma quota consumida
+    expect(await prisma.raw.fileObject.count()).toBe(0);
+    expect(await prisma.raw.messageAttachment.count()).toBe(0);
+    const contador = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'storage_bytes' },
+    });
+    expect(Number(contador?.value ?? 0)).toBe(0);
   });
 
   // ── Coleta de mídia ───────────────────────────────────────────────────────
@@ -488,6 +706,45 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     expect(transport.fetches).toEqual(['media-concorrente']);
     expect(await prisma.raw.fileObject.count()).toBe(1);
     expect(await prisma.raw.messageAttachment.count()).toBe(1);
+  });
+
+  it('posse perdida DEPOIS de gravar limpa o resíduo (discardOrphan)', async () => {
+    const mensagem = await prisma.raw.message.findFirst({ where: { direction: 'inbound' } });
+    const media = await prisma.raw.inboundMedia.create({
+      data: {
+        workspaceId: wsA.workspaceId,
+        messageId: mensagem!.id,
+        providerMediaId: 'media-orfa',
+        mimeType: 'image/png',
+        fileName: 'exame.png',
+      },
+    });
+    // o token muda DEPOIS do renewLease e do download, já durante a gravação:
+    // o storage é o último ponto antes da conclusão fenced
+    const files = app.get(FilesService);
+    const original = files.storeFromChannel.bind(files);
+    (files as unknown as { storeFromChannel: unknown }).storeFromChannel = async (
+      input: Parameters<typeof original>[0],
+    ) => {
+      const arquivo = await original(input);
+      await prisma.raw.inboundMedia.updateMany({
+        where: { id: media.id },
+        data: { claimToken: '33333333-3333-4333-8333-333333333333' },
+      });
+      return arquivo;
+    };
+
+    const resultado = await app.get(MediaCollectorService).collectPending();
+    (files as unknown as { storeFromChannel: unknown }).storeFromChannel = original;
+
+    expect(resultado.collected).toBe(0);
+    // o resíduo foi limpo: sem arquivo, sem anexo e com a quota devolvida
+    expect(await prisma.raw.fileObject.count()).toBe(0);
+    expect(await prisma.raw.messageAttachment.count()).toBe(0);
+    const contador = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'storage_bytes' },
+    });
+    expect(Number(contador?.value ?? 0)).toBe(0);
   });
 
   it('mídia de tipo não suportado falha sem gravar arquivo', async () => {

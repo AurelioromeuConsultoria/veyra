@@ -110,26 +110,37 @@ export class OutboxService {
       // bug de programação: payload fora da allowlist do evento
       throw new Error(`Payload inválido para ${eventType}: ${parsed.error.message}`);
     }
-    try {
-      await db.outboxEvent.create({
-        data: {
-          workspaceId,
-          eventType,
-          payload: parsed.data as object,
-          dedupeKey,
-          chainId: causality?.chainId ?? null,
-          depth: causality?.depth ?? 0,
-          originAutomationId: causality?.originAutomationId ?? null,
-        },
-      } as never);
-    } catch (error) {
-      // dedupeKey repetido = evento já enfileirado (idempotência barata)
-      if ((error as { code?: string }).code === 'P2002') {
-        this.logger.debug(`Evento ${eventType} já enfileirado (dedupe): ${dedupeKey}`);
-        return;
-      }
-      throw error;
+    /**
+     * PRÉ-CHECAGEM, e não `catch` de P2002. No Postgres, violação de unique
+     * ABORTA o bloco inteiro: capturar o erro dentro da transação de domínio
+     * deixava todo statement seguinte — e o próprio COMMIT — falhando com
+     * 25P02. O caso concreto era ganhar um deal, reabri-lo e ganhá-lo de novo:
+     * o `dedupeKey` repetia, a transação envenenava, e aquele deal nunca mais
+     * podia ser marcado como ganho.
+     *
+     * A corrida remanescente (duas transações inserindo o mesmo `dedupeKey` ao
+     * mesmo tempo) resulta em erro de unique que aborta UMA delas — que é o
+     * comportamento correto para um efeito externo duplicado.
+     */
+    const existente = await db.outboxEvent.findFirst({
+      where: { workspaceId, dedupeKey },
+      select: { id: true },
+    });
+    if (existente) {
+      this.logger.debug(`Evento ${eventType} já enfileirado (dedupe): ${dedupeKey}`);
+      return;
     }
+    await db.outboxEvent.create({
+      data: {
+        workspaceId,
+        eventType,
+        payload: parsed.data as object,
+        dedupeKey,
+        chainId: causality?.chainId ?? null,
+        depth: causality?.depth ?? 0,
+        originAutomationId: causality?.originAutomationId ?? null,
+      },
+    } as never);
   }
 
   /**

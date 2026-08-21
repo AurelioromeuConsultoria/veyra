@@ -29,4 +29,21 @@ describe('classificação de falha de envio (ADR-039)', () => {
     expect(classifyFailure({ status: 400 })).toBe('permanent');
     expect(classifyFailure({ status: 404 })).toBe('permanent');
   });
+
+  it('2xx SEM id de mensagem é AMBÍGUO: a Meta aceitou e não devolveu o id', () => {
+    // era o pior caminho possível: o catch-all devolvia `retryable`, e reenviar
+    // duplicaria uma mensagem provavelmente entregue
+    expect(classifyFailure({ status: 200 })).toBe('ambiguous');
+    expect(classifyFailure({ status: 201 })).toBe('ambiguous');
+  });
+
+  it('408 é ambíguo — timeout do lado do servidor', () => {
+    expect(classifyFailure({ status: 408 })).toBe('ambiguous');
+  });
+
+  it('limites de taxa que vêm com 400 são RETENTÁVEIS, apesar do status', () => {
+    expect(classifyFailure({ status: 400, metaCode: 130_429 })).toBe('retryable');
+    expect(classifyFailure({ status: 400, metaCode: 131_048 })).toBe('retryable');
+    expect(classifyFailure({ status: 400, metaCode: 131_056 })).toBe('retryable');
+  });
 });

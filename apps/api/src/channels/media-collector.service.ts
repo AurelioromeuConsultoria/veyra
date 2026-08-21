@@ -93,6 +93,7 @@ export class MediaCollectorService {
     providerMediaId: string;
     mimeType: string;
     fileName: string | null;
+    attempts: number;
     claimToken: string;
   }): Promise<boolean> {
     const credential = await this.credentialFor(item.workspaceId, item.messageId);
@@ -121,6 +122,16 @@ export class MediaCollectorService {
       throw error;
     }
 
+    /**
+     * POSSE ANTES DE GRAVAR: o download pode ter levado mais que o lease. Se a
+     * posse já não é nossa, parar aqui evita arquivo, bytes e quota órfãos —
+     * verificar só depois de gravar deixaria exatamente esse resíduo.
+     */
+    if (!(await this.renewLease(item))) {
+      this.logger.warn(`Lease de mídia ${item.id} perdido antes da gravação — abandonando`);
+      return false;
+    }
+
     // entra no contexto do workspace: daqui em diante vale o client protegido,
     // e o arquivo passa pelo MESMO caminho de quota e limpeza do upload humano
     return this.cls.run(async () => {
@@ -132,29 +143,45 @@ export class MediaCollectorService {
           fileName,
           mimeType: outcome.mimeType,
         });
-        // FENCING: só o dono do lease conclui
-        const { count } = await this.prisma.raw.inboundMedia.updateMany({
-          where: { id: item.id, claimToken: item.claimToken, state: 'pending' },
-          data: {
-            state: 'fetched',
-            fileObjectId: file.id,
-            claimedAt: null,
-            leaseExpiresAt: null,
-            claimToken: null,
-          },
+        /**
+         * FENCING e ANEXO na MESMA transação. Separados, a morte do processo
+         * entre os dois deixava a mídia `fetched`, cobrada em storage e SEM
+         * anexo — invisível na conversa e irrecuperável, porque o claim exige
+         * `pending`.
+         */
+        const { count } = await this.prisma.raw.$transaction(async (tx) => {
+          const concluido = await tx.inboundMedia.updateMany({
+            where: { id: item.id, claimToken: item.claimToken, state: 'pending' },
+            data: {
+              state: 'fetched',
+              fileObjectId: file.id,
+              claimedAt: null,
+              leaseExpiresAt: null,
+              claimToken: null,
+            },
+          });
+          if (concluido.count === 0) return { count: 0 };
+          // o anexo liga a mídia à mensagem que a trouxe
+          await tx.messageAttachment.create({
+            data: {
+              workspaceId: item.workspaceId,
+              messageId: item.messageId,
+              fileObjectId: file.id,
+            },
+          });
+          return { count: concluido.count };
         });
         if (count === 0) {
-          this.logger.warn(`Lease de mídia ${item.id} perdido — conclusão ignorada`);
+          /**
+           * Perdemos a posse ENTRE gravar e concluir: quem assumiu vai baixar de
+           * novo, então este arquivo é resíduo. Limpeza compensatória — sem
+           * ela sobrariam bytes no disco, uma linha de FileObject e consumo de
+           * quota que ninguém referencia.
+           */
+          this.logger.error(`Lease de mídia ${item.id} perdido após gravar — limpando resíduo`);
+          await this.files.discardOrphan(item.workspaceId, file.id);
           return false;
         }
-        // o anexo liga a mídia à mensagem que a trouxe
-        await this.prisma.raw.messageAttachment.create({
-          data: {
-            workspaceId: item.workspaceId,
-            messageId: item.messageId,
-            fileObjectId: file.id,
-          },
-        });
         return true;
       } catch (error) {
         this.logger.error(`Falha ao gravar mídia ${item.id} (${(error as Error).name})`);
@@ -178,8 +205,27 @@ export class MediaCollectorService {
     });
   }
 
-  /** Devolve ao pool para nova tentativa (o lease sai do caminho). */
-  private async releaseForRetry(item: { id: string; claimToken: string }): Promise<boolean> {
+  /** Renova o lease; `false` = a posse já não é nossa. */
+  private async renewLease(item: { id: string; claimToken: string }): Promise<boolean> {
+    const { count } = await this.prisma.raw.inboundMedia.updateMany({
+      where: { id: item.id, claimToken: item.claimToken, state: 'pending' },
+      data: { leaseExpiresAt: new Date(Date.now() + LEASE_MS) },
+    });
+    return count > 0;
+  }
+
+  /**
+   * Devolve ao pool para nova tentativa. Esgotadas as tentativas, vira estado
+   * TERMINAL: sem isto a linha ficava `pending` para sempre, fora do claim
+   * (`attempts < MAX`) e sem `errorCode` — mídia de paciente desaparecendo em
+   * silêncio.
+   */
+  private async releaseForRetry(item: {
+    id: string;
+    claimToken: string;
+    attempts: number;
+  }): Promise<boolean> {
+    if (item.attempts >= MAX_ATTEMPTS) return this.fail(item, 'max_attempts');
     await this.prisma.raw.inboundMedia.updateMany({
       where: { id: item.id, claimToken: item.claimToken },
       data: { claimedAt: null, leaseExpiresAt: null, claimToken: null },

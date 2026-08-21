@@ -105,7 +105,14 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         delivered += 1;
       } catch (error) {
         failed += 1;
-        // falha do próprio dispatcher (não da entrega): reagenda com backoff
+        // falha do próprio dispatcher (não da entrega): reagenda com backoff.
+        // Logar aqui é essencial — sem isso o motivo do reagendamento fica
+        // invisível e só aparece como "evento parado em pending".
+        this.logger.error(
+          `Dispatcher falhou no evento ${event.id} (${event.eventType}): ${
+            error instanceof Error ? error.message.slice(0, 300) : 'desconhecido'
+          }`,
+        );
         await this.outbox.markFailed(
           event.id,
           event.claimToken,
@@ -131,12 +138,22 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       const resultado = await this.whatsappSend.dispatch(event);
       if (resultado === 'retry') {
         // falha transitória ANTES do envio: devolve ao outbox com backoff
-        await this.outbox.markFailed(
+        const desfecho = await this.outbox.markFailed(
           event.id,
           event.claimToken,
           event.attempts,
           'envio recusado antes do despacho (transitório)',
         );
+        if (desfecho !== 'retry') {
+          /**
+           * O evento morreu (tentativas esgotadas) ou o lease foi assumido por
+           * outro worker: não haverá nova tentativa. Deixar o dispatch em
+           * `failed_before_send` seria um estado que MENTE — o nome promete
+           * retentativa que não vem.
+           */
+          const { messageId } = event.payload as { messageId: string };
+          await this.whatsappSend.markExhausted(event.workspaceId, messageId);
+        }
         return;
       }
     }

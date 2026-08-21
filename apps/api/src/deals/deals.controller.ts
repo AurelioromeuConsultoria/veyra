@@ -62,7 +62,14 @@ export class DealsController {
     return this.deals.update(auth, id, body);
   }
 
+  /**
+   * @Idempotent: retry HTTP não pode mover duas vezes nem emitir dois eventos.
+   * É o par necessário da chave de dedupe por TRANSIÇÃO (abaixo): a chave
+   * permite ganhar de novo depois de reabrir, e a idempotência impede que o
+   * mesmo clique conte como duas transições.
+   */
   @RequirePermissions('deals:write')
+  @Idempotent()
   @Post(':id/move')
   move(
     @CurrentAuth() auth: AuthContext,
