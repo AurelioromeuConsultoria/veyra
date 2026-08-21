@@ -309,6 +309,14 @@ export class DealsService {
 
       const movedStage = deal.stageId !== stage.id;
       if (movedStage) {
+        /**
+         * UM instante para a transição inteira: é ele que identifica o FATO
+         * (não o deal) nas chaves de dedupe. Reabrir e ganhar de novo é fato
+         * novo e merece evento novo; chave fixa por deal engolia a segunda
+         * vitória. Derivado do que é gravado em `stageEnteredAt`, não de um
+         * `Date.now()` solto por chamada.
+         */
+        const transicaoEm = new Date();
         const fromStage = await tx.stage.findFirst({
           where: { id: deal.stageId, workspaceId },
           select: { name: true },
@@ -318,7 +326,7 @@ export class DealsService {
           data: {
             stageId: stage.id,
             status: stage.type === 'open' ? 'open' : stage.type,
-            stageEnteredAt: new Date(),
+            stageEnteredAt: transicaoEm,
           },
         });
         await this.activities.record(tx as unknown as Db, workspaceId, 'deal_stage_changed', {
@@ -331,13 +339,9 @@ export class DealsService {
           workspaceId,
           'deal.stage_changed',
           { id: dealId, fromStage: fromStage?.name ?? '—', toStage: stage.name },
-          `deal.stage_changed:${dealId}:${stage.id}:${Date.now()}`,
+          `deal.stage_changed:${dealId}:${stage.id}:${transicaoEm.toISOString()}`,
         );
         if (stage.type === 'won' || stage.type === 'lost') {
-          // o instante identifica a TRANSIÇÃO, não o deal: reabrir e ganhar de
-          // novo é fato novo e merece evento novo. A chave fixa por deal fazia a
-          // segunda vitória ser engolida pelo dedupe (dívida registrada).
-          const occurredAt = new Date();
           await this.activities.record(
             tx as unknown as Db,
             workspaceId,
@@ -353,7 +357,7 @@ export class DealsService {
             workspaceId,
             stage.type === 'won' ? 'deal.won' : 'deal.lost',
             { id: dealId, amountCents: deal.amountCents },
-            `deal.${stage.type}:${dealId}:${occurredAt.toISOString()}`,
+            `deal.${stage.type}:${dealId}:${transicaoEm.toISOString()}`,
           );
         }
       }

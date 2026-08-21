@@ -1,5 +1,6 @@
 import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ClsService } from 'nestjs-cls';
+import { AuditService } from '../audit/audit.service';
 import { CryptoService } from '../common/crypto.service';
 import type { ClaimedEvent } from '../outbox/outbox.service';
 import { OutboxService } from '../outbox/outbox.service';
@@ -13,6 +14,14 @@ type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
 
 /** Lease do envio: cobre a chamada ao provedor com folga (timeout de 15s). */
 const DISPATCH_LEASE_MS = 2 * 60_000;
+
+/**
+ * Só é considerado abandonado o que está parado há MUITO mais que o lease do
+ * outbox (5 min): abaixo disso o caminho normal — outro worker reassume o
+ * evento — ainda está em curso, e a varredura só atrapalharia. O desfecho
+ * consulta o outbox justamente porque o backoff dele chega a horas.
+ */
+const REAP_AFTER_MINUTES = 15;
 
 export interface OutboundRequest {
   conversationId: string;
@@ -42,6 +51,7 @@ export class WhatsappSendService {
     private readonly usage: UsageService,
     private readonly outbox: OutboxService,
     private readonly crypto: CryptoService,
+    private readonly audit: AuditService,
     private readonly cls: ClsService,
     @Inject(META_TRANSPORT) private readonly transport: MetaTransport,
   ) {}
@@ -136,6 +146,11 @@ export class WhatsappSendService {
      * depois". `failed_before_send` é elegível — sem isso a retentativa nunca
      * aconteceria de verdade.
      *
+     * A reserva NÃO é zerada aqui: `isReservationAlive` decide adiante. Zerar
+     * perdia a referência de uma reserva VIVA (worker reiniciado antes de
+     * despachar), que continuava ocupando o contador até o TTL — inflando o uso
+     * e podendo recusar envios de terceiros.
+     *
      * Elegíveis: `reserved` (primeira tentativa), `failed_before_send` (falha
      * transitória anterior — é isto que faz a retentativa funcionar de verdade,
      * sem ninguém mexer no banco) ou `sending` com LEASE EXPIRADO (worker que
@@ -156,10 +171,6 @@ export class WhatsappSendService {
           SET "state" = 'sending',
               "claimToken" = gen_random_uuid(),
               "leaseExpiresAt" = now() + ($3::int * interval '1 millisecond'),
-              -- a reserva da tentativa anterior pode ter EXPIRADO e sido
-              -- expurgada: zerar aqui obriga o caminho a reservar de novo, em
-              -- vez de confiar num id que talvez não exista mais
-              "reservationId" = CASE WHEN "state" = 'reserved' THEN "reservationId" ELSE NULL END,
               "attempts" = "attempts" + 1
         WHERE "workspaceId" = $1::uuid
           AND "messageId" = $2::uuid
@@ -229,12 +240,30 @@ export class WhatsappSendService {
       return 'done';
     }
 
-    // a reserva pode ter sido liberada por uma tentativa anterior: reserva de
-    // novo ANTES de chamar, senão o teto não valeria para retentativa
+    /**
+     * A reserva precisa estar VIVA antes da chamada. Duas razões para ela não
+     * estar: uma tentativa anterior a liberou, ou o TTL (10 min) venceu antes de
+     * o backoff do outbox (até 25 min) trazer o evento de volta — e nesse caso o
+     * job de expurgo já devolveu o valor ao orçamento. Confiar num id morto
+     * fazia a mensagem sair mesmo com o teto ocupado por outro uso, e a cobrança
+     * acontecia DEPOIS do efeito externo.
+     */
     let reservationId = dispatch.reservationId;
+    if (reservationId && !(await this.usage.isReservationAlive(reservationId))) {
+      /**
+       * Expirada mas talvez NÃO expurgada: o TTL é de 10 min e a varredura roda
+       * a cada 5, então há uma janela em que a reserva ainda ocupa +1 no
+       * contador. Devolver antes de reservar de novo evita o absurdo de o envio
+       * ser recusado pela própria vaga que ele já havia pago.
+       */
+      await this.usage.release(reservationId);
+      reservationId = null;
+    }
     if (!reservationId) {
       const nova = await this.usage.reserve(workspaceId, 'messages_sent', 1);
       if (nova === 'quota_exceeded') {
+        // sem vaga no teto: NÃO chama o transporte. O envio é recusado antes de
+        // existir, em vez de acontecer e ser cobrado fora do limite.
         await this.finish(messageId, dispatch.claimToken, 'failed_permanent', {
           errorCode: 'quota_exceeded',
         });
@@ -254,8 +283,10 @@ export class WhatsappSendService {
       data: { dispatchedAt: new Date() },
     });
     if (marcou.count === 0) {
-      // perdemos a posse antes de despachar: quem tem a posse decide
+      // perdemos a posse antes de despachar: quem tem a posse decide, e a
+      // reserva desta tentativa é liberada em vez de ficar pendurada até o TTL
       this.logger.warn(`Lease de envio ${messageId} perdido antes do despacho`);
+      await this.usage.release(reservationId);
       return 'done';
     }
 
@@ -275,10 +306,15 @@ export class WhatsappSendService {
           );
 
     if (outcome.ok) {
-      await this.chargeOne(workspaceId, reservationId);
+      /**
+       * Conclui PRIMEIRO, cobra depois. Cobrar antes permitia cobrança dupla:
+       * um worker travado cobrava e, em paralelo, o reaper do lease vencido
+       * cobrava de novo pela mesma mensagem. Quem não tem a posse não cobra.
+       */
       const posse = await this.finish(messageId, dispatch.claimToken, 'sent', {
         externalId: outcome.externalId,
       });
+      if (posse) await this.chargeOne(workspaceId, reservationId);
       if (!posse) {
         /**
          * Perdemos a posse DEPOIS de enviar. NÃO sobrescrevemos a linha de quem
@@ -289,16 +325,12 @@ export class WhatsappSendService {
         this.logger.error(
           `Lease de envio ${messageId} perdido após despacho bem-sucedido (${outcome.externalId})`,
         );
-        await this.prisma.raw.auditLog.create({
-          data: {
-            workspaceId,
-            action: 'message.dispatch_lease_lost',
-            entityType: 'message',
-            entityId: messageId,
-            actorType: 'system',
-            actorId: 'whatsapp-dispatcher',
-            after: { externalId: outcome.externalId },
-          },
+        await this.audit.record(this.prisma.db as Db, workspaceId, 'message.dispatch_lease_lost', {
+          entityType: 'message',
+          entityId: messageId,
+          actor: { type: 'system', id: 'whatsapp-dispatcher' },
+          // o wamid é o que permite a um humano achar a mensagem no provedor
+          after: { externalId: outcome.externalId, direction: 'outbound' },
         });
       }
       return 'done';
@@ -308,9 +340,12 @@ export class WhatsappSendService {
     const errorCode = String(outcome.failure.metaCode ?? outcome.failure.status ?? 'network');
 
     if (classe === 'ambiguous') {
-      // pode ter sido despachada: COBRA a quota, não reenvia e encerra
-      await this.chargeOne(workspaceId, reservationId);
-      await this.finish(messageId, dispatch.claimToken, 'unknown_after_dispatch', { errorCode });
+      // pode ter sido despachada: não reenvia, encerra e COBRA — mas só se a
+      // posse ainda for nossa, para não cobrar em dobro com o reaper
+      const posse = await this.finish(messageId, dispatch.claimToken, 'unknown_after_dispatch', {
+        errorCode,
+      });
+      if (posse) await this.chargeOne(workspaceId, reservationId);
       this.logger.warn(`Envio ${messageId} incerto (${errorCode}) — aguardando resolução humana`);
       return 'done';
     }
@@ -332,6 +367,9 @@ export class WhatsappSendService {
   private async chargeOne(workspaceId: string, reservationId: string): Promise<void> {
     const liquidada = await this.usage.settle(workspaceId, reservationId, 'messages_sent', 1);
     if (!liquidada) {
+      // a linha do PERÍODO pode não existir (reserva de 31/08 liquidada em
+      // 01/09): sem isto o `applyDelta` lançaria DEPOIS do efeito externo
+      await this.usage.ensureCounterRow(workspaceId, 'messages_sent');
       const db = this.prisma.db as unknown as TxRunner;
       await db.$transaction((tx) =>
         this.usage.consumeOverLimit(tx, workspaceId, 'messages_sent', 1),
@@ -345,6 +383,8 @@ export class WhatsappSendService {
    * cobrada — nunca de volta para envio (ADR-039).
    */
   private async resolveAbandonedInFlight(workspaceId: string, messageId: string): Promise<boolean> {
+    // `raw` justificado: UPDATE condicional com RETURNING (a decisão depende do
+    // estado lido no MESMO comando). `workspaceId` explícito no WHERE.
     const abandonadas = await this.prisma.raw.$queryRawUnsafe<{ reservationId: string | null }[]>(
       `UPDATE "MessageDispatch"
           SET "state" = 'unknown_after_dispatch',
@@ -374,6 +414,7 @@ export class WhatsappSendService {
     if (abandonada.reservationId) {
       await this.chargeOne(workspaceId, abandonada.reservationId);
     } else {
+      await this.usage.ensureCounterRow(workspaceId, 'messages_sent');
       const db = this.prisma.db as unknown as TxRunner;
       await db.$transaction((tx) =>
         this.usage.consumeOverLimit(tx, workspaceId, 'messages_sent', 1),
@@ -386,22 +427,156 @@ export class WhatsappSendService {
     return true;
   }
 
-  /**
-   * Marca terminal um dispatch cujo evento do outbox morreu (tentativas
-   * esgotadas ou lease perdido): `failed_before_send` promete retentativa que
-   * não vai acontecer.
+/**
+   * O evento morreu no outbox (tentativas esgotadas): não haverá retentativa, e
+   * deixar o dispatch em `failed_before_send` seria um estado que MENTE — o nome
+   * promete uma retentativa que não vem.
+   *
+   * Roda no contexto do workspace da mensagem: o dispatcher do outbox é
+   * cross-workspace, e sem isto o client protegido barraria a escrita (a
+   * exceção era engolida pelo dispatcher e o dispatch ficava mentindo mesmo).
    */
   async markExhausted(workspaceId: string, messageId: string): Promise<void> {
-    await this.prisma.raw.messageDispatch.updateMany({
-      where: { workspaceId, messageId, state: { in: ['reserved', 'failed_before_send'] } },
-      data: {
-        state: 'failed_permanent',
-        errorCode: 'retries_exhausted',
-        claimToken: null,
-        leaseExpiresAt: null,
-        reservationId: null,
-      },
+    await this.cls.run(async () => {
+      this.cls.set('workspaceId', workspaceId);
+      const linha = await this.prisma.db.messageDispatch.findFirst({
+        where: { messageId },
+        select: { state: true, dispatchedAt: true, reservationId: true },
+      });
+      if (!linha) return;
+      const elegiveis = ['reserved', 'failed_before_send', 'sending'];
+      if (!elegiveis.includes(linha.state)) return;
+
+      const despachou = linha.dispatchedAt !== null;
+      /**
+       * A GUARDA VAI NO `where`, não em JS: entre a leitura e a escrita o estado
+       * pode mudar (varredura concorrente, ou dono vivo concluindo), e escrever
+       * por `messageId` puro sobrescreveria um estado terminal já cobrado — a
+       * mesma mentira de entrega que a varredura permeável causava. Se não
+       * escrevermos nada, não liquidamos quota nenhuma.
+       */
+      const { count } = await this.prisma.db.messageDispatch.updateMany({
+        where: {
+          messageId,
+          state: { in: elegiveis as never },
+          ...(despachou ? { dispatchedAt: { not: null } } : { dispatchedAt: null }),
+        },
+        data: {
+          // COM marcador de despacho pode ter saído: nunca "não enviou"
+          state: despachou ? 'unknown_after_dispatch' : 'failed_permanent',
+          errorCode: despachou ? 'retries_exhausted_in_flight' : 'retries_exhausted',
+          claimToken: null,
+          leaseExpiresAt: null,
+          reservationId: null,
+        },
+      });
+      if (count === 0) return; // outro dono decidiu antes: nada a liquidar
+      await this.settleQuotaFor(workspaceId, linha.reservationId, despachou);
+      if (despachou) {
+        this.logger.error(`Envio ${messageId} esgotou tentativas em voo — marcado incerto`);
+      }
     });
+  }
+
+  /**
+   * Fecha a quota de um dispatch encerrado à força: cobra se pode ter saído,
+   * devolve se provadamente não saiu. Sem isto a reserva ficaria pendurada até
+   * o TTL, encolhendo o teto de quem não gastou nada.
+   */
+  private async settleQuotaFor(
+    workspaceId: string,
+    reservationId: string | null,
+    despachou: boolean,
+  ): Promise<void> {
+    if (!reservationId) return;
+    if (despachou) await this.chargeOne(workspaceId, reservationId);
+    else await this.usage.release(reservationId);
+  }
+
+  /**
+   * Varredura de dispatches abandonados: worker que morreu de forma que nem o
+   * dispatcher percebeu (exceção entre o claim e a conclusão, processo morto).
+   * É o consumidor do índice `(state, leaseExpiresAt)`, sem o qual a linha
+   * ficaria `sending` para sempre e a mensagem sumiria em silêncio.
+   *
+   * O DESFECHO respeita quem ainda pode tentar:
+   *  - COM marcador de despacho → `unknown_after_dispatch` e cobra: pode ter
+   *    saído, e nunca reenviamos por conta própria (ADR-039).
+   *  - sem marcador, com evento do outbox VIVO → `failed_before_send`, que é
+   *    elegível ao claim: a retentativa legítima ainda vem (o backoff do outbox
+   *    chega a horas, muito além deste limiar). Enterrar como `failed_permanent`
+   *    matava a entrega — o mesmo dano do `lost` tratado como `dead`.
+   *  - sem marcador e sem evento vivo → `failed_permanent`: ninguém mais tenta.
+   *
+   * `raw` justificado: varredura cross-workspace (SECURITY.md §2) com UPDATE
+   * condicional e RETURNING; o workspaceId de cada linha é usado explicitamente
+   * na quota, dentro do CLS.
+   */
+  async reapStaleDispatches(limit = 50): Promise<number> {
+    const abandonadas = await this.prisma.raw.$queryRawUnsafe<
+      {
+        messageId: string;
+        workspaceId: string;
+        reservationId: string | null;
+        despachou: boolean;
+      }[]
+    >(
+      /**
+       * O predicado é REPETIDO no WHERE externo, não só na subquery. Em READ
+       * COMMITTED, quando este UPDATE bloqueia numa linha que outra transação
+       * alterou, o Postgres refaz a qualificação contra a versão nova — mas a
+       * subquery é reavaliada no snapshot ORIGINAL, que ainda vê `sending`.
+       * Sem o predicado externo, a varredura sobrescrevia um `sent` acabado de
+       * comitar: mensagem entregue aparecendo como "Não enviada", com reenvio
+       * manual e cobrança em dobro. `SKIP LOCKED` evita que duas varreduras
+       * disputem a mesma linha.
+       */
+      `UPDATE "MessageDispatch" AS d
+          SET "state" = CASE
+                WHEN d."dispatchedAt" IS NOT NULL THEN 'unknown_after_dispatch'::"DispatchState"
+                WHEN EXISTS (
+                  SELECT 1 FROM "OutboxEvent" e
+                   WHERE e."workspaceId" = d."workspaceId"
+                     AND e."dedupeKey" = 'whatsapp.send_pending:' || d."messageId"::text
+                     AND e."status" IN ('pending', 'processing')
+                ) THEN 'failed_before_send'::"DispatchState"
+                ELSE 'failed_permanent'::"DispatchState" END,
+              "errorCode" = CASE
+                WHEN d."dispatchedAt" IS NOT NULL THEN 'abandoned_in_flight'
+                ELSE 'abandoned_before_send' END,
+              "claimToken" = NULL,
+              "leaseExpiresAt" = NULL
+        WHERE d."messageId" IN (
+                SELECT "messageId" FROM "MessageDispatch"
+                 WHERE "state" = 'sending'
+                   AND "leaseExpiresAt" < now() - ($1::int * interval '1 minute')
+                 LIMIT $2
+                 FOR UPDATE SKIP LOCKED
+              )
+          AND d."state" = 'sending'
+          AND d."leaseExpiresAt" < now() - ($1::int * interval '1 minute')
+      RETURNING d."messageId", d."workspaceId", d."reservationId",
+                (d."dispatchedAt" IS NOT NULL) AS "despachou"`,
+      REAP_AFTER_MINUTES,
+      limit,
+    );
+    for (const linha of abandonadas) {
+      // a varredura é cross-workspace, mas a QUOTA não: entra no contexto de
+      // cada linha para que o ajuste passe pelo client protegido, como faria o
+      // worker que morreu
+      await this.cls.run(async () => {
+        this.cls.set('workspaceId', linha.workspaceId);
+        await this.settleQuotaFor(linha.workspaceId, linha.reservationId, linha.despachou);
+        await this.prisma.db.messageDispatch.updateMany({
+          where: { messageId: linha.messageId },
+          data: { reservationId: null },
+        });
+      });
+    }
+    if (abandonadas.length > 0) {
+      this.logger.error(`${abandonadas.length} envio(s) abandonado(s) resolvidos pela varredura`);
+    }
+    return abandonadas.length;
   }
 
   /**
@@ -422,6 +597,16 @@ export class WhatsappSendService {
         claimToken: null,
         leaseExpiresAt: null,
         reservationId: null,
+        /**
+         * O marcador é zerado APENAS em `failed_before_send`, o único estado que
+         * volta a ser elegível ao claim: herdado por uma tentativa nova, ele
+         * mentia — morrer antes de chamar viraria `unknown_after_dispatch` com
+         * cobrança de mensagem que provadamente nunca saiu.
+         *
+         * Nos estados terminais o marcador FICA: é o instante do despacho, e é
+         * dele que depende quem for triar a fila de casos incertos depois.
+         */
+        ...(state === 'failed_before_send' ? { dispatchedAt: null } : {}),
         ...(extra.errorCode !== undefined ? { errorCode: extra.errorCode } : {}),
         ...(extra.externalId !== undefined ? { externalId: extra.externalId } : {}),
       },

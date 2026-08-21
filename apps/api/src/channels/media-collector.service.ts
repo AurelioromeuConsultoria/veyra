@@ -136,13 +136,16 @@ export class MediaCollectorService {
     // e o arquivo passa pelo MESMO caminho de quota e limpeza do upload humano
     return this.cls.run(async () => {
       this.cls.set('workspaceId', item.workspaceId);
+      // fora do `try`: o catch precisa saber se o arquivo já existe para limpar
+      let file: { id: string } | undefined;
       try {
-        const file = await this.files.storeFromChannel({
+        const gravado = await this.files.storeFromChannel({
           workspaceId: item.workspaceId,
           bytes: outcome.bytes,
           fileName,
           mimeType: outcome.mimeType,
         });
+        file = gravado;
         /**
          * FENCING e ANEXO na MESMA transação. Separados, a morte do processo
          * entre os dois deixava a mídia `fetched`, cobrada em storage e SEM
@@ -154,7 +157,7 @@ export class MediaCollectorService {
             where: { id: item.id, claimToken: item.claimToken, state: 'pending' },
             data: {
               state: 'fetched',
-              fileObjectId: file.id,
+              fileObjectId: gravado.id,
               claimedAt: null,
               leaseExpiresAt: null,
               claimToken: null,
@@ -166,11 +169,18 @@ export class MediaCollectorService {
             data: {
               workspaceId: item.workspaceId,
               messageId: item.messageId,
-              fileObjectId: file.id,
+              fileObjectId: gravado.id,
             },
           });
           return { count: concluido.count };
         });
+        /**
+         * Concluído: o arquivo já está ANEXADO e sai do alcance da limpeza. Sem
+         * isto, um COMMIT bem-sucedido cuja resposta se perdesse cairia no catch
+         * e apagaria um FileObject referenciado — o anexo iria por cascade e a
+         * mídia voltaria a ser "cobrada, sem anexo e irrecuperável".
+         */
+        if (count > 0) file = undefined;
         if (count === 0) {
           /**
            * Perdemos a posse ENTRE gravar e concluir: quem assumiu vai baixar de
@@ -179,12 +189,19 @@ export class MediaCollectorService {
            * quota que ninguém referencia.
            */
           this.logger.error(`Lease de mídia ${item.id} perdido após gravar — limpando resíduo`);
-          await this.files.discardOrphan(item.workspaceId, file.id);
+          await this.files.discardOrphan(item.workspaceId, gravado.id);
           return false;
         }
         return true;
       } catch (error) {
         this.logger.error(`Falha ao gravar mídia ${item.id} (${(error as Error).name})`);
+        /**
+         * O arquivo pode ter sido gravado ANTES da falha (o erro veio da
+         * transação de conclusão): a transação volta atrás, os bytes e a quota
+         * não. Sem esta limpeza, cada retentativa somava um FileObject órfão
+         * cobrado no teto de armazenamento.
+         */
+        if (file) await this.files.discardOrphan(item.workspaceId, file.id);
         return this.releaseForRetry(item);
       }
     });

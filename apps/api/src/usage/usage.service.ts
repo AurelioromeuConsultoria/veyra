@@ -211,13 +211,33 @@ export class UsageService {
        * consumir quota nenhuma.
        */
       if (!reservation) return false;
-      await tx.usageReservation.deleteMany({ where: { id: reservationId } });
+      /**
+       * A POSSE é o delete, não a leitura: dois liquidantes concorrentes (worker
+       * e varredura de expiradas) leriam a mesma linha e aplicariam o ajuste
+       * duas vezes. Só quem apagou de fato ajusta o contador.
+       */
+      const { count } = await tx.usageReservation.deleteMany({ where: { id: reservationId } });
+      if (count === 0) return false;
       const difference = actualAmount - reservation.amount;
       if (difference !== 0) {
         await this.applyDelta(tx, reservation.metric, reservation.period, difference);
       }
       return true;
     });
+  }
+
+  /**
+   * A reserva ainda existe e está viva? Necessário porque o TTL (10 min) é mais
+   * curto que o backoff do outbox (até 25 min): um `reservationId` gravado no
+   * dispatch pode apontar para uma reserva já expurgada, e confiar nele deixaria
+   * o efeito externo acontecer sem vaga no teto.
+   */
+  async isReservationAlive(reservationId: string): Promise<boolean> {
+    const row = await this.prisma.db.usageReservation.findFirst({
+      where: { id: reservationId, expiresAt: { gt: new Date() } },
+      select: { id: true },
+    });
+    return row !== null;
   }
 
   /** Libera a reserva inteira (chamada falhou, nada foi gasto). */
@@ -231,7 +251,9 @@ export class UsageService {
         select: { amount: true, metric: true, period: true },
       })) as unknown as { amount: number; metric: string; period: string } | null;
       if (!reservation) return;
-      await tx.usageReservation.deleteMany({ where: { id: reservationId } });
+      // mesma regra do settle: quem apagou é quem devolve o valor
+      const { count } = await tx.usageReservation.deleteMany({ where: { id: reservationId } });
+      if (count === 0) return;
       await this.applyDelta(tx, reservation.metric, reservation.period, -reservation.amount);
     });
   }

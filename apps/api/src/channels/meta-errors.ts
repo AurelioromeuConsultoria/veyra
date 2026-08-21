@@ -67,5 +67,10 @@ export function classifyFailure(failure: TransportFailure): FailureClass {
   if (status === 401 || status === 403) return 'permanent'; // credencial/permissão
   if (failure.metaCode && PERMANENT_META_CODES.has(failure.metaCode)) return 'permanent';
   if (status >= 400) return 'permanent'; // validação: retentar repete o erro
-  return 'retryable';
+  /**
+   * Desconhecido = AMBÍGUO, nunca retentável: um código que não sabemos
+   * classificar pode ter deixado a mensagem sair. Repetir arriscaria mandar
+   * duas vezes para o paciente; encerrar como incerto pede olho humano.
+   */
+  return 'ambiguous';
 }

@@ -41,6 +41,12 @@ export const AUDIT_FIELDS: Record<string, readonly string[]> = {
   file: ['fileName', 'mimeType', 'scanStatus'],
   aiConsent: ['conversationContent'],
   automation: ['name', 'trigger', 'enabled', 'depth', 'chainId'],
+  /**
+   * `externalId` é o wamid — identificador DO PROVEDOR, não conteúdo nem
+   * segredo — e é o único ponto de retomada quando perdemos a posse depois de
+   * um envio bem-sucedido. Corpo da mensagem JAMAIS entra aqui.
+   */
+  message: ['externalId', 'direction'],
   aiProposal: ['type', 'status'], // payload NUNCA — pode conter texto de terceiro
 };
 

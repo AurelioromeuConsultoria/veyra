@@ -46,4 +46,10 @@ describe('classificação de falha de envio (ADR-039)', () => {
     expect(classifyFailure({ status: 400, metaCode: 131_048 })).toBe('retryable');
     expect(classifyFailure({ status: 400, metaCode: 131_056 })).toBe('retryable');
   });
+
+  it('falha SEM status nem código é AMBÍGUA, nunca retentável', () => {
+    // o default importa: um formato de erro que não previmos pode ter deixado a
+    // mensagem sair. Reenviar mandaria duas vezes para o paciente.
+    expect(classifyFailure({})).toBe('ambiguous');
+  });
 });

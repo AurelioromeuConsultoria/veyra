@@ -13,6 +13,7 @@ import { WebhooksService } from '../webhooks/webhooks.service';
 const OUTBOX_QUEUE = 'outbox-dispatch';
 const RETENTION_QUEUE = 'audit-retention';
 const RESERVATION_QUEUE = 'usage-reservations';
+const DISPATCH_REAP_QUEUE = 'dispatch-reap';
 const MEDIA_QUEUE = 'inbound-media';
 
 /**
@@ -76,6 +77,18 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       await this.mediaCollector.collectPending();
     });
     await this.boss.schedule(MEDIA_QUEUE, '* * * * *', {}, { tz: 'America/Sao_Paulo' });
+
+    /**
+     * Dispatches abandonados em voo: worker morto de forma que nem o dispatcher
+     * do outbox percebeu (exceção entre o claim e a conclusão, processo morto).
+     * Sem esta varredura a linha ficaria `sending` para sempre e a mensagem
+     * desapareceria em silêncio — com a reserva presa junto (ADR-039).
+     */
+    await this.boss.createQueue(DISPATCH_REAP_QUEUE);
+    await this.boss.work(DISPATCH_REAP_QUEUE, async () => {
+      await this.whatsappSend.reapStaleDispatches();
+    });
+    await this.boss.schedule(DISPATCH_REAP_QUEUE, '*/5 * * * *', {}, { tz: 'America/Sao_Paulo' });
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -144,12 +157,14 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
           event.attempts,
           'envio recusado antes do despacho (transitório)',
         );
-        if (desfecho !== 'retry') {
+        if (desfecho === 'dead') {
           /**
-           * O evento morreu (tentativas esgotadas) ou o lease foi assumido por
-           * outro worker: não haverá nova tentativa. Deixar o dispatch em
-           * `failed_before_send` seria um estado que MENTE — o nome promete
-           * retentativa que não vem.
+           * SOMENTE `dead` (tentativas esgotadas): não haverá nova tentativa, e
+           * deixar o dispatch em `failed_before_send` seria um estado que MENTE
+           * — o nome promete retentativa que não vem.
+           *
+           * `lost` é o oposto: outro worker assumiu o evento e VAI tentar.
+           * Encerrar aqui mataria uma entrega viva.
            */
           const { messageId } = event.payload as { messageId: string };
           await this.whatsappSend.markExhausted(event.workspaceId, messageId);

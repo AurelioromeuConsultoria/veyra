@@ -1,4 +1,5 @@
 import { createHmac } from 'node:crypto';
+import { ClsService } from 'nestjs-cls';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { CryptoService } from '../common/crypto.service';
@@ -485,6 +486,8 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
       where: { messageId: criada.body.id },
     });
     expect(dispatch).toMatchObject({ state: 'sent', claimToken: null });
+    // o segundo worker nem incrementou a tentativa: parou no claim
+    expect(dispatch!.attempts).toBe(1);
     const contador = await prisma.raw.usageCounter.findFirst({
       where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },
     });
@@ -551,11 +554,25 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
       where: { messageId: criada.body.id },
     });
     expect(dispatch).toMatchObject({ state: 'sent' });
+    /**
+     * A reserva desta mensagem estava VIVA quando o lease foi reassumido.
+     * Perder a referência dela (zerar no claim) fazia a liquidação falhar e
+     * cobrar de novo: contador em 2 por UMA mensagem, teto encolhendo a cada
+     * worker reiniciado. Cobrança exata e nenhuma reserva pendurada.
+     */
+    const contador = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },
+    });
+    expect(Number(contador?.value ?? 0)).toBe(1);
+    expect(await prisma.raw.usageReservation.count({ where: {} })).toBe(0);
   });
 
-  it('reserva EXPURGADA na retentativa não deixa o envio sair de graça', async () => {
-    const criada = await sendMessage({ direction: 'outbound', body: 'Reserva sumiu' }).expect(201);
-    // a reserva expira e o job a devolve ao orçamento, como aconteceria após 10min
+  it('P1: reserva expurgada com o teto JÁ OCUPADO não envia — recusa antes da chamada', async () => {
+    await setPlanLimit(prisma, 'messages_sent', 1);
+    const criada = await sendMessage({ direction: 'outbound', body: 'Perdeu a vaga' }).expect(201);
+
+    // o TTL da reserva (10min) é mais curto que o backoff do outbox (até 25min):
+    // a reserva vence e o job a devolve ao orçamento antes de o worker rodar
     await prisma.raw.usageReservation.updateMany({
       where: {},
       data: { expiresAt: new Date(Date.now() - 1000) },
@@ -563,19 +580,58 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     await app.get(UsageService).purgeExpiredReservations();
     expect(await prisma.raw.usageReservation.count()).toBe(0);
 
+    // OUTRA operação ocupa a última vaga nesse intervalo
+    const cls = app.get(ClsService);
+    await cls.run(async () => {
+      cls.set('workspaceId', wsA.workspaceId);
+      const usage = app.get(UsageService);
+      await usage.ensureCounterRow(wsA.workspaceId, 'messages_sent');
+      await (
+        prisma.db as unknown as {
+          $transaction: (fn: (tx: unknown) => Promise<void>) => Promise<void>;
+        }
+      ).$transaction((tx) =>
+        usage.consumeOverLimit(tx as never, wsA.workspaceId, 'messages_sent', 1),
+      );
+    });
+
     await drain();
 
-    // enviou E cobrou: antes o `settle` silencioso deixava a mensagem sair sem
-    // consumir quota nenhuma, e o teto deixava de valer para toda retentativa
-    expect(transport.sends).toHaveLength(1);
+    // NADA foi enviado: sem vaga, o transporte não é chamado. Antes, o worker
+    // confiava no reservationId morto, enviava, e só cobrava depois — fora do
+    // limite, contra a regra central da entrega.
+    expect(transport.sends).toEqual([]);
+    const dispatch = await prisma.raw.messageDispatch.findFirst({
+      where: { messageId: criada.body.id },
+    });
+    expect(dispatch).toMatchObject({ state: 'failed_permanent', errorCode: 'quota_exceeded' });
+    // o contador continua no teto, sem estouro
     const contador = await prisma.raw.usageCounter.findFirst({
       where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },
     });
     expect(Number(contador?.value ?? 0)).toBe(1);
+  });
+
+  it('reserva expurgada COM vaga disponível reserva de novo e envia uma vez', async () => {
+    const criada = await sendMessage({ direction: 'outbound', body: 'Ainda cabe' }).expect(201);
+    await prisma.raw.usageReservation.updateMany({
+      where: {},
+      data: { expiresAt: new Date(Date.now() - 1000) },
+    });
+    await app.get(UsageService).purgeExpiredReservations();
+
+    await drain();
+
+    expect(transport.sends).toHaveLength(1);
     const dispatch = await prisma.raw.messageDispatch.findFirst({
       where: { messageId: criada.body.id },
     });
     expect(dispatch).toMatchObject({ state: 'sent' });
+    // cobrada uma única vez, pela reserva NOVA
+    const contador = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },
+    });
+    expect(Number(contador?.value ?? 0)).toBe(1);
   });
 
   it('evento morto no outbox marca o dispatch terminal, sem estado que mente', async () => {
@@ -597,6 +653,213 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     });
     // `failed_before_send` prometeria retentativa que não vem
     expect(dispatch).toMatchObject({ state: 'failed_permanent', errorCode: 'retries_exhausted' });
+  });
+
+  it('P1: falha transitória ZERA o marcador de despacho da tentativa', async () => {
+    transport.nextSend = { ok: false, failure: { status: 429 } };
+    const criada = await sendMessage({ direction: 'outbound', body: 'Marcador limpo' }).expect(201);
+    await drain();
+
+    const dispatch = await prisma.raw.messageDispatch.findFirst({
+      where: { messageId: criada.body.id },
+    });
+    /**
+     * `dispatchedAt` significa "esta tentativa chegou a chamar a Meta". Herdado
+     * de uma tentativa anterior, ele mentia: um worker que morresse ANTES de
+     * chamar seria lido como "pode ter enviado", virava incerto e cobrava quota
+     * por uma mensagem que provadamente nunca saiu.
+     */
+    expect(dispatch).toMatchObject({ state: 'failed_before_send', dispatchedAt: null });
+  });
+
+  /** Abandona o dispatch da mensagem: `sending`, lease vencido há muito. */
+  const abandonar = async (messageId: string, dispatchedAt: Date | null) => {
+    await prisma.raw.messageDispatch.updateMany({
+      where: { messageId },
+      data: {
+        state: 'sending',
+        claimToken: '22222222-2222-4222-8222-222222222222',
+        leaseExpiresAt: new Date(Date.now() - 30 * 60_000),
+        dispatchedAt,
+      },
+    });
+  };
+
+  it('varredura: abandonado SEM despacho, com evento vivo, volta a ser enviável', async () => {
+    const criada = await sendMessage({ direction: 'outbound', body: 'Worker morreu' }).expect(201);
+    await abandonar(criada.body.id, null);
+
+    expect(await app.get(WhatsappSendService).reapStaleDispatches()).toBe(1);
+
+    let dispatch = await prisma.raw.messageDispatch.findFirst({
+      where: { messageId: criada.body.id },
+    });
+    /**
+     * `failed_permanent` aqui MATAVA a entrega: o evento do outbox ainda vai
+     * tentar (o backoff dele chega a horas, muito além do limiar da varredura) e
+     * o claim recusa estado terminal — mensagem nunca enviada, sem retentativa.
+     * `failed_before_send` é elegível ao claim.
+     */
+    expect(dispatch).toMatchObject({
+      state: 'failed_before_send',
+      errorCode: 'abandoned_before_send',
+      claimToken: null,
+      reservationId: null,
+    });
+    let contador = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },
+    });
+    expect(Number(contador?.value ?? 0)).toBe(0); // devolvida: nada foi enviado
+
+    // e a retentativa do outbox realmente envia
+    await drain();
+    expect(transport.sends).toHaveLength(1);
+    dispatch = await prisma.raw.messageDispatch.findFirst({
+      where: { messageId: criada.body.id },
+    });
+    expect(dispatch).toMatchObject({ state: 'sent' });
+    contador = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },
+    });
+    expect(Number(contador?.value ?? 0)).toBe(1);
+  });
+
+  it('varredura: sem evento vivo no outbox, encerra em definitivo', async () => {
+    const criada = await sendMessage({ direction: 'outbound', body: 'Ninguém mais tenta' }).expect(
+      201,
+    );
+    // o evento já morreu: não há quem retente
+    await prisma.raw.outboxEvent.updateMany({
+      where: { eventType: 'whatsapp.send_pending' },
+      data: { status: 'dead' },
+    });
+    await abandonar(criada.body.id, null);
+
+    await app.get(WhatsappSendService).reapStaleDispatches();
+
+    const dispatch = await prisma.raw.messageDispatch.findFirst({
+      where: { messageId: criada.body.id },
+    });
+    expect(dispatch).toMatchObject({ state: 'failed_permanent' });
+    const contador = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },
+    });
+    expect(Number(contador?.value ?? 0)).toBe(0);
+  });
+
+  it('varredura: abandonado COM marcador vira incerto e cobra', async () => {
+    const criada = await sendMessage({ direction: 'outbound', body: 'Pode ter saído' }).expect(201);
+    await abandonar(criada.body.id, new Date(Date.now() - 30 * 60_000));
+
+    await app.get(WhatsappSendService).reapStaleDispatches();
+
+    const dispatch = await prisma.raw.messageDispatch.findFirst({
+      where: { messageId: criada.body.id },
+    });
+    expect(dispatch).toMatchObject({
+      state: 'unknown_after_dispatch',
+      errorCode: 'abandoned_in_flight',
+    });
+    // o INSTANTE do despacho sobrevive: é dele que depende a triagem humana
+    expect(dispatch!.dispatchedAt).not.toBeNull();
+    const contador = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },
+    });
+    expect(Number(contador?.value ?? 0)).toBe(1); // cobrada: pode ter chegado
+  });
+
+  it('P0: varredura NÃO toca dispatch já concluído com lease residual', async () => {
+    const criada = await sendMessage({ direction: 'outbound', body: 'Já foi' }).expect(201);
+    await drain();
+    /**
+     * Concluído por um worker, com lease residual antigo. O predicado precisa
+     * estar no WHERE EXTERNO, não só na subquery: em READ COMMITTED o Postgres
+     * refaz a qualificação contra a versão nova da linha, mas reavalia a
+     * subquery no snapshot ORIGINAL — e a varredura sobrescrevia um `sent`
+     * acabado de comitar. Mensagem entregue exibida como "Não enviada" leva a
+     * reenvio manual: o dano do ADR-039 por caminho humano.
+     */
+    await prisma.raw.messageDispatch.updateMany({
+      where: { messageId: criada.body.id },
+      data: { leaseExpiresAt: new Date(Date.now() - 30 * 60_000) },
+    });
+
+    expect(await app.get(WhatsappSendService).reapStaleDispatches()).toBe(0);
+
+    const dispatch = await prisma.raw.messageDispatch.findFirst({
+      where: { messageId: criada.body.id },
+    });
+    expect(dispatch).toMatchObject({ state: 'sent', externalId: 'wamid.ENVIADA' });
+    const contador = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },
+    });
+    expect(Number(contador?.value ?? 0)).toBe(1); // cobrada UMA vez
+  });
+
+  it('P0: varredura cross-workspace mantém cada quota no seu workspace', async () => {
+    // wsB tem o próprio canal, conversa, mensagem e dispatch abandonado
+    const wsB = await createWorkspaceFixture(prisma, 'outra-clinica');
+    const canalB = await prisma.raw.channel.create({
+      data: { workspaceId: wsB.workspaceId, type: 'whatsapp', name: 'WhatsApp B' },
+    });
+    const conversaB = await prisma.raw.conversation.create({
+      data: { workspaceId: wsB.workspaceId, channelId: canalB.id, externalAddress: '5511777776666' },
+    });
+    const mensagemB = await prisma.raw.message.create({
+      data: {
+        workspaceId: wsB.workspaceId,
+        channelId: canalB.id,
+        conversationId: conversaB.id,
+        direction: 'outbound',
+        authorType: 'system',
+        body: 'De outro workspace',
+      },
+    });
+    const usage = app.get(UsageService);
+    await usage.ensureCounterRow(wsB.workspaceId, 'messages_sent');
+    const reservaB = await app.get(ClsService).run(async () => {
+      app.get(ClsService).set('workspaceId', wsB.workspaceId);
+      return usage.reserve(wsB.workspaceId, 'messages_sent', 1);
+    });
+    await prisma.raw.messageDispatch.create({
+      data: {
+        workspaceId: wsB.workspaceId,
+        messageId: mensagemB.id,
+        state: 'sending',
+        reservationId: (reservaB as { reservationId: string }).reservationId,
+        claimToken: '44444444-4444-4444-8444-444444444444',
+        leaseExpiresAt: new Date(Date.now() - 30 * 60_000),
+        dispatchedAt: new Date(Date.now() - 30 * 60_000), // cobrável
+      },
+    });
+
+    // wsA: abandonado SEM marcador (quota deve VOLTAR)
+    const criada = await sendMessage({ direction: 'outbound', body: 'Do wsA' }).expect(201);
+    await prisma.raw.outboxEvent.updateMany({
+      where: { eventType: 'whatsapp.send_pending' },
+      data: { status: 'dead' },
+    });
+    await abandonar(criada.body.id, null);
+
+    expect(await app.get(WhatsappSendService).reapStaleDispatches()).toBe(2);
+
+    // cada contador ficou no seu: A devolveu, B cobrou
+    const contadorA = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },
+    });
+    const contadorB = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsB.workspaceId, metric: 'messages_sent' },
+    });
+    expect(Number(contadorA?.value ?? 0)).toBe(0);
+    expect(Number(contadorB?.value ?? 0)).toBe(1);
+    const dispatchA = await prisma.raw.messageDispatch.findFirst({
+      where: { workspaceId: wsA.workspaceId, messageId: criada.body.id },
+    });
+    const dispatchB = await prisma.raw.messageDispatch.findFirst({
+      where: { workspaceId: wsB.workspaceId, messageId: mensagemB.id },
+    });
+    expect(dispatchA).toMatchObject({ state: 'failed_permanent' });
+    expect(dispatchB).toMatchObject({ state: 'unknown_after_dispatch' });
   });
 
   it('o estado do despacho é VISÍVEL na thread', async () => {

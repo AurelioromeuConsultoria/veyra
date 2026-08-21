@@ -5,6 +5,7 @@ import type {
   ConversationPageDto,
   ConversationStatus,
   FileObjectDto,
+  MessageDispatchState,
   MessageDto,
   MessagePageDto,
 } from '@veyra/contracts';
@@ -23,6 +24,51 @@ const statusLabels: Record<ConversationStatus, string> = {
   pending: 'Pendente',
   closed: 'Fechada',
 };
+
+/**
+ * Estado do despacho externo. Sem isto, uma mensagem que a Meta recusou (ou que
+ * ficou incerta) parecia enviada para quem a escreveu. `unknown_after_dispatch`
+ * é o caso que mais pede olho humano — nunca reenviamos por conta própria.
+ */
+const DISPATCH_LABEL: Record<MessageDispatchState, { texto: string; tom: string } | null> = {
+  reserved: { texto: 'Enviando…', tom: 'text-muted-fg' },
+  sending: { texto: 'Enviando…', tom: 'text-muted-fg' },
+  sent: null, // o caminho feliz não merece ruído visual
+  failed_before_send: { texto: 'Aguardando nova tentativa', tom: 'text-muted-fg' },
+  failed_permanent: { texto: 'Não enviada', tom: 'text-negative' },
+  unknown_after_dispatch: { texto: 'Entrega não confirmada', tom: 'text-warning' },
+};
+
+/** Código do provedor não é mensagem: quem atende lê a frase, não o número. */
+const DISPATCH_ERROR_LABEL: Record<string, string> = {
+  window_closed_needs_template: 'janela de 24h fechada — use um template',
+  template_requires_consent: 'falta consentimento registrado',
+  template_unknown: 'template não aprovado',
+  template_params_mismatch: 'parâmetros não correspondem ao template',
+  quota_exceeded: 'limite do plano atingido',
+  no_credential: 'canal sem credencial configurada',
+  conversation_missing: 'conversa não encontrada',
+  message_missing: 'mensagem não encontrada',
+  network: 'falha de rede',
+  retries_exhausted: 'tentativas esgotadas',
+  retries_exhausted_in_flight: 'tentativas esgotadas durante o envio',
+  abandoned_before_send: 'envio interrompido antes de sair',
+  abandoned_in_flight: 'envio interrompido em andamento',
+  lease_expired_in_flight: 'resultado não confirmado pelo provedor',
+};
+
+function DispatchBadge({ state, error }: { state: MessageDispatchState; error: string | null }) {
+  const rotulo = DISPATCH_LABEL[state];
+  if (!rotulo) return null;
+  // código desconhecido não vira texto na cara do usuário: some em silêncio
+  const motivo = error ? DISPATCH_ERROR_LABEL[error] : undefined;
+  return (
+    <p className={clsx('mt-1 font-mono text-[10px]', rotulo.tom)}>
+      {rotulo.texto}
+      {motivo ? ` · ${motivo}` : ''}
+    </p>
+  );
+}
 
 export function InboxPage() {
   const { data: user } = useSession();
@@ -329,6 +375,9 @@ export function InboxPage() {
                       </li>
                     ))}
                   </ul>
+                ) : null}
+                {message.dispatchState ? (
+                  <DispatchBadge state={message.dispatchState} error={message.dispatchError} />
                 ) : null}
               </div>
             ))}
