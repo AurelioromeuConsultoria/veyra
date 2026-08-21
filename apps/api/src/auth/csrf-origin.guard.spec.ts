@@ -3,11 +3,16 @@ import { CsrfOriginGuard } from './csrf-origin.guard';
 
 describe('CsrfOriginGuard — Origin + double-submit (ajuste #7)', () => {
   const WEB_ORIGIN = 'http://localhost:5175';
-  const guard = new CsrfOriginGuard({ getOrThrow: () => WEB_ORIGIN } as never);
+  /** Reflector falso: `false` = rota comum (não é webhook de provedor). */
+  const reflector = (isProviderWebhook: boolean) =>
+    ({ getAllAndOverride: () => isProviderWebhook }) as never;
+  const guard = new CsrfOriginGuard({ getOrThrow: () => WEB_ORIGIN } as never, reflector(false));
 
   function ctx(req: Record<string, unknown>): ExecutionContext {
     return {
       switchToHttp: () => ({ getRequest: () => req }),
+      getHandler: () => () => undefined,
+      getClass: () => class {},
     } as unknown as ExecutionContext;
   }
 
@@ -55,5 +60,20 @@ describe('CsrfOriginGuard — Origin + double-submit (ajuste #7)', () => {
     expect(
       guard.canActivate(ctx({ method: 'POST', headers: { referer: `${WEB_ORIGIN}/login` } })),
     ).toBe(true);
+  });
+
+  it('webhook de provedor é isento: sem cookie, autenticado por assinatura', () => {
+    const doWebhook = new CsrfOriginGuard(
+      { getOrThrow: () => WEB_ORIGIN } as never,
+      reflector(true),
+    );
+    // sem Origin e sem CSRF — exatamente o que a Meta manda
+    expect(doWebhook.canActivate(ctx({ method: 'POST', headers: {} }))).toBe(true);
+  });
+
+  it('rota comum sem Origin continua recusada — a isenção NÃO é geral', () => {
+    expect(() => guard.canActivate(ctx({ method: 'POST', headers: {} }))).toThrow(
+      ForbiddenException,
+    );
   });
 });
