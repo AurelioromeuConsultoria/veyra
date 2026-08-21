@@ -77,6 +77,7 @@ export class FilesService {
     }
 
     const workspaceId = auth.workspaceId as string;
+    await this.usage.ensureCounterRow(workspaceId, 'storage_bytes');
     const extension = extensionOf(file.originalname);
     const key = `${workspaceId}/${randomUUID()}${extension ? `.${extension}` : ''}`;
 
@@ -193,6 +194,7 @@ export class FilesService {
     if (!existing) throw new NotFoundException('Arquivo não encontrado');
 
     const workspaceId = auth.workspaceId as string;
+    await this.usage.ensureCounterRow(workspaceId, 'storage_bytes');
     const db = this.prisma.db as unknown as TxRunner;
     await db.$transaction(async (tx) => {
       await this.audit.record(tx, workspaceId, 'file.deleted', {

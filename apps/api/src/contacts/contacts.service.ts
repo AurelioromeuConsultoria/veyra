@@ -95,6 +95,8 @@ export class ContactsService {
 
   async create(auth: AuthContext, input: CreateContactInput): Promise<ContactDto> {
     await this.validateReferences(input);
+    // fora da transação, de propósito (ver UsageService.consume)
+    await this.usage.ensureCounterRow(auth.workspaceId as string, 'contacts');
     const validated = await this.customFields.validateValues('contact', input.customFields, {
       requireAll: true,
     });
@@ -183,6 +185,7 @@ export class ContactsService {
   async update(auth: AuthContext, id: string, input: UpdateContactInput): Promise<ContactDto> {
     const existing = await this.prisma.db.contact.findFirst({ where: { id } });
     if (!existing) throw new NotFoundException('Contato não encontrado');
+    await this.usage.ensureCounterRow(auth.workspaceId as string, 'contacts');
     await this.validateReferences(input);
     const validated = input.customFields
       ? await this.customFields.validateValues('contact', input.customFields, {
@@ -240,6 +243,7 @@ export class ContactsService {
       where: { id },
     })) as unknown as ContactRow | null;
     if (!existing) throw new NotFoundException('Contato não encontrado');
+    await this.usage.ensureCounterRow(auth.workspaceId as string, 'contacts');
     await (this.prisma.db as unknown as TxRunner).$transaction(async (tx) => {
       await this.audit.record(tx, auth.workspaceId as string, 'contact.deleted', {
         entityType: 'contact',
@@ -282,6 +286,7 @@ export class ContactsService {
         'Importação indisponível: há campos personalizados obrigatórios — importe pelo formulário ou torne-os opcionais',
       );
     }
+    await this.usage.ensureCounterRow(auth.workspaceId as string, 'contacts');
     // o LOTE inteiro entra na mesma transação e consome a quota de uma vez: ou
     // importa tudo, ou nada. Importação parcial por quota deixaria o usuário
     // sem saber quais linhas entraram (ajuste da revisão da 8).

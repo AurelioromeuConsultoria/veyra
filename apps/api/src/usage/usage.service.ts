@@ -1,5 +1,4 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ClsService } from 'nestjs-cls';
 import type { Prisma } from '../generated/prisma/client';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { USAGE_METRICS, periodEnd, periodKeyFor, type MetricKey } from './metrics';
@@ -25,10 +24,7 @@ export interface UsageSnapshot {
 export class UsageService {
   private readonly logger = new Logger(UsageService.name);
 
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly cls: ClsService,
-  ) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   /**
    * Incremento ATÔMICO com verificação de limite, DENTRO da transação de quem
@@ -47,8 +43,11 @@ export class UsageService {
     const definition = USAGE_METRICS[metric];
     const period = periodKeyFor(definition.kind);
     const limit = definition.enforced ? await this.limitFor(workspaceId, metric) : null;
-    await this.ensureRow(metric);
-    const value = await this.applyDelta(tx, metric, period, delta);
+    // a linha do contador é garantida ANTES da transação, por quem chama
+    // (`ensureCounterRow`). Fazer isso aqui abriria uma conexão NOVA dentro da
+    // transação de domínio — sob concorrência, isso esgota o pool e as
+    // requisições passam a falhar em bloco (a suíte pegou exatamente isso).
+    const value = await this.applyDelta(tx, metric, period, delta, workspaceId);
 
     if (limit !== null && delta > 0 && value > limit) {
       // `value` já inclui o que está reservado: a reserva vive no próprio
@@ -138,7 +137,8 @@ export class UsageService {
     const definition = USAGE_METRICS[metric];
     const period = periodKeyFor(definition.kind);
     const limit = await this.limitFor(workspaceId, metric);
-    await this.ensureRow(metric);
+    // aqui é seguro: estamos FORA da transação (ela abre abaixo)
+    await this.ensureCounterRow(workspaceId, metric);
     const db = this.prisma.db as unknown as {
       $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T>;
     };
@@ -282,11 +282,6 @@ export class UsageService {
    * dentro da transação a aborta por inteiro — não há retry possível ali.
    * Criar a linha zerada é inofensivo mesmo se a transação de domínio abortar.
    */
-  /** Caminho com CLS: o workspace vem do contexto da request. */
-  private async ensureRow(metric: MetricKey): Promise<void> {
-    await this.ensureCounterRow(this.cls.get<string>('workspaceId'), metric);
-  }
-
   /**
    * Garante a linha do contador com `workspaceId` EXPLÍCITO, para caminhos sem
    * CLS — a ingestão de canal externo não tem sessão (ADR-037). Precisa rodar

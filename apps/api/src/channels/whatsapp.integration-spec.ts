@@ -4,6 +4,7 @@ import request from 'supertest';
 import { PrismaService } from '../prisma/prisma.service';
 import { createTestApp } from '../../test/integration/app';
 import {
+  TEST_PASSWORD,
   createUserFixture,
   createMembershipFixture,
   createWorkspaceFixture,
@@ -16,6 +17,7 @@ import { resetDb } from '../../test/integration/harness';
 const APP_SECRET = process.env.META_APP_SECRET as string;
 const VERIFY_TOKEN = process.env.META_WEBHOOK_VERIFY_TOKEN as string;
 const PHONE_NUMBER_ID = '109876543210';
+const ORIGIN = process.env.WEB_ORIGIN ?? 'http://localhost:5175';
 
 const sign = (raw: string, secret = APP_SECRET) =>
   `sha256=${createHmac('sha256', secret).update(Buffer.from(raw)).digest('hex')}`;
@@ -73,6 +75,18 @@ describe('Canal WhatsApp — ingestão (integração)', () => {
       .set('x-hub-signature-256', sign(raw, secret))
       .send(raw);
   };
+
+  async function loginAs(email: string): Promise<{ cookieHeader: string; csrf: string }> {
+    const res = await request(http)
+      .post('/api/auth/login')
+      .set('Origin', ORIGIN)
+      .send({ email, password: TEST_PASSWORD })
+      .expect(201);
+    const setCookies = (res.headers['set-cookie'] as unknown as string[]) ?? [];
+    const cookieHeader = setCookies.map((c) => c.split(';')[0]).join('; ');
+    const csrf = /veyra_csrf=([^;]+)/.exec(cookieHeader)?.[1] ?? '';
+    return { cookieHeader, csrf };
+  }
 
   beforeEach(async () => {
     await resetDb(prisma);
@@ -415,6 +429,55 @@ describe('Canal WhatsApp — ingestão (integração)', () => {
         },
       }),
     ).rejects.toThrow();
+  });
+
+  it('P0 concorrência: mensagem humana e inbound ATRASADO não rebaixam o inbox', async () => {
+    // conversa existente com contato, criada pela própria ingestão
+    await send(inbound()).expect(200);
+    const conversa = await prisma.raw.conversation.findFirst();
+
+    // sessão de atendente para enviar a mensagem humana
+    const owner = await loginAs('owner-a@veyra.test');
+    const humana = request(http)
+      .post(`/api/conversations/${conversa!.id}/messages`)
+      .set('Origin', ORIGIN)
+      .set('Cookie', owner.cookieHeader)
+      .set('x-csrf-token', owner.csrf)
+      .send({ direction: 'outbound', body: 'Confirmado para amanhã' });
+
+    // inbound com timestamp ANTIGO chegando ao mesmo tempo
+    const atrasada = inbound();
+    atrasada.entry[0].changes[0].value.messages[0].id = 'wamid.ATRASADA';
+    atrasada.entry[0].changes[0].value.messages[0].timestamp = '1786000000';
+
+    const [resHumana, resInbound] = await Promise.all([humana, send(atrasada)]);
+    expect(resHumana.status).toBe(201);
+    expect(resInbound.status).toBe(200);
+
+    // as duas mensagens existem…
+    expect(await prisma.raw.message.count()).toBe(3);
+    // …e o inbox NÃO voltou no tempo: o GREATEST no banco decidiu, mesmo com a
+    // humana passando por outro caminho (que o lock consultivo não cobre)
+    const depois = await prisma.raw.conversation.findFirst({ where: { id: conversa!.id } });
+    const daHumana = await prisma.raw.message.findFirst({
+      where: { body: 'Confirmado para amanhã' },
+    });
+    expect(depois!.lastMessageAt.getTime()).toBeGreaterThanOrEqual(
+      daHumana!.createdAt.getTime() - 1000,
+    );
+    expect(depois!.lastMessageAt.getTime()).toBeGreaterThan(new Date('2026-08-05').getTime());
+  });
+
+  it('timestamp no FUTURO é limitado ao presente', async () => {
+    const futura = inbound();
+    const daquiUmaSemana = Math.floor((Date.now() + 7 * 24 * 60 * 60 * 1000) / 1000);
+    futura.entry[0].changes[0].value.messages[0].timestamp = String(daquiUmaSemana);
+    await send(futura).expect(200);
+
+    const conversa = await prisma.raw.conversation.findFirst();
+    // sem o limite, a conversa ficaria à frente de tudo e o carimbo `now()` de
+    // uma mensagem humana nunca mais apareceria como o mais recente
+    expect(conversa!.lastInboundAt!.getTime()).toBeLessThanOrEqual(Date.now() + 1000);
   });
 
   // ── Recibos (ADR-039) ─────────────────────────────────────────────────────

@@ -98,7 +98,7 @@ export class WhatsappService {
       return false;
     }
     const { workspaceId, channelId } = credential;
-    const occurredAt = new Date(Number(message.timestamp) * 1000);
+    const occurredAt = this.clampToNow(new Date(Number(message.timestamp) * 1000));
     const media = this.extractMedia(message);
     const body = message.text?.body?.trim() || (media ? `[${message.type}]` : '');
     if (!body) return false;
@@ -153,18 +153,32 @@ export class WhatsappService {
         },
       });
 
-      // NUNCA REGREDIR: entrega fora de ordem não pode encurtar a janela nem
-      // reordenar o inbox. Guarda o MAIOR timestamp visto.
-      await tx.conversation.updateMany({
-        where: { workspaceId, id: conversation.id },
-        data: {
-          lastMessageAt: this.later(conversation.lastMessageAt, occurredAt),
-          // JANELA DE ATENDIMENTO (ADR-038): mensagem recebida abre a janela.
-          // Consentimento é OUTRA coisa e NÃO é criado aqui.
-          lastInboundAt: this.later(conversation.lastInboundAt, occurredAt),
-          status: conversation.status === 'closed' ? 'open' : undefined,
-        },
-      });
+      /**
+       * NUNCA REGREDIR, de forma ATÔMICA. Calcular o máximo em JavaScript
+       * depois de ler a conversa era corrida: o lock consultivo serializa por
+       * telefone, mas uma mensagem HUMANA de saída toca a mesma conversa por
+       * outro caminho, sem passar por ele. Se ela commitasse entre a leitura e
+       * a escrita, a ingestão sobrescreveria o horário novo por um timestamp
+       * antigo do provedor.
+       *
+       * `GREATEST` e `CASE` deixam a decisão no banco, sob o lock da própria
+       * linha. SQL cru é obrigatório aqui (o Prisma não expressa GREATEST) e
+       * está no client `raw` deste caminho, com workspaceId explícito.
+       */
+      await tx.$executeRawUnsafe(
+        `UPDATE "Conversation"
+            SET "lastMessageAt" = GREATEST("lastMessageAt", $3::timestamptz),
+                "lastInboundAt" = CASE
+                  WHEN "lastInboundAt" IS NULL OR "lastInboundAt" < $3::timestamptz
+                    THEN $3::timestamptz
+                  ELSE "lastInboundAt"
+                END,
+                "status" = CASE WHEN "status" = 'closed' THEN 'open'::"ConversationStatus" ELSE "status" END
+          WHERE "workspaceId" = $1::uuid AND "id" = $2::uuid`,
+        workspaceId,
+        conversation.id,
+        occurredAt.toISOString(),
+      );
       await tx.activity.create({
         data: {
           workspaceId,
@@ -195,9 +209,14 @@ export class WhatsappService {
     return true;
   }
 
-  /** O maior de dois instantes, tolerando ausência. */
-  private later(current: Date | null | undefined, candidate: Date): Date {
-    return current && current.getTime() > candidate.getTime() ? current : candidate;
+  /**
+   * O instante do provedor, limitado ao presente. Timestamp no FUTURO (relógio
+   * adiantado do outro lado) travaria a conversa à frente de tudo: o carimbo
+   * `now()` de uma mensagem humana nunca mais apareceria como o mais recente.
+   */
+  private clampToNow(candidate: Date): Date {
+    const agora = new Date();
+    return candidate.getTime() > agora.getTime() ? agora : candidate;
   }
 
   private async ingestStatus(
