@@ -67,6 +67,8 @@ export const listMessagesSchema = z.object({
 });
 export type ListMessagesInput = z.infer<typeof listMessagesSchema>;
 
+export type ConsentStatus = 'granted' | 'revoked' | 'none';
+
 export interface ConversationDto {
   id: string;
   channelType: 'internal' | 'email' | 'whatsapp';
@@ -77,7 +79,48 @@ export interface ConversationDto {
   assigneeMembershipId: string | null;
   assigneeName: string | null;
   lastMessageAt: string;
+  /**
+   * Fim da janela de atendimento de 24h — INSTANTE, não duração restante:
+   * duração viaja no JSON e já chega velha, enquanto o instante permite a tela
+   * contar sozinha. `null` = canal sem janela (interno) ou nenhuma mensagem do
+   * contato ainda. Não é permissão de envio: quem decide é o servidor
+   * (`SendPolicyDto`), porque a janela é só um dos fatores (ADR-038).
+   */
+  windowExpiresAt: string | null;
+  /**
+   * Consentimento do contato NESTE canal. Separado da janela de propósito: uma
+   * mensagem recebida abre a janela e NÃO registra opt-in (ADR-038), e confundir
+   * os dois é o erro que a tela precisa impedir. `null` = canal interno ou
+   * conversa sem contato.
+   */
+  consentStatus: ConsentStatus | null;
   createdAt: string;
+}
+
+/** Template aprovado, como o compositor precisa vê-lo. */
+export interface MessageTemplateDto {
+  name: string;
+  language: string;
+  /** o envio precisa casar EXATAMENTE esta quantidade de parâmetros */
+  paramCount: number;
+}
+
+/**
+ * Veredito do SERVIDOR sobre o que pode ser enviado agora. A UI mostra, não
+ * recalcula: reimplementar a política no front criaria duas versões que
+ * divergem, e a do front seria a errada — ela não vê consentimento revogado nem
+ * recibo atrasado (ADR-038, ADR-039).
+ */
+export interface SendPolicyDto {
+  channelType: 'internal' | 'email' | 'whatsapp';
+  /** `free_form` = texto livre; `template` = fora da janela, exige aprovado */
+  mode: 'free_form' | 'template' | 'blocked';
+  /** motivo curto quando `blocked` ou `template` — texto já em pt-BR */
+  reason: string | null;
+  windowExpiresAt: string | null;
+  consentStatus: ConsentStatus | null;
+  /** vazio quando o canal não usa template (interno) */
+  templates: MessageTemplateDto[];
 }
 
 export interface MessageAttachmentDto {

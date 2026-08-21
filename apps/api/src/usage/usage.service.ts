@@ -1,10 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
 import type { Prisma } from '../generated/prisma/client';
 import { PrismaService, type Db } from '../prisma/prisma.service';
-import { USAGE_METRICS, periodEnd, periodKeyFor, type MetricKey } from './metrics';
+import { USAGE_METRICS, catalogGapAlert, periodEnd, periodKeyFor, type MetricKey } from './metrics';
 import { QuotaExceededException } from './quota.exception';
+import type { AppliedPlanDto } from '@veyra/contracts';
 
 type AnyClient = Db | Prisma.TransactionClient;
+
+/** Teto com PROCEDÊNCIA: de onde ele veio muda o que a tela precisa dizer. */
+interface ResolvedLimit {
+  value: number;
+  source: 'plan' | 'default_plan' | 'code_floor';
+}
 
 /** Métricas que nunca ficam sem teto — citadas no alerta para não ser genérico. */
 const NEVER_UNLIMITED = Object.values(USAGE_METRICS)
@@ -25,6 +32,7 @@ export interface UsageSnapshot {
   used: number;
   limit: number | null;
   enforced: boolean;
+  limitSource: 'plan' | 'default_plan' | 'code_floor' | null;
   resetsAt: string | null;
 }
 
@@ -258,6 +266,21 @@ export class UsageService {
     return row !== null;
   }
 
+  /**
+   * A cota desta métrica já está no teto? Consulta de LEITURA, para a interface
+   * poder dizer o motivo antes de o usuário tentar — usa o mesmo teto que a
+   * reserva usaria, então tela e enforcement não divergem.
+   */
+  async isExhausted(workspaceId: string, metric: MetricKey): Promise<boolean> {
+    const limit = await this.limitFor(workspaceId, metric);
+    if (limit === null) return false;
+    const row = await this.prisma.db.usageCounter.findFirst({
+      where: { metric, period: periodKeyFor(USAGE_METRICS[metric].kind) },
+      select: { value: true },
+    });
+    return Number(row?.value ?? 0) >= limit;
+  }
+
   /** Libera a reserva inteira (chamada falhou, nada foi gasto). */
   async release(reservationId: string): Promise<void> {
     const db = this.prisma.db as unknown as {
@@ -348,7 +371,8 @@ export class UsageService {
         kind: definition.kind,
         unit: definition.unit,
         used: Number(row?.value ?? 0),
-        limit: limit ?? null,
+        limit: limit?.value ?? null,
+        limitSource: limit?.source ?? null,
         enforced: definition.enforced,
         resetsAt: definition.kind === 'counter' ? periodEnd().toISOString() : null,
       };
@@ -401,22 +425,49 @@ export class UsageService {
 
   /** Teto do plano vigente; `null` = métrica sem limite declarado. */
   async limitFor(workspaceId: string, metric: MetricKey): Promise<number | null> {
-    return (await this.limitsFor(workspaceId)).get(metric) ?? null;
+    return (await this.limitsFor(workspaceId)).get(metric)?.value ?? null;
   }
 
-  private async limitsFor(workspaceId: string): Promise<Map<string, number>> {
+  /**
+   * Plano EFETIVAMENTE aplicado, que pode não ser o contratado: assinatura
+   * cancelada mantém o registro e passa a valer o teto do padrão (ADR-041).
+   * Mostrar o contratado nesse caso mente para quem tenta entender o 402.
+   */
+  async appliedPlan(workspaceId: string): Promise<AppliedPlanDto> {
+    // raw justificado: `Plan` é catálogo GLOBAL (ADR-034), fora do client
+    // filtrado; a `Subscription` leva `workspaceId` explícito no where
+    const subscription = await this.prisma.raw.subscription.findFirst({
+      where: { workspaceId, status: 'active' },
+      include: { plan: true },
+    });
+    if (subscription) {
+      return {
+        key: subscription.plan.key,
+        name: subscription.plan.name,
+        source: 'subscription',
+      };
+    }
+    const padrao = await this.prisma.raw.plan.findFirst({ where: { isDefault: true } });
+    return padrao
+      ? { key: padrao.key, name: padrao.name, source: 'default_plan' }
+      : { key: '—', name: 'nenhum plano padrão', source: 'none' };
+  }
+
+  private async limitsFor(workspaceId: string): Promise<Map<string, ResolvedLimit>> {
     // raw justificado: Subscription é do workspace, mas Plan/PlanLimit são
     // catálogo GLOBAL (ADR-034) e ficam fora do client filtrado
     const subscription = await this.prisma.raw.subscription.findFirst({
       where: { workspaceId, status: 'active' },
       select: { planKey: true },
     });
-    const mapa = new Map<string, number>();
+    const mapa = new Map<string, ResolvedLimit>();
     if (subscription) {
       const limits = await this.prisma.raw.planLimit.findMany({
         where: { planKey: subscription.planKey },
       });
-      for (const limit of limits) mapa.set(limit.metric, Number(limit.value));
+      for (const limit of limits) {
+        mapa.set(limit.metric, { value: Number(limit.value), source: 'plan' });
+      }
     } else {
       /**
        * Sem assinatura ativa (`past_due`, `canceled`, ou provisionamento que
@@ -430,7 +481,7 @@ export class UsageService {
        */
       this.alertMissingSubscription(workspaceId);
     }
-    return this.enforceFloors(mapa);
+    return this.enforceFloors(mapa, subscription?.planKey ?? null);
   }
 
   /**
@@ -445,7 +496,11 @@ export class UsageService {
    * Para essas métricas, a ausência da linha é sempre lacuna de configuração,
    * nunca "ilimitado por escolha": ilimitado não é uma opção.
    */
-  private async enforceFloors(mapa: Map<string, number>): Promise<Map<string, number>> {
+  private async enforceFloors(
+    mapa: Map<string, ResolvedLimit>,
+    /** plano ASSINADO, ou null quando não há assinatura ativa */
+    planoAssinado: string | null,
+  ): Promise<Map<string, ResolvedLimit>> {
     const faltando = Object.values(USAGE_METRICS).filter(
       (definition) => definition.neverUnlimited && !mapa.has(definition.key),
     );
@@ -463,17 +518,14 @@ export class UsageService {
     for (const definition of faltando) {
       const linha = padrao.find((limit) => limit.metric === definition.key);
       if (linha) {
-        mapa.set(definition.key, Number(linha.value));
-        /**
-         * Herança SILENCIOSA era mistério de suporte: um cliente pagante em
-         * plano sem a linha ficava limitado pelo teto do padrão, e o único sinal
-         * era o 402 dele reclamando. O aviso nomeia plano, métrica e teto.
-         */
-        this.alertOnce(
-          `catalogo:${plano?.key ?? '-'}:${definition.key}`,
-          `Plano sem limite para "${definition.key}": teto ${Number(linha.value)} herdado do ` +
-            `plano padrão "${plano?.key}". Corrigir o catálogo do plano assinado.`,
+        mapa.set(definition.key, { value: Number(linha.value), source: 'default_plan' });
+        const aviso = catalogGapAlert(
+          planoAssinado,
+          definition.key,
+          Number(linha.value),
+          plano?.key ?? '—',
         );
+        if (aviso) this.alertOnce(`catalogo:${planoAssinado}:${definition.key}`, aviso);
         continue;
       }
       /**
@@ -481,7 +533,7 @@ export class UsageService {
        * e o alerta é OUTRO: isto é incidente de configuração, não condição
        * comercial, e confundir os dois manda o operador procurar no lugar errado.
        */
-      mapa.set(definition.key, definition.safetyFloor ?? 0);
+      mapa.set(definition.key, { value: definition.safetyFloor ?? 0, source: 'code_floor' });
       this.alertOnce(
         `piso:${definition.key}`,
         `Catálogo de planos sem limite para "${definition.key}"` +

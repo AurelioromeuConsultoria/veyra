@@ -26,6 +26,13 @@ export function UsagePage() {
 
   const metrics = overview.data?.metrics ?? [];
   const subscription = overview.data?.subscription;
+  const applied = overview.data?.appliedPlan;
+  /**
+   * O plano APLICADO pode não ser o contratado: assinatura cancelada mantém o
+   * registro de `Pro` e passa a valer o teto do padrão (ADR-041). Mostrar o
+   * contratado nesse caso mente para quem está tentando entender o limite.
+   */
+  const herdado = applied?.source === 'default_plan';
 
   return (
     <div className="flex h-screen flex-col">
@@ -33,11 +40,25 @@ export function UsagePage() {
         <Gauge size={15} className="text-muted-fg" />
         <div className="mr-auto">
           <h1 className="text-sm font-semibold">Uso e plano</h1>
-          <p className="text-xs text-muted-fg">
-            {subscription
-              ? `Plano ${subscription.plan.name} · renova em ${dateFormat.format(new Date(subscription.currentPeriodEnd))}`
-              : 'Sem assinatura ativa'}
+          <p className="text-xs text-muted-fg" data-testid="usage-applied-plan">
+            {overview.isPending
+              ? 'Carregando plano…'
+              : overview.isError
+                ? 'Não foi possível ler o plano vigente'
+                : herdado
+                  ? `Plano ${applied?.name} aplicado por ausência de assinatura ativa`
+                  : applied?.source === 'subscription' && subscription
+                    ? `Plano ${applied.name} · renova em ${dateFormat.format(new Date(subscription.currentPeriodEnd))}`
+                    : /* só afirmamos incidente com resposta na mão: enquanto
+                         carregava, esta frase piscava em toda visita */
+                      'Nenhum plano padrão configurado — limites no piso de segurança'}
           </p>
+          {herdado && subscription ? (
+            <p className="text-[11px] text-warning">
+              Assinatura registrada: {subscription.plan.name} ({subscription.status}). Verificar
+              provisionamento ou situação comercial.
+            </p>
+          ) : null}
         </div>
       </header>
 
@@ -67,6 +88,15 @@ export function UsagePage() {
                     ) : null}
                   </span>
                 </div>
+                {metric.limitSource === 'default_plan' || metric.limitSource === 'code_floor' ? (
+                  /* de onde veio o teto: sem isto, cliente limitado por lacuna
+                     de catálogo vê só um 402 inexplicável */
+                  <p className="mt-1 text-[11px] text-warning">
+                    {metric.limitSource === 'default_plan'
+                      ? 'Teto herdado do plano padrão — o plano vigente não define esta métrica'
+                      : 'Teto no piso de segurança — o catálogo de planos não define esta métrica'}
+                  </p>
+                ) : null}
                 {metric.limit !== null ? (
                   <div className="mt-2 h-1 overflow-hidden rounded-full bg-surface-2">
                     <div

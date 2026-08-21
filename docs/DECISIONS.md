@@ -349,6 +349,8 @@ O Core continua **não conhecendo o vertical** (§3.8): Clinics estende por exte
 **Decisão:** dois conceitos distintos, nenhum derivado do outro. (a) `Conversation.lastInboundAt` é alimentado pela ingestão e define a janela de 24h — **resposta livre dentro dela é permitida**. (b) `ContactChannelConsent` registra opt-in com `source`, `grantedAt` e `revokedAt`, e **nunca é criado automaticamente** por mensagem recebida. (c) Mensagem **iniciada pelo negócio** ou **fora da janela** exige template aprovado **e** consentimento válido. A checagem mora no service de domínio, não no adaptador do canal: no adaptador, todo caminho de envio novo esqueceria a regra.
 **Consequências:** o produto não pode "conquistar" consentimento por acidente, e a diferença aparece na interface — dentro da janela o compositor é livre, fora dela é seleção de template. Preço: registrar opt-in passa a ser um ato explícito do negócio, com tela e trilha próprias.
 
+**Adendo (9.1.c — a UI mostra, não decide):** a política de envio é exposta por `GET /api/conversations/:id/send-policy`, que usa a MESMA função pura do worker e devolve modo (`free_form`/`template`/`blocked`), motivo em pt-BR, fim da janela, estado do opt-in e os templates aprovados do canal. A tela não recalcula nada: ela não vê consentimento revogado nem recibo atrasado, e uma segunda implementação da regra divergiria justamente da que o worker aplica — com o front sempre na versão errada. A janela viaja como **instante de expiração**, não como duração restante, porque duração já chega velha no JSON. Existe teste provando que o que o endpoint nega, o envio nega.
+
 ## ADR-039 — Envio: reserva de dispatch e o caso incerto
 
 **Status:** aceito · **Data:** 2026-08-20

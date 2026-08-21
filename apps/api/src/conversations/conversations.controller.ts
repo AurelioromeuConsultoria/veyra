@@ -8,6 +8,7 @@ import {
   ListMessagesInput,
   MessageDto,
   MessagePageDto,
+  SendPolicyDto,
   UpdateConversationInput,
   createConversationSchema,
   createMessageSchema,
@@ -55,6 +56,21 @@ export class ConversationsController {
     @Body(new ZodPipe(updateConversationSchema)) body: UpdateConversationInput,
   ): Promise<ConversationDto> {
     return this.conversations.update(auth, id, body);
+  }
+
+  /**
+   * O que pode ser enviado AGORA. `conversations:write` e não `read`: quem não
+   * pode enviar não precisa do catálogo de templates nem do estado de opt-in do
+   * contato — dar a permissão mais larga ampliaria a exposição justamente para
+   * quem nunca vai usar a informação (revisão da 9.1.c).
+   */
+  @RequirePermissions('conversations:write')
+  @Get(':id/send-policy')
+  sendPolicy(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<SendPolicyDto> {
+    return this.conversations.sendPolicy(auth.workspaceId as string, id);
   }
 
   @RequirePermissions('conversations:read')

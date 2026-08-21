@@ -107,3 +107,26 @@ export function periodKeyFor(kind: MetricKind, at = new Date()): string {
 export function periodEnd(at = new Date()): Date {
   return new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth() + 1, 1));
 }
+
+/**
+ * Aviso de lacuna no catálogo do plano ASSINADO — e `null` quando não há plano
+ * assinado, porque aí a herança é esperada e já foi anunciada pelo alerta de
+ * assinatura ausente. Sem esta distinção o log dizia "o plano assinado está sem
+ * limite" para workspace que não tem plano nenhum: alerta que aponta para o
+ * lugar errado é pior que alerta nenhum.
+ *
+ * Função pura para poder ser testada nos dois ramos sem espionar o logger.
+ */
+export function catalogGapAlert(
+  planoAssinado: string | null,
+  metric: string,
+  tetoHerdado: number,
+  planoPadrao: string,
+): string | null {
+  if (planoAssinado === null) return null;
+  return (
+    `Plano "${planoAssinado}" sem limite para "${metric}": teto ${tetoHerdado} herdado do ` +
+    `plano padrão "${planoPadrao}". Cliente com assinatura ativa limitado por lacuna de ` +
+    `catálogo — corrigir o catálogo do plano assinado.`
+  );
+}

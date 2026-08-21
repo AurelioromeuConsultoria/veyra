@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { OWNER_A } from '../env';
-import { login } from './helpers';
+import { login, openE2eDb } from './helpers';
 
 test.describe('Inbox (UI)', () => {
   test('conversa manual ponta a ponta: criar, registrar os dois sentidos e fechar', async ({
@@ -77,5 +77,101 @@ test.describe('Inbox (UI)', () => {
     await page.getByRole('button', { name: 'Recebida' }).click();
     await expect(page.getByText('Obrigado pelo retorno!')).toBeVisible();
     await expect(page.getByText(nome).first()).toBeVisible();
+  });
+
+  test('canal externo: janela, opt-in e compositor trocando para template', async ({ page }) => {
+    const db = await openE2eDb();
+    try {
+      const { rows } = await db.query<{ workspace_id: string }>(
+        `SELECT m."workspaceId" AS workspace_id
+           FROM "Membership" m
+           JOIN "User" u ON u."id" = m."userId"
+          WHERE u."email" = $1
+          LIMIT 1`,
+        [OWNER_A],
+      );
+      const ws = rows[0].workspace_id;
+      /**
+       * O contato é criado AQUI. A versão anterior pegava "o primeiro contato do
+       * workspace", que só existia porque `contacts.spec.ts` roda antes na ordem
+       * alfabética: rodar este teste isolado quebrava no INSERT do consentimento,
+       * apontando para o lugar errado.
+       */
+      const contatoRow = await db.query<{ id: string }>(
+        `INSERT INTO "Contact" ("id","workspaceId","name","updatedAt")
+         VALUES (gen_random_uuid(), $1, 'Paciente Externo', now()) RETURNING "id"`,
+        [ws],
+      );
+      const contato = contatoRow.rows[0].id;
+
+      // canal externo com JANELA FECHADA: é o estado que a tela precisa explicar
+      const canal = await db.query<{ id: string }>(
+        `INSERT INTO "Channel" ("id","workspaceId","type","name")
+         VALUES (gen_random_uuid(), $1, 'whatsapp', 'WhatsApp E2E') RETURNING "id"`,
+        [ws],
+      );
+      const assunto = `Fora da janela ${Date.now()}`;
+      await db.query(
+        `INSERT INTO "Conversation"
+           ("id","workspaceId","channelId","contactId","subject","externalAddress","lastInboundAt","lastMessageAt")
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, '+5511999990000',
+                 now() - interval '25 hours', now())`,
+        [ws, canal.rows[0].id, contato, assunto],
+      );
+
+      await login(page, OWNER_A);
+      await page.getByRole('link', { name: 'Inbox' }).click();
+      await page.getByRole('button', { name: new RegExp(assunto.slice(0, 12)) }).click();
+
+      // selo do canal na LISTA (triagem) e o veredito acima do compositor
+      await expect(page.getByText('whatsapp', { exact: true }).first()).toBeVisible();
+      await expect(page.getByTestId('send-policy')).toContainText('janela fechada');
+      await expect(page.getByTestId('send-policy')).toContainText('sem opt-in');
+      await expect(page.getByTestId('send-policy')).toContainText(/consentimento/i);
+      // bloqueado: o botão não envia, em vez de deixar o atendente descobrir pelo erro
+      await page.getByLabel('Corpo da mensagem').fill('Podemos reagendar?');
+      await expect(page.getByRole('button', { name: /Enviada|Enviar template/ })).toBeDisabled();
+
+      // com opt-in e template aprovado, o compositor TROCA para template
+      await db.query(
+        `INSERT INTO "ContactChannelConsent"
+           ("id","workspaceId","contactId","channelType","source","activeMark")
+         VALUES (gen_random_uuid(), $1, $2, 'whatsapp', 'agent', TRUE)`,
+        [ws, contato],
+      );
+      /**
+       * MESMO NOME em dois idiomas — caso normal no catálogo da Meta, e o que
+       * expôs o defeito: resolver o template só pelo nome tornava a segunda
+       * opção inselecionável e mandava o idioma errado, podendo renderizar a
+       * quantidade errada de parâmetros.
+       */
+      await db.query(
+        `INSERT INTO "MessageTemplate" ("id","workspaceId","channelId","name","language","paramCount","updatedAt")
+         VALUES (gen_random_uuid(), $1, $2, 'retorno_consulta', 'pt_BR', 1, now()),
+                (gen_random_uuid(), $1, $2, 'retorno_consulta', 'en_US', 2, now())`,
+        [ws, canal.rows[0].id],
+      );
+      await page.reload();
+      await page.getByRole('button', { name: new RegExp(assunto.slice(0, 12)) }).click();
+
+      await expect(page.getByTestId('send-policy')).toContainText('opt-in registrado');
+      const compositor = page.getByTestId('template-composer');
+      await expect(compositor).toBeVisible();
+      // a versão en_US tem DOIS parâmetros: escolher por (nome, idioma) é o que
+      // faz a tela pedir a quantidade certa
+      await page.getByLabel('Template aprovado').selectOption('retorno_consulta:en_US');
+      await page.getByLabel('Corpo da mensagem').fill('Retorno de consulta');
+      await expect(page.getByLabel('Parâmetro 2')).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Enviar template' })).toBeDisabled();
+
+      await page.getByLabel('Template aprovado').selectOption('retorno_consulta:pt_BR');
+      // trocar de template zera os parâmetros: um parâmetro só, e obrigatório
+      await expect(page.getByLabel('Parâmetro 2')).toHaveCount(0);
+      await expect(page.getByRole('button', { name: 'Enviar template' })).toBeDisabled();
+      await page.getByLabel('Parâmetro 1').fill('quinta às 10h');
+      await expect(page.getByRole('button', { name: 'Enviar template' })).toBeEnabled();
+    } finally {
+      await db.end();
+    }
   });
 });

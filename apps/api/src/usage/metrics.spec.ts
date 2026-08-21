@@ -1,4 +1,4 @@
-import { USAGE_METRICS } from './metrics';
+import { USAGE_METRICS, catalogGapAlert } from './metrics';
 
 /**
  * INVARIANTE DE CATÁLOGO. A regra do ADR-041 é genérica sobre `USAGE_METRICS`,
@@ -37,5 +37,22 @@ describe('catálogo de métricas de uso (ADR-032, ADR-041)', () => {
     for (const definition of Object.values(USAGE_METRICS)) {
       if (definition.neverUnlimited) expect(definition.enforced).toBe(true);
     }
+  });
+});
+
+describe('aviso de lacuna de catálogo (ADR-041)', () => {
+  it('não avisa quando NÃO há plano assinado: a herança é esperada ali', () => {
+    // o alerta de assinatura ausente já cobriu o caso; repetir com outra
+    // redação mandaria o operador procurar lacuna de catálogo que não existe
+    expect(catalogGapAlert(null, 'messages_sent', 1000, 'base')).toBeNull();
+  });
+
+  it('avisa nomeando o plano assinado, a métrica e o teto herdado', () => {
+    const aviso = catalogGapAlert('enterprise', 'messages_sent', 1000, 'base');
+    expect(aviso).toContain('enterprise');
+    expect(aviso).toContain('messages_sent');
+    expect(aviso).toContain('1000');
+    // e nomeia DE ONDE o teto veio, senão quem for corrigir procura às cegas
+    expect(aviso).toContain('base');
   });
 });

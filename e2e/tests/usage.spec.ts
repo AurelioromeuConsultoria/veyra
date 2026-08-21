@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { OWNER_A } from '../env';
-import { login } from './helpers';
+import { login, openE2eDb } from './helpers';
 
 test.describe('Uso e plano (UI)', () => {
   test('mostra plano vigente, consumo e a natureza de cada métrica', async ({ page }) => {
@@ -40,5 +40,51 @@ test.describe('Uso e plano (UI)', () => {
     // asserção com RETRY: ao voltar para a tela, o TanStack Query serve o valor
     // em cache antes de o refetch chegar — ler uma vez é uma corrida perdida
     await expect.poll(lerUsados, { timeout: 10_000 }).toBe(antes + 1);
+  });
+
+  test('assinatura cancelada mostra o plano APLICADO, não o contratado', async ({ page }) => {
+    const db = await openE2eDb();
+    let ws: string | null = null;
+    let anterior: string | null = null;
+    try {
+      /**
+       * Antes desta entrega a tela dizia "Plano Base · renova em …" mesmo com a
+       * assinatura cancelada, enquanto o teto aplicado vinha do plano padrão
+       * (ADR-041) — quem esbarrasse no limite não tinha como entender por quê.
+       */
+      // ESCOPADO ao workspace deste teste: sem o WHERE, o update atingia beta
+      // também e o `finally` "consertava" para ativo linhas que talvez não
+      // estivessem — flakiness cruzada entre specs
+      const { rows } = await db.query<{ workspace_id: string; status: string }>(
+        `SELECT m."workspaceId" AS workspace_id, s."status" FROM "Membership" m
+           JOIN "User" u ON u."id" = m."userId"
+           JOIN "Subscription" s ON s."workspaceId" = m."workspaceId"
+          WHERE u."email" = $1 LIMIT 1`,
+        [OWNER_A],
+      );
+      ws = rows[0].workspace_id;
+      anterior = rows[0].status;
+      await db.query(`UPDATE "Subscription" SET "status" = 'canceled' WHERE "workspaceId" = $1`, [
+        ws,
+      ]);
+      await login(page, OWNER_A);
+      await page.getByRole('link', { name: 'Uso e plano' }).click();
+
+      await expect(page.getByTestId('usage-applied-plan')).toContainText(
+        /aplicado por ausência de assinatura ativa/i,
+      );
+      // e a assinatura registrada aparece como alerta, não como se estivesse valendo
+      await expect(page.getByText(/Assinatura registrada/i)).toBeVisible();
+    } finally {
+      // devolve o status ANTERIOR: restaurar 'active' por decreto inventaria
+      // estado para uma linha que talvez não estivesse ativa
+      if (ws && anterior) {
+        await db.query(
+          `UPDATE "Subscription" SET "status" = $2::"SubscriptionStatus" WHERE "workspaceId" = $1`,
+          [ws, anterior],
+        );
+      }
+      await db.end();
+    }
   });
 });

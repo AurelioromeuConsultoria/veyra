@@ -1,5 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
+  ConsentStatus,
   ConversationSummaryDto,
   ConversationDto,
   ConversationPageDto,
@@ -8,6 +9,7 @@ import type {
   MessageDispatchState,
   MessageDto,
   MessagePageDto,
+  SendPolicyDto,
 } from '@veyra/contracts';
 import { clsx } from 'clsx';
 import { MessageSquarePlus, Paperclip, Send, Sparkles, X } from 'lucide-react';
@@ -38,6 +40,63 @@ const DISPATCH_LABEL: Record<MessageDispatchState, { texto: string; tom: string 
   failed_permanent: { texto: 'Não enviada', tom: 'text-negative' },
   unknown_after_dispatch: { texto: 'Entrega não confirmada', tom: 'text-warning' },
 };
+
+/** Restante da janela, compacto, para a linha da lista. */
+function WindowChip({ expiresAt }: { expiresAt: string | null }) {
+  if (!expiresAt) return null;
+  const restante = new Date(expiresAt).getTime() - Date.now();
+  if (restante <= 0) {
+    return <span className="shrink-0 font-mono text-[9px] text-warning">fechada</span>;
+  }
+  const horas = Math.floor(restante / 3_600_000);
+  return (
+    <span className="shrink-0 font-mono text-[9px] tabular-nums text-muted-fg">
+      {horas > 0 ? `${horas}h` : `${Math.floor(restante / 60_000)}min`}
+    </span>
+  );
+}
+
+/**
+ * Estado do canal externo acima do compositor: janela, opt-in e o motivo quando
+ * o envio está bloqueado. É o que evita o atendente descobrir a regra pelo erro.
+ */
+function PolicyBanner({ policy }: { policy: SendPolicyDto }) {
+  const restante = policy.windowExpiresAt
+    ? new Date(policy.windowExpiresAt).getTime() - Date.now()
+    : null;
+  const horas = restante !== null && restante > 0 ? Math.floor(restante / 3_600_000) : 0;
+  const minutos =
+    restante !== null && restante > 0 ? Math.floor((restante % 3_600_000) / 60_000) : 0;
+  return (
+    <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px]" data-testid="send-policy">
+      {restante !== null && restante > 0 ? (
+        <span className="font-mono tabular-nums text-muted-fg">
+          janela {horas}h{String(minutos).padStart(2, '0')}
+        </span>
+      ) : (
+        <span className="font-mono text-warning">janela fechada</span>
+      )}
+      <ConsentBadge status={policy.consentStatus} />
+      {policy.reason ? (
+        <span className={clsx(policy.mode === 'blocked' ? 'text-negative' : 'text-muted-fg')}>
+          {policy.reason}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/** Opt-in é evidência SEPARADA da janela (ADR-038) — a tela não pode fundir os dois. */
+function ConsentBadge({ status }: { status: ConsentStatus | null }) {
+  if (status === null) return null;
+  const rotulo =
+    status === 'granted'
+      ? { texto: 'opt-in registrado', tom: 'text-positive' }
+      : status === 'revoked'
+        ? { texto: 'opt-in revogado', tom: 'text-negative' }
+        : { texto: 'sem opt-in', tom: 'text-muted-fg' };
+  return <span className={clsx('font-mono', rotulo.tom)}>{rotulo.texto}</span>;
+}
 
 /** Código do provedor não é mensagem: quem atende lê a frase, não o número. */
 const DISPATCH_ERROR_LABEL: Record<string, string> = {
@@ -80,6 +139,9 @@ export function InboxPage() {
   const [status, setStatus] = useState<'open' | 'pending' | 'closed' | 'all'>('open');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  /** template escolhido no compositor, quando a janela exige um */
+  const [templateName, setTemplateName] = useState('');
+  const [templateParams, setTemplateParams] = useState<string[]>([]);
   const [attachments, setAttachments] = useState<FileObjectDto[]>([]);
   const [summary, setSummary] = useState<ConversationSummaryDto | null>(null);
   const [subject, setSubject] = useState('');
@@ -110,9 +172,86 @@ export function InboxPage() {
     enabled: selectedId !== null,
   });
 
+  /**
+   * O que pode ser enviado agora vem do SERVIDOR. A tela não recalcula janela
+   * nem consentimento: ela não vê opt-in revogado nem recibo atrasado, e uma
+   * segunda implementação da política divergiria da que o worker aplica.
+   */
+  const policy = useQuery({
+    queryKey: ['send-policy', selectedId],
+    queryFn: () => api.get<SendPolicyDto>(`/api/conversations/${selectedId}/send-policy`),
+    enabled: selectedId !== null && canWrite,
+    /**
+     * Revalida quando a janela expira — é por isso que o servidor manda o
+     * INSTANTE. Sem isto, quem abrisse a conversa com 4 minutos restantes
+     * escrevia com calma, via "janela 0h01" na tela, e recebia 400 no envio:
+     * o botão era governado por um cache que não envelhecia.
+     */
+    /**
+     * Revalida PERTO da expiração, não de minuto em minuto: com 23h de janela
+     * restante, pesquisar a cada 60s eram cinco consultas por minuto no servidor
+     * sem nenhuma decisão nova. Perto do fim, o intervalo aperta.
+     */
+    refetchInterval: (query) => {
+      const expira = query.state.data?.windowExpiresAt;
+      if (!expira) return false;
+      const restante = new Date(expira).getTime() - Date.now();
+      if (restante <= 0) return false;
+      if (restante < 60_000) return restante + 1_000;
+      return Math.min(Math.max(restante / 4, 60_000), 15 * 60_000);
+    },
+    // a aba que volta do background pode estar mostrando janela já fechada
+    refetchOnWindowFocus: true,
+  });
+  /**
+   * FAIL-CLOSED enquanto a política não chegou: em canal externo, `free_form`
+   * por omissão mostrava compositor livre e botão habilitado numa conversa de
+   * janela fechada, e o 400 vinha depois. Canal interno não tem política a
+   * esperar.
+   */
+  const externo = selected !== null && selected.channelType !== 'internal';
+  const modo: SendPolicyDto['mode'] = policy.data?.mode ?? (externo ? 'blocked' : 'free_form');
+  /**
+   * Chave é (nome, IDIOMA). O catálogo da Meta permite o mesmo nome em idiomas
+   * diferentes (`@@unique(workspaceId, channelId, name, language)`), e resolver
+   * só pelo nome tornava a segunda opção inselecionável, mandava o idioma do
+   * primeiro achado e podia renderizar a quantidade errada de parâmetros.
+   */
+  const template =
+    policy.data?.templates.find((t) => `${t.name}:${t.language}` === templateName) ?? null;
+  /**
+   * Itera os ÍNDICES do template, não o array: ele é preenchido por posição e
+   * tem buracos (preencher o campo 2 antes do 1 deixa `[undefined, 'x']`).
+   * `filter(p => p.trim())` estourava `TypeError` no render e derrubava o inbox.
+   */
+  const paramsCompletos =
+    template === null ||
+    Array.from({ length: template.paramCount }).every((_, i) => templateParams[i]?.trim());
+
+  /**
+   * Trocar de conversa ZERA o compositor. Sem isto, o template e o parâmetro da
+   * conversa A chegavam prontos e habilitados na conversa B — um Enter mandaria
+   * para o contato B o horário combinado com o contato A. O rascunho e os anexos
+   * são a mesma classe de erro e vão junto.
+   */
+  useEffect(() => {
+    setTemplateName('');
+    setTemplateParams([]);
+    setDraft('');
+    setAttachments([]);
+    setError(null);
+  }, [selectedId]);
+
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['conversations'] });
     void queryClient.invalidateQueries({ queryKey: ['messages'] });
+    /**
+     * A política muda com o que acabou de acontecer: um envio pode ter esgotado
+     * a cota. Registro MANUAL de mensagem recebida NÃO reabre a janela — só a
+     * ingestão assinada escreve `lastInboundAt`, porque um texto digitado por um
+     * atendente não é evidência de que o contato falou no canal (ADR-038).
+     */
+    void queryClient.invalidateQueries({ queryKey: ['send-policy'] });
   };
 
   const createConversation = useMutation({
@@ -140,6 +279,15 @@ export function InboxPage() {
       api.post<MessageDto>(`/api/conversations/${selectedId}/messages`, {
         direction,
         body: draft.trim(),
+        ...(modo === 'template' && template
+          ? {
+              template: {
+                name: template.name,
+                language: template.language,
+                params: templateParams.slice(0, template.paramCount),
+              },
+            }
+          : {}),
         attachmentIds: attachments.map((file) => file.id),
       }),
     onSuccess: () => {
@@ -150,6 +298,13 @@ export function InboxPage() {
     },
     onError: (e) => setError(e instanceof ApiError ? e.message : 'Falha ao registrar mensagem'),
   });
+
+  /** Predicado ÚNICO de "pode enviar": botão e submissão do form usam este. */
+  const podeEnviar =
+    draft.trim().length > 0 &&
+    !send.isPending &&
+    modo !== 'blocked' &&
+    (modo !== 'template' || (template !== null && paramsCompletos));
 
   /** Resumo é sinal, não chat: aparece no contexto da conversa e some com ela. */
   const summarize = useMutation({
@@ -245,6 +400,14 @@ export function InboxPage() {
                   <span className="truncate text-[13px] font-medium">
                     {conversation.contactName ?? conversation.subject ?? 'Sem assunto'}
                   </span>
+                  {conversation.channelType !== 'internal' ? (
+                    <span className="shrink-0 rounded border border-border px-1 font-mono text-[9px] uppercase tracking-wider text-muted-fg">
+                      {conversation.channelType}
+                    </span>
+                  ) : null}
+                  {/* janela na LINHA serve triagem: quem está perto de fechar é
+                      quem precisa de resposta agora */}
+                  <WindowChip expiresAt={conversation.windowExpiresAt} />
                   <span className="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-muted-fg">
                     {timeFormat.format(new Date(conversation.lastMessageAt))}
                   </span>
@@ -400,9 +563,57 @@ export function InboxPage() {
               className="border-t border-border px-5 py-3"
               onSubmit={(e) => {
                 e.preventDefault();
-                if (draft.trim()) send.mutate('outbound');
+                // MESMO predicado do botão: os campos de parâmetro estão dentro
+                // do form, e Enter num deles submetia por cima da garantia
+                if (podeEnviar) send.mutate('outbound');
               }}
             >
+              {externo && !policy.data ? (
+                <p className="mb-2 text-[11px] text-muted-fg">
+                  {policy.isError
+                    ? 'Não foi possível verificar a política de envio deste canal'
+                    : 'Verificando política de envio…'}
+                </p>
+              ) : null}
+              {policy.data && policy.data.channelType !== 'internal' ? (
+                <PolicyBanner policy={policy.data} />
+              ) : null}
+              {modo === 'template' ? (
+                <div className="mb-2 space-y-1.5" data-testid="template-composer">
+                  <Select
+                    aria-label="Template aprovado"
+                    value={templateName}
+                    onChange={(e) => {
+                      setTemplateName(e.target.value);
+                      setTemplateParams([]);
+                    }}
+                  >
+                    <option value="">Escolha um template aprovado…</option>
+                    {policy.data?.templates.map((t) => (
+                      <option key={`${t.name}:${t.language}`} value={`${t.name}:${t.language}`}>
+                        {t.name} ({t.language}) · {t.paramCount} parâmetro(s)
+                      </option>
+                    ))}
+                  </Select>
+                  {template
+                    ? Array.from({ length: template.paramCount }).map((_, index) => (
+                        <Input
+                          key={index}
+                          aria-label={`Parâmetro ${index + 1}`}
+                          placeholder={`Parâmetro ${index + 1}`}
+                          value={templateParams[index] ?? ''}
+                          onChange={(e) =>
+                            setTemplateParams((current) => {
+                              const proximo = [...current];
+                              proximo[index] = e.target.value;
+                              return proximo;
+                            })
+                          }
+                        />
+                      ))
+                    : null}
+                </div>
+              ) : null}
               {attachments.length > 0 ? (
                 <ul className="mb-2 flex flex-wrap gap-1.5">
                   {attachments.map((file) => (
@@ -467,9 +678,14 @@ export function InboxPage() {
                   type="submit"
                   variant="primary"
                   size="sm"
-                  disabled={!draft.trim() || send.isPending}
+                  /* o veredito é do servidor: `blocked` não envia, e `template`
+                     exige template escolhido com os parâmetros completos */
+                  disabled={!podeEnviar}
+                  title={
+                    modo === 'blocked' ? (policy.data?.reason ?? 'Envio bloqueado') : undefined
+                  }
                 >
-                  <Send size={13} /> Enviada
+                  <Send size={13} /> {modo === 'template' ? 'Enviar template' : 'Enviada'}
                 </Button>
               </div>
             </form>

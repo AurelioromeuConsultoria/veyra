@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import type {
+  ConsentStatus,
   ConversationDto,
   ConversationPageDto,
   CreateConversationInput,
@@ -9,16 +10,28 @@ import type {
   MessageAttachmentDto,
   MessageDto,
   MessagePageDto,
+  MessageTemplateDto,
+  SendPolicyDto,
   UpdateConversationInput,
 } from '@veyra/contracts';
 import { ActivitiesService } from '../activities/activities.service';
+import { decideSend, SERVICE_WINDOW_MS } from '../channels/send-policy';
 import { WhatsappSendService } from '../channels/whatsapp-send.service';
 import { FilesService } from '../files/files.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { UsageService } from '../usage/usage.service';
 import { AuthContext } from '../common/decorators';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 
 type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
+
+/**
+ * Consentimento é por (contato, canal). Chave única para os dois lugares que o
+ * consultam, para nenhum deles esquecer o canal — foi o defeito que a revisão
+ * pegou: a tela dizia "opt-in registrado" com base em outro canal.
+ */
+const consentKey = (contactId: string, channelType: string): string =>
+  `${contactId}:${channelType}`;
 
 type ConversationRow = {
   id: string;
@@ -29,6 +42,10 @@ type ConversationRow = {
   status: 'open' | 'pending' | 'closed';
   assigneeMembershipId: string | null;
   lastMessageAt: Date;
+  /** última mensagem DO CONTATO: origem da janela de 24h (ADR-038) */
+  lastInboundAt: Date | null;
+  /** endereço exato no canal externo (o wa_id que falou com a gente) */
+  externalAddress: string | null;
   createdAt: Date;
 };
 
@@ -69,6 +86,7 @@ export class ConversationsService {
     private readonly notifications: NotificationsService,
     private readonly files: FilesService,
     private readonly send: WhatsappSendService,
+    private readonly usage: UsageService,
   ) {}
 
   /**
@@ -225,6 +243,17 @@ export class ConversationsService {
 
     // CANAL EXTERNO: o envio tem política, reserva de quota e despacho pelo
     // outbox (ADR-039). O canal interno grava direto, como sempre.
+    if (isExternal && input.direction === 'outbound' && channel?.type !== 'whatsapp') {
+      /**
+       * Só WhatsApp tem transporte hoje. Rotear qualquer canal não-interno para o
+       * remetente de WhatsApp criaria uma mensagem que o worker nunca conseguiria
+       * enviar (não acharia credencial) — falha tardia e obscura em vez de
+       * recusa clara.
+       */
+      throw new BadRequestException(
+        'Este canal ainda não tem transporte de envio configurado no Veyra',
+      );
+    }
     if (isExternal && input.direction === 'outbound') {
       /**
        * RECUSA EXPLÍCITA: o transporte ainda não envia mídia, e seguir adiante
@@ -341,6 +370,156 @@ export class ConversationsService {
     };
   }
 
+  /**
+   * Veredito do SERVIDOR sobre o que o compositor pode enviar agora, com os
+   * templates aprovados quando o texto livre não é permitido.
+   *
+   * Existe para que a UI não recalcule política: ela não vê consentimento
+   * revogado nem recibo atrasado, e uma segunda implementação da regra
+   * divergiria da que o worker aplica de fato (ADR-038, ADR-039).
+   */
+  async sendPolicy(workspaceId: string, id: string): Promise<SendPolicyDto> {
+    const row = (await this.prisma.db.conversation.findFirst({
+      where: { id },
+    })) as unknown as ConversationRow | null;
+    if (!row) throw new NotFoundException('Conversa não encontrada');
+
+    const channel = await this.prisma.db.channel.findFirst({
+      where: { id: row.channelId },
+      select: { type: true },
+    });
+    const channelType = (channel?.type ?? 'internal') as SendPolicyDto['channelType'];
+    const windowExpiresAt = row.lastInboundAt
+      ? new Date(row.lastInboundAt.getTime() + SERVICE_WINDOW_MS).toISOString()
+      : null;
+
+    // canal interno não tem janela, consentimento nem template: registro direto
+    if (channelType === 'internal') {
+      return {
+        channelType,
+        mode: 'free_form',
+        reason: null,
+        windowExpiresAt: null,
+        consentStatus: null,
+        templates: [],
+      };
+    }
+
+    /**
+     * COTA faz parte do veredito. Sem ela, a política dizia `free_form` e o
+     * envio devolvia 402 — a tela prometia um envio que o servidor recusa. O
+     * atendente precisa saber que o limite do plano é a razão, e não achar que
+     * a mensagem falhou por defeito.
+     */
+    /**
+     * Só WhatsApp tem transporte. Sem este ramo, a política prometia envio num
+     * canal que `addMessage` recusa com 400 — a mesma divergência tela/servidor
+     * que a cota criava, e a frase é deliberadamente a MESMA das duas pontas.
+     */
+    if (channelType !== 'whatsapp') {
+      return {
+        channelType,
+        mode: 'blocked',
+        reason: 'Este canal ainda não tem transporte de envio configurado no Veyra',
+        windowExpiresAt,
+        consentStatus: null,
+        templates: [],
+      };
+    }
+
+    const [consents, templates, cotaEsgotada] = await Promise.all([
+      this.resolveConsents([row]),
+      this.prisma.db.messageTemplate.findMany({
+        where: { channelId: row.channelId, status: 'approved' },
+        select: { name: true, language: true, paramCount: true },
+        orderBy: { name: 'asc' },
+      }),
+      this.usage.isExhausted(workspaceId, 'messages_sent'),
+    ]);
+    const consentStatus: ConsentStatus = row.contactId
+      ? (consents.get(consentKey(row.contactId, channelType)) ?? 'none')
+      : 'none';
+    if (cotaEsgotada) {
+      return {
+        channelType,
+        mode: 'blocked',
+        reason: 'Cota de mensagens do plano esgotada neste período',
+        windowExpiresAt,
+        consentStatus,
+        templates: [],
+      };
+    }
+    /**
+     * A MESMA função pura que o worker usa, consultada sem template: se ela
+     * permite texto livre, a janela está aberta; se recusa, o motivo já é a
+     * explicação que a tela mostra.
+     */
+    const decision = decideSend({
+      lastInboundAt: row.lastInboundAt,
+      hasActiveConsent: consentStatus === 'granted',
+      template: null,
+      templateParams: [],
+      externalAddress: row.externalAddress,
+      now: new Date(),
+    });
+
+    if (decision.allowed) {
+      return {
+        channelType,
+        mode: 'free_form',
+        reason: null,
+        windowExpiresAt,
+        consentStatus,
+        templates: templates as MessageTemplateDto[],
+      };
+    }
+    /**
+     * Sem endereço externo não há como enviar nada — nem template. É diferente
+     * de "janela fechada", e dizer "use um template" aí mandaria o atendente
+     * tentar algo que também vai falhar.
+     */
+    if (decision.reason === 'no_external_address') {
+      return {
+        channelType,
+        mode: 'blocked',
+        reason: 'Esta conversa não tem endereço externo: só é possível enviar após o contato falar',
+        windowExpiresAt,
+        consentStatus,
+        templates: [],
+      };
+    }
+    // janela fechada: template é o caminho, e ele exige consentimento vigente
+    if (consentStatus !== 'granted') {
+      return {
+        channelType,
+        mode: 'blocked',
+        reason:
+          'Janela de 24h fechada e sem consentimento registrado: registre o opt-in do contato para retomar por template',
+        windowExpiresAt,
+        consentStatus,
+        templates: templates as MessageTemplateDto[],
+      };
+    }
+    if (templates.length === 0) {
+      return {
+        channelType,
+        mode: 'blocked',
+        reason: 'Janela de 24h fechada e nenhum template aprovado cadastrado neste canal',
+        windowExpiresAt,
+        consentStatus,
+        templates: [],
+      };
+    }
+    return {
+      channelType,
+      mode: 'template',
+      reason: 'Janela de 24h fechada: use um template aprovado',
+      windowExpiresAt,
+      consentStatus,
+      templates: templates as MessageTemplateDto[],
+    };
+  }
+
   private async validateReferences(input: {
     contactId?: string | null;
     assigneeMembershipId?: string | null;
@@ -358,13 +537,16 @@ export class ConversationsService {
   }
 
   private async toDtos(rows: ConversationRow[]): Promise<ConversationDto[]> {
-    const [contactNames, memberNames, channels] = await Promise.all([
+    const [contactNames, memberNames, channels, consents] = await Promise.all([
       this.resolveContactNames(rows.map((r) => r.contactId)),
       this.resolveMemberNames(rows.map((r) => r.assigneeMembershipId)),
       this.prisma.db.channel.findMany({
         where: { id: { in: [...new Set(rows.map((r) => r.channelId))] } },
         select: { id: true, type: true },
       }),
+      // LOTE, não por linha: 30 conversas na lista do inbox não podem virar 30
+      // consultas de consentimento
+      this.resolveConsents(rows),
     ]);
     const channelType = new Map(channels.map((c) => [c.id, c.type]));
     return rows.map((row) => ({
@@ -379,8 +561,50 @@ export class ConversationsService {
         ? (memberNames.get(row.assigneeMembershipId) ?? null)
         : null,
       lastMessageAt: row.lastMessageAt.toISOString(),
+      /**
+       * Derivado, não armazenado: a janela é `lastInboundAt + 24h` e nada mais.
+       * Guardar o instante calculado abriria a chance de ele divergir do fato
+       * que o gera. Canal interno não tem janela.
+       */
+      windowExpiresAt:
+        channelType.get(row.channelId) === 'internal' || !row.lastInboundAt
+          ? null
+          : new Date(row.lastInboundAt.getTime() + SERVICE_WINDOW_MS).toISOString(),
+      consentStatus:
+        channelType.get(row.channelId) === 'internal' || !row.contactId
+          ? null
+          : (consents.get(
+              consentKey(row.contactId, channelType.get(row.channelId) ?? 'internal'),
+            ) ?? 'none'),
       createdAt: row.createdAt.toISOString(),
     }));
+  }
+
+  /**
+   * Estado do consentimento por (contato, CANAL), em UMA consulta. `granted`
+   * exige marca ativa; `revoked` distingue "nunca houve" de "houve e foi
+   * retirado" — a diferença muda o que o atendente faz em seguida.
+   *
+   * A chave inclui o TIPO DE CANAL porque o consentimento é por canal
+   * (`@@unique(workspaceId, contactId, channelType, activeMark)`) e é assim que
+   * o envio o verifica. Sem isso, um opt-in de e-mail apareceria como opt-in de
+   * WhatsApp: a tela afirmaria a existência de uma evidência que nunca foi dada
+   * — exatamente a fusão que o ADR-038 proíbe, e com peso de LGPD.
+   */
+  private async resolveConsents(rows: ConversationRow[]): Promise<Map<string, ConsentStatus>> {
+    const contactIds = [...new Set(rows.map((r) => r.contactId).filter(Boolean))] as string[];
+    if (contactIds.length === 0) return new Map();
+    const consents = await this.prisma.db.contactChannelConsent.findMany({
+      where: { contactId: { in: contactIds } },
+      select: { contactId: true, channelType: true, activeMark: true },
+    });
+    const estado = new Map<string, ConsentStatus>();
+    for (const consent of consents) {
+      const chave = consentKey(consent.contactId, consent.channelType);
+      if (consent.activeMark === true) estado.set(chave, 'granted');
+      else if (!estado.has(chave)) estado.set(chave, 'revoked');
+    }
+    return estado;
   }
 
   private async toMessageDtos(rows: MessageRow[]): Promise<MessageDto[]> {

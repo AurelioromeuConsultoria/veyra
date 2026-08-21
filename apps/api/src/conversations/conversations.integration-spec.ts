@@ -195,6 +195,8 @@ describe('Conversas — inbox, mensagens e timeline (integração)', () => {
     // acesso direto por id é 404, não 403 (não revela existência)
     await get(`/api/conversations/${conversation.id}`, sessionB).expect(404);
     await get(`/api/conversations/${conversation.id}/messages`, sessionB).expect(404);
+    // a política de envio expõe janela, opt-in e templates: entra na mesma lista
+    await get(`/api/conversations/${conversation.id}/send-policy`, sessionB).expect(404);
     await post(`/api/conversations/${conversation.id}/messages`, sessionB, {
       direction: 'outbound',
       body: 'Intruso',

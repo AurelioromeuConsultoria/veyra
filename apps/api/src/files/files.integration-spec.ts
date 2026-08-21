@@ -241,9 +241,13 @@ describe('Arquivos — upload, download autorizado e expurgo (integração)', ()
 
     /**
      * Marcado clean por um scanner, o portão do ARQUIVO libera — e a recusa que
-     * sobra é de CAPACIDADE: o transporte ainda não manda mídia, e seguir adiante
-     * daria 201 com o anexo perdido. Os portões são independentes e nesta ordem:
-     * verificação do arquivo → capacidade do canal → política da conversa.
+     * sobra é de TRANSPORTE: este canal é `email`, que não tem remetente
+     * implementado. Os portões são independentes e nesta ordem: verificação do
+     * arquivo → transporte do canal → capacidade de anexo → política da conversa.
+     *
+     * Os dois últimos só são observáveis em canal COM transporte, e estão
+     * provados em `whatsapp-send.integration-spec.ts` (anexo recusado, política
+     * concordando com o envio). Aqui a prova é a dos dois primeiros.
      */
     await prisma.raw.fileObject.updateMany({
       where: { id: arquivo.id },
@@ -256,16 +260,17 @@ describe('Arquivos — upload, download autorizado e expurgo (integração)', ()
     });
     expect(depois.status).toBe(400);
     expect(depois.body.message).not.toMatch(/não foi verificado/i);
-    expect(depois.body.message).toMatch(/anexo/i);
+    expect(depois.body.message).toMatch(/transporte/i);
 
-    // e SEM anexo a recusa é de POLÍTICA (esta conversa não tem endereço externo
-    // nem janela aberta) — a prova de que o terceiro portão continua no lugar
+    // e SEM anexo a recusa é a mesma: transporte é do CANAL, não do anexo —
+    // rotear e-mail para o remetente de WhatsApp criaria mensagem que o worker
+    // nunca conseguiria enviar
     const semAnexo = await post(`/api/conversations/${conversaExterna.id}/messages`, sessionA, {
       direction: 'outbound',
       body: 'segue',
     });
     expect(semAnexo.status).toBe(400);
-    expect(semAnexo.body.message).toMatch(/destinatário|janela/i);
+    expect(semAnexo.body.message).toMatch(/transporte/i);
   });
 
   // ── Expurgo ───────────────────────────────────────────────────────────────

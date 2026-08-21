@@ -1211,6 +1211,261 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     ).rejects.toMatchObject({ code: 'P2002' });
   });
 
+  // ── Política visível na UI (9.1.c) ────────────────────────────────────────
+
+  it('política: dentro da janela é texto livre, com o instante de expiração', async () => {
+    const res = await request(http)
+      .get(`/api/conversations/${conversationId}/send-policy`)
+      .set('Cookie', session.cookieHeader)
+      .expect(200);
+
+    expect(res.body).toMatchObject({
+      channelType: 'whatsapp',
+      mode: 'free_form',
+      reason: null,
+      consentStatus: 'none', // recebida NÃO registra opt-in (ADR-038)
+    });
+    // INSTANTE, não duração: a tela conta sozinha sem receber valor velho
+    expect(new Date(res.body.windowExpiresAt).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it('política: janela fechada SEM consentimento bloqueia e explica', async () => {
+    await prisma.raw.conversation.updateMany({
+      where: { id: conversationId },
+      data: { lastInboundAt: new Date(Date.now() - 25 * 60 * 60_000) },
+    });
+
+    const res = await request(http)
+      .get(`/api/conversations/${conversationId}/send-policy`)
+      .set('Cookie', session.cookieHeader)
+      .expect(200);
+
+    expect(res.body.mode).toBe('blocked');
+    expect(res.body.reason).toMatch(/consentimento/i);
+    // e o instante mostrado é o de EXPIRAÇÃO, já no passado — não some da tela
+    expect(new Date(res.body.windowExpiresAt).getTime()).toBeLessThan(Date.now());
+  });
+
+  it('P1: opt-in de OUTRO canal não conta como opt-in deste', async () => {
+    await prisma.raw.conversation.updateMany({
+      where: { id: conversationId },
+      data: { lastInboundAt: new Date(Date.now() - 25 * 60 * 60_000) },
+    });
+    /**
+     * Consentimento é por CANAL. Sem filtrar o tipo, um opt-in de e-mail fazia a
+     * tela afirmar "opt-in registrado" numa conversa de WhatsApp e liberar o modo
+     * template — evidência de consentimento que nunca foi dada, com peso de LGPD.
+     */
+    await prisma.raw.contactChannelConsent.create({
+      data: {
+        workspaceId: wsA.workspaceId,
+        contactId,
+        channelType: 'email',
+        source: 'form',
+        activeMark: true,
+      },
+    });
+
+    const res = await request(http)
+      .get(`/api/conversations/${conversationId}/send-policy`)
+      .set('Cookie', session.cookieHeader)
+      .expect(200);
+
+    expect(res.body).toMatchObject({ mode: 'blocked', consentStatus: 'none' });
+    expect(res.body.reason).toMatch(/consentimento/i);
+  });
+
+  it('política: janela fechada COM consentimento e template aprovado pede template', async () => {
+    await prisma.raw.conversation.updateMany({
+      where: { id: conversationId },
+      data: { lastInboundAt: new Date(Date.now() - 25 * 60 * 60_000) },
+    });
+    await prisma.raw.contactChannelConsent.create({
+      data: {
+        workspaceId: wsA.workspaceId,
+        contactId,
+        channelType: 'whatsapp',
+        source: 'form',
+        activeMark: true,
+      },
+    });
+    await prisma.raw.messageTemplate.create({
+      data: {
+        workspaceId: wsA.workspaceId,
+        channelId,
+        name: 'retorno_consulta',
+        language: 'pt_BR',
+        paramCount: 2,
+      },
+    });
+
+    const res = await request(http)
+      .get(`/api/conversations/${conversationId}/send-policy`)
+      .set('Cookie', session.cookieHeader)
+      .expect(200);
+
+    expect(res.body).toMatchObject({ mode: 'template', consentStatus: 'granted' });
+    expect(res.body.templates).toEqual([
+      { name: 'retorno_consulta', language: 'pt_BR', paramCount: 2 },
+    ]);
+  });
+
+  it('P0: política e envio concordam — nos dois sentidos, em cada estado', async () => {
+    /**
+     * O risco desta entrega é a tela dizer uma coisa e o envio fazer outra. Um
+     * único cenário não sustentava a garantia: aqui cada estado é montado, o
+     * veredito é lido e o ENVIO correspondente é executado de verdade.
+     */
+    const politica = () =>
+      request(http)
+        .get(`/api/conversations/${conversationId}/send-policy`)
+        .set('Cookie', session.cookieHeader)
+        .expect(200);
+
+    // (1) dentro da janela: livre, e o envio livre passa
+    let res = await politica();
+    expect(res.body.mode).toBe('free_form');
+    expect((await sendMessage({ direction: 'outbound', body: 'Dentro' })).status).toBe(201);
+
+    // (2) janela fechada sem opt-in: bloqueado, e o envio livre é recusado
+    await prisma.raw.conversation.updateMany({
+      where: { id: conversationId },
+      data: { lastInboundAt: new Date(Date.now() - 25 * 60 * 60_000) },
+    });
+    res = await politica();
+    expect(res.body).toMatchObject({ mode: 'blocked' });
+    expect((await sendMessage({ direction: 'outbound', body: 'Fora' })).status).toBe(400);
+
+    // (3) com opt-in e template aprovado: modo template, e o envio por template passa
+    await prisma.raw.contactChannelConsent.create({
+      data: {
+        workspaceId: wsA.workspaceId,
+        contactId,
+        channelType: 'whatsapp',
+        source: 'agent',
+        activeMark: true,
+      },
+    });
+    await prisma.raw.messageTemplate.create({
+      data: {
+        workspaceId: wsA.workspaceId,
+        channelId,
+        name: 'lembrete',
+        language: 'pt_BR',
+        paramCount: 1,
+      },
+    });
+    res = await politica();
+    expect(res.body.mode).toBe('template');
+    const permitido = await sendMessage({
+      direction: 'outbound',
+      body: 'Lembrete',
+      template: { name: 'lembrete', language: 'pt_BR', params: ['amanhã'] },
+    });
+    expect(permitido.status).toBe(201);
+
+    // (4) parâmetros que não casam: o servidor recusa, e a política já dizia
+    // quantos são — a tela não deixa chegar aqui, mas o servidor não confia nela
+    const errado = await sendMessage({
+      direction: 'outbound',
+      body: 'Lembrete',
+      template: { name: 'lembrete', language: 'pt_BR', params: [] },
+    });
+    expect(errado.status).toBe(400);
+    expect(res.body.templates).toEqual([{ name: 'lembrete', language: 'pt_BR', paramCount: 1 }]);
+  });
+
+  it('anexo em canal COM transporte é recusado com motivo, não perdido', async () => {
+    const arquivo = await request(http)
+      .post('/api/files')
+      .set('Origin', ORIGIN)
+      .set('Cookie', session.cookieHeader)
+      .set('x-csrf-token', session.csrf)
+      .attach('file', PNG, 'exame.png')
+      .expect(201);
+    await prisma.raw.fileObject.updateMany({
+      where: { id: arquivo.body.id },
+      data: { scanStatus: 'clean' },
+    });
+
+    const res = await sendMessage({
+      direction: 'outbound',
+      body: 'Segue o exame',
+      attachmentIds: [arquivo.body.id],
+    });
+
+    /**
+     * O transporte não manda mídia. Seguir adiante criava a mensagem SEM o
+     * anexo: 201 para quem escreveu, nada para quem deveria receber.
+     */
+    expect(res.status).toBe(400);
+    expect(res.body.message).toMatch(/anexo/i);
+    expect(transport.sends).toEqual([]);
+  });
+
+  it('P0: cota esgotada aparece na política, não só no 402', async () => {
+    await setPlanLimit(prisma, 'messages_sent', 0);
+
+    const res = await request(http)
+      .get(`/api/conversations/${conversationId}/send-policy`)
+      .set('Cookie', session.cookieHeader)
+      .expect(200);
+
+    /**
+     * Sem isto a política dizia `free_form` e o envio devolvia 402: a tela
+     * prometia um envio que o servidor recusa, e o atendente não tinha como
+     * saber que a razão era o teto do plano.
+     */
+    expect(res.body).toMatchObject({ mode: 'blocked' });
+    expect(res.body.reason).toMatch(/cota/i);
+    const envio = await sendMessage({ direction: 'outbound', body: 'Sem cota' });
+    expect(envio.status).toBe(402);
+  });
+
+  it('política de envio exige `conversations:write`, não só leitura', async () => {
+    // quem não pode enviar não precisa do catálogo de templates nem do opt-in
+    const guest = await createUserFixture(prisma, 'guest-a@veyra.test');
+    await createMembershipFixture(prisma, wsA.workspaceId, guest, wsA.roles.guest);
+    const login = await request(http)
+      .post('/api/auth/login')
+      .set('Origin', ORIGIN)
+      .send({ email: 'guest-a@veyra.test', password: TEST_PASSWORD })
+      .expect(201);
+    const cookies = (login.headers['set-cookie'] as unknown as string[]) ?? [];
+    const cookieHeader = cookies.map((c) => c.split(';')[0]).join('; ');
+
+    // Guest tem `conversations:read` e NÃO tem `conversations:write`
+    await request(http)
+      .get(`/api/conversations/${conversationId}/messages`)
+      .set('Cookie', cookieHeader)
+      .expect(200);
+    await request(http)
+      .get(`/api/conversations/${conversationId}/send-policy`)
+      .set('Cookie', cookieHeader)
+      .expect(403);
+  });
+
+  it('a lista do inbox mostra janela e opt-in sem consulta por linha', async () => {
+    await prisma.raw.contactChannelConsent.create({
+      data: {
+        workspaceId: wsA.workspaceId,
+        contactId,
+        channelType: 'whatsapp',
+        source: 'agent',
+        activeMark: true,
+      },
+    });
+
+    const res = await request(http)
+      .get('/api/conversations')
+      .set('Cookie', session.cookieHeader)
+      .expect(200);
+
+    const conversa = res.body.items.find((c: { id: string }) => c.id === conversationId);
+    expect(conversa).toMatchObject({ channelType: 'whatsapp', consentStatus: 'granted' });
+    expect(conversa.windowExpiresAt).toBeTruthy();
+  });
+
   it('o estado do despacho é VISÍVEL na thread', async () => {
     transport.nextSend = { ok: false, failure: { networkFailure: true } };
     await sendMessage({ direction: 'outbound', body: 'Incerta' }).expect(201);

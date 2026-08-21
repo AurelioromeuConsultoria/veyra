@@ -37,6 +37,7 @@ export class UsageController {
             currentPeriodEnd: subscription.currentPeriodEnd.toISOString(),
           }
         : null,
+      appliedPlan: await this.usage.appliedPlan(workspaceId),
       metrics: await this.usage.snapshot(workspaceId),
     };
   }
