@@ -54,6 +54,7 @@ const DISPATCH_ERROR_LABEL: Record<string, string> = {
   retries_exhausted_in_flight: 'tentativas esgotadas durante o envio',
   abandoned_before_send: 'envio interrompido antes de sair',
   abandoned_in_flight: 'envio interrompido em andamento',
+  no_retrier: 'envio interrompido sem nova tentativa',
   lease_expired_in_flight: 'resultado não confirmado pelo provedor',
 };
 

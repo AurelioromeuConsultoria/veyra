@@ -226,6 +226,17 @@ export class ConversationsService {
     // CANAL EXTERNO: o envio tem política, reserva de quota e despacho pelo
     // outbox (ADR-039). O canal interno grava direto, como sempre.
     if (isExternal && input.direction === 'outbound') {
+      /**
+       * RECUSA EXPLÍCITA: o transporte ainda não envia mídia, e seguir adiante
+       * criaria a mensagem SEM o anexo — 201 para quem escreveu, nada para quem
+       * deveria receber. Falha silenciosa é pior que limitação declarada; o
+       * envio com anexo entra quando o scanner existir (9.2).
+       */
+      if (attachments.length > 0) {
+        throw new BadRequestException(
+          'Envio com anexo ainda não é suportado neste canal — envie o texto e compartilhe o arquivo por outro meio',
+        );
+      }
       const { messageId } = await this.send.enqueueOutbound(auth.workspaceId as string, {
         conversationId,
         body: input.body,

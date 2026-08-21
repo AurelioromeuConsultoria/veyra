@@ -171,7 +171,11 @@ export class WhatsappSendService {
           SET "state" = 'sending',
               "claimToken" = gen_random_uuid(),
               "leaseExpiresAt" = now() + ($3::int * interval '1 millisecond'),
-              "attempts" = "attempts" + 1
+              "attempts" = "attempts" + 1,
+              -- mantido à mão: o @updatedAt do Prisma não alcança comando cru, e
+              -- o limiar da varredura depende desta coluna. Sem isto, linha
+              -- recém-escrita nasce "velha" e pode ser enterrada na 1a passada
+              "updatedAt" = now()
         WHERE "workspaceId" = $1::uuid
           AND "messageId" = $2::uuid
           AND (
@@ -557,7 +561,8 @@ export class WhatsappSendService {
                 WHEN d."dispatchedAt" IS NOT NULL THEN 'abandoned_in_flight'
                 ELSE 'abandoned_before_send' END,
               "claimToken" = NULL,
-              "leaseExpiresAt" = NULL
+              "leaseExpiresAt" = NULL,
+              "updatedAt" = now()
         WHERE d."messageId" IN (
                 SELECT "messageId" FROM "MessageDispatch"
                  WHERE "state" = 'sending'
@@ -598,11 +603,15 @@ export class WhatsappSendService {
   }
 
   /**
-   * `failed_before_send` promete uma retentativa. Quando o evento do outbox que
-   * a faria não existe mais — morreu, ou fechou como entregue enquanto um worker
+   * `failed_before_send` e `reserved` prometem uma retentativa. Quando o evento
+   * do outbox que a faria não existe mais — morreu, ou fechou como entregue enquanto um worker
    * travado perdia a posse —, a promessa é falsa e a linha ficaria para sempre
    * exibindo "aguardando nova tentativa" sem ninguém que possa tentar. Este é o
    * mesmo defeito de "estado que mente" pelo outro lado.
+   *
+   * `reserved` entra pelo mesmo motivo: se `dispatch` lançar ANTES do claim em
+   * todas as tentativas, o dispatcher nunca chama `markExhausted` e a linha fica
+   * exibindo "Enviando…" para sempre.
    *
    * Só linhas PARADAS há mais que o limiar, para não confundir a janela normal
    * entre concluir o dispatch e o outbox reprogramar o evento.
@@ -616,15 +625,16 @@ export class WhatsappSendService {
     >(
       `UPDATE "MessageDispatch" AS d
           SET "state" = 'failed_permanent'::"DispatchState",
-              "errorCode" = 'no_retrier'
+              "errorCode" = 'no_retrier',
+              "updatedAt" = now()
         WHERE d."messageId" IN (
                 SELECT "messageId" FROM "MessageDispatch"
-                 WHERE "state" = 'failed_before_send'
+                 WHERE "state" IN ('failed_before_send', 'reserved')
                    AND "updatedAt" < now() - ($1::int * interval '1 minute')
                  LIMIT $2
                  FOR UPDATE SKIP LOCKED
               )
-          AND d."state" = 'failed_before_send'
+          AND d."state" IN ('failed_before_send', 'reserved')
           AND d."updatedAt" < now() - ($1::int * interval '1 minute')
           AND NOT EXISTS (
                 SELECT 1 FROM "OutboxEvent" e

@@ -98,6 +98,26 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     post(`/api/conversations/${conversationId}/messages`, body, headers);
   const drain = () => app.get(JobsService).dispatchPending();
 
+  /**
+   * Assere o número de envios COM diagnóstico. Uma falha intermitente desta
+   * suíte apareceu como `transport.sends` vazio e custou uma investigação
+   * inconclusiva: sem o estado do dispatch na mensagem de erro, "não enviou" não
+   * distingue quota recusada, janela fechada e política revalidada.
+   */
+  const expectEnvios = async (messageId: string, esperado: number) => {
+    if (transport.sends.length !== esperado) {
+      const d = await prisma.raw.messageDispatch.findFirst({ where: { messageId } });
+      const c = await prisma.raw.usageCounter.findFirst({
+        where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },
+      });
+      throw new Error(
+        `esperava ${esperado} envio(s), houve ${transport.sends.length}. ` +
+          `dispatch=${JSON.stringify({ state: d?.state, errorCode: d?.errorCode, attempts: d?.attempts })} ` +
+          `contador=${c ? String(c.value) : 'ausente'}`,
+      );
+    }
+  };
+
   /** Entrada real, para a conversa nascer com janela e endereço. */
   const ingest = (timestamp = String(Math.floor(Date.now() / 1000))) => {
     const payload = {
@@ -905,14 +925,23 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
        * Sem ambas, esta chamada trava até o COMMIT — daí a corrida contra o
        * relógio, para falhar com mensagem em vez de estourar o timeout da suíte.
        */
+      const varredura = app
+        .get(WhatsappSendService)
+        .reapStaleDispatches()
+        // a perdedora do `race` não pode explodir depois nem escrever no teste
+        // seguinte: se ela bloqueou, é engolida junto com o rollback
+        .catch(() => 'abortou');
       const resultado = await Promise.race([
-        app.get(WhatsappSendService).reapStaleDispatches(),
+        varredura,
         new Promise((resolve) => setTimeout(() => resolve('bloqueou'), 2_000)),
       ]);
       expect(resultado).toBe(0);
 
       await outra.query('COMMIT');
     } finally {
+      // ROLLBACK explícito: se a asserção falhar, a transação aberta não fica
+      // pendurada esperando o fim da conexão e contaminando o teste seguinte
+      await outra.query('ROLLBACK').catch(() => undefined);
       await outra.end();
     }
 
@@ -992,6 +1021,63 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     expect((trilha!.after as Record<string, unknown>).externalId).toBe('wamid.ENVIADA');
     expect(JSON.stringify(trilha!.after)).not.toContain('Texto sigiloso');
     expect(trilha!.entityId).toBe(criada.body.id);
+  });
+
+  it('varredura: `reserved` parado sem evento vivo para de exibir "Enviando…"', async () => {
+    const criada = await sendMessage({ direction: 'outbound', body: 'Nunca claimou' }).expect(201);
+    /**
+     * `dispatch` lançando ANTES do claim em todas as tentativas: o dispatcher
+     * nunca chama `markExhausted` e a linha ficava `reserved` para sempre,
+     * exibindo "Enviando…" na thread. Terceiro lado do mesmo estado que mente.
+     */
+    await prisma.raw.outboxEvent.updateMany({
+      where: { eventType: 'whatsapp.send_pending' },
+      data: { status: 'dead' },
+    });
+    await prisma.raw.messageDispatch.updateMany({
+      where: { messageId: criada.body.id },
+      data: { updatedAt: new Date(Date.now() - 30 * 60_000) },
+    });
+
+    expect(await app.get(WhatsappSendService).reapStaleDispatches()).toBe(1);
+
+    const dispatch = await prisma.raw.messageDispatch.findFirst({
+      where: { messageId: criada.body.id },
+    });
+    expect(dispatch).toMatchObject({ state: 'failed_permanent', errorCode: 'no_retrier' });
+    const contador = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },
+    });
+    expect(Number(contador?.value ?? 0)).toBe(0); // reserva devolvida
+  });
+
+  it('evento morto NÃO rebaixa dispatch com lease VIVO de outro worker', async () => {
+    const criada = await sendMessage({ direction: 'outbound', body: 'Outro está enviando' }).expect(
+      201,
+    );
+    // outro worker detém a posse e ainda não despachou
+    await prisma.raw.messageDispatch.updateMany({
+      where: { messageId: criada.body.id },
+      data: {
+        state: 'sending',
+        claimToken: '66666666-6666-4666-8666-666666666666',
+        leaseExpiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+
+    await app.get(WhatsappSendService).markExhausted(wsA.workspaceId, criada.body.id);
+
+    const dispatch = await prisma.raw.messageDispatch.findFirst({
+      where: { messageId: criada.body.id },
+    });
+    /**
+     * Rebaixar aqui fazia o dono vivo enviar, perder o fencing e a mensagem
+     * ENTREGUE aparecer como "Não enviada" — convite ao reenvio manual.
+     */
+    expect(dispatch).toMatchObject({
+      state: 'sending',
+      claimToken: '66666666-6666-4666-8666-666666666666',
+    });
   });
 
   it('o estado do despacho é VISÍVEL na thread', async () => {

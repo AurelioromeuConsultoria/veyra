@@ -239,9 +239,12 @@ describe('Arquivos — upload, download autorizado e expurgo (integração)', ()
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/não foi verificado|canal externo/i);
 
-    // marcado clean por um scanner, o portão do ARQUIVO libera — e a recusa que
-    // sobra é de POLÍTICA do canal (esta conversa não tem endereço externo nem
-    // janela aberta), o que prova que os dois portões são independentes
+    /**
+     * Marcado clean por um scanner, o portão do ARQUIVO libera — e a recusa que
+     * sobra é de CAPACIDADE: o transporte ainda não manda mídia, e seguir adiante
+     * daria 201 com o anexo perdido. Os portões são independentes e nesta ordem:
+     * verificação do arquivo → capacidade do canal → política da conversa.
+     */
     await prisma.raw.fileObject.updateMany({
       where: { id: arquivo.id },
       data: { scanStatus: 'clean' },
@@ -253,7 +256,16 @@ describe('Arquivos — upload, download autorizado e expurgo (integração)', ()
     });
     expect(depois.status).toBe(400);
     expect(depois.body.message).not.toMatch(/não foi verificado/i);
-    expect(depois.body.message).toMatch(/destinatário|janela/i);
+    expect(depois.body.message).toMatch(/anexo/i);
+
+    // e SEM anexo a recusa é de POLÍTICA (esta conversa não tem endereço externo
+    // nem janela aberta) — a prova de que o terceiro portão continua no lugar
+    const semAnexo = await post(`/api/conversations/${conversaExterna.id}/messages`, sessionA, {
+      direction: 'outbound',
+      body: 'segue',
+    });
+    expect(semAnexo.status).toBe(400);
+    expect(semAnexo.body.message).toMatch(/destinatário|janela/i);
   });
 
   // ── Expurgo ───────────────────────────────────────────────────────────────

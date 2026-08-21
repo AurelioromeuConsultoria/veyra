@@ -299,7 +299,9 @@ export class UsageService {
     const definition = USAGE_METRICS[metric];
     const period = periodKeyFor(definition.kind);
     const limit = (await this.limitFor(workspaceId, metric)) ?? 0;
-    const row = await this.prisma.raw.usageCounter.findFirst({
+    const row = await // raw justificado: usado também fora do CLS (worker de envio), com
+    // workspaceId explícito no where — §3.3
+    this.prisma.raw.usageCounter.findFirst({
       where: { workspaceId, metric, period },
       select: { value: true },
     });

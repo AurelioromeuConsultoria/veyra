@@ -116,10 +116,11 @@ export class MediaCollectorService {
     }
 
     const fileName = item.fileName ?? this.inferName(item.providerMediaId, outcome.mimeType);
+    let detectado: string;
     try {
       // MESMA validação do upload humano: tipo real por magic bytes, e
       // extensão coerente com o conteúdo
-      assertAllowedFile(outcome.bytes, fileName);
+      detectado = assertAllowedFile(outcome.bytes, fileName).mimeType;
     } catch (error) {
       if (error instanceof UnsupportedFileError) return this.fail(item, 'unsupported_type');
       throw error;
@@ -147,7 +148,13 @@ export class MediaCollectorService {
           workspaceId: item.workspaceId,
           bytes: outcome.bytes,
           fileName,
-          mimeType: outcome.mimeType,
+          /**
+           * TIPO DETECTADO, nunca o declarado. `outcome.mimeType` é o
+           * `Content-Type` que a CDN devolveu para um arquivo de TERCEIRO —
+           * confiar nele contraria SECURITY.md §7.1 exatamente onde o conteúdo
+           * é menos confiável, e o download ecoaria esse tipo de volta.
+           */
+          mimeType: detectado,
         });
         file = gravado;
         /**
@@ -158,7 +165,12 @@ export class MediaCollectorService {
          */
         const { count } = await this.prisma.raw.$transaction(async (tx) => {
           const concluido = await tx.inboundMedia.updateMany({
-            where: { id: item.id, claimToken: item.claimToken, state: 'pending' },
+            where: {
+              workspaceId: item.workspaceId,
+              id: item.id,
+              claimToken: item.claimToken,
+              state: 'pending',
+            },
             data: {
               state: 'fetched',
               fileObjectId: gravado.id,
@@ -244,9 +256,16 @@ export class MediaCollectorService {
   }
 
   /** Renova o lease; `false` = a posse já não é nossa. */
-  private async renewLease(item: { id: string; claimToken: string }): Promise<boolean> {
+  private async renewLease(item: ClaimedMedia): Promise<boolean> {
     const { count } = await this.prisma.raw.inboundMedia.updateMany({
-      where: { id: item.id, claimToken: item.claimToken, state: 'pending' },
+      // `workspaceId` explícito mesmo com a PK no where: é a regra de todo `raw`
+      // do projeto (§3.3), e o hábito é o que impede o próximo erro de encanamento
+      where: {
+        workspaceId: item.workspaceId,
+        id: item.id,
+        claimToken: item.claimToken,
+        state: 'pending',
+      },
       data: { leaseExpiresAt: new Date(Date.now() + LEASE_MS) },
     });
     return count > 0;
@@ -258,25 +277,18 @@ export class MediaCollectorService {
    * (`attempts < MAX`) e sem `errorCode` — mídia de paciente desaparecendo em
    * silêncio.
    */
-  private async releaseForRetry(item: {
-    id: string;
-    claimToken: string;
-    attempts: number;
-  }): Promise<boolean> {
+  private async releaseForRetry(item: ClaimedMedia): Promise<boolean> {
     if (item.attempts >= MAX_ATTEMPTS) return this.fail(item, 'max_attempts');
     await this.prisma.raw.inboundMedia.updateMany({
-      where: { id: item.id, claimToken: item.claimToken },
+      where: { workspaceId: item.workspaceId, id: item.id, claimToken: item.claimToken },
       data: { claimedAt: null, leaseExpiresAt: null, claimToken: null },
     });
     return false;
   }
 
-  private async fail(
-    item: { id: string; claimToken: string },
-    errorCode: string,
-  ): Promise<boolean> {
+  private async fail(item: ClaimedMedia, errorCode: string): Promise<boolean> {
     await this.prisma.raw.inboundMedia.updateMany({
-      where: { id: item.id, claimToken: item.claimToken },
+      where: { workspaceId: item.workspaceId, id: item.id, claimToken: item.claimToken },
       data: {
         state: 'failed',
         errorCode,
