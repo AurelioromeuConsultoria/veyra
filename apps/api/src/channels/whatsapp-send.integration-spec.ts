@@ -234,7 +234,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
   it('reentrega do evento NÃO reenvia a mensagem', async () => {
     const criada = await sendMessage({ direction: 'outbound', body: 'Uma vez só' }).expect(201);
     await drain();
-    expect(transport.sends).toHaveLength(1);
+    await expectEnvios(criada.body.id, 1);
 
     // devolve o evento a pending, como um lease expirado faria
     await prisma.raw.outboxEvent.updateMany({
@@ -244,7 +244,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     await drain();
 
     // o dispatch não está mais `reserved`: nada é reenviado
-    expect(transport.sends).toHaveLength(1);
+    await expectEnvios(criada.body.id, 1);
     const contador = await prisma.raw.usageCounter.findFirst({
       where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },
     });
@@ -384,7 +384,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     });
     expect(evento!.status).toBe('delivered');
     await drain();
-    expect(transport.sends).toHaveLength(1);
+    await expectEnvios(criada.body.id, 1);
   });
 
   it('falha PERMANENTE libera a quota e encerra sem seis retentativas', async () => {
@@ -507,7 +507,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     };
     await Promise.all([service.dispatch(claimado), service.dispatch(claimado)]);
 
-    expect(transport.sends).toHaveLength(1);
+    await expectEnvios(criada.body.id, 1);
     const dispatch = await prisma.raw.messageDispatch.findFirst({
       where: { messageId: criada.body.id },
     });
@@ -575,7 +575,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     });
     await drain();
 
-    expect(transport.sends).toHaveLength(1);
+    await expectEnvios(criada.body.id, 1);
     const dispatch = await prisma.raw.messageDispatch.findFirst({
       where: { messageId: criada.body.id },
     });
@@ -648,7 +648,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
 
     await drain();
 
-    expect(transport.sends).toHaveLength(1);
+    await expectEnvios(criada.body.id, 1);
     const dispatch = await prisma.raw.messageDispatch.findFirst({
       where: { messageId: criada.body.id },
     });
@@ -739,7 +739,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
 
     // e a retentativa do outbox realmente envia
     await drain();
-    expect(transport.sends).toHaveLength(1);
+    await expectEnvios(criada.body.id, 1);
     dispatch = await prisma.raw.messageDispatch.findFirst({
       where: { messageId: criada.body.id },
     });
@@ -1008,7 +1008,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     const criada = await sendMessage({ direction: 'outbound', body: 'Texto sigiloso' }).expect(201);
     await drain();
 
-    expect(transport.sends).toHaveLength(1);
+    await expectEnvios(criada.body.id, 1);
     const trilha = await prisma.raw.auditLog.findFirst({
       where: { workspaceId: wsA.workspaceId, action: 'message.dispatch_lease_lost' },
     });
