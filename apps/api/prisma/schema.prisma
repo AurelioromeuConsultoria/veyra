@@ -110,6 +110,7 @@ model Workspace {
   channelConsents        ContactChannelConsent[]
   messageDispatches      MessageDispatch[]
   messageStatusEvents    MessageStatusEvent[]
+  inboundMedia           InboundMedia[]
 }
 
 /// Catálogo GLOBAL de permissões (ADR-004): chaves estáveis do sistema —
@@ -903,6 +904,7 @@ model Message {
   attachments         MessageAttachment[]
   messageDispatches   MessageDispatch[]
   messageStatusEvents MessageStatusEvent[]
+  inboundMedias       InboundMedia[]
 
   @@unique([workspaceId, id])
   // dedup de ingestão externa (nulos não colidem: mensagem interna não tem externalId)
@@ -992,9 +994,10 @@ model FileObject {
   scanStatus             FileScanStatus @default(pending)
   createdAt              DateTime       @default(now())
 
-  workspace   Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  uploadedBy  Membership          @relation("FileUploader", fields: [workspaceId, uploadedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  attachments MessageAttachment[]
+  workspace     Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  uploadedBy    Membership          @relation("FileUploader", fields: [workspaceId, uploadedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  attachments   MessageAttachment[]
+  inboundMedias InboundMedia[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, key])
@@ -1360,14 +1363,18 @@ model ContactChannelConsent {
   evidence              String?
   grantedAt             DateTime      @default(now())
   revokedAt             DateTime?
+  /// VIGENTE = TRUE; revogado = NULL. Com o unique composto abaixo, o banco
+  /// garante no máximo um consentimento ativo por (contato, canal) — mesmo
+  /// padrão de `Pipeline.defaultMark` e `Channel.systemMark`. O índice comum
+  /// não garantia nada, e o comentário do modelo prometia o que o banco não fazia.
+  activeMark            Boolean?
   grantedByMembershipId String?       @db.Uuid
 
   workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   contact   Contact     @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
   grantedBy Membership? @relation("ConsentGranter", fields: [workspaceId, grantedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
 
-  /// um consentimento VIGENTE por (contato, canal) — histórico fica pelas
-  /// linhas revogadas, que saem do unique parcial
+  @@unique([workspaceId, contactId, channelType, activeMark])
   @@index([workspaceId, contactId, channelType])
 }
 
@@ -1432,4 +1439,45 @@ model MessageStatusEvent {
   /// reentrega do mesmo recibo não duplica o fato
   @@unique([workspaceId, messageId, status])
   @@index([workspaceId, messageId, occurredAt])
+}
+
+enum InboundMediaState {
+  /// referência registrada; bytes ainda no provedor
+  pending
+  fetched
+  failed
+}
+
+/**
+ * Referência de MÍDIA recebida (ADR-037). O webhook público registra apenas
+ * isto — baixar ali daria a um chamador externo o poder de nos fazer buscar
+ * conteúdo arbitrário. A coleta autenticada acontece depois e cria o
+ * `FileObject` com `scanStatus: pending`.
+ * É uma TABELA e não um evento de outbox porque evento interno sem consumidor
+ * é entrega perdida: o dispatcher marcaria como entregue e a referência
+ * desapareceria. A coleta entra na 9.1.b, junto do transporte autenticado.
+ */
+model InboundMedia {
+  id              String            @id @default(uuid()) @db.Uuid
+  workspaceId     String            @db.Uuid
+  messageId       String            @db.Uuid
+  /// id da mídia NO PROVEDOR — opaco, sem tabela local para referenciar
+  providerMediaId String
+  mimeType        String
+  fileName        String?
+  state           InboundMediaState @default(pending)
+  fileObjectId    String?           @db.Uuid
+  /// código curto do motivo quando `failed` — nunca resposta do provedor
+  errorCode       String?
+  attempts        Int               @default(0)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  workspace  Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  message    Message     @relation(fields: [workspaceId, messageId], references: [workspaceId, id], onDelete: Cascade)
+  fileObject FileObject? @relation(fields: [workspaceId, fileObjectId], references: [workspaceId, id], onDelete: SetNull)
+
+  /// reentrega do mesmo evento não cria segunda referência
+  @@unique([workspaceId, messageId, providerMediaId])
+  @@index([workspaceId, state])
 }

@@ -61,6 +61,10 @@ const DOCUMENTED_LOOSE_COLUMNS = new Set([
   'ChannelCredential.phoneNumberId',
   'ChannelCredential.businessAccountId',
   'MessageDispatch.externalId',
+  // id da mídia NO PROVEDOR: opaco, e os bytes só existem lá até a coleta.
+  // A integridade que importa é o unique (workspaceId, messageId,
+  // providerMediaId), que impede referência duplicada. ADR-037.
+  'InboundMedia.providerMediaId',
 ]);
 
 interface FkRow {

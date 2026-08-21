@@ -8,6 +8,7 @@ import {
   createMembershipFixture,
   createWorkspaceFixture,
   seedPermissionCatalog,
+  setPlanLimit,
   type WorkspaceFixture,
 } from '../../test/integration/fixtures';
 import { resetDb } from '../../test/integration/harness';
@@ -189,7 +190,7 @@ describe('Canal WhatsApp — ingestão (integração)', () => {
     expect(await prisma.raw.message.count()).toBe(2);
   });
 
-  it('mídia recebida NÃO é baixada no request público: só a coleta é agendada', async () => {
+  it('mídia recebida NÃO é baixada no request público: fica como referência pendente', async () => {
     const comImagem = inbound();
     const mensagem = comImagem.entry[0].changes[0].value.messages[0] as Record<string, unknown>;
     mensagem.type = 'image';
@@ -199,11 +200,26 @@ describe('Canal WhatsApp — ingestão (integração)', () => {
 
     // nenhum arquivo existe ainda — o webhook público não busca conteúdo
     expect(await prisma.raw.fileObject.count()).toBe(0);
-    const evento = await prisma.raw.outboxEvent.findFirst({
-      where: { eventType: 'whatsapp.media_pending' },
+    // e a referência ficou em TABELA, não em evento interno sem consumidor
+    // (que o dispatcher marcaria como entregue, perdendo a mídia)
+    const referencia = await prisma.raw.inboundMedia.findFirst();
+    expect(referencia).toMatchObject({
+      providerMediaId: 'media-123',
+      mimeType: 'image/png',
+      state: 'pending',
+      fileObjectId: null,
     });
-    expect(evento).toBeTruthy();
-    expect(evento!.payload).toMatchObject({ mediaId: 'media-123', mimeType: 'image/png' });
+  });
+
+  it('reentrega do evento com mídia não cria segunda referência', async () => {
+    const comImagem = inbound();
+    const mensagem = comImagem.entry[0].changes[0].value.messages[0] as Record<string, unknown>;
+    mensagem.type = 'image';
+    delete mensagem.text;
+    mensagem.image = { id: 'media-123', mime_type: 'image/png' };
+    await send(comImagem).expect(200);
+    await send(comImagem).expect(200);
+    expect(await prisma.raw.inboundMedia.count()).toBe(1);
   });
 
   it('tipo de mensagem não suportado é ignorado sem quebrar', async () => {
@@ -218,6 +234,187 @@ describe('Canal WhatsApp — ingestão (integração)', () => {
   it('payload malformado responde 200 e não vira reentrega infinita', async () => {
     await send({ object: 'whatsapp_business_account', entry: 'não é array' }).expect(200);
     expect(await prisma.raw.message.count()).toBe(0);
+  });
+
+  // ── Correções da revisão ──────────────────────────────────────────────────
+
+  it('P0: entregas SIMULTÂNEAS do mesmo evento criam exatamente um de cada coisa', async () => {
+    const payload = inbound();
+    const resultados = await Promise.all([send(payload), send(payload), send(payload)]);
+    expect(resultados.every((r) => r.status === 200)).toBe(true);
+
+    // sem o lock consultivo, isto criava contatos duplicados e uma das entregas
+    // estourava no unique da mensagem
+    expect(await prisma.raw.contact.count({ where: { workspaceId: wsA.workspaceId } })).toBe(1);
+    expect(await prisma.raw.conversation.count()).toBe(1);
+    expect(await prisma.raw.message.count()).toBe(1);
+    expect(await prisma.raw.activity.count({ where: { type: 'message_received' } })).toBe(1);
+
+    // e a quota foi consumida UMA vez
+    const contador = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'contacts' },
+    });
+    expect(Number(contador?.value ?? 0)).toBe(1);
+  });
+
+  it('ADR-040: contato criado pelo canal passa pelo domínio — quota, activity e outbox', async () => {
+    await send(inbound()).expect(200);
+
+    const contador = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'contacts' },
+    });
+    expect(Number(contador?.value ?? 0)).toBe(1);
+
+    const activity = await prisma.raw.activity.findFirst({ where: { type: 'contact_created' } });
+    expect(activity!.actorType).toBe('system');
+
+    // é o `contact.created` que faz um lead de WhatsApp disparar automação
+    const evento = await prisma.raw.outboxEvent.findFirst({
+      where: { eventType: 'contact.created' },
+    });
+    expect(evento).toBeTruthy();
+  });
+
+  it('ADR-040: quota esgotada NÃO descarta a mensagem do paciente', async () => {
+    await setPlanLimit(prisma, 'contacts', 0);
+    await send(inbound()).expect(200);
+
+    // a mensagem entrou e o contato existe: perder a conversa por limite de
+    // plano é dano irrecuperável para o paciente
+    expect(await prisma.raw.message.count()).toBe(1);
+    expect(await prisma.raw.contact.count({ where: { workspaceId: wsA.workspaceId } })).toBe(1);
+    // e o estouro fica VISÍVEL no medidor, acima do teto
+    const contador = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'contacts' },
+    });
+    expect(Number(contador?.value ?? 0)).toBe(1);
+  });
+
+  it('entrega FORA DE ORDEM não faz a janela regredir', async () => {
+    const recente = inbound();
+    recente.entry[0].changes[0].value.messages[0].timestamp = '1787000900';
+    await send(recente).expect(200);
+    const depoisDaRecente = await prisma.raw.conversation.findFirst();
+
+    const antiga = inbound();
+    antiga.entry[0].changes[0].value.messages[0].id = 'wamid.ANTIGA';
+    antiga.entry[0].changes[0].value.messages[0].timestamp = '1787000100';
+    await send(antiga).expect(200);
+
+    const depois = await prisma.raw.conversation.findFirst();
+    // a mensagem antiga foi ingerida…
+    expect(await prisma.raw.message.count()).toBe(2);
+    // …mas a janela e a ordem do inbox guardam o MAIOR instante
+    expect(depois!.lastInboundAt).toEqual(depoisDaRecente!.lastInboundAt);
+    expect(depois!.lastMessageAt).toEqual(depoisDaRecente!.lastMessageAt);
+  });
+
+  it('P0: recibo de mensagem de OUTRO canal do mesmo workspace é ignorado', async () => {
+    // segundo canal do mesmo workspace, com mensagem despachada por ele
+    const outroCanal = await prisma.raw.channel.create({
+      data: { workspaceId: wsA.workspaceId, type: 'email', name: 'E-mail' },
+    });
+    const conversa = await prisma.raw.conversation.create({
+      data: { workspaceId: wsA.workspaceId, channelId: outroCanal.id },
+    });
+    const mensagem = await prisma.raw.message.create({
+      data: {
+        workspaceId: wsA.workspaceId,
+        conversationId: conversa.id,
+        channelId: outroCanal.id,
+        direction: 'outbound',
+        authorType: 'user',
+        body: 'de outro canal',
+      },
+    });
+    await prisma.raw.messageDispatch.create({
+      data: {
+        workspaceId: wsA.workspaceId,
+        messageId: mensagem.id,
+        state: 'sent',
+        externalId: 'wamid.DE_OUTRO_CANAL',
+      },
+    });
+
+    await send({
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                metadata: { phone_number_id: PHONE_NUMBER_ID },
+                statuses: [
+                  { id: 'wamid.DE_OUTRO_CANAL', status: 'delivered', timestamp: '1787000200' },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    }).expect(200);
+
+    expect(await prisma.raw.messageStatusEvent.count()).toBe(0);
+  });
+
+  it('consentimento: o banco garante no máximo um vigente por contato e canal', async () => {
+    await send(inbound()).expect(200);
+    const contato = await prisma.raw.contact.findFirst();
+
+    await prisma.raw.contactChannelConsent.create({
+      data: {
+        workspaceId: wsA.workspaceId,
+        contactId: contato!.id,
+        channelType: 'whatsapp',
+        source: 'agent',
+        activeMark: true,
+      },
+    });
+    // segundo VIGENTE para o mesmo par é recusado pelo banco
+    await expect(
+      prisma.raw.contactChannelConsent.create({
+        data: {
+          workspaceId: wsA.workspaceId,
+          contactId: contato!.id,
+          channelType: 'whatsapp',
+          source: 'form',
+          activeMark: true,
+        },
+      }),
+    ).rejects.toThrow();
+
+    // revogado sai do unique: o histórico convive com um novo vigente
+    await prisma.raw.contactChannelConsent.updateMany({
+      where: { contactId: contato!.id },
+      data: { activeMark: null, revokedAt: new Date() },
+    });
+    await prisma.raw.contactChannelConsent.create({
+      data: {
+        workspaceId: wsA.workspaceId,
+        contactId: contato!.id,
+        channelType: 'whatsapp',
+        source: 'form',
+        activeMark: true,
+      },
+    });
+    expect(await prisma.raw.contactChannelConsent.count()).toBe(2);
+  });
+
+  it('CHECK impede marca vigente com revogação preenchida', async () => {
+    await send(inbound()).expect(200);
+    const contato = await prisma.raw.contact.findFirst();
+    await expect(
+      prisma.raw.contactChannelConsent.create({
+        data: {
+          workspaceId: wsA.workspaceId,
+          contactId: contato!.id,
+          channelType: 'whatsapp',
+          source: 'agent',
+          activeMark: true,
+          revokedAt: new Date(),
+        },
+      }),
+    ).rejects.toThrow();
   });
 
   // ── Recibos (ADR-039) ─────────────────────────────────────────────────────

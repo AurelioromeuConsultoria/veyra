@@ -116,7 +116,9 @@ O webhook do WhatsApp é o **único caminho de escrita público e não autentica
 5. **Throttle próprio** e teto de corpo; o `GET` de verificação compara o `verify_token` em tempo constante.
 6. **Mídia não é baixada no request público**: o webhook registra a referência e agenda a coleta autenticada (evento interno do outbox). Baixar ali daria a um chamador externo o poder de nos fazer buscar conteúdo arbitrário.
 7. **Segredos**: o app secret e o verify_token vivem no ambiente/keystore (um Meta App hoje); por canal ficam `phoneNumberId`, WABA e o token de envio **cifrado**. Nada disso entra em DTO, log, auditoria, cache ou idempotência.
-8. **Janela ≠ consentimento** (ADR-038): mensagem recebida abre a janela de 24h (`lastInboundAt`); consentimento é `ContactChannelConsent` com origem, data e revogação, **nunca criado automaticamente**.
+8. **Janela ≠ consentimento** (ADR-038): mensagem recebida abre a janela de 24h (`lastInboundAt`); consentimento é `ContactChannelConsent` com origem, data e revogação, **nunca criado automaticamente**. No máximo **um vigente** por (contato, canal), garantido por unique composto com `activeMark` TRUE/NULL e CHECK que amarra a marca à revogação.
+9. **Ingestão passa pelo domínio** (ADR-040): contato criado pelo canal consome quota, emite `Activity` e `contact.created` — um lead de WhatsApp dispara automação como qualquer outro. Tudo em **uma transação sob lock consultivo** por (workspace, canal, telefone), com dedupe dentro do lock. Quota esgotada **não descarta** a mensagem: o excesso fica visível no medidor, enquanto a criação manual continua barrada em 402.
+10. **Timestamps não regridem**: entrega fora de ordem guarda o maior instante em `lastMessageAt`/`lastInboundAt`. Recibo só é aceito se o dispatch pertencer ao **mesmo canal** que a credencial resolveu.
 
 ## 8. Segredos e criptografia
 

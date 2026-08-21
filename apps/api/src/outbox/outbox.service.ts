@@ -40,23 +40,10 @@ export const OUTBOX_EVENTS = {
    * lista de eventos assináveis.
    */
   'file.purge': z.object({ key: z.string().max(200) }).strict(),
-  /**
-   * INTERNO: coleta autenticada de mídia recebida no WhatsApp. O webhook
-   * público só registra a referência (ADR-037) — baixar dentro dele daria a um
-   * chamador externo o poder de nos fazer buscar conteúdo arbitrário.
-   */
-  'whatsapp.media_pending': z
-    .object({
-      messageId: z.string().uuid(),
-      mediaId: z.string().max(200),
-      mimeType: z.string().max(100),
-      fileName: z.string().max(200),
-    })
-    .strict(),
 } as const;
 
 /** Eventos que NUNCA saem para webhook: são trabalho interno da plataforma. */
-export const INTERNAL_EVENT_TYPES = new Set<string>(['file.purge', 'whatsapp.media_pending']);
+export const INTERNAL_EVENT_TYPES = new Set<string>(['file.purge']);
 
 export type OutboxEventType = keyof typeof OUTBOX_EVENTS;
 export const OUTBOX_EVENT_TYPES = Object.keys(OUTBOX_EVENTS) as OutboxEventType[];

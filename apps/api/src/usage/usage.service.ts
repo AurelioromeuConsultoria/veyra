@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ClsService } from 'nestjs-cls';
 import type { Prisma } from '../generated/prisma/client';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { USAGE_METRICS, periodEnd, periodKeyFor, type MetricKey } from './metrics';
@@ -24,7 +25,10 @@ export interface UsageSnapshot {
 export class UsageService {
   private readonly logger = new Logger(UsageService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cls: ClsService,
+  ) {}
 
   /**
    * Incremento ATÔMICO com verificação de limite, DENTRO da transação de quem
@@ -43,7 +47,7 @@ export class UsageService {
     const definition = USAGE_METRICS[metric];
     const period = periodKeyFor(definition.kind);
     const limit = definition.enforced ? await this.limitFor(workspaceId, metric) : null;
-    await this.ensureRow(metric, period);
+    await this.ensureRow(metric);
     const value = await this.applyDelta(tx, metric, period, delta);
 
     if (limit !== null && delta > 0 && value > limit) {
@@ -73,10 +77,13 @@ export class UsageService {
     metric: string,
     period: string,
     delta: number,
+    /** explícito nos caminhos sem CLS (ingestão de canal externo) */
+    workspaceId?: string,
   ): Promise<number> {
     const client = tx as Db;
+    const where = workspaceId ? { workspaceId, metric, period } : { metric, period };
     const { count } = await client.usageCounter.updateMany({
-      where: { metric, period },
+      where,
       data: { value: { increment: delta } },
     });
     if (count === 0) {
@@ -86,16 +93,35 @@ export class UsageService {
       throw new Error(`Linha de uso ausente para ${metric}/${period}`);
     }
     const row = (await client.usageCounter.findFirst({
-      where: { metric, period },
+      where,
       select: { value: true },
     })) as unknown as { value: bigint } | null;
     const value = Number(row?.value ?? 0);
     // gauge nunca fica negativo (exclusão dupla, backfill defasado)
     if (value < 0) {
-      await client.usageCounter.updateMany({ where: { metric, period }, data: { value: 0 } });
+      await client.usageCounter.updateMany({ where, data: { value: 0 } });
       return 0;
     }
     return value;
+  }
+
+  /**
+   * Consome SEM barrar no limite, para caminhos em que recusar causa dano maior
+   * que estourar o teto — hoje só a ingestão de canal externo (ADR-040):
+   * perder a mensagem de um paciente por limite de plano é irrecuperável para
+   * ele, enquanto ultrapassar o teto é um problema de cobrança, visível no
+   * medidor e resolvido com uma conversa.
+   */
+  async consumeOverLimit(
+    tx: AnyClient,
+    workspaceId: string,
+    metric: MetricKey,
+    delta: number,
+  ): Promise<void> {
+    const period = periodKeyFor(USAGE_METRICS[metric].kind);
+    // a linha precisa existir ANTES: quem chama de dentro de uma transação sem
+    // CLS garante isso com `ensureCounterRow`
+    await this.applyDelta(tx, metric, period, delta, workspaceId);
   }
 
   /**
@@ -112,7 +138,7 @@ export class UsageService {
     const definition = USAGE_METRICS[metric];
     const period = periodKeyFor(definition.kind);
     const limit = await this.limitFor(workspaceId, metric);
-    await this.ensureRow(metric, period);
+    await this.ensureRow(metric);
     const db = this.prisma.db as unknown as {
       $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T>;
     };
@@ -256,14 +282,31 @@ export class UsageService {
    * dentro da transação a aborta por inteiro — não há retry possível ali.
    * Criar a linha zerada é inofensivo mesmo se a transação de domínio abortar.
    */
-  private async ensureRow(metric: string, period: string): Promise<void> {
-    const existing = await this.prisma.db.usageCounter.findFirst({
-      where: { metric, period },
+  /** Caminho com CLS: o workspace vem do contexto da request. */
+  private async ensureRow(metric: MetricKey): Promise<void> {
+    await this.ensureCounterRow(this.cls.get<string>('workspaceId'), metric);
+  }
+
+  /**
+   * Garante a linha do contador com `workspaceId` EXPLÍCITO, para caminhos sem
+   * CLS — a ingestão de canal externo não tem sessão (ADR-037). Precisa rodar
+   * FORA da transação de domínio: criar lá dentro exporia a corrida da primeira
+   * escrita a um `P2002`, e no Postgres um erro dentro da transação a aborta por
+   * inteiro.
+   *
+   * `raw` justificado: workspaceId explícito, caminho sem contexto (§2).
+   */
+  async ensureCounterRow(workspaceId: string, metric: MetricKey): Promise<void> {
+    const period = periodKeyFor(USAGE_METRICS[metric].kind);
+    const existing = await this.prisma.raw.usageCounter.findFirst({
+      where: { workspaceId, metric, period },
       select: { id: true },
     });
     if (existing) return;
     try {
-      await this.prisma.db.usageCounter.create({ data: { metric, period, value: 0 } } as never);
+      await this.prisma.raw.usageCounter.create({
+        data: { workspaceId, metric, period, value: 0 },
+      });
     } catch (error) {
       // outra requisição criou primeiro: exatamente o que queremos
       if ((error as { code?: string }).code !== 'P2002') throw error;

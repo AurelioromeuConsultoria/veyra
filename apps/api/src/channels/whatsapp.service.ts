@@ -1,8 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { OutboxService } from '../outbox/outbox.service';
+import { ContactsService } from '../contacts/contacts.service';
+import { UsageService } from '../usage/usage.service';
 import type { Prisma } from '../generated/prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaService, type Db } from '../prisma/prisma.service';
 import { verifyMetaSignature } from './whatsapp.signature';
 import { STATUS_MAP, SUPPORTED_MESSAGE_TYPES, whatsappWebhookSchema } from './whatsapp.types';
 
@@ -21,7 +22,8 @@ export class WhatsappService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
-    private readonly outbox: OutboxService,
+    private readonly contacts: ContactsService,
+    private readonly usage: UsageService,
   ) {}
 
   /** Assinatura sobre o CORPO BRUTO, antes de qualquer parse de domínio. */
@@ -96,23 +98,47 @@ export class WhatsappService {
       return false;
     }
     const { workspaceId, channelId } = credential;
-
-    // DEDUPE pelo unique (workspaceId, channelId, externalId): a Meta reentrega
-    // o que não recebe 2xx, e reentrega não pode virar mensagem repetida
-    const existente = await this.prisma.raw.message.findFirst({
-      where: { workspaceId, channelId, externalId: message.id },
-      select: { id: true },
-    });
-    if (existente) return true; // já ingerida: sucesso, sem efeito
-
-    const contact = await this.resolveContact(workspaceId, message.from, profileName);
     const occurredAt = new Date(Number(message.timestamp) * 1000);
     const media = this.extractMedia(message);
     const body = message.text?.body?.trim() || (media ? `[${message.type}]` : '');
     if (!body) return false;
+    const phone = `+${message.from.replace(/\D/g, '')}`;
+    // a linha do contador precisa existir antes da transação: criá-la lá dentro
+    // exporia a corrida da primeira escrita a um P2002, que aborta a transação
+    // inteira no Postgres
+    await this.usage.ensureCounterRow(workspaceId, 'contacts');
 
+    /**
+     * TUDO numa transação, sob LOCK CONSULTIVO por (workspace, canal, telefone).
+     *
+     * Sem o lock, duas entregas simultâneas do mesmo evento — que a Meta faz —
+     * criavam dois contatos e uma delas estourava no unique da mensagem: dedupe
+     * verificado fora da transação é uma corrida perdida. O lock serializa por
+     * telefone, então conversas de contatos diferentes seguem em paralelo.
+     */
     await this.prisma.raw.$transaction(async (tx) => {
-      const conversation = await this.resolveConversation(tx, workspaceId, channelId, contact.id);
+      await tx.$executeRawUnsafe(
+        'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+        `${workspaceId}:${channelId}`,
+        phone,
+      );
+
+      // DEDUPE dentro do lock: agora "não existe" é uma afirmação estável
+      const existente = await tx.message.findFirst({
+        where: { workspaceId, channelId, externalId: message.id },
+        select: { id: true },
+      });
+      if (existente) return;
+
+      const contactId = await this.resolveContact(tx, workspaceId, phone, profileName);
+      const conversation = await this.resolveConversation(
+        tx,
+        workspaceId,
+        channelId,
+        contactId,
+        occurredAt,
+      );
+
       const created = await tx.message.create({
         data: {
           workspaceId,
@@ -120,19 +146,22 @@ export class WhatsappService {
           channelId,
           direction: 'inbound',
           authorType: 'contact',
-          authorContactId: contact.id,
+          authorContactId: contactId,
           body,
           externalId: message.id,
           deliveredAt: occurredAt,
         },
       });
+
+      // NUNCA REGREDIR: entrega fora de ordem não pode encurtar a janela nem
+      // reordenar o inbox. Guarda o MAIOR timestamp visto.
       await tx.conversation.updateMany({
         where: { workspaceId, id: conversation.id },
         data: {
-          lastMessageAt: occurredAt,
+          lastMessageAt: this.later(conversation.lastMessageAt, occurredAt),
           // JANELA DE ATENDIMENTO (ADR-038): mensagem recebida abre a janela.
           // Consentimento é OUTRA coisa e NÃO é criado aqui.
-          lastInboundAt: occurredAt,
+          lastInboundAt: this.later(conversation.lastInboundAt, occurredAt),
           status: conversation.status === 'closed' ? 'open' : undefined,
         },
       });
@@ -144,29 +173,31 @@ export class WhatsappService {
           payload: {},
           occurredAt,
           conversationId: conversation.id,
-          contactId: contact.id,
+          contactId,
         },
       });
 
       if (media) {
-        // o webhook PÚBLICO não baixa mídia: só registra a referência e agenda
-        // a coleta autenticada (ajuste da revisão). Baixar aqui daria a um
-        // chamador externo o poder de nos fazer buscar conteúdo arbitrário.
-        await this.outbox.enqueue(
-          tx,
-          workspaceId,
-          'whatsapp.media_pending',
-          {
+        // REFERÊNCIA em tabela, não evento interno sem consumidor: o dispatcher
+        // marcaria o evento como entregue e a mídia desapareceria. A coleta
+        // autenticada acontece na 9.1.b.
+        await tx.inboundMedia.create({
+          data: {
+            workspaceId,
             messageId: created.id,
-            mediaId: media.mediaId,
+            providerMediaId: media.mediaId,
             mimeType: media.mimeType,
-            fileName: media.fileName ?? '',
+            fileName: media.fileName ?? null,
           },
-          `whatsapp.media_pending:${message.id}`,
-        );
+        });
       }
     });
     return true;
+  }
+
+  /** O maior de dois instantes, tolerando ausência. */
+  private later(current: Date | null | undefined, candidate: Date): Date {
+    return current && current.getTime() > candidate.getTime() ? current : candidate;
   }
 
   private async ingestStatus(
@@ -178,14 +209,17 @@ export class WhatsappService {
       this.logger.warn(`Status desconhecido (${status.status}) — ignorado`);
       return false;
     }
-    const { workspaceId } = credential;
-    // o recibo referencia o wamid, que vive no DISPATCH (Message é append-only)
+    const { workspaceId, channelId } = credential;
+    // o recibo referencia o wamid, que vive no DISPATCH (Message é append-only).
+    // O `message.channelId` no filtro garante que o recibo é do MESMO canal que
+    // a credencial resolveu — sem isso, um número aceitaria recibo de mensagem
+    // enviada por outro canal do mesmo workspace.
     const dispatch = await this.prisma.raw.messageDispatch.findFirst({
-      where: { workspaceId, externalId: status.id },
+      where: { workspaceId, externalId: status.id, message: { channelId } },
       select: { messageId: true },
     });
     if (!dispatch) {
-      this.logger.warn('Recibo para mensagem desconhecida — ignorado');
+      this.logger.warn('Recibo sem dispatch correspondente neste canal — ignorado');
       return false;
     }
     try {
@@ -206,26 +240,26 @@ export class WhatsappService {
     return true;
   }
 
-  /** Contato pelo telefone; cria se não existir, com o nome do perfil. */
+  /**
+   * Contato pelo telefone; se não existir, cria PELO DOMÍNIO — com quota,
+   * Activity e `contact.created` no outbox, para que um lead chegando por
+   * WhatsApp dispare automação como qualquer outro (ADR-040).
+   */
   private async resolveContact(
+    tx: Prisma.TransactionClient,
     workspaceId: string,
-    waId: string,
+    phone: string,
     profileName?: string,
-  ): Promise<{ id: string }> {
-    const phone = `+${waId.replace(/\D/g, '')}`;
-    const existente = await this.prisma.raw.contact.findFirst({
+  ): Promise<string> {
+    const existente = await tx.contact.findFirst({
       where: { workspaceId, phones: { has: phone } },
       select: { id: true },
     });
-    if (existente) return existente;
-    return this.prisma.raw.contact.create({
-      data: {
-        workspaceId,
-        name: profileName?.trim() || phone,
-        phones: [phone],
-        source: 'whatsapp',
-      },
-      select: { id: true },
+    if (existente) return existente.id;
+    return this.contacts.createFromExternalChannel(tx as unknown as Db, workspaceId, {
+      name: profileName?.trim() || phone,
+      phone,
+      source: 'whatsapp',
     });
   }
 
@@ -236,17 +270,27 @@ export class WhatsappService {
     workspaceId: string,
     channelId: string,
     contactId: string,
-  ): Promise<{ id: string; status: string }> {
-    const aberta = (await tx.conversation.findFirst({
+    /** instante da mensagem: conversa NOVA nasce com ele, não com `now()` */
+    occurredAt: Date,
+  ): Promise<{ id: string; status: string; lastMessageAt: Date; lastInboundAt: Date | null }> {
+    const aberta = await tx.conversation.findFirst({
       where: { workspaceId, channelId, contactId, status: { not: 'closed' } },
       orderBy: { lastMessageAt: 'desc' },
-      select: { id: true, status: true },
-    })) as { id: string; status: string } | null;
+      select: { id: true, status: true, lastMessageAt: true, lastInboundAt: true },
+    });
     if (aberta) return aberta;
-    return (await tx.conversation.create({
-      data: { workspaceId, channelId, contactId },
-      select: { id: true, status: true },
-    })) as { id: string; status: string };
+    // o default `now()` serve para conversa criada à mão; aqui o instante é o
+    // da mensagem, senão a regra de "não regredir" fixaria a conversa no agora
+    return tx.conversation.create({
+      data: {
+        workspaceId,
+        channelId,
+        contactId,
+        lastMessageAt: occurredAt,
+        lastInboundAt: occurredAt,
+      },
+      select: { id: true, status: true, lastMessageAt: true, lastInboundAt: true },
+    });
   }
 
   private extractMedia(message: {

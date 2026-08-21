@@ -137,6 +137,49 @@ export class ContactsService {
     return this.get(id);
   }
 
+  /**
+   * Criação a partir de CANAL EXTERNO (ADR-040), dentro da transação de quem
+   * chama. Existe para que a ingestão não contorne o domínio: sem isto, o
+   * contato nascia sem consumir quota, sem `Activity` e sem `contact.created`
+   * no outbox — ou seja, sem disparar automação, que é justamente o ponto de
+   * um lead chegando por WhatsApp.
+   *
+   * A quota é consumida SEM barrar: recusar a mensagem de um paciente por
+   * limite de plano é dano irrecuperável para ele, enquanto ultrapassar o teto
+   * é problema de cobrança, visível no medidor.
+   */
+  async createFromExternalChannel(
+    tx: Db,
+    workspaceId: string,
+    input: { name: string; phone: string; source: string },
+  ): Promise<string> {
+    const contact = await tx.contact.create({
+      data: {
+        workspaceId,
+        name: input.name,
+        phones: [input.phone],
+        source: input.source,
+      },
+    } as never);
+    const contactId = (contact as unknown as { id: string }).id;
+
+    await this.usage.consumeOverLimit(tx, workspaceId, 'contacts', 1);
+    await this.activities.record(tx, workspaceId, 'contact_created', {
+      actorMembershipId: null,
+      actorType: 'system',
+      payload: { name: input.name },
+      targets: { contactId },
+    });
+    await this.outbox.enqueue(
+      tx,
+      workspaceId,
+      'contact.created',
+      { id: contactId, name: input.name },
+      `contact.created:${contactId}`,
+    );
+    return contactId;
+  }
+
   async update(auth: AuthContext, id: string, input: UpdateContactInput): Promise<ContactDto> {
     const existing = await this.prisma.db.contact.findFirst({ where: { id } });
     if (!existing) throw new NotFoundException('Contato não encontrado');

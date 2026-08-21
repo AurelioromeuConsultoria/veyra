@@ -67,6 +67,7 @@ export const WORKSPACE_MODELS = new Set<string>([
   'ContactChannelConsent',
   'MessageDispatch',
   'MessageStatusEvent',
+  'InboundMedia',
 ]);
 
 /**
@@ -248,6 +249,11 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     workspace: 'Workspace',
     message: 'Message',
   },
+  InboundMedia: {
+    workspace: 'Workspace',
+    message: 'Message',
+    fileObject: 'FileObject',
+  },
   Webhook: {
     workspace: 'Workspace',
     deliveries: 'WebhookDelivery',
@@ -297,6 +303,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     workspace: 'Workspace',
     uploadedBy: 'Membership',
     attachments: 'MessageAttachment',
+    inboundMedias: 'InboundMedia',
   },
   MessageAttachment: {
     message: 'Message',
@@ -343,5 +350,6 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     attachments: 'MessageAttachment',
     messageDispatches: 'MessageDispatch',
     messageStatusEvents: 'MessageStatusEvent',
+    inboundMedias: 'InboundMedia',
   },
 };
