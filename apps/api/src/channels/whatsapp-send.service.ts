@@ -427,7 +427,7 @@ export class WhatsappSendService {
     return true;
   }
 
-/**
+  /**
    * O evento morreu no outbox (tentativas esgotadas): não haverá retentativa, e
    * deixar o dispatch em `failed_before_send` seria um estado que MENTE — o nome
    * promete uma retentativa que não vem.
@@ -439,13 +439,25 @@ export class WhatsappSendService {
   async markExhausted(workspaceId: string, messageId: string): Promise<void> {
     await this.cls.run(async () => {
       this.cls.set('workspaceId', workspaceId);
+      const agora = new Date();
+      /**
+       * `sending` só é elegível se o lease NÃO estiver vivo — a mesma guarda do
+       * claim e da varredura. Sem ela, um evento que morre enquanto OUTRO worker
+       * detém a posse fazia esta rotina sobrescrever `failed_permanent` debaixo
+       * dele: o worker enviava, perdia o fencing e a mensagem entregue aparecia
+       * como "Não enviada", convidando ao reenvio manual.
+       */
+      const posseLivre = {
+        OR: [
+          { state: { in: ['reserved', 'failed_before_send'] as never } },
+          { state: 'sending' as never, leaseExpiresAt: { lt: agora } },
+        ],
+      };
       const linha = await this.prisma.db.messageDispatch.findFirst({
-        where: { messageId },
+        where: { messageId, ...posseLivre },
         select: { state: true, dispatchedAt: true, reservationId: true },
       });
       if (!linha) return;
-      const elegiveis = ['reserved', 'failed_before_send', 'sending'];
-      if (!elegiveis.includes(linha.state)) return;
 
       const despachou = linha.dispatchedAt !== null;
       /**
@@ -458,7 +470,7 @@ export class WhatsappSendService {
       const { count } = await this.prisma.db.messageDispatch.updateMany({
         where: {
           messageId,
-          state: { in: elegiveis as never },
+          ...posseLivre,
           ...(despachou ? { dispatchedAt: { not: null } } : { dispatchedAt: null }),
         },
         data: {
@@ -568,15 +580,74 @@ export class WhatsappSendService {
         this.cls.set('workspaceId', linha.workspaceId);
         await this.settleQuotaFor(linha.workspaceId, linha.reservationId, linha.despachou);
         await this.prisma.db.messageDispatch.updateMany({
-          where: { messageId: linha.messageId },
+          // SÓ a reserva que liquidamos: entre o UPDATE e este laço, um worker
+          // legítimo pode ter reivindicado a linha e escrito uma reserva NOVA —
+          // apagá-la cegamente repetiria a perda de referência que saiu do claim
+          where: { messageId: linha.messageId, reservationId: linha.reservationId },
           data: { reservationId: null },
         });
       });
     }
-    if (abandonadas.length > 0) {
-      this.logger.error(`${abandonadas.length} envio(s) abandonado(s) resolvidos pela varredura`);
+    const orfaos = await this.reapUnretriable();
+    if (abandonadas.length > 0 || orfaos > 0) {
+      this.logger.error(
+        `${abandonadas.length} envio(s) abandonado(s) e ${orfaos} sem retentador resolvidos pela varredura`,
+      );
     }
-    return abandonadas.length;
+    return abandonadas.length + orfaos;
+  }
+
+  /**
+   * `failed_before_send` promete uma retentativa. Quando o evento do outbox que
+   * a faria não existe mais — morreu, ou fechou como entregue enquanto um worker
+   * travado perdia a posse —, a promessa é falsa e a linha ficaria para sempre
+   * exibindo "aguardando nova tentativa" sem ninguém que possa tentar. Este é o
+   * mesmo defeito de "estado que mente" pelo outro lado.
+   *
+   * Só linhas PARADAS há mais que o limiar, para não confundir a janela normal
+   * entre concluir o dispatch e o outbox reprogramar o evento.
+   *
+   * `raw` justificado: varredura cross-workspace (SECURITY.md §2); o
+   * workspaceId de cada linha é usado explicitamente na liquidação.
+   */
+  private async reapUnretriable(): Promise<number> {
+    const orfaos = await this.prisma.raw.$queryRawUnsafe<
+      { messageId: string; workspaceId: string; reservationId: string | null }[]
+    >(
+      `UPDATE "MessageDispatch" AS d
+          SET "state" = 'failed_permanent'::"DispatchState",
+              "errorCode" = 'no_retrier'
+        WHERE d."messageId" IN (
+                SELECT "messageId" FROM "MessageDispatch"
+                 WHERE "state" = 'failed_before_send'
+                   AND "updatedAt" < now() - ($1::int * interval '1 minute')
+                 LIMIT $2
+                 FOR UPDATE SKIP LOCKED
+              )
+          AND d."state" = 'failed_before_send'
+          AND d."updatedAt" < now() - ($1::int * interval '1 minute')
+          AND NOT EXISTS (
+                SELECT 1 FROM "OutboxEvent" e
+                 WHERE e."workspaceId" = d."workspaceId"
+                   AND e."dedupeKey" = 'whatsapp.send_pending:' || d."messageId"::text
+                   AND e."status" IN ('pending', 'processing')
+              )
+      RETURNING d."messageId", d."workspaceId", d."reservationId"`,
+      REAP_AFTER_MINUTES,
+      50,
+    );
+    for (const linha of orfaos) {
+      await this.cls.run(async () => {
+        this.cls.set('workspaceId', linha.workspaceId);
+        // nada foi despachado neste estado: a quota volta
+        await this.settleQuotaFor(linha.workspaceId, linha.reservationId, false);
+        await this.prisma.db.messageDispatch.updateMany({
+          where: { messageId: linha.messageId, reservationId: linha.reservationId },
+          data: { reservationId: null },
+        });
+      });
+    }
+    return orfaos.length;
   }
 
   /**

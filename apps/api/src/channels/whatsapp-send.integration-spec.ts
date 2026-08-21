@@ -1,4 +1,5 @@
 import { createHmac } from 'node:crypto';
+import { Client } from 'pg';
 import { ClsService } from 'nestjs-cls';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
@@ -45,8 +46,12 @@ class FakeMetaTransport implements MetaTransport {
   nextSend: SendOutcome = { ok: true, externalId: 'wamid.ENVIADA' };
   nextFetch: FetchOutcome = { ok: true, bytes: PNG, mimeType: 'image/png' };
 
+  /** Roda DENTRO da chamada ao provedor: usado para roubar a posse do lease. */
+  onSend?: () => Promise<void>;
+
   async sendText(_c: unknown, to: string, body: string): Promise<SendOutcome> {
     this.sends.push({ to, body });
+    await this.onSend?.();
     return this.nextSend;
   }
   async sendTemplate(_c: unknown, to: string, template: { name: string }): Promise<SendOutcome> {
@@ -135,6 +140,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     transport.fetches = [];
     transport.nextSend = { ok: true, externalId: 'wamid.ENVIADA' };
     transport.nextFetch = { ok: true, bytes: PNG, mimeType: 'image/png' };
+    transport.onSend = undefined;
 
     await resetDb(prisma);
     await seedPermissionCatalog(prisma);
@@ -803,7 +809,11 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
       data: { workspaceId: wsB.workspaceId, type: 'whatsapp', name: 'WhatsApp B' },
     });
     const conversaB = await prisma.raw.conversation.create({
-      data: { workspaceId: wsB.workspaceId, channelId: canalB.id, externalAddress: '5511777776666' },
+      data: {
+        workspaceId: wsB.workspaceId,
+        channelId: canalB.id,
+        externalAddress: '5511777776666',
+      },
     });
     const mensagemB = await prisma.raw.message.create({
       data: {
@@ -860,6 +870,128 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     });
     expect(dispatchA).toMatchObject({ state: 'failed_permanent' });
     expect(dispatchB).toMatchObject({ state: 'unknown_after_dispatch' });
+  });
+
+  it('P0: conclusão CONCORRENTE não comitada não é rebaixada pela varredura', async () => {
+    const criada = await sendMessage({ direction: 'outbound', body: 'Comitando agora' }).expect(
+      201,
+    );
+    await drain();
+    await prisma.raw.messageDispatch.updateMany({
+      where: { messageId: criada.body.id },
+      data: { state: 'sending', leaseExpiresAt: new Date(Date.now() - 30 * 60_000) },
+    });
+
+    /**
+     * Segunda conexão com transação ABERTA: é o único jeito de o Jest exercitar
+     * o recheck que protege um `sent` recém-concluído. Sem o predicado no WHERE
+     * externo, a varredura reavalia a subquery no snapshot ORIGINAL — que ainda
+     * vê `sending` — e sobrescreve a linha que o outro acabou de concluir.
+     */
+    const outra = new Client({ connectionString: process.env.DATABASE_URL });
+    await outra.connect();
+    try {
+      await outra.query('BEGIN');
+      await outra.query(
+        `UPDATE "MessageDispatch" SET "state" = 'sent', "leaseExpiresAt" = NULL
+          WHERE "messageId" = $1`,
+        [criada.body.id],
+      );
+
+      /**
+       * A varredura precisa NÃO TOCAR e NÃO BLOQUEAR. A corrida é decidida por
+       * duas guardas: `SKIP LOCKED` pula a linha travada e o predicado repetido
+       * no WHERE externo descarta na reavaliação caso ela chegue a bloquear.
+       * Sem ambas, esta chamada trava até o COMMIT — daí a corrida contra o
+       * relógio, para falhar com mensagem em vez de estourar o timeout da suíte.
+       */
+      const resultado = await Promise.race([
+        app.get(WhatsappSendService).reapStaleDispatches(),
+        new Promise((resolve) => setTimeout(() => resolve('bloqueou'), 2_000)),
+      ]);
+      expect(resultado).toBe(0);
+
+      await outra.query('COMMIT');
+    } finally {
+      await outra.end();
+    }
+
+    const dispatch = await prisma.raw.messageDispatch.findFirst({
+      where: { messageId: criada.body.id },
+    });
+    expect(dispatch).toMatchObject({ state: 'sent', externalId: 'wamid.ENVIADA' });
+    const contador = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },
+    });
+    expect(Number(contador?.value ?? 0)).toBe(1);
+  });
+
+  it('varredura: `failed_before_send` sem retentador para de mentir', async () => {
+    transport.nextSend = { ok: false, failure: { status: 429 } };
+    const criada = await sendMessage({ direction: 'outbound', body: 'Sem retentador' }).expect(201);
+    await drain();
+    // o evento que faria a retentativa não existe mais
+    await prisma.raw.outboxEvent.updateMany({
+      where: { eventType: 'whatsapp.send_pending' },
+      data: { status: 'delivered' },
+    });
+    await prisma.raw.messageDispatch.updateMany({
+      where: { messageId: criada.body.id },
+      data: { updatedAt: new Date(Date.now() - 30 * 60_000) },
+    });
+
+    expect(await app.get(WhatsappSendService).reapStaleDispatches()).toBe(1);
+
+    const dispatch = await prisma.raw.messageDispatch.findFirst({
+      where: { messageId: criada.body.id },
+    });
+    // "aguardando nova tentativa" sem ninguém que possa tentar é estado que mente
+    expect(dispatch).toMatchObject({ state: 'failed_permanent', errorCode: 'no_retrier' });
+  });
+
+  it('varredura NÃO encerra `failed_before_send` com evento vivo', async () => {
+    transport.nextSend = { ok: false, failure: { status: 429 } };
+    const criada = await sendMessage({ direction: 'outbound', body: 'Ainda vai tentar' }).expect(
+      201,
+    );
+    await drain();
+    await prisma.raw.messageDispatch.updateMany({
+      where: { messageId: criada.body.id },
+      data: { updatedAt: new Date(Date.now() - 30 * 60_000) },
+    });
+
+    expect(await app.get(WhatsappSendService).reapStaleDispatches()).toBe(0);
+
+    const dispatch = await prisma.raw.messageDispatch.findFirst({
+      where: { messageId: criada.body.id },
+    });
+    expect(dispatch!.state).toBe('failed_before_send'); // o outbox ainda vai tentar
+  });
+
+  it('posse perdida APÓS envio bem-sucedido deixa trilha com o wamid, sem corpo', async () => {
+    const roubarPosse = async () => {
+      await prisma.raw.messageDispatch.updateMany({
+        where: { state: 'sending' },
+        data: { claimToken: '55555555-5555-4555-8555-555555555555' },
+      });
+    };
+    transport.onSend = roubarPosse;
+    const criada = await sendMessage({ direction: 'outbound', body: 'Texto sigiloso' }).expect(201);
+    await drain();
+
+    expect(transport.sends).toHaveLength(1);
+    const trilha = await prisma.raw.auditLog.findFirst({
+      where: { workspaceId: wsA.workspaceId, action: 'message.dispatch_lease_lost' },
+    });
+    /**
+     * O wamid é o ÚNICO ponto de retomada: sem ele a trilha do caso incerto era
+     * `{ direction: "[changed]" }`, e um humano não teria como achar a mensagem
+     * no provedor. Corpo da mensagem, jamais.
+     */
+    expect(trilha).toBeTruthy();
+    expect((trilha!.after as Record<string, unknown>).externalId).toBe('wamid.ENVIADA');
+    expect(JSON.stringify(trilha!.after)).not.toContain('Texto sigiloso');
+    expect(trilha!.entityId).toBe(criada.body.id);
   });
 
   it('o estado do despacho é VISÍVEL na thread', async () => {

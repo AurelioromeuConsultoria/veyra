@@ -20,6 +20,18 @@ const MAX_ATTEMPTS = 4;
  * fencing token — porque dois workers baixando e gravando a mesma mídia
  * produziriam dois arquivos e duas cobranças de storage.
  */
+/** Mídia reivindicada por esta instância, com o token que prova a posse. */
+interface ClaimedMedia {
+  id: string;
+  workspaceId: string;
+  messageId: string;
+  providerMediaId: string;
+  mimeType: string;
+  fileName: string | null;
+  attempts: number;
+  claimToken: string;
+}
+
 @Injectable()
 export class MediaCollectorService {
   private readonly logger = new Logger(MediaCollectorService.name);
@@ -86,16 +98,7 @@ export class MediaCollectorService {
     );
   }
 
-  private async collectOne(item: {
-    id: string;
-    workspaceId: string;
-    messageId: string;
-    providerMediaId: string;
-    mimeType: string;
-    fileName: string | null;
-    attempts: number;
-    claimToken: string;
-  }): Promise<boolean> {
+  private async collectOne(item: ClaimedMedia): Promise<boolean> {
     const credential = await this.credentialFor(item.workspaceId, item.messageId);
     if (!credential) return this.fail(item, 'no_credential');
 
@@ -136,7 +139,8 @@ export class MediaCollectorService {
     // e o arquivo passa pelo MESMO caminho de quota e limpeza do upload humano
     return this.cls.run(async () => {
       this.cls.set('workspaceId', item.workspaceId);
-      // fora do `try`: o catch precisa saber se o arquivo já existe para limpar
+      // fora do `try`: o catch precisa saber QUAL arquivo foi gravado para
+      // decidir, pelo estado no banco, se ele é resíduo ou anexo bom
       let file: { id: string } | undefined;
       try {
         const gravado = await this.files.storeFromChannel({
@@ -174,13 +178,6 @@ export class MediaCollectorService {
           });
           return { count: concluido.count };
         });
-        /**
-         * Concluído: o arquivo já está ANEXADO e sai do alcance da limpeza. Sem
-         * isto, um COMMIT bem-sucedido cuja resposta se perdesse cairia no catch
-         * e apagaria um FileObject referenciado — o anexo iria por cascade e a
-         * mídia voltaria a ser "cobrada, sem anexo e irrecuperável".
-         */
-        if (count > 0) file = undefined;
         if (count === 0) {
           /**
            * Perdemos a posse ENTRE gravar e concluir: quem assumiu vai baixar de
@@ -196,15 +193,39 @@ export class MediaCollectorService {
       } catch (error) {
         this.logger.error(`Falha ao gravar mídia ${item.id} (${(error as Error).name})`);
         /**
-         * O arquivo pode ter sido gravado ANTES da falha (o erro veio da
-         * transação de conclusão): a transação volta atrás, os bytes e a quota
-         * não. Sem esta limpeza, cada retentativa somava um FileObject órfão
+         * O arquivo pode ter sido gravado ANTES da falha: a transação volta
+         * atrás, os bytes e a quota não, e cada retentativa somaria um órfão
          * cobrado no teto de armazenamento.
+         *
+         * Mas quem decide é o ESTADO NO BANCO, nunca uma flag em memória: se o
+         * COMMIT venceu e só a resposta se perdeu, este `catch` também roda — e
+         * apagar aí destruiria um `FileObject` já ANEXADO, levando o anexo por
+         * cascade e deixando a mídia `fetched` sem arquivo, irreivindicável
+         * porque o claim exige `pending`. Exatamente o dano que a limpeza
+         * pretendia evitar, ao contrário.
          */
-        if (file) await this.files.discardOrphan(item.workspaceId, file.id);
+        if (file) await this.discardIfResidue(item, file.id);
         return this.releaseForRetry(item);
       }
     });
+  }
+
+  /**
+   * Descarta o arquivo SÓ se ele for comprovadamente resíduo: a mídia ainda
+   * está `pending` (a conclusão não venceu) ou já aponta para OUTRO arquivo
+   * (outro coletor concluiu). Se ela está concluída com este mesmo id, o commit
+   * venceu e não há nada a apagar.
+   */
+  private async discardIfResidue(item: ClaimedMedia, fileObjectId: string): Promise<void> {
+    const atual = await this.prisma.raw.inboundMedia.findFirst({
+      where: { workspaceId: item.workspaceId, id: item.id },
+      select: { state: true, fileObjectId: true },
+    });
+    if (atual?.state !== 'pending' && atual?.fileObjectId === fileObjectId) {
+      this.logger.warn(`Mídia ${item.id} concluída apesar do erro — arquivo preservado`);
+      return;
+    }
+    await this.files.discardOrphan(item.workspaceId, fileObjectId);
   }
 
   private async credentialFor(
