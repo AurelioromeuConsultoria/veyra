@@ -16,9 +16,9 @@ test.describe('Uso e plano (UI)', () => {
     await expect(page.getByText('Execuções de IA')).toBeVisible();
     await expect(page.getByText(/zera em/).first()).toBeVisible();
 
-    // a métrica declarada mas não cobrada aparece marcada como tal
+    // desde a 9.1.b existe envio externo de verdade, e a métrica é cobrada
     await expect(page.getByText('Mensagens enviadas')).toBeVisible();
-    await expect(page.getByText('não cobrada').first()).toBeVisible();
+    await expect(page.getByTestId('usage-messages_sent-used')).toBeVisible();
   });
 
   test('criar contato move o medidor de contatos', async ({ page }) => {

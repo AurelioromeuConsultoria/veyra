@@ -3,14 +3,17 @@ import { ConfigService } from '@nestjs/config';
 import { PgBoss } from 'pg-boss';
 import { AuditService } from '../audit/audit.service';
 import { AutomationsService } from '../automations/automations.service';
+import { MediaCollectorService } from '../channels/media-collector.service';
+import { WhatsappSendService } from '../channels/whatsapp-send.service';
 import { FilesService } from '../files/files.service';
 import { UsageService } from '../usage/usage.service';
-import { INTERNAL_EVENT_TYPES, OutboxService } from '../outbox/outbox.service';
+import { INTERNAL_EVENT_TYPES, OutboxService, type ClaimedEvent } from '../outbox/outbox.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
 
 const OUTBOX_QUEUE = 'outbox-dispatch';
 const RETENTION_QUEUE = 'audit-retention';
 const RESERVATION_QUEUE = 'usage-reservations';
+const MEDIA_QUEUE = 'inbound-media';
 
 /**
  * Jobs no MESMO Postgres (pg-boss, ADR-007). Kill switch: DISABLE_JOBS.
@@ -30,6 +33,8 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     private readonly files: FilesService,
     private readonly usage: UsageService,
     private readonly automations: AutomationsService,
+    private readonly whatsappSend: WhatsappSendService,
+    private readonly mediaCollector: MediaCollectorService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -64,6 +69,13 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       await this.usage.purgeExpiredReservations();
     });
     await this.boss.schedule(RESERVATION_QUEUE, '*/5 * * * *', {}, { tz: 'America/Sao_Paulo' });
+
+    // coleta de mídia recebida: varredura, não evento (ADR-037)
+    await this.boss.createQueue(MEDIA_QUEUE);
+    await this.boss.work(MEDIA_QUEUE, async () => {
+      await this.mediaCollector.collectPending();
+    });
+    await this.boss.schedule(MEDIA_QUEUE, '* * * * *', {}, { tz: 'America/Sao_Paulo' });
   }
 
   async onModuleDestroy(): Promise<void> {
@@ -110,15 +122,23 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
    * que a linha já saiu do banco (ADR-024), com o lease/fencing do outbox
    * garantindo que um worker lento não apague o arquivo de outra tentativa.
    */
-  private async handleInternal(event: {
-    id: string;
-    eventType: string;
-    payload: unknown;
-    claimToken: string;
-  }): Promise<void> {
+  private async handleInternal(event: ClaimedEvent): Promise<void> {
     if (event.eventType === 'file.purge') {
       const { key } = event.payload as { key: string };
       await this.files.purge(key);
+    }
+    if (event.eventType === 'whatsapp.send_pending') {
+      const resultado = await this.whatsappSend.dispatch(event);
+      if (resultado === 'retry') {
+        // falha transitória ANTES do envio: devolve ao outbox com backoff
+        await this.outbox.markFailed(
+          event.id,
+          event.claimToken,
+          event.attempts,
+          'envio recusado antes do despacho (transitório)',
+        );
+        return;
+      }
     }
     await this.outbox.markDelivered(event.id, event.claimToken);
   }

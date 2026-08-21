@@ -131,14 +131,16 @@ describe('Uso e quotas (integração)', () => {
     expect(contacts.resetsAt).toBeNull();
   });
 
-  it('counter declara a virada; a métrica de mensagens está no catálogo mas NÃO é cobrada', async () => {
+  it('counter declara a virada, e mensagens enviadas passou a ser cobrada', async () => {
     const overview = (await get('/api/usage', sessionA).expect(200)).body;
     const aiRuns = overview.metrics.find((m: { metric: string }) => m.metric === 'ai_runs');
     expect(aiRuns.kind).toBe('counter');
     expect(aiRuns.resetsAt).toBeTruthy();
 
+    // a partir da 9.1.b existe envio externo de verdade: a métrica é cobrada
     const messages = overview.metrics.find((m: { metric: string }) => m.metric === 'messages_sent');
-    expect(messages.enforced).toBe(false); // sem canal externo, não se cobra por digitar
+    expect(messages.enforced).toBe(true);
+    expect(messages.limit).toBe(1000);
   });
 
   it('custo de IA é declarado em centavos de DÓLAR', async () => {

@@ -137,6 +137,7 @@ export class WhatsappService {
         channelId,
         contactId,
         occurredAt,
+        phone,
       );
 
       const created = await tx.message.create({
@@ -167,7 +168,8 @@ export class WhatsappService {
        */
       await tx.$executeRawUnsafe(
         `UPDATE "Conversation"
-            SET "lastMessageAt" = GREATEST("lastMessageAt", $3::timestamptz),
+            SET "externalAddress" = COALESCE("externalAddress", $4),
+                "lastMessageAt" = GREATEST("lastMessageAt", $3::timestamptz),
                 "lastInboundAt" = CASE
                   WHEN "lastInboundAt" IS NULL OR "lastInboundAt" < $3::timestamptz
                     THEN $3::timestamptz
@@ -178,6 +180,7 @@ export class WhatsappService {
         workspaceId,
         conversation.id,
         occurredAt.toISOString(),
+        phone,
       );
       await tx.activity.create({
         data: {
@@ -291,6 +294,8 @@ export class WhatsappService {
     contactId: string,
     /** instante da mensagem: conversa NOVA nasce com ele, não com `now()` */
     occurredAt: Date,
+    /** endereço externo exato (E.164 do wa_id que entrou) */
+    externalAddress: string,
   ): Promise<{ id: string; status: string; lastMessageAt: Date; lastInboundAt: Date | null }> {
     const aberta = await tx.conversation.findFirst({
       where: { workspaceId, channelId, contactId, status: { not: 'closed' } },
@@ -307,6 +312,10 @@ export class WhatsappService {
         contactId,
         lastMessageAt: occurredAt,
         lastInboundAt: occurredAt,
+        // ENDEREÇO EXATO de quem falou: o envio responde para este número, e
+        // não para um telefone qualquer do contato. Conversas anteriores a esta
+        // entrega são preenchidas pelo COALESCE do UPDATE acima.
+        externalAddress,
       },
       select: { id: true, status: true, lastMessageAt: true, lastInboundAt: true },
     });

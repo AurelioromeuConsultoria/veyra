@@ -118,7 +118,8 @@ O webhook do WhatsApp é o **único caminho de escrita público e não autentica
 7. **Segredos**: o app secret e o verify_token vivem no ambiente/keystore (um Meta App hoje); por canal ficam `phoneNumberId`, WABA e o token de envio **cifrado**. Nada disso entra em DTO, log, auditoria, cache ou idempotência.
 8. **Janela ≠ consentimento** (ADR-038): mensagem recebida abre a janela de 24h (`lastInboundAt`); consentimento é `ContactChannelConsent` com origem, data e revogação, **nunca criado automaticamente**. No máximo **um vigente** por (contato, canal), garantido por unique composto com `activeMark` TRUE/NULL e CHECK que amarra a marca à revogação.
 9. **Ingestão passa pelo domínio** (ADR-040): contato criado pelo canal consome quota, emite `Activity` e `contact.created` — um lead de WhatsApp dispara automação como qualquer outro. Tudo em **uma transação sob lock consultivo** por (workspace, canal, telefone), com dedupe dentro do lock. Quota esgotada **não descarta** a mensagem: o excesso fica visível no medidor, enquanto a criação manual continua barrada em 402.
-10. **Timestamps não regridem**: entrega fora de ordem guarda o maior instante em `lastMessageAt`/`lastInboundAt`. Recibo só é aceito se o dispatch pertencer ao **mesmo canal** que a credencial resolveu.
+10. **Envio** (ADR-039): política revalidada no worker antes de chamar o provedor; destinatário é o `externalAddress` exato da conversa; falha ambígua **não** reenvia; coleta de mídia só por host allowlistado (`graph.facebook.com`, `*.fbsbx.com`), sem redirect, com teto de 10 MB, sniffer de magic bytes e `scanStatus: pending`.
+11. **Timestamps não regridem**: entrega fora de ordem guarda o maior instante em `lastMessageAt`/`lastInboundAt`. Recibo só é aceito se o dispatch pertencer ao **mesmo canal** que a credencial resolveu.
 
 ## 8. Segredos e criptografia
 

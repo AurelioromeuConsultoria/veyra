@@ -40,10 +40,16 @@ export const OUTBOX_EVENTS = {
    * lista de eventos assináveis.
    */
   'file.purge': z.object({ key: z.string().max(200) }).strict(),
+  /**
+   * INTERNO: envio pendente pelo canal externo. O consumidor existe (o
+   * dispatcher chama `WhatsappSendService.dispatch`) — evento interno sem
+   * handler é entrega perdida, como a mídia da 9.1.a mostrou.
+   */
+  'whatsapp.send_pending': z.object({ messageId: z.string().uuid() }).strict(),
 } as const;
 
 /** Eventos que NUNCA saem para webhook: são trabalho interno da plataforma. */
-export const INTERNAL_EVENT_TYPES = new Set<string>(['file.purge']);
+export const INTERNAL_EVENT_TYPES = new Set<string>(['file.purge', 'whatsapp.send_pending']);
 
 export type OutboxEventType = keyof typeof OUTBOX_EVENTS;
 export const OUTBOX_EVENT_TYPES = Object.keys(OUTBOX_EVENTS) as OutboxEventType[];

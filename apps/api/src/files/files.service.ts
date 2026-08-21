@@ -124,6 +124,73 @@ export class FilesService {
     return this.get(id);
   }
 
+  /**
+   * Gravação a partir de CANAL EXTERNO (mídia recebida). Passa pelo MESMO
+   * caminho do upload humano: chave derivada no servidor, quota de storage e
+   * limpeza dos bytes se a transação falhar. `scanStatus` nasce `pending`, e o
+   * portão de saída externa (§7.5) impede reenvio antes do scanner.
+   */
+  async storeFromChannel(input: {
+    workspaceId: string;
+    bytes: Buffer;
+    fileName: string;
+    mimeType: string;
+  }): Promise<FileObjectDto> {
+    if (input.bytes.length > MAX_FILE_BYTES) {
+      throw new BadRequestException('Mídia acima do limite');
+    }
+    await this.usage.ensureCounterRow(input.workspaceId, 'storage_bytes');
+    const extension = extensionOf(input.fileName);
+    const key = `${input.workspaceId}/${randomUUID()}${extension ? `.${extension}` : ''}`;
+    await this.storage.put(key, input.bytes);
+
+    const db = this.prisma.db as unknown as TxRunner;
+    let id: string;
+    try {
+      id = await db.$transaction(async (tx) => {
+        const created = await tx.fileObject.create({
+          data: {
+            workspaceId: input.workspaceId,
+            key,
+            fileName: input.fileName.slice(0, 200),
+            mimeType: input.mimeType,
+            sizeBytes: input.bytes.length,
+            // mídia recebida não tem membership que a enviou: o uploader é o
+            // canal, e a coluna exige membership — usa a do sistema quando
+            // houver; por ora, a primeira membership ativa do workspace
+            uploadedByMembershipId: await this.systemUploader(tx),
+            scanStatus: 'pending',
+          },
+        } as never);
+        const fileId = (created as unknown as { id: string }).id;
+        await this.usage.consumeOverLimit(
+          tx,
+          input.workspaceId,
+          'storage_bytes',
+          input.bytes.length,
+        );
+        return fileId;
+      });
+    } catch (error) {
+      await this.storage.delete(key).catch(() => {
+        this.logger.error(`Falha ao limpar mídia recusada: ${key}`);
+      });
+      throw error;
+    }
+    return this.get(id);
+  }
+
+  /** Membership de referência para arquivo que não veio de uma pessoa. */
+  private async systemUploader(tx: Db): Promise<string> {
+    const membership = (await tx.membership.findFirst({
+      where: { status: 'active' },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true },
+    })) as unknown as { id: string } | null;
+    if (!membership) throw new BadRequestException('Workspace sem membership ativa');
+    return membership.id;
+  }
+
   async list(): Promise<FileObjectDto[]> {
     const rows = (await this.prisma.db.fileObject.findMany({
       orderBy: { createdAt: 'desc' },

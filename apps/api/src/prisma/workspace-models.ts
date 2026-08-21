@@ -68,6 +68,7 @@ export const WORKSPACE_MODELS = new Set<string>([
   'MessageDispatch',
   'MessageStatusEvent',
   'InboundMedia',
+  'MessageTemplate',
 ]);
 
 /**
@@ -236,6 +237,10 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     workspace: 'Workspace',
     channel: 'Channel',
   },
+  MessageTemplate: {
+    workspace: 'Workspace',
+    channel: 'Channel',
+  },
   ContactChannelConsent: {
     workspace: 'Workspace',
     contact: 'Contact',
@@ -277,6 +282,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     conversations: 'Conversation',
     messages: 'Message',
     credential: 'ChannelCredential',
+    messageTemplates: 'MessageTemplate',
   },
   Conversation: {
     workspace: 'Workspace',

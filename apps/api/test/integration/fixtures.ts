@@ -121,10 +121,12 @@ export async function seedPlanCatalog(prisma: PrismaService): Promise<void> {
     { planKey: 'base', metric: 'storage_bytes', kind: 'gauge', value: 1073741824n },
     { planKey: 'base', metric: 'ai_runs', kind: 'counter', value: 200n },
     { planKey: 'base', metric: 'ai_cost_cents', kind: 'counter', value: 500n },
+    { planKey: 'base', metric: 'messages_sent', kind: 'counter', value: 1000n },
     { planKey: 'pro', metric: 'contacts', kind: 'gauge', value: 50000n },
     { planKey: 'pro', metric: 'storage_bytes', kind: 'gauge', value: 10737418240n },
     { planKey: 'pro', metric: 'ai_runs', kind: 'counter', value: 5000n },
     { planKey: 'pro', metric: 'ai_cost_cents', kind: 'counter', value: 20000n },
+    { planKey: 'pro', metric: 'messages_sent', kind: 'counter', value: 20000n },
   ];
   for (const limit of limits) {
     await prisma.raw.planLimit.upsert({
@@ -147,7 +149,7 @@ export async function setPlanLimit(
     create: {
       planKey,
       metric,
-      kind: metric.startsWith('ai_') ? 'counter' : 'gauge',
+      kind: metric.startsWith('ai_') || metric === 'messages_sent' ? 'counter' : 'gauge',
       value: BigInt(value),
     },
     update: { value: BigInt(value) },

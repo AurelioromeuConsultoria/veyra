@@ -47,6 +47,17 @@ export const createMessageSchema = z.object({
   body: z.string().trim().min(1).max(10000),
   /** ids de FileObject já enviados; anexar é parte da criação (append-only) */
   attachmentIds: z.array(z.string().uuid()).max(5).optional(),
+  /**
+   * Template aprovado, obrigatório para enviar FORA da janela de atendimento de
+   * 24h em canal externo (ADR-038). Ignorado no canal interno.
+   */
+  template: z
+    .object({
+      name: z.string().trim().min(1).max(120),
+      language: z.string().trim().min(2).max(10),
+      params: z.array(z.string().max(200)).max(10).default([]),
+    })
+    .optional(),
 });
 export type CreateMessageInput = z.infer<typeof createMessageSchema>;
 

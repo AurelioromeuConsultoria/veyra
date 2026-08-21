@@ -65,6 +65,10 @@ const DOCUMENTED_LOOSE_COLUMNS = new Set([
   // A integridade que importa é o unique (workspaceId, messageId,
   // providerMediaId), que impede referência duplicada. ADR-037.
   'InboundMedia.providerMediaId',
+  // ponteiro para uma reserva EFÊMERA: a `UsageReservation` é apagada na
+  // liquidação, por desenho. Uma FK aqui impediria justamente o que queremos —
+  // que a reserva desapareça quando deixa de existir. ADR-039.
+  'MessageDispatch.reservationId',
 ]);
 
 interface FkRow {

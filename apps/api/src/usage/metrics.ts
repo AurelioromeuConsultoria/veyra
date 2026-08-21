@@ -53,8 +53,9 @@ export const USAGE_METRICS: Record<string, MetricDefinition> = {
     kind: 'counter',
     label: 'Mensagens enviadas',
     unit: 'count',
-    // planejada, não cobrada: sem canal externo, não há envio de verdade
-    enforced: false,
+    // COBRADA a partir da 9.1.b: existe envio externo de verdade, com custo do
+    // outro lado. Reservada antes da chamada e liquidada pelo resultado.
+    enforced: true,
   },
 };
 

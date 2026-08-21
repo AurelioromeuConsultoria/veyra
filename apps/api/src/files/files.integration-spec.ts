@@ -239,16 +239,21 @@ describe('Arquivos — upload, download autorizado e expurgo (integração)', ()
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/não foi verificado|canal externo/i);
 
-    // marcado clean por um scanner, passa
+    // marcado clean por um scanner, o portão do ARQUIVO libera — e a recusa que
+    // sobra é de POLÍTICA do canal (esta conversa não tem endereço externo nem
+    // janela aberta), o que prova que os dois portões são independentes
     await prisma.raw.fileObject.updateMany({
       where: { id: arquivo.id },
       data: { scanStatus: 'clean' },
     });
-    await post(`/api/conversations/${conversaExterna.id}/messages`, sessionA, {
+    const depois = await post(`/api/conversations/${conversaExterna.id}/messages`, sessionA, {
       direction: 'outbound',
       body: 'segue',
       attachmentIds: [arquivo.id],
-    }).expect(201);
+    });
+    expect(depois.status).toBe(400);
+    expect(depois.body.message).not.toMatch(/não foi verificado/i);
+    expect(depois.body.message).toMatch(/destinatário|janela/i);
   });
 
   // ── Expurgo ───────────────────────────────────────────────────────────────

@@ -59,7 +59,7 @@ As cinco capacidades de IA restantes deixaram de ser uma entrega própria (**ADR
 Primeiro canal externo REAL, com as restrições da plataforma tratadas como requisito — não como detalhe de integração.
 
 - **9.1.a — Ingestão ✅** endpoint público com assinatura sobre o corpo bruto (ADR-037), roteamento pelo número, dedupe por `wamid`, janela de atendimento (`lastInboundAt`) separada de consentimento (ADR-038), recibos deduplicados e ordenados pelo provedor (ADR-039), mídia apenas referenciada com coleta agendada.
-- **9.1.b — Envio 🔜** `MessageDispatch` reservado antes da chamada, retentativa só para falha comprovadamente pré-envio, `unknown_after_dispatch` sem reenvio automático, templates fora da janela e `messages_sent` com enforcement.
+- **9.1.b — Envio ✅** `MessageDispatch` reservado antes da chamada com a reserva de quota atrelada, classificação de falha em tabela isolada (retentável/permanente/ambígua), `unknown_after_dispatch` sem reenvio automático, política revalidada no worker, template registrado manualmente e exigido fora da janela, coleta de mídia com lease/fencing pelo transporte autenticado, e `messages_sent` cobrada.
 - **9.1.c — UI 🔜** canal, tempo restante da janela, estado do opt-in e status por mensagem no inbox.
 - **9.2 — Privacidade operacional**: retenção e expurgo de `AiRun.result` (dívida registrada na Entrega 7) e **scanner de antivírus** antes de qualquer arquivo sair para canal externo — hoje `scanStatus` nunca deixa `pending`, e o portão de saída externa já existe esperando por isso.
 - **9.3 — Sugestão de resposta**: a capacidade de IA entra AQUI, junto do canal, porque agora existe para onde enviar. Ação externa continua sendo `AiProposal` aprovada por humano.

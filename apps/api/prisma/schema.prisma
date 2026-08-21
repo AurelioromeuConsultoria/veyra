@@ -107,6 +107,7 @@ model Workspace {
   automations            Automation[]
   automationExecutions   AutomationExecution[]
   channelCredentials     ChannelCredential[]
+  messageTemplates       MessageTemplate[]
   channelConsents        ContactChannelConsent[]
   messageDispatches      MessageDispatch[]
   messageStatusEvents    MessageStatusEvent[]
@@ -832,10 +833,11 @@ model Channel {
   systemMark  Boolean?
   createdAt   DateTime    @default(now())
 
-  workspace     Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  conversations Conversation[]
-  messages      Message[]
-  credential    ChannelCredential?
+  workspace        Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversations    Conversation[]
+  messages         Message[]
+  credential       ChannelCredential?
+  messageTemplates MessageTemplate[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, systemMark])
@@ -856,6 +858,10 @@ model Conversation {
   /// Última mensagem DO CONTATO: define a janela de atendimento de 24h
   /// (ADR-038). Não é consentimento — este é evidência separada.
   lastInboundAt        DateTime?
+  /// ENDEREÇO EXATO no canal externo (E.164 do wa_id que entrou). Um contato
+  /// pode ter vários telefones; o envio NÃO escolhe um de `Contact.phones` —
+  /// responde para o número que falou com a gente.
+  externalAddress      String?
   createdAt            DateTime           @default(now())
 
   workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -1382,8 +1388,12 @@ enum DispatchState {
   /// reservado ANTES da chamada ao provedor (ADR-039)
   reserved
   sent
-  /// falha COMPROVADAMENTE anterior ao envio: retentável
+  /// falha comprovadamente anterior ao envio e TRANSITÓRIA (429, rede): o
+  /// outbox tenta de novo, e a nova tentativa reserva quota outra vez
   failed_before_send
+  /// falha anterior ao envio e DEFINITIVA (template inválido, credencial
+  /// recusada): retentar seria repetir o mesmo erro seis vezes
+  failed_permanent
   /// timeout/queda após possível despacho: NÃO reenviar, resolver com humano
   unknown_after_dispatch
 }
@@ -1393,16 +1403,27 @@ enum DispatchState {
  * mandar a mesma mensagem duas vezes quando a resposta do provedor se perde.
  */
 model MessageDispatch {
-  messageId   String        @id @db.Uuid
-  workspaceId String        @db.Uuid
-  state       DispatchState @default(reserved)
+  messageId        String        @id @db.Uuid
+  workspaceId      String        @db.Uuid
+  state            DispatchState @default(reserved)
+  /// reserva de quota VIVA desta tentativa. Falha transitória libera a reserva,
+  /// e a retentativa reserva de novo antes de chamar o provedor — senão o teto
+  /// não valeria para retentativa.
+  reservationId    String?       @db.Uuid
+  /// TEMPLATE pedido no envio, guardado aqui porque o worker REVALIDA a política
+  /// imediatamente antes de chamar o provedor (a janela pode fechar e o
+  /// consentimento pode ser revogado no caminho). Sem isto o worker não saberia
+  /// que o envio era por template.
+  templateName     String?
+  templateLanguage String?
+  templateParams   Json?
   /// id no provedor (wamid), conhecido só depois do envio bem-sucedido
-  externalId  String?
+  externalId       String?
   /// código curto do provedor — nunca corpo de resposta nem stack trace
-  errorCode   String?
-  attempts    Int           @default(0)
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  errorCode        String?
+  attempts         Int           @default(0)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   message   Message   @relation(fields: [workspaceId, messageId], references: [workspaceId, id], onDelete: Cascade)
@@ -1466,6 +1487,12 @@ model InboundMedia {
   mimeType        String
   fileName        String?
   state           InboundMediaState @default(pending)
+  /// LEASE + FENCING da coleta (mesmo padrão do outbox): dois workers não podem
+  /// baixar e gravar a mesma mídia. Só é reivindicável quem está `pending` ou
+  /// com lease expirado, e só o dono do token conclui.
+  claimedAt       DateTime?
+  leaseExpiresAt  DateTime?
+  claimToken      String?           @db.Uuid
   fileObjectId    String?           @db.Uuid
   /// código curto do motivo quando `failed` — nunca resposta do provedor
   errorCode       String?
@@ -1480,4 +1507,39 @@ model InboundMedia {
   /// reentrega do mesmo evento não cria segunda referência
   @@unique([workspaceId, messageId, providerMediaId])
   @@index([workspaceId, state])
+  @@index([state, leaseExpiresAt])
+}
+
+enum TemplateStatus {
+  /// registrado aqui e aprovado na Meta (registro MANUAL nesta entrega)
+  approved
+  /// registrado mas não liberado para uso
+  paused
+}
+
+/**
+ * Template aprovado, necessário para mensagem FORA da janela de atendimento
+ * (ADR-038). O registro é MANUAL nesta entrega: sincronizar o catálogo da Meta
+ * exige WABA real e é trabalho próprio. Sem sync, ainda validamos a forma do
+ * envio e recusamos template desconhecido — que é o que impede o erro mais
+ * comum do primeiro envio real.
+ */
+model MessageTemplate {
+  id          String         @id @default(uuid()) @db.Uuid
+  workspaceId String         @db.Uuid
+  channelId   String         @db.Uuid
+  /// nome exato aprovado na Meta
+  name        String
+  language    String
+  /// quantidade de parâmetros do corpo — o envio precisa casar exatamente
+  paramCount  Int            @default(0)
+  status      TemplateStatus @default(approved)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  channel   Channel   @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@unique([workspaceId, channelId, name, language])
+  @@index([workspaceId, channelId])
 }

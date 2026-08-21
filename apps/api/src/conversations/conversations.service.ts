@@ -12,6 +12,7 @@ import type {
   UpdateConversationInput,
 } from '@veyra/contracts';
 import { ActivitiesService } from '../activities/activities.service';
+import { WhatsappSendService } from '../channels/whatsapp-send.service';
 import { FilesService } from '../files/files.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { AuthContext } from '../common/decorators';
@@ -67,6 +68,7 @@ export class ConversationsService {
     private readonly activities: ActivitiesService,
     private readonly notifications: NotificationsService,
     private readonly files: FilesService,
+    private readonly send: WhatsappSendService,
   ) {}
 
   /**
@@ -199,6 +201,7 @@ export class ConversationsService {
       where: { id: conversationId },
     })) as unknown as ConversationRow | null;
     if (!conversation) throw new NotFoundException('Conversa não encontrada');
+
     if (input.direction === 'inbound' && !conversation.contactId) {
       throw new BadRequestException(
         'Conversa sem contato não recebe mensagem de entrada — vincule um contato antes',
@@ -207,16 +210,33 @@ export class ConversationsService {
 
     // anexos: precisam existir NESTE workspace (o findMany filtrado garante) e,
     // se a conversa for de canal EXTERNO, precisam estar `clean` — arquivo
-    // pendente de verificação não sai do Veyra (§7.5)
+    // pendente de verificação não sai do Veyra (§7.5). Esta checagem vem ANTES
+    // do roteamento de canal: é sobre o CONTEÚDO, e recusar por conteúdo antes
+    // de discutir política de canal dá o erro mais útil ao usuário.
     const attachments = await this.files.loadForAttachment(input.attachmentIds ?? []);
-    if (attachments.length > 0) {
-      const channel = await this.prisma.db.channel.findFirst({
-        where: { id: conversation.channelId },
-        select: { type: true },
+    const channel = await this.prisma.db.channel.findFirst({
+      where: { id: conversation.channelId },
+      select: { type: true },
+    });
+    const isExternal = channel?.type !== 'internal';
+    if (attachments.length > 0 && isExternal) {
+      this.files.assertSendableExternally(attachments);
+    }
+
+    // CANAL EXTERNO: o envio tem política, reserva de quota e despacho pelo
+    // outbox (ADR-039). O canal interno grava direto, como sempre.
+    if (isExternal && input.direction === 'outbound') {
+      const { messageId } = await this.send.enqueueOutbound(auth.workspaceId as string, {
+        conversationId,
+        body: input.body,
+        template: input.template,
+        actorMembershipId: auth.membershipId ?? null,
       });
-      if (channel?.type !== 'internal') {
-        this.files.assertSendableExternally(attachments);
-      }
+      const row = (await this.prisma.db.message.findFirst({
+        where: { id: messageId },
+      })) as unknown as MessageRow;
+      const [dto] = await this.toMessageDtos([row]);
+      return dto;
     }
 
     const db = this.prisma.db as unknown as TxRunner;

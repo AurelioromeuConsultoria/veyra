@@ -436,6 +436,12 @@ describe('Canal WhatsApp — ingestão (integração)', () => {
     await send(inbound()).expect(200);
     const conversa = await prisma.raw.conversation.findFirst();
 
+    // a janela precisa estar ABERTA para o envio livre: a fixture usa um
+    // timestamp fixo no passado, então a conversa é trazida para agora
+    await prisma.raw.conversation.updateMany({
+      where: { id: conversa!.id },
+      data: { lastInboundAt: new Date() },
+    });
     // sessão de atendente para enviar a mensagem humana
     const owner = await loginAs('owner-a@veyra.test');
     const humana = request(http)
@@ -456,6 +462,8 @@ describe('Canal WhatsApp — ingestão (integração)', () => {
 
     // as duas mensagens existem…
     expect(await prisma.raw.message.count()).toBe(3);
+    // …e a de saída ficou reservada para despacho (canal externo)
+    expect(await prisma.raw.messageDispatch.count()).toBe(1);
     // …e o inbox NÃO voltou no tempo: o GREATEST no banco decidiu, mesmo com a
     // humana passando por outro caminho (que o lock consultivo não cobre)
     const depois = await prisma.raw.conversation.findFirst({ where: { id: conversa!.id } });
