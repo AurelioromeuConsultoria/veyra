@@ -3,6 +3,7 @@ import type { UsageMetricDto, UsageOverviewDto } from '@veyra/contracts';
 import { clsx } from 'clsx';
 import { Gauge } from 'lucide-react';
 import { api } from '../lib/api';
+import { hasPermission, useSession } from '../lib/session';
 
 const dateFormat = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'medium' });
 
@@ -33,6 +34,14 @@ export function UsagePage() {
    * contratado nesse caso mente para quem está tentando entender o limite.
    */
   const herdado = applied?.source === 'default_plan';
+  /**
+   * A anomalia COMERCIAL ("assinatura cancelada, verificar provisionamento") é
+   * informação de negócio, não de trabalho: o medidor e a procedência do teto
+   * ficam para todos com `workspace:read`, mas o convidado externo não precisa
+   * saber que a conta do cliente está cancelada.
+   */
+  const { data: user } = useSession();
+  const podeVerBilling = hasPermission(user, 'billing:manage');
 
   return (
     <div className="flex h-screen flex-col">
@@ -53,7 +62,7 @@ export function UsagePage() {
                          carregava, esta frase piscava em toda visita */
                       'Nenhum plano padrão configurado — limites no piso de segurança'}
           </p>
-          {herdado && subscription ? (
+          {herdado && subscription && podeVerBilling ? (
             <p className="text-[11px] text-warning">
               Assinatura registrada: {subscription.plan.name} ({subscription.status}). Verificar
               provisionamento ou situação comercial.

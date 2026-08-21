@@ -537,16 +537,13 @@ export class ConversationsService {
   }
 
   private async toDtos(rows: ConversationRow[]): Promise<ConversationDto[]> {
-    const [contactNames, memberNames, channels, consents] = await Promise.all([
+    const [contactNames, memberNames, channels] = await Promise.all([
       this.resolveContactNames(rows.map((r) => r.contactId)),
       this.resolveMemberNames(rows.map((r) => r.assigneeMembershipId)),
       this.prisma.db.channel.findMany({
         where: { id: { in: [...new Set(rows.map((r) => r.channelId))] } },
         select: { id: true, type: true },
       }),
-      // LOTE, não por linha: 30 conversas na lista do inbox não podem virar 30
-      // consultas de consentimento
-      this.resolveConsents(rows),
     ]);
     const channelType = new Map(channels.map((c) => [c.id, c.type]));
     return rows.map((row) => ({
@@ -570,12 +567,6 @@ export class ConversationsService {
         channelType.get(row.channelId) === 'internal' || !row.lastInboundAt
           ? null
           : new Date(row.lastInboundAt.getTime() + SERVICE_WINDOW_MS).toISOString(),
-      consentStatus:
-        channelType.get(row.channelId) === 'internal' || !row.contactId
-          ? null
-          : (consents.get(
-              consentKey(row.contactId, channelType.get(row.channelId) ?? 'internal'),
-            ) ?? 'none'),
       createdAt: row.createdAt.toISOString(),
     }));
   }

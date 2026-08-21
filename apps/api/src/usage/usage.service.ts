@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ClsService } from 'nestjs-cls';
 import type { Prisma } from '../generated/prisma/client';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { USAGE_METRICS, catalogGapAlert, periodEnd, periodKeyFor, type MetricKey } from './metrics';
@@ -43,7 +44,10 @@ export class UsageService {
   /** Último alerta por chave (assinatura ausente, lacuna de catálogo, piso). */
   private readonly alertsSent = new Map<string, number>();
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly cls: ClsService,
+  ) {}
 
   /**
    * Incremento ATÔMICO com verificação de limite, DENTRO da transação de quem
@@ -272,6 +276,17 @@ export class UsageService {
    * reserva usaria, então tela e enforcement não divergem.
    */
   async isExhausted(workspaceId: string, metric: MetricKey): Promise<boolean> {
+    /**
+     * UMA fonte de verdade de tenant. O teto vem de `raw` escopado pelo
+     * parâmetro e o contador de `prisma.db` escopado pelo CLS: divergir os dois
+     * leria o teto de um workspace contra o contador de outro — silenciosamente,
+     * e fail-open se o teto lido fosse o maior. Hoje é inexplorável (guard grava
+     * os dois da mesma membership), mas a garantia não pode depender disso.
+     */
+    const contexto = this.cls.get('workspaceId') as string | undefined;
+    if (contexto !== workspaceId) {
+      throw new Error('isExhausted: workspaceId divergente do contexto da requisição');
+    }
     const limit = await this.limitFor(workspaceId, metric);
     if (limit === null) return false;
     const row = await this.prisma.db.usageCounter.findFirst({

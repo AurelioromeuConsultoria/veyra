@@ -88,12 +88,11 @@ export interface ConversationDto {
    */
   windowExpiresAt: string | null;
   /**
-   * Consentimento do contato NESTE canal. Separado da janela de propósito: uma
-   * mensagem recebida abre a janela e NÃO registra opt-in (ADR-038), e confundir
-   * os dois é o erro que a tela precisa impedir. `null` = canal interno ou
-   * conversa sem contato.
+   * O estado do consentimento NÃO viaja aqui, de propósito: é evidência com peso
+   * de LGPD e a listagem é lida por qualquer portador de `conversations:read`,
+   * sem finalidade — a triagem usa a janela. Quem precisa dele é o compositor,
+   * e ele o obtém do `SendPolicyDto`, que exige `conversations:write`.
    */
-  consentStatus: ConsentStatus | null;
   createdAt: string;
 }
 

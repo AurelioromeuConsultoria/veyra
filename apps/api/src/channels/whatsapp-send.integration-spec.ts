@@ -1445,7 +1445,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
       .expect(403);
   });
 
-  it('a lista do inbox mostra janela e opt-in sem consulta por linha', async () => {
+  it('a lista do inbox mostra canal e janela, e NÃO o estado de opt-in', async () => {
     await prisma.raw.contactChannelConsent.create({
       data: {
         workspaceId: wsA.workspaceId,
@@ -1462,8 +1462,14 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
       .expect(200);
 
     const conversa = res.body.items.find((c: { id: string }) => c.id === conversationId);
-    expect(conversa).toMatchObject({ channelType: 'whatsapp', consentStatus: 'granted' });
+    expect(conversa).toMatchObject({ channelType: 'whatsapp' });
     expect(conversa.windowExpiresAt).toBeTruthy();
+    /**
+     * O estado do opt-in NÃO viaja na listagem: é evidência de LGPD e a lista é
+     * lida por qualquer `conversations:read`, sem finalidade. A triagem usa a
+     * janela; quem precisa do consentimento é o compositor, via política.
+     */
+    expect(conversa.consentStatus).toBeUndefined();
   });
 
   it('o estado do despacho é VISÍVEL na thread', async () => {
