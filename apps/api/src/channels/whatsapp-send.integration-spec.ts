@@ -119,7 +119,10 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
   };
 
   /** Entrada real, para a conversa nascer com janela e endereço. */
-  const ingest = (timestamp = String(Math.floor(Date.now() / 1000))) => {
+  const ingest = (timestamp = String(Math.floor(Date.now() / 1000))) =>
+    ingestFrom('5511999998888', timestamp);
+
+  const ingestFrom = (waId: string, timestamp = String(Math.floor(Date.now() / 1000))) => {
     const payload = {
       object: 'whatsapp_business_account',
       entry: [
@@ -128,11 +131,11 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
             {
               value: {
                 metadata: { phone_number_id: PHONE_NUMBER_ID },
-                contacts: [{ wa_id: '5511999998888', profile: { name: 'Paciente Ana' } }],
+                contacts: [{ wa_id: waId, profile: { name: 'Paciente Ana' } }],
                 messages: [
                   {
-                    id: `wamid.IN${timestamp}`,
-                    from: '5511999998888',
+                    id: `wamid.IN${waId}${timestamp}`,
+                    from: waId,
                     timestamp,
                     type: 'text',
                     text: { body: 'Quero marcar' },
@@ -1078,6 +1081,134 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
       state: 'sending',
       claimToken: '66666666-6666-4666-8666-666666666666',
     });
+  });
+
+  // ── Assinatura ausente (ADR-041) ──────────────────────────────────────────
+
+  it('P0: sem assinatura ATIVA, envio externo respeita o teto do plano padrão', async () => {
+    await setPlanLimit(prisma, 'messages_sent', 1);
+    // provisionamento que falhou, inadimplência, cancelamento — tudo o mesmo caso
+    await prisma.raw.subscription.updateMany({
+      where: { workspaceId: wsA.workspaceId },
+      data: { status: 'canceled' },
+    });
+
+    const primeira = await sendMessage({ direction: 'outbound', body: 'Cabe' });
+    expect(primeira.status).toBe(201);
+    const segunda = await sendMessage({ direction: 'outbound', body: 'Não cabe' });
+    /**
+     * Antes, ausência de assinatura significava "sem limite": o controle de plano
+     * deixava de existir justamente no inadimplente, e uso PAGO ficava ilimitado
+     * por falha de provisionamento.
+     */
+    expect(segunda.status).toBe(402);
+    expect(segunda.body).toMatchObject({ code: 'quota_exceeded', metric: 'messages_sent' });
+  });
+
+  it('ingestão NÃO depende de assinatura ativa: contato novo entra igual', async () => {
+    await prisma.raw.subscription.updateMany({
+      where: { workspaceId: wsA.workspaceId },
+      data: { status: 'canceled' },
+    });
+    /**
+     * O nome anterior prometia ser "o cruzamento ADR-040 × ADR-041" e o
+     * `setPlanLimit('contacts', 0)` era INERTE: `contacts` não é métrica de custo
+     * de terceiro, então nesse cenário o teto dela é nulo e nunca entrava em
+     * jogo. O cruzamento de verdade (quota esgotada não descarta mensagem) já
+     * está coberto em `whatsapp.integration-spec.ts`, com assinatura ativa.
+     *
+     * O que ESTE teste prova é o recorte: sem assinatura, a entrada segue livre
+     * porque a métrica interna não herda teto.
+     */
+    expect(await app.get(UsageService).limitFor(wsA.workspaceId, 'contacts')).toBeNull();
+    const antes = await prisma.raw.contact.count({ where: {} });
+
+    await ingestFrom('5511555554444').expect(200);
+
+    expect(await prisma.raw.contact.count({ where: {} })).toBe(antes + 1);
+    const recebidas = await prisma.raw.message.findMany({
+      where: { workspaceId: wsA.workspaceId, direction: 'inbound' },
+    });
+    expect(recebidas).toHaveLength(2); // a do beforeEach e a de agora
+  });
+
+  it('o teto herdado vem do plano PADRÃO, não de uma chave escrita no código', async () => {
+    // o padrão passa a ser `pro`; se o código usasse a string 'base', o teto
+    // continuaria vindo de lá e este teste falharia
+    await prisma.raw.plan.updateMany({ where: { key: 'base' }, data: { isDefault: null } });
+    await prisma.raw.plan.updateMany({ where: { key: 'pro' }, data: { isDefault: true } });
+    await setPlanLimit(prisma, 'messages_sent', 999, 'base');
+    await setPlanLimit(prisma, 'messages_sent', 1, 'pro');
+    await prisma.raw.subscription.updateMany({
+      where: { workspaceId: wsA.workspaceId },
+      data: { status: 'canceled' },
+    });
+
+    expect((await sendMessage({ direction: 'outbound', body: 'Cabe' })).status).toBe(201);
+    expect((await sendMessage({ direction: 'outbound', body: 'Não cabe' })).status).toBe(402);
+  });
+
+  it('sem assinatura ativa, métrica INTERNA segue sem teto (recorte deliberado)', async () => {
+    await prisma.raw.subscription.updateMany({
+      where: { workspaceId: wsA.workspaceId },
+      data: { status: 'canceled' },
+    });
+    await setPlanLimit(prisma, 'contacts', 1);
+
+    // barrar contato de quem não pode resolver a questão comercial puniria o
+    // lado errado; o excesso aparece no medidor. Só custo EXTERNO é fail-closed.
+    const res = await post('/api/contacts', { name: 'Segundo contato' });
+    expect(res.status).toBe(201);
+  });
+
+  it('P0: plano ATIVO sem a linha da métrica cai no piso, não em ilimitado', async () => {
+    /**
+     * O furo que sobrava: o piso valia só para quem não tinha assinatura. Um
+     * plano novo (`enterprise`, plano de piloto) sem a linha de `messages_sent`
+     * dava envio ilimitado na NOSSA conta do provedor — e sem alerta, porque o
+     * alerta vivia só no ramo sem assinatura.
+     */
+    await prisma.raw.plan.create({
+      data: { key: 'enterprise', name: 'Enterprise', priceCents: 99_900 },
+    });
+    await prisma.raw.planLimit.create({
+      data: { planKey: 'enterprise', metric: 'contacts', kind: 'gauge', value: BigInt(999_999) },
+    });
+    await prisma.raw.subscription.updateMany({
+      where: { workspaceId: wsA.workspaceId },
+      data: { planKey: 'enterprise' },
+    });
+    // o plano PADRÃO define o piso herdado
+    await setPlanLimit(prisma, 'messages_sent', 1);
+
+    expect((await sendMessage({ direction: 'outbound', body: 'Cabe' })).status).toBe(201);
+    const segunda = await sendMessage({ direction: 'outbound', body: 'Não cabe' });
+    expect(segunda.status).toBe(402);
+    expect(segunda.body).toMatchObject({ code: 'quota_exceeded', metric: 'messages_sent' });
+  });
+
+  it('sem plano padrão no catálogo, o teto vem do piso do CÓDIGO — nunca nulo', async () => {
+    // incidente de configuração: nem assinatura ativa, nem plano padrão
+    await prisma.raw.subscription.updateMany({
+      where: { workspaceId: wsA.workspaceId },
+      data: { status: 'canceled' },
+    });
+    await prisma.raw.planLimit.deleteMany({ where: { metric: 'messages_sent' } });
+    await prisma.raw.plan.updateMany({ where: {}, data: { isDefault: null } });
+
+    const limite = await app.get(UsageService).limitFor(wsA.workspaceId, 'messages_sent');
+    // NUNCA null: "sem limite" é o que este ADR existe para eliminar
+    expect(limite).toBe(50);
+  });
+
+  it('o banco recusa DOIS planos padrão — o piso não fica ambíguo', async () => {
+    // P2002 = violação de unique. `toThrow()` genérico ficaria verde por qualquer
+    // motivo (coluna faltando, tipo errado) e não provaria a garantia
+    await expect(
+      prisma.raw.plan.create({
+        data: { key: 'outro-padrao', name: 'Outro', priceCents: 100, isDefault: true },
+      }),
+    ).rejects.toMatchObject({ code: 'P2002' });
   });
 
   it('o estado do despacho é VISÍVEL na thread', async () => {

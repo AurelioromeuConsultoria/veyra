@@ -333,4 +333,41 @@ describe('Uso e quotas (integração)', () => {
     );
     expect(await counterOf('ai_cost_cents')).toBe(0);
   });
+
+  // ── Teto sem assinatura ativa (ADR-041) ───────────────────────────────────
+
+  it('P0: sem assinatura ativa, o teto de CUSTO DE IA é herdado, não anulado', async () => {
+    await prisma.raw.subscription.updateMany({
+      where: { workspaceId: wsA.workspaceId },
+      data: { status: 'canceled' },
+    });
+
+    /**
+     * O call site de IA é outro (`reserve` em `intelligence.service`), e todos os
+     * testes do ADR-041 exercitavam só o envio de WhatsApp. Sem este caso,
+     * apagar a marca de `ai_cost_cents` devolveria gasto de LLM sem teto com a
+     * suíte inteira verde.
+     */
+    const usage = app.get(UsageService);
+    expect(await usage.limitFor(wsA.workspaceId, 'ai_cost_cents')).not.toBeNull();
+    expect(await usage.limitFor(wsA.workspaceId, 'ai_runs')).not.toBeNull();
+    // e a métrica interna segue sem teto no mesmo cenário — o recorte deliberado
+    expect(await usage.limitFor(wsA.workspaceId, 'contacts')).toBeNull();
+  });
+
+  it('sem assinatura ativa, reserva de IA acima do teto herdado é RECUSADA', async () => {
+    await setPlanLimit(prisma, 'ai_cost_cents', 10);
+    await prisma.raw.subscription.updateMany({
+      where: { workspaceId: wsA.workspaceId },
+      data: { status: 'canceled' },
+    });
+    const usage = app.get(UsageService);
+    await usage.ensureCounterRow(wsA.workspaceId, 'ai_cost_cents');
+
+    const primeira = await asWorkspace(() => usage.reserve(wsA.workspaceId, 'ai_cost_cents', 8));
+    expect(primeira).not.toBe('quota_exceeded');
+    const segunda = await asWorkspace(() => usage.reserve(wsA.workspaceId, 'ai_cost_cents', 8));
+    // antes do ADR-041 isto passava: sem assinatura, sem limite, gasto sem fim
+    expect(segunda).toBe('quota_exceeded');
+  });
 });

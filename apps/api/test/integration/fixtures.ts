@@ -111,7 +111,7 @@ export async function createMembershipFixture(
 export async function seedPlanCatalog(prisma: PrismaService): Promise<void> {
   const plans = [
     { key: 'base', name: 'Base', priceCents: 0, isDefault: true },
-    { key: 'pro', name: 'Pro', priceCents: 9900, isDefault: false },
+    { key: 'pro', name: 'Pro', priceCents: 9900, isDefault: null },
   ];
   for (const plan of plans) {
     await prisma.raw.plan.upsert({ where: { key: plan.key }, create: plan, update: {} });

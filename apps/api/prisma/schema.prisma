@@ -1180,7 +1180,12 @@ model Plan {
   name       String
   /// preço em CENTAVOS DE DÓLAR (USD) — dinheiro é Int (§3.11, ADR-034)
   priceCents Int
-  isDefault  Boolean  @default(false)
+  /// TRUE ou NULL, nunca FALSE: com `@@unique` o banco garante UM só plano
+  /// padrão (mesmo padrão de `Pipeline.defaultMark` e `Channel.systemMark`).
+  /// Deixou de ser preferência de provisionamento e passou a decidir TETO de
+  /// quem não tem assinatura ativa (ADR-041) — dois padrões dariam limites
+  /// diferentes conforme a ordem que o Postgres devolvesse.
+  isDefault  Boolean? @unique
   createdAt  DateTime @default(now())
 
   limits        PlanLimit[]

@@ -6,6 +6,14 @@ import { QuotaExceededException } from './quota.exception';
 
 type AnyClient = Db | Prisma.TransactionClient;
 
+/** Métricas que nunca ficam sem teto — citadas no alerta para não ser genérico. */
+const NEVER_UNLIMITED = Object.values(USAGE_METRICS)
+  .filter((definition) => definition.neverUnlimited)
+  .map((definition) => definition.key);
+
+/** Um alerta por workspace por hora: o caminho é quente (todo envio passa). */
+const ALERT_THROTTLE_MS = 60 * 60_000;
+
 /** Reserva de IA expira se o processo morrer entre reservar e liquidar. */
 const RESERVATION_TTL_MS = 10 * 60_000;
 
@@ -23,6 +31,9 @@ export interface UsageSnapshot {
 @Injectable()
 export class UsageService {
   private readonly logger = new Logger(UsageService.name);
+
+  /** Último alerta por chave (assinatura ausente, lacuna de catálogo, piso). */
+  private readonly alertsSent = new Map<string, number>();
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -49,9 +60,16 @@ export class UsageService {
   ): Promise<void> {
     const definition = USAGE_METRICS[metric];
     const period = periodKeyFor(definition.kind);
+    /**
+     * O piso do ADR-041 mora em `limitsFor`, então um chamador que passasse
+     * `knownLimit: null` para métrica de custo de terceiro furava a regra sem
+     * tocar em nada marcado como sensível. Aqui isso é impossível: `null` para
+     * essas métricas é ignorado e o teto é resolvido de verdade.
+     */
+    const declarado = definition.neverUnlimited && knownLimit === null ? undefined : knownLimit;
     const limit = definition.enforced
-      ? knownLimit !== undefined
-        ? knownLimit
+      ? declarado !== undefined
+        ? declarado
         : await this.limitFor(workspaceId, metric)
       : null;
     // a linha do contador é garantida ANTES da transação, por quem chama
@@ -393,11 +411,121 @@ export class UsageService {
       where: { workspaceId, status: 'active' },
       select: { planKey: true },
     });
-    if (!subscription) return new Map();
-    const limits = await this.prisma.raw.planLimit.findMany({
-      where: { planKey: subscription.planKey },
-    });
-    return new Map(limits.map((limit) => [limit.metric, Number(limit.value)]));
+    const mapa = new Map<string, number>();
+    if (subscription) {
+      const limits = await this.prisma.raw.planLimit.findMany({
+        where: { planKey: subscription.planKey },
+      });
+      for (const limit of limits) mapa.set(limit.metric, Number(limit.value));
+    } else {
+      /**
+       * Sem assinatura ativa (`past_due`, `canceled`, ou provisionamento que
+       * falhou), mapa vazio significava "sem limite" — o controle de plano
+       * deixava de existir exatamente no inadimplente (ADR-041). O piso abaixo
+       * fecha isso; aqui só o alerta, porque a causa é comercial.
+       *
+       * O recorte é deliberado: métrica interna (contatos, armazenamento)
+       * continua sem teto neste caso, porque barrá-la puniria quem não pode
+       * resolver a questão comercial; métrica que gasta dinheiro de terceiro, não.
+       */
+      this.alertMissingSubscription(workspaceId);
+    }
+    return this.enforceFloors(mapa);
+  }
+
+  /**
+   * PISO das métricas que nunca podem ficar sem teto (ADR-041), aplicado nos
+   * DOIS ramos — com e sem assinatura ativa.
+   *
+   * Restringir isto ao ramo "sem assinatura" protegia só o caso excepcional e
+   * deixava o comum aberto: bastava um plano novo (um `enterprise`, um plano de
+   * piloto) sem a linha da métrica para aquele cliente gastar sem teto na NOSSA
+   * conta do provedor — e sem alerta, porque o alerta vivia só no outro ramo.
+   *
+   * Para essas métricas, a ausência da linha é sempre lacuna de configuração,
+   * nunca "ilimitado por escolha": ilimitado não é uma opção.
+   */
+  private async enforceFloors(mapa: Map<string, number>): Promise<Map<string, number>> {
+    const faltando = Object.values(USAGE_METRICS).filter(
+      (definition) => definition.neverUnlimited && !mapa.has(definition.key),
+    );
+    if (faltando.length === 0) return mapa;
+
+    /**
+     * `raw` justificado: `Plan`/`PlanLimit` são catálogo GLOBAL (ADR-034), fora
+     * do client filtrado por definição. `isDefault` é marca TRUE/NULL com unique,
+     * então "o plano padrão" é único por garantia do banco.
+     */
+    const plano = await this.prisma.raw.plan.findFirst({ where: { isDefault: true } });
+    const padrao = plano
+      ? await this.prisma.raw.planLimit.findMany({ where: { planKey: plano.key } })
+      : [];
+    for (const definition of faltando) {
+      const linha = padrao.find((limit) => limit.metric === definition.key);
+      if (linha) {
+        mapa.set(definition.key, Number(linha.value));
+        /**
+         * Herança SILENCIOSA era mistério de suporte: um cliente pagante em
+         * plano sem a linha ficava limitado pelo teto do padrão, e o único sinal
+         * era o 402 dele reclamando. O aviso nomeia plano, métrica e teto.
+         */
+        this.alertOnce(
+          `catalogo:${plano?.key ?? '-'}:${definition.key}`,
+          `Plano sem limite para "${definition.key}": teto ${Number(linha.value)} herdado do ` +
+            `plano padrão "${plano?.key}". Corrigir o catálogo do plano assinado.`,
+        );
+        continue;
+      }
+      /**
+       * O catálogo não resolveu. Cai no piso do CÓDIGO — nunca em "sem limite" —
+       * e o alerta é OUTRO: isto é incidente de configuração, não condição
+       * comercial, e confundir os dois manda o operador procurar no lugar errado.
+       */
+      mapa.set(definition.key, definition.safetyFloor ?? 0);
+      this.alertOnce(
+        `piso:${definition.key}`,
+        `Catálogo de planos sem limite para "${definition.key}"` +
+          `${plano ? ` no plano padrão "${plano.key}"` : ' (nenhum plano padrão)'}: ` +
+          `piso de segurança ${definition.safetyFloor ?? 0} aplicado. Corrigir o catálogo.`,
+      );
+    }
+    return mapa;
+  }
+
+  /**
+   * ALERTA OPERACIONAL: workspace sem assinatura ativa é falha de
+   * provisionamento ou condição comercial a tratar, não estado normal.
+   */
+  private alertMissingSubscription(workspaceId: string): void {
+    this.alertOnce(
+      `sem-assinatura:${workspaceId}`,
+      `Workspace ${workspaceId} sem assinatura ATIVA: métricas de custo de terceiro ` +
+        `(${NEVER_UNLIMITED.join(', ')}) herdam teto do catálogo de planos — nunca ` +
+        `ilimitado. Verificar provisionamento ou situação comercial.`,
+    );
+  }
+
+  /**
+   * Alerta ESTRANGULADO por chave: o caminho é quente (um envio chama `limitsFor`
+   * mais de uma vez), e alertar a cada passagem esconderia o próprio alerta —
+   * catálogo quebrado geraria dezenas de linhas por mensagem. Primeira ocorrência
+   * sai na hora; as repetições esperam a janela.
+   *
+   * É POR INSTÂNCIA: com N réplicas são N alertas por janela, aceitável para um
+   * alerta e não vale estado compartilhado.
+   */
+  private alertOnce(chave: string, mensagem: string): void {
+    const ultimo = this.alertsSent.get(chave) ?? 0;
+    if (Date.now() - ultimo < ALERT_THROTTLE_MS) return;
+    this.alertsSent.set(chave, Date.now());
+    // poda: sem isto o mapa só cresce, uma entrada por chave, para sempre
+    if (this.alertsSent.size > 500) {
+      const corte = Date.now() - 2 * ALERT_THROTTLE_MS;
+      for (const [k, quando] of this.alertsSent) {
+        if (quando < corte) this.alertsSent.delete(k);
+      }
+    }
+    this.logger.error(mensagem);
   }
 
   /** Liquidação: soma o custo REAL, sem barrar — o gasto já aconteceu. */

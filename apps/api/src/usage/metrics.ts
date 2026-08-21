@@ -5,6 +5,16 @@
  */
 export type MetricKind = 'counter' | 'gauge';
 
+/**
+ * Métrica cujo consumo gasta dinheiro de TERCEIRO: o par
+ * `neverUnlimited`+`safetyFloor` é inseparável no tipo, para o compilador
+ * impedir o descuido de marcar "nunca ilimitado" sem piso — que resultaria em
+ * teto zero, bloqueando tudo, a alternativa que o ADR-041 descarta.
+ */
+type ExternalCostGuard =
+  | { neverUnlimited?: undefined; safetyFloor?: undefined }
+  | { neverUnlimited: true; safetyFloor: number };
+
 export interface MetricDefinition {
   key: string;
   kind: MetricKind;
@@ -12,14 +22,27 @@ export interface MetricDefinition {
   /** unidade para exibição — evita "5000" sem contexto na tela */
   unit: 'count' | 'bytes' | 'usd_cents';
   /**
-   * Métrica declarada mas AINDA sem enforcement. `messages_sent` fica aqui
-   * porque não existe envio externo: cobrar por mensagem enquanto o canal é
-   * interno e manual seria cobrar por digitar (decisão da revisão da 8).
+   * Métrica declarada mas AINDA sem enforcement. Hoje todas são cobradas:
+   * `messages_sent` deixou de ser exceção na 9.1.b, quando passou a existir
+   * envio externo de verdade — antes, cobrar por mensagem em canal interno e
+   * manual seria cobrar por digitar.
    */
   enforced: boolean;
 }
 
-export const USAGE_METRICS: Record<string, MetricDefinition> = {
+/**
+ * `neverUnlimited`: métrica que NUNCA fica sem teto, porque gasta dinheiro de
+ * terceiro. Sem assinatura ativa — ou com plano sem a linha — o limite é herdado
+ * do plano padrão em vez de virar ilimitado (ADR-041). Métrica interna segue sem
+ * teto nesse caso, porque o dano de barrar é maior que o de contar depois.
+ *
+ * `safetyFloor`: piso usado SÓ quando o catálogo não resolve (sem plano padrão,
+ * ou plano padrão sem a linha). Existe para que "nunca ilimitado" não dependa de
+ * dado que pode faltar; conservador de propósito, e o alerta diz que ele entrou.
+ */
+export type MetricDefinitionWithGuard = MetricDefinition & ExternalCostGuard;
+
+export const USAGE_METRICS: Record<string, MetricDefinitionWithGuard> = {
   contacts: {
     key: 'contacts',
     kind: 'gauge',
@@ -40,6 +63,9 @@ export const USAGE_METRICS: Record<string, MetricDefinition> = {
     label: 'Execuções de IA',
     unit: 'count',
     enforced: true,
+    // cada execução chama a Anthropic: dinheiro de terceiro, logo nunca sem teto
+    neverUnlimited: true,
+    safetyFloor: 50,
   },
   ai_cost_cents: {
     key: 'ai_cost_cents',
@@ -47,6 +73,13 @@ export const USAGE_METRICS: Record<string, MetricDefinition> = {
     label: 'Custo de IA',
     unit: 'usd_cents',
     enforced: true,
+    /**
+     * A métrica é denominada em centavos DE GASTO REAL: deixá-la sem teto quando
+     * a assinatura não está ativa seria o furo que o ADR-041 fecha, na única
+     * métrica cuja unidade é literalmente dinheiro.
+     */
+    neverUnlimited: true,
+    safetyFloor: 100,
   },
   messages_sent: {
     key: 'messages_sent',
@@ -56,6 +89,9 @@ export const USAGE_METRICS: Record<string, MetricDefinition> = {
     // COBRADA a partir da 9.1.b: existe envio externo de verdade, com custo do
     // outro lado. Reservada antes da chamada e liquidada pelo resultado.
     enforced: true,
+    // e nunca ilimitada: cada mensagem custa dinheiro no provedor (ADR-041)
+    neverUnlimited: true,
+    safetyFloor: 50,
   },
 };
 
