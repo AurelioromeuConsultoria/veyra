@@ -52,7 +52,13 @@ export function UsagePage() {
               : overview.isError
                 ? 'Não foi possível ler o plano vigente'
                 : herdado
-                  ? `Plano ${applied?.name} aplicado por ausência de assinatura ativa`
+                  ? /* `subscription` nula é ambígua: pode não existir OU quem
+                       olha não tem direito de ver. Só afirmamos o motivo
+                       comercial para quem recebeu a assinatura — os demais leem
+                       a procedência do TETO, que é o que lhes diz respeito */
+                    subscription
+                    ? `Plano ${applied?.name} aplicado por ausência de assinatura ativa`
+                    : `Plano ${applied?.name} aplicado — teto do plano padrão`
                   : applied?.source === 'subscription'
                     ? /* o nome vem do plano APLICADO; a data de renovação só
                          existe para quem gere billing, porque o servidor não

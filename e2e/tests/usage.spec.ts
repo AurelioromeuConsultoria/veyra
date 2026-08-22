@@ -90,19 +90,24 @@ test.describe('Uso e plano (UI)', () => {
 
   test('membro sem billing vê o medidor, não a situação comercial', async ({ page }) => {
     const db = await openE2eDb();
+    let papelAnterior: string | null = null;
+    let membership: { ws: string } | null = null;
     try {
       /**
        * A API é a fronteira: antes, esconder a faixa na tela deixava qualquer
        * portador do medidor obter status, preço e período chamando /api/usage.
        */
-      const { rows } = await db.query<{ role_id: string; ws: string }>(
-        `SELECT r."id" AS role_id, r."workspaceId" AS ws
+      const { rows } = await db.query<{ role_id: string; ws: string; atual: string }>(
+        `SELECT r."id" AS role_id, r."workspaceId" AS ws, m."roleId" AS atual
            FROM "Role" r
            JOIN "Membership" m ON m."workspaceId" = r."workspaceId"
            JOIN "User" u ON u."id" = m."userId"
           WHERE u."email" = $1 AND r."systemKey" = 'member' LIMIT 1`,
         [OWNER_A],
       );
+      expect(rows.length).toBe(1);
+      papelAnterior = rows[0].atual;
+      membership = { ws: rows[0].ws };
       // rebaixa o owner do teste a Member (sem `billing:manage`)
       await db.query(
         `UPDATE "Membership" SET "roleId" = $1 WHERE "workspaceId" = $2
@@ -122,6 +127,18 @@ test.describe('Uso e plano (UI)', () => {
       expect(corpo.subscription).toBeNull();
       expect(JSON.stringify(corpo)).not.toContain('priceCents');
     } finally {
+      /**
+       * RESTAURA o papel. Hoje este é o último spec alfabeticamente e passar sem
+       * restaurar é acidente de ordenação: qualquer spec nova depois de "u"
+       * herdaria um workspace SEM Owner — estado que a própria API proíbe criar.
+       */
+      if (papelAnterior && membership) {
+        await db.query(
+          `UPDATE "Membership" SET "roleId" = $1 WHERE "workspaceId" = $2
+             AND "userId" = (SELECT "id" FROM "User" WHERE "email" = $3)`,
+          [papelAnterior, membership.ws, OWNER_A],
+        );
+      }
       await db.end();
     }
   });

@@ -121,16 +121,24 @@ describe('Uso e quotas (integração)', () => {
 
   // ── Plano e visão de uso ──────────────────────────────────────────────────
 
-  it('P1: quem NÃO gere billing recebe uso e plano aplicado, sem situação comercial', async () => {
-    const membro = await createUserFixture(prisma, 'membro-a@veyra.test');
-    await createMembershipFixture(prisma, wsA.workspaceId, membro, wsA.roles.member);
-    const sessaoMembro = await loginAs('membro-a@veyra.test');
+  it.each([
+    ['member', 'membro-a@veyra.test'],
+    // ADMIN é o caso que expõe implementação por NOME de papel: tem TODAS as
+    // permissões menos `billing:manage`, então quem ramificasse por
+    // `systemKey === 'owner'` (proibido, §3.5) passaria no teste do Member e
+    // falharia aqui
+    ['admin', 'admin-a@veyra.test'],
+    ['guest', 'guest-a@veyra.test'],
+  ])('P1: %s NÃO recebe situação comercial, só uso e plano aplicado', async (roleKey, email) => {
+    const usuario = await createUserFixture(prisma, email);
+    await createMembershipFixture(prisma, wsA.workspaceId, usuario, wsA.roles[roleKey]);
+    const sessao = await loginAs(email);
 
-    const overview = (await get('/api/usage', sessaoMembro).expect(200)).body;
+    const overview = (await get('/api/usage', sessao).expect(200)).body;
 
     /**
-     * Esconder na tela não bastava: qualquer portador do medidor obtinha status,
-     * preço e fim do período chamando a API. O SERVIDOR é que não envia.
+     * Esconder na tela não bastava: qualquer portador do medidor obtinha
+     * status, preço e fim do período chamando a API. O SERVIDOR é que não envia.
      */
     expect(overview.subscription).toBeNull();
     // e o que é informação de TRABALHO continua chegando

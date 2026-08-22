@@ -1,7 +1,7 @@
 import { Controller, Get } from '@nestjs/common';
 import type { UsageOverviewDto } from '@veyra/contracts';
 import { AuthContext, CurrentAuth, RequirePermissions } from '../common/decorators';
-import { PermissionCheckService } from '../auth/permission-check.service';
+import { PermissionsService } from '../auth/permissions.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { UsageService } from './usage.service';
 
@@ -10,7 +10,7 @@ export class UsageController {
   constructor(
     private readonly usage: UsageService,
     private readonly prisma: PrismaService,
-    private readonly permissions: PermissionCheckService,
+    private readonly permissions: PermissionsService,
   ) {}
 
   /**
@@ -28,7 +28,7 @@ export class UsageController {
      * quem gere billing: filtrar só na tela deixava a API entregando tudo a
      * qualquer portador do medidor, inclusive convidado externo.
      */
-    const podeVerBilling = await this.permissions.has('billing:manage');
+    const podeVerBilling = await this.permissions.has(auth, 'billing:manage');
     // raw justificado: Plan é catálogo GLOBAL (ADR-034), fora do client filtrado
     const subscription = podeVerBilling
       ? await this.prisma.raw.subscription.findFirst({
