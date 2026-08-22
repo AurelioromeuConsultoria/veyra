@@ -30,10 +30,12 @@ export interface UsageSnapshot {
   label: string;
   kind: 'counter' | 'gauge';
   unit: 'count' | 'bytes' | 'usd_cents';
-  used: number;
+  used: number | null;
   limit: number | null;
   enforced: boolean;
   limitSource: 'plan' | 'default_plan' | 'code_floor' | null;
+  usedRatio: number | null;
+  monetaryRedacted?: boolean;
   resetsAt: string | null;
 }
 
@@ -369,7 +371,18 @@ export class UsageService {
     );
   }
 
-  async snapshot(workspaceId: string): Promise<UsageSnapshot[]> {
+  /**
+   * Visão de uso, PROJETADA pelo direito de quem pede.
+   *
+   * `includeMonetary` libera os valores em dólar (`unit: 'usd_cents'`): custo em
+   * USD é dado comercial tão sensível quanto preço de plano — especialmente para
+   * convidado externo. Quem trabalha no CRM precisa saber que existe teto de IA
+   * e se está perto dele; não precisa dos centavos nem do orçamento (ADR-041).
+   *
+   * A razão de uso (0..1) NÃO é monetária e acompanha sempre: é ela que permite
+   * dizer "próximo do limite" sem revelar valor nenhum.
+   */
+  async snapshot(workspaceId: string, includeMonetary: boolean): Promise<UsageSnapshot[]> {
     const limits = await this.limitsFor(workspaceId);
     const counters = (await this.prisma.db.usageCounter.findMany({})) as unknown as {
       metric: string;
@@ -380,15 +393,23 @@ export class UsageService {
       const period = periodKeyFor(definition.kind);
       const row = counters.find((c) => c.metric === definition.key && c.period === period);
       const limit = limits.get(definition.key);
+      const used = Number(row?.value ?? 0);
+      const teto = limit?.value ?? null;
+      // a UNIDADE é o critério, não uma lista de nomes: métrica nova em dólar
+      // nasce protegida sem ninguém precisar lembrar de adicioná-la aqui
+      const monetaria = definition.unit === 'usd_cents';
+      const omitir = monetaria && !includeMonetary;
       return {
         metric: definition.key,
         label: definition.label,
         kind: definition.kind,
         unit: definition.unit,
-        used: Number(row?.value ?? 0),
-        limit: limit?.value ?? null,
+        used: omitir ? null : used,
+        limit: omitir ? null : teto,
         limitSource: limit?.source ?? null,
         enforced: definition.enforced,
+        usedRatio: teto && teto > 0 ? Math.min(1, used / teto) : null,
+        ...(omitir ? { monetaryRedacted: true } : {}),
         resetsAt: definition.kind === 'counter' ? periodEnd().toISOString() : null,
       };
     });

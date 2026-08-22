@@ -151,7 +151,7 @@ describe('Uso e quotas (integração)', () => {
     expect(bruto).not.toContain('currentPeriodEnd');
   });
 
-  it('quem gere billing recebe a assinatura completa', async () => {
+  it('quem gere billing recebe assinatura e valores monetários completos', async () => {
     const overview = (await get('/api/usage', sessionA).expect(200)).body;
 
     expect(overview.subscription).toMatchObject({
@@ -160,6 +160,11 @@ describe('Uso e quotas (integração)', () => {
     });
     expect(overview.subscription.plan.priceCents).toBe(0);
     expect(overview.subscription.currentPeriodEnd).toBeTruthy();
+
+    // e o custo de IA vem em centavos, com teto — é para isso que existe o direito
+    const custo = overview.metrics.find((m: { metric: string }) => m.metric === 'ai_cost_cents');
+    expect(custo).toMatchObject({ used: 0, limit: 500, unit: 'usd_cents' });
+    expect(custo.monetaryRedacted).toBeUndefined();
   });
 
   it('workspace nasce com assinatura no plano-base e uso zerado', async () => {

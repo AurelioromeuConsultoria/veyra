@@ -49,7 +49,7 @@ export class UsageController {
           }
         : null,
       appliedPlan: await this.usage.appliedPlan(workspaceId),
-      metrics: await this.usage.snapshot(workspaceId),
+      metrics: await this.usage.snapshot(workspaceId, podeVerBilling),
     };
   }
 }

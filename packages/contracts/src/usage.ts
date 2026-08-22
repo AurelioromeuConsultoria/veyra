@@ -4,9 +4,22 @@ export interface UsageMetricDto {
   kind: 'counter' | 'gauge';
   /** `usd_cents` deixa explícito que dinheiro aqui é CENTAVO DE DÓLAR (ADR-034) */
   unit: 'count' | 'bytes' | 'usd_cents';
-  used: number;
-  /** null = métrica sem limite no plano vigente */
+  /**
+   * `null` = valor MONETÁRIO omitido porque quem pede não tem `billing:manage`.
+   * Dólar é dado comercial: quem trabalha no CRM precisa saber que existe teto e
+   * se está perto dele, não quanto a conta gastou (ADR-041).
+   */
+  used: number | null;
+  /** null = métrica sem limite no plano vigente, ou valor monetário omitido */
   limit: number | null;
+  /**
+   * Uso sobre o teto, de 0 a 1 — não monetário, então acompanha a métrica mesmo
+   * quando os valores são omitidos. É o que permite dizer "próximo do limite"
+   * sem revelar centavos. `null` quando não há teto.
+   */
+  usedRatio: number | null;
+  /** true = há teto e valores, mas eles foram omitidos por falta de permissão */
+  monetaryRedacted?: boolean;
   /**
    * DE ONDE veio o teto. Sem isto, um cliente limitado por lacuna de catálogo vê
    * só um 402 inexplicável — o "mistério de suporte" que o ADR-041 quer evitar.

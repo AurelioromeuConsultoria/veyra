@@ -84,7 +84,9 @@ export function UsagePage() {
       <div className="flex-1 overflow-auto p-5">
         <ul className="max-w-2xl space-y-3">
           {metrics.map((metric) => {
-            const ratio = metric.limit ? Math.min(1, metric.used / metric.limit) : 0;
+            // a razão vem do servidor: com valor monetário omitido, é a única
+            // fonte da barra — e ela não revela centavos
+            const ratio = metric.usedRatio ?? 0;
             const near = ratio >= 0.8;
             return (
               <li key={metric.metric} className="rounded-md border border-border p-3">
@@ -96,15 +98,28 @@ export function UsagePage() {
                     </span>
                   ) : null}
                   <span className="ml-auto font-mono text-xs tabular-nums">
-                    <span data-testid={`usage-${metric.metric}-used`}>
-                      {formatValue(metric.used, metric.unit)}
-                    </span>
-                    {metric.limit !== null ? (
-                      <span className="text-muted-fg">
-                        {' '}
-                        / {formatValue(metric.limit, metric.unit)}
+                    {metric.used === null ? (
+                      /* valor monetário omitido pelo servidor: mostramos
+                         DISPONIBILIDADE, não dinheiro — quem trabalha precisa
+                         saber que está perto do teto, não quanto a conta gastou */
+                      <span data-testid={`usage-${metric.metric}-used`} className="text-muted-fg">
+                        {metric.usedRatio === null
+                          ? 'sem teto definido'
+                          : `${Math.round(metric.usedRatio * 100)}% do limite`}
                       </span>
-                    ) : null}
+                    ) : (
+                      <>
+                        <span data-testid={`usage-${metric.metric}-used`}>
+                          {formatValue(metric.used, metric.unit)}
+                        </span>
+                        {metric.limit !== null ? (
+                          <span className="text-muted-fg">
+                            {' '}
+                            / {formatValue(metric.limit, metric.unit)}
+                          </span>
+                        ) : null}
+                      </>
+                    )}
                   </span>
                 </div>
                 {metric.limitSource === 'default_plan' || metric.limitSource === 'code_floor' ? (
@@ -116,13 +131,18 @@ export function UsagePage() {
                       : 'Teto no piso de segurança — o catálogo de planos não define esta métrica'}
                   </p>
                 ) : null}
-                {metric.limit !== null ? (
+                {metric.usedRatio !== null ? (
                   <div className="mt-2 h-1 overflow-hidden rounded-full bg-surface-2">
                     <div
                       className={clsx('h-full', near ? 'bg-warning' : 'bg-accent')}
                       style={{ width: `${ratio * 100}%` }}
                     />
                   </div>
+                ) : null}
+                {metric.monetaryRedacted && near ? (
+                  <p className="mt-1 text-[11px] text-warning">
+                    Uso de IA próximo do limite — peça a quem gere o plano para ver o valor
+                  </p>
                 ) : null}
                 <p className="mt-1.5 text-[11px] text-muted-fg">
                   {metric.kind === 'gauge'

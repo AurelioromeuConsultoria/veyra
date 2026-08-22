@@ -126,6 +126,12 @@ test.describe('Uso e plano (UI)', () => {
       const corpo = await overview.json();
       expect(corpo.subscription).toBeNull();
       expect(JSON.stringify(corpo)).not.toContain('priceCents');
+      // custo de IA sem centavos: o trabalho vê disponibilidade, não dinheiro
+      const custo = corpo.metrics.find((m: { metric: string }) => m.metric === 'ai_cost_cents');
+      expect(custo.used).toBeNull();
+      expect(custo.monetaryRedacted).toBe(true);
+      await expect(page.getByTestId('usage-ai_cost_cents-used')).toContainText(/% do limite/);
+      await expect(page.getByText(/US\$/)).toHaveCount(0);
     } finally {
       /**
        * RESTAURA o papel. Hoje este é o último spec alfabeticamente e passar sem
