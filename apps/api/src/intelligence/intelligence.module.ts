@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ContactsModule } from '../contacts/contacts.module';
 import { ConversationsModule } from '../conversations/conversations.module';
 import { DealsModule } from '../deals/deals.module';
+import { AuthModule } from '../auth/auth.module';
 import { IntelligencePersistenceModule } from '../intelligence-persistence/intelligence-persistence.module';
 import { TasksModule } from '../tasks/tasks.module';
 import { IntelligenceController } from './intelligence.controller';
@@ -18,6 +19,9 @@ import { LLM_CLIENT } from './llm/llm.client';
   // serviços de DOMÍNIO são a única porta de leitura da IA (ADR-027):
   // por usarem o client filtrado, o run herda tenant, RBAC e auditoria
   imports: [
+    // `PermissionsService`: a rota de custo é `workspace:manage`, mas os VALORES
+    // em dólar exigem `billing:manage` — projeção de campo (§4)
+    AuthModule,
     IntelligencePersistenceModule,
     ConversationsModule,
     ContactsModule,

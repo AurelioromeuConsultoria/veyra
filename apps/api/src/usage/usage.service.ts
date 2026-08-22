@@ -2,11 +2,24 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ClsService } from 'nestjs-cls';
 import type { Prisma } from '../generated/prisma/client';
 import { PrismaService, type Db } from '../prisma/prisma.service';
-import { USAGE_METRICS, catalogGapAlert, periodEnd, periodKeyFor, type MetricKey } from './metrics';
+import {
+  MONETARY_UNITS,
+  USAGE_METRICS,
+  catalogGapAlert,
+  periodEnd,
+  periodKeyFor,
+  type MetricKey,
+} from './metrics';
 import { QuotaExceededException } from './quota.exception';
 import type { AppliedPlanDto } from '@veyra/contracts';
 
 type AnyClient = Db | Prisma.TransactionClient;
+
+/** Razão de uso: inteira em pontos percentuais quando o valor é omitido. */
+const quantizeRatio = (bruto: number, quantizar: boolean): number => {
+  const limitado = Math.min(1, Math.max(0, bruto));
+  return quantizar ? Math.round(limitado * 100) / 100 : limitado;
+};
 
 /** Teto com PROCEDÊNCIA: de onde ele veio muda o que a tela precisa dizer. */
 interface ResolvedLimit {
@@ -363,10 +376,12 @@ export class UsageService {
       where: { workspaceId, metric, period },
       select: { value: true },
     });
+    // métrica em dólar não devolve teto nem gasto no corpo do erro
+    const monetaria = MONETARY_UNITS[definition.unit];
     return new QuotaExceededException(
       metric,
-      limit,
-      Number(row?.value ?? 0),
+      monetaria ? null : limit,
+      monetaria ? null : Number(row?.value ?? 0),
       definition.kind === 'counter' ? periodEnd() : null,
     );
   }
@@ -396,8 +411,8 @@ export class UsageService {
       const used = Number(row?.value ?? 0);
       const teto = limit?.value ?? null;
       // a UNIDADE é o critério, não uma lista de nomes: métrica nova em dólar
-      // nasce protegida sem ninguém precisar lembrar de adicioná-la aqui
-      const monetaria = definition.unit === 'usd_cents';
+      // nasce protegida, e unidade nova não compila sem decisão explícita
+      const monetaria = MONETARY_UNITS[definition.unit];
       const omitir = monetaria && !includeMonetary;
       return {
         metric: definition.key,
@@ -408,7 +423,16 @@ export class UsageService {
         limit: omitir ? null : teto,
         limitSource: limit?.source ?? null,
         enforced: definition.enforced,
-        usedRatio: teto && teto > 0 ? Math.min(1, used / teto) : null,
+        /**
+         * QUANTIZADA quando o valor é omitido: a razão exata em double permite
+         * reconstruir o valor (0.274 × 500 = 137), e o teto é inferível — poucos
+         * valores de catálogo, piso no código. Percentual inteiro serve à tela
+         * ("87% do limite") e não devolve o centavo.
+         *
+         * Teto ZERO não é "sem teto": é bloqueio total, e devolver `null` diria
+         * o oposto justamente a quem já não vê os números.
+         */
+        usedRatio: teto === null ? null : teto === 0 ? 1 : quantizeRatio(used / teto, omitir),
         ...(omitir ? { monetaryRedacted: true } : {}),
         resetsAt: definition.kind === 'counter' ? periodEnd().toISOString() : null,
       };

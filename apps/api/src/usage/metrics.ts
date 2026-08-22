@@ -40,6 +40,18 @@ export interface MetricDefinition {
  * ou plano padrão sem a linha). Existe para que "nunca ilimitado" não dependa de
  * dado que pode faltar; conservador de propósito, e o alerta diz que ele entrou.
  */
+/**
+ * Unidades que representam DINHEIRO. Mapa exaustivo de propósito: acrescentar
+ * `'brl_cents'` ou `'credits'` à união sem decidir aqui passa a ser erro de
+ * compilação, em vez de vazar em silêncio (o mesmo raciocínio do spec de
+ * invariante de `neverUnlimited`).
+ */
+export const MONETARY_UNITS: Record<MetricDefinition['unit'], boolean> = {
+  count: false,
+  bytes: false,
+  usd_cents: true,
+};
+
 export type MetricDefinitionWithGuard = MetricDefinition & ExternalCostGuard;
 
 export const USAGE_METRICS: Record<string, MetricDefinitionWithGuard> = {

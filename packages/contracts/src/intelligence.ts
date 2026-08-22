@@ -88,13 +88,22 @@ export interface AiRunDto {
   contextSummary: string;
   inputTokens: number;
   outputTokens: number;
-  costCents: number;
+  /**
+   * `null` = valor MONETÁRIO omitido porque quem pede não tem `billing:manage`.
+   * Tokens e latência ficam: são diagnóstico de administração. Dólar é dado
+   * comercial, e por execução é ainda mais granular que o total do período
+   * (ADR-041).
+   */
+  costCents: number | null;
   latencyMs: number;
   action: 'none' | 'proposed' | 'executed';
   createdAt: string;
 }
 
 export interface AiUsageDto {
-  totalCostCents: number;
+  /** `null` = omitido por falta de `billing:manage` (ADR-041) */
+  totalCostCents: number | null;
+  /** true = havia valores monetários e eles foram omitidos */
+  monetaryRedacted?: boolean;
   runs: AiRunDto[];
 }

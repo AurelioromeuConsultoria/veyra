@@ -8,8 +8,8 @@ import { HttpException, HttpStatus } from '@nestjs/common';
 export class QuotaExceededException extends HttpException {
   constructor(
     readonly metric: string,
-    readonly limit: number,
-    readonly current: number,
+    readonly limit: number | null,
+    readonly current: number | null,
     readonly resetsAt: Date | null,
   ) {
     super(
@@ -17,6 +17,12 @@ export class QuotaExceededException extends HttpException {
         code: 'quota_exceeded',
         message: `Limite do plano atingido para ${metric}`,
         metric,
+        /**
+         * `null` para métrica MONETÁRIA: o corpo do erro seria o caminho mais
+         * curto para vazar teto e gasto exatos a quem não tem `billing:manage`.
+         * Hoje nenhuma métrica em dólar chega a um 402 HTTP, mas os construtores
+         * são genéricos — a primeira que chegar já sai protegida (ADR-041).
+         */
         limit,
         current,
         resetsAt: resetsAt?.toISOString() ?? null,

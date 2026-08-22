@@ -440,6 +440,29 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     await drain();
 
     dispatch = await prisma.raw.messageDispatch.findFirst({ where: { messageId: criada.body.id } });
+    if (dispatch?.state !== 'sent') {
+      /**
+       * DIAGNÓSTICO da retentativa: esta asserção falhou de forma intermitente
+       * (1 em 6) e "state: failed_before_send" não distingue "o evento não foi
+       * reivindicado" de "foi reivindicado e falhou de novo". `attempts` do
+       * evento responde isso na hora.
+       */
+      const ev = await prisma.raw.outboxEvent.findFirst({
+        where: { eventType: 'whatsapp.send_pending' },
+      });
+      throw new Error(
+        `retentativa não concluiu: dispatch=${JSON.stringify({
+          state: dispatch?.state,
+          errorCode: dispatch?.errorCode,
+          attempts: dispatch?.attempts,
+        })} evento=${JSON.stringify({
+          status: ev?.status,
+          attempts: ev?.attempts,
+          nextRetryAt: ev?.nextRetryAt?.toISOString(),
+          agora: new Date().toISOString(),
+        })} envios=${JSON.stringify(transport.sends)}`,
+      );
+    }
     expect(dispatch).toMatchObject({ state: 'sent', externalId: 'wamid.NA_SEGUNDA' });
     contador = await prisma.raw.usageCounter.findFirst({
       where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },

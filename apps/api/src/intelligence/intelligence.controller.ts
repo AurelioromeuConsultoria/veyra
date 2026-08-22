@@ -13,6 +13,7 @@ import {
   listProposalsSchema,
   listRunsSchema,
 } from '@veyra/contracts';
+import { PermissionsService } from '../auth/permissions.service';
 import { AuthContext, CurrentAuth, RequirePermissions } from '../common/decorators';
 import { Idempotent } from '../common/idempotency.decorator';
 import { ZodPipe } from '../common/zod.pipe';
@@ -20,7 +21,10 @@ import { IntelligenceService } from './intelligence.service';
 
 @Controller('intelligence')
 export class IntelligenceController {
-  constructor(private readonly intelligence: IntelligenceService) {}
+  constructor(
+    private readonly intelligence: IntelligenceService,
+    private readonly permissions: PermissionsService,
+  ) {}
 
   /** Consentimento é configuração do workspace (ADR-028). */
   @RequirePermissions('workspace:read')
@@ -136,18 +140,28 @@ export class IntelligenceController {
   }
 
   /**
-   * Histórico e custo do workspace inteiro (inclusive resultados gravados):
-   * é informação de administração, não de uso — `workspace:manage`.
+   * Histórico e custo do workspace inteiro: a ROTA é `workspace:manage` porque
+   * runs, tokens, latência e motivo de recusa são diagnóstico de administração.
+   *
+   * Os VALORES EM DÓLAR, porém, exigem `billing:manage` — projeção de campo, a
+   * mesma regra de `/api/usage` (ADR-041, SECURITY.md §4). Sem isto o Admin, que
+   * tem `workspace:manage` e NÃO tem `billing:manage`, lia o gasto real por
+   * execução: a porta da frente ficava fechada e esta, de serviço, aberta.
    */
   @RequirePermissions('workspace:manage')
   @Get('usage')
-  async usage(@Query(new ZodPipe(listRunsSchema)) query: ListRunsInput): Promise<AiUsageDto> {
-    const [runs, totalCostCents] = await Promise.all([
+  async usage(
+    @CurrentAuth() auth: AuthContext,
+    @Query(new ZodPipe(listRunsSchema)) query: ListRunsInput,
+  ): Promise<AiUsageDto> {
+    const [runs, totalCostCents, podeVerBilling] = await Promise.all([
       this.intelligence.listRuns(query.limit),
       this.intelligence.totalCostCents(),
+      this.permissions.has(auth, 'billing:manage'),
     ]);
     return {
-      totalCostCents,
+      totalCostCents: podeVerBilling ? totalCostCents : null,
+      ...(podeVerBilling ? {} : { monetaryRedacted: true }),
       runs: runs.map((run) => ({
         id: run.id,
         capability: run.capability,
@@ -157,7 +171,7 @@ export class IntelligenceController {
         contextSummary: run.contextSummary,
         inputTokens: run.inputTokens,
         outputTokens: run.outputTokens,
-        costCents: run.costCents,
+        costCents: podeVerBilling ? run.costCents : null,
         latencyMs: run.latencyMs,
         action: run.action,
         createdAt: run.createdAt.toISOString(),

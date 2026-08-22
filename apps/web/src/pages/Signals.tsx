@@ -96,7 +96,13 @@ export function SignalsPage() {
         </div>
         {canManage ? (
           <span className="font-mono text-xs tabular-nums text-muted-fg">
-            {usage.data ? `${money(usage.data.totalCostCents)} em IA` : '—'}
+            {/* valor em dólar só para quem gere billing; os demais veem o
+                volume de execuções, que é o diagnóstico de administração */}
+            {usage.data?.totalCostCents !== null && usage.data
+              ? `${money(usage.data.totalCostCents)} em IA`
+              : usage.data
+                ? `${usage.data.runs.length} execuções`
+                : '—'}
           </span>
         ) : null}
       </header>
@@ -222,7 +228,13 @@ export function SignalsPage() {
                 <td className="py-1.5 font-mono text-xs tabular-nums text-muted-fg">
                   {run.inputTokens + run.outputTokens}
                 </td>
-                <td className="py-1.5 font-mono text-xs tabular-nums">{money(run.costCents)}</td>
+                <td className="py-1.5 font-mono text-xs tabular-nums">
+                  {run.costCents === null ? (
+                    <span className="text-muted-fg">—</span>
+                  ) : (
+                    money(run.costCents)
+                  )}
+                </td>
               </tr>
             ))}
             {usage.data && usage.data.runs.length === 0 ? (

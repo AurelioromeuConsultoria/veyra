@@ -149,6 +149,59 @@ describe('Uso e quotas (integração)', () => {
     const bruto = JSON.stringify(overview);
     expect(bruto).not.toContain('priceCents');
     expect(bruto).not.toContain('currentPeriodEnd');
+
+    /**
+     * Custo em USD é dado comercial tão sensível quanto preço de plano — mais,
+     * para convidado externo, porque é o gasto REAL da conta. O trabalho precisa
+     * saber que existe teto de IA e se está perto dele, não os centavos.
+     */
+    const custo = overview.metrics.find((m: { metric: string }) => m.metric === 'ai_cost_cents');
+    expect(custo).toMatchObject({ used: null, limit: null, monetaryRedacted: true });
+    // DISPONIBILIDADE continua: é o que serve ao trabalho, e não revela valor
+    expect(typeof custo.usedRatio).toBe('number');
+
+    /**
+     * E a omissão é por UNIDADE, não por nome de métrica: `ai_runs` conta a mesma
+     * atividade de IA e segue com valores, porque não é dinheiro.
+     */
+    const runs = overview.metrics.find((m: { metric: string }) => m.metric === 'ai_runs');
+    expect(runs).toMatchObject({ used: 0, limit: 200 });
+    expect(runs.monetaryRedacted).toBeUndefined();
+  });
+
+  it('P1: ADMIN administra a IA e NÃO vê o custo em dólar', async () => {
+    const usuario = await createUserFixture(prisma, 'admin-ia@veyra.test');
+    await createMembershipFixture(prisma, wsA.workspaceId, usuario, wsA.roles.admin);
+    const sessao = await loginAs('admin-ia@veyra.test');
+
+    /**
+     * Admin TEM `workspace:manage` e NÃO tem `billing:manage`: a porta da frente
+     * (`/api/usage`) estava fechada e esta, de serviço, ficava aberta — com o
+     * gasto real POR EXECUÇÃO, mais granular que o total do período.
+     *
+     * O 200 é asserido de propósito: um 403 aqui faria o teste "passar" sem
+     * provar nada sobre a projeção.
+     */
+    const res = await get('/api/intelligence/usage', sessao).expect(200);
+    expect(res.body.totalCostCents).toBeNull();
+    expect(res.body.monetaryRedacted).toBe(true);
+    for (const run of res.body.runs) expect(run.costCents).toBeNull();
+    // e o diagnóstico de administração continua: a rota não perdeu propósito
+    expect(Array.isArray(res.body.runs)).toBe(true);
+  });
+
+  it('MEMBER não administra a IA: negado antes de qualquer projeção', async () => {
+    const usuario = await createUserFixture(prisma, 'membro-ia@veyra.test');
+    await createMembershipFixture(prisma, wsA.workspaceId, usuario, wsA.roles.member);
+    const sessao = await loginAs('membro-ia@veyra.test');
+
+    await get('/api/intelligence/usage', sessao).expect(403);
+  });
+
+  it('quem gere billing vê o custo de IA por execução', async () => {
+    const res = await get('/api/intelligence/usage', sessionA).expect(200);
+    expect(res.body.totalCostCents).toBe(0);
+    expect(res.body.monetaryRedacted).toBeUndefined();
   });
 
   it('quem gere billing recebe assinatura e valores monetários completos', async () => {

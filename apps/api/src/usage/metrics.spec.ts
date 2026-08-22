@@ -1,4 +1,4 @@
-import { USAGE_METRICS, catalogGapAlert } from './metrics';
+import { MONETARY_UNITS, USAGE_METRICS, catalogGapAlert } from './metrics';
 
 /**
  * INVARIANTE DE CATÁLOGO. A regra do ADR-041 é genérica sobre `USAGE_METRICS`,
@@ -54,5 +54,22 @@ describe('aviso de lacuna de catálogo (ADR-041)', () => {
     expect(aviso).toContain('1000');
     // e nomeia DE ONDE o teto veio, senão quem for corrigir procura às cegas
     expect(aviso).toContain('base');
+  });
+});
+
+describe('unidades monetárias (ADR-041)', () => {
+  it('dólar é monetário; contagem e bytes não', () => {
+    // o mapa é exaustivo por tipo: unidade nova não compila sem decidir aqui,
+    // que é o que impede um vazamento silencioso de valor comercial
+    expect(MONETARY_UNITS.usd_cents).toBe(true);
+    expect(MONETARY_UNITS.count).toBe(false);
+    expect(MONETARY_UNITS.bytes).toBe(false);
+  });
+
+  it('toda métrica monetária é counter de período, não gauge', () => {
+    // gauge monetário exigiria decidir o que "nível atual de dinheiro" significa
+    for (const definition of Object.values(USAGE_METRICS)) {
+      if (MONETARY_UNITS[definition.unit]) expect(definition.kind).toBe('counter');
+    }
   });
 });

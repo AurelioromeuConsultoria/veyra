@@ -77,7 +77,8 @@ export interface QuotaExceededDto {
   code: 'quota_exceeded';
   message: string;
   metric: string;
-  limit: number;
-  current: number;
+  /** null = métrica monetária: teto e gasto não saem no corpo do erro (ADR-041) */
+  limit: number | null;
+  current: number | null;
   resetsAt: string | null;
 }
