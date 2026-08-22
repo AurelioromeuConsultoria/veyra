@@ -433,9 +433,18 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     // consertado o provedor, a retentativa acontece SEM ninguém mexer no
     // dispatch: só o relógio do backoff é adiantado, como o tempo faria
     transport.nextSend = { ok: true, externalId: 'wamid.NA_SEGUNDA' };
+    /**
+     * Backoff JÁ VENCIDO, não "agora": o claim compara `nextRetryAt <= now()`
+     * com o relógio do POSTGRES, e `new Date()` vem do Node. Um desvio de
+     * milissegundos entre os dois deixava a linha inelegível e a drenagem
+     * seguinte não reivindicava o evento — falha intermitente de 1 em 6, com o
+     * dispatch preso em `failed_before_send`. O diagnóstico mostrou
+     * `nextRetryAt` 2 ms à frente de `agora`; recuar segundos tira o relógio da
+     * equação sem enfraquecer o que o teste prova.
+     */
     await prisma.raw.outboxEvent.updateMany({
       where: { eventType: 'whatsapp.send_pending' },
-      data: { nextRetryAt: new Date() },
+      data: { nextRetryAt: new Date(Date.now() - 5_000) },
     });
     await drain();
 

@@ -18,13 +18,14 @@ Cada item diz **o que capturar** — sem a evidência, o item não está validad
 
 ## 1. Preparação
 
-Variáveis no ambiente da API (nunca em DTO, log ou commit — SECURITY.md §8):
+Variáveis no ambiente da API (nunca em DTO, log ou commit — SECURITY.md §8).
+Os nomes exatos estão em `.env.example`, na raiz — é a fonte, não esta tabela:
 
-| Variável             | Onde obtém                  | Para quê                                       |
-| -------------------- | --------------------------- | ---------------------------------------------- |
-| `META_APP_SECRET`    | App da Meta → Configurações | HMAC do webhook, conferido sobre o corpo BRUTO |
-| `META_VERIFY_TOKEN`  | você escolhe                | desafio `GET` de assinatura do webhook         |
-| `META_GRAPH_VERSION` | opcional (default `v21.0`)  | fixar a versão da Graph API                    |
+| Variável                    | Onde obtém                        | Para quê                                       |
+| --------------------------- | --------------------------------- | ---------------------------------------------- |
+| `META_APP_SECRET`           | App da Meta → Configurações       | HMAC do webhook, conferido sobre o corpo BRUTO |
+| `META_WEBHOOK_VERIFY_TOKEN` | você escolhe (mín. 16 caracteres) | desafio `GET` de verificação do webhook        |
+| `META_GRAPH_VERSION`        | opcional (default `v21.0`)        | fixar a versão da Graph API                    |
 
 Cadastro do canal (ato administrativo, sem endpoint — ADR-037):
 
@@ -72,13 +73,16 @@ verificação.
 | 9   | **Erro ambíguo**            | forçar timeout (rede) deixa `unknown_after_dispatch` **sem reenviar**                         | é o comportamento desejado: duplicar é pior que pendente                                       |
 | 10  | **Quota**                   | com `messages_sent` no teto, a política diz "cota esgotada" e o envio devolve 402             | —                                                                                              |
 
-## 3. Obstáculo conhecido no caminho
+## 3. Se o ambiente ainda não tem workspace
 
-`pnpm --filter @veyra/api provision` (criar workspace) **trava no boot** —
-defeito pré-existente, registrado em `docs/MEMORY/technical-debt.md`. Se o
-ambiente ainda não tem workspace, isso bloqueia o passo 1. As CLIs de plano e de
-canal foram corrigidas (faltava o adaptador do Prisma 7 e, no plano, o `dotenv`);
-o provisionamento carrega o `AppModule` inteiro e é outro problema.
+```
+pnpm --filter @veyra/api provision --name "Clínica X" --slug clinica-x --owner-email dono@clinica.com
+```
+
+O token do convite de Owner é impresso **uma única vez** — entregue por canal
+seguro. As três CLIs administrativas foram consertadas junto com este roteiro (a
+de provisionamento rodava por `tsx`, e o esbuild elide o import de classe usada
+só como tipo, o que quebrava a injeção do Nest em silêncio).
 
 ## 4. Regra durante a validação
 

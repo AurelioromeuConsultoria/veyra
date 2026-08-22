@@ -15,7 +15,7 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:seed": "tsx prisma/seed.ts",
     "check:fk": "tsx scripts/check-cross-tenant-fk.ts",
-    "provision": "tsx scripts/provision-workspace.ts",
+    "provision": "nest build && node dist/cli/provision.js",
     "plan": "tsx scripts/set-plan.ts",
     "channel:whatsapp": "tsx scripts/register-whatsapp-channel.ts",
     "redact:meta": "tsx scripts/redact-meta-error.ts"

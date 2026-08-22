@@ -1,7 +1,14 @@
 /**
  * CLI de provisionamento controlado de workspace (ADR-014).
  *
- * USO: pnpm --filter @veyra/api provision -- --name "Acme" --slug acme --owner-email dono@acme.com
+ * USO: pnpm --filter @veyra/api provision --name "Acme" --slug acme --owner-email dono@acme.com
+ *
+ * Vive em `src/cli` e roda COMPILADO, não por `tsx`: o esbuild elide o import de
+ * classe usada apenas em posição de tipo, e é assim que as dependências do Nest
+ * chegam ao construtor. O resultado era `UndefinedDependencyException` que, com
+ * `logger: false`, ficava SILENCIOSA — parecia travamento no boot. Os outros
+ * scripts administrativos seguem em `scripts/` porque falam com o Prisma direto,
+ * sem injeção.
  *
  * Owner com conta existente → Membership Owner criada.
  * Owner sem conta → Invite Owner; o TOKEN é impresso UMA ÚNICA VEZ abaixo
@@ -10,16 +17,14 @@
  */
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
-import { AppModule } from '../src/app.module';
-import { ProvisioningService } from '../src/workspaces/provisioning.service';
+import { AppModule } from '../app.module';
+import { ProvisioningService } from '../workspaces/provisioning.service';
 
 function arg(name: string): string {
   const index = process.argv.indexOf(`--${name}`);
   const value = index >= 0 ? process.argv[index + 1] : undefined;
   if (!value || value.startsWith('--')) {
-    console.error(
-      'Uso: provision -- --name "Nome" --slug slug-unico --owner-email dono@empresa.com',
-    );
+    console.error('Uso: provision --name "Nome" --slug slug-unico --owner-email dono@empresa.com');
     process.exit(1);
   }
   return value;
