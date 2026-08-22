@@ -121,6 +121,39 @@ describe('Uso e quotas (integração)', () => {
 
   // ── Plano e visão de uso ──────────────────────────────────────────────────
 
+  it('P1: quem NÃO gere billing recebe uso e plano aplicado, sem situação comercial', async () => {
+    const membro = await createUserFixture(prisma, 'membro-a@veyra.test');
+    await createMembershipFixture(prisma, wsA.workspaceId, membro, wsA.roles.member);
+    const sessaoMembro = await loginAs('membro-a@veyra.test');
+
+    const overview = (await get('/api/usage', sessaoMembro).expect(200)).body;
+
+    /**
+     * Esconder na tela não bastava: qualquer portador do medidor obtinha status,
+     * preço e fim do período chamando a API. O SERVIDOR é que não envia.
+     */
+    expect(overview.subscription).toBeNull();
+    // e o que é informação de TRABALHO continua chegando
+    expect(overview.appliedPlan).toMatchObject({ key: 'base', source: 'subscription' });
+    const contacts = overview.metrics.find((m: { metric: string }) => m.metric === 'contacts');
+    expect(contacts).toMatchObject({ limit: 2000, enforced: true, limitSource: 'plan' });
+    // nenhum resquício de preço ou período em qualquer canto do payload
+    const bruto = JSON.stringify(overview);
+    expect(bruto).not.toContain('priceCents');
+    expect(bruto).not.toContain('currentPeriodEnd');
+  });
+
+  it('quem gere billing recebe a assinatura completa', async () => {
+    const overview = (await get('/api/usage', sessionA).expect(200)).body;
+
+    expect(overview.subscription).toMatchObject({
+      status: 'active',
+      plan: { key: 'base' },
+    });
+    expect(overview.subscription.plan.priceCents).toBe(0);
+    expect(overview.subscription.currentPeriodEnd).toBeTruthy();
+  });
+
   it('workspace nasce com assinatura no plano-base e uso zerado', async () => {
     const overview = (await get('/api/usage', sessionA).expect(200)).body;
     expect(overview.subscription.plan.key).toBe('base');

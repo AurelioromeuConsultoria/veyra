@@ -3,7 +3,6 @@ import type { UsageMetricDto, UsageOverviewDto } from '@veyra/contracts';
 import { clsx } from 'clsx';
 import { Gauge } from 'lucide-react';
 import { api } from '../lib/api';
-import { hasPermission, useSession } from '../lib/session';
 
 const dateFormat = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'medium' });
 
@@ -35,13 +34,11 @@ export function UsagePage() {
    */
   const herdado = applied?.source === 'default_plan';
   /**
-   * A anomalia COMERCIAL ("assinatura cancelada, verificar provisionamento") é
-   * informação de negócio, não de trabalho: o medidor e a procedência do teto
-   * ficam para todos com `workspace:read`, mas o convidado externo não precisa
-   * saber que a conta do cliente está cancelada.
+   * A anomalia COMERCIAL aparece porque o SERVIDOR mandou a assinatura — ele só
+   * a envia a quem tem `billing:manage`. A tela não decide isso: esconder
+   * visualmente deixava a API entregando status, preço e período a qualquer
+   * portador do medidor.
    */
-  const { data: user } = useSession();
-  const podeVerBilling = hasPermission(user, 'billing:manage');
 
   return (
     <div className="flex h-screen flex-col">
@@ -56,13 +53,20 @@ export function UsagePage() {
                 ? 'Não foi possível ler o plano vigente'
                 : herdado
                   ? `Plano ${applied?.name} aplicado por ausência de assinatura ativa`
-                  : applied?.source === 'subscription' && subscription
-                    ? `Plano ${applied.name} · renova em ${dateFormat.format(new Date(subscription.currentPeriodEnd))}`
+                  : applied?.source === 'subscription'
+                    ? /* o nome vem do plano APLICADO; a data de renovação só
+                         existe para quem gere billing, porque o servidor não
+                         manda a assinatura para os demais */
+                      `Plano ${applied.name}${
+                        subscription
+                          ? ` · renova em ${dateFormat.format(new Date(subscription.currentPeriodEnd))}`
+                          : ''
+                      }`
                     : /* só afirmamos incidente com resposta na mão: enquanto
                          carregava, esta frase piscava em toda visita */
                       'Nenhum plano padrão configurado — limites no piso de segurança'}
           </p>
-          {herdado && subscription && podeVerBilling ? (
+          {herdado && subscription ? (
             <p className="text-[11px] text-warning">
               Assinatura registrada: {subscription.plan.name} ({subscription.status}). Verificar
               provisionamento ou situação comercial.

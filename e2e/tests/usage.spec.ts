@@ -87,4 +87,42 @@ test.describe('Uso e plano (UI)', () => {
       await db.end();
     }
   });
+
+  test('membro sem billing vê o medidor, não a situação comercial', async ({ page }) => {
+    const db = await openE2eDb();
+    try {
+      /**
+       * A API é a fronteira: antes, esconder a faixa na tela deixava qualquer
+       * portador do medidor obter status, preço e período chamando /api/usage.
+       */
+      const { rows } = await db.query<{ role_id: string; ws: string }>(
+        `SELECT r."id" AS role_id, r."workspaceId" AS ws
+           FROM "Role" r
+           JOIN "Membership" m ON m."workspaceId" = r."workspaceId"
+           JOIN "User" u ON u."id" = m."userId"
+          WHERE u."email" = $1 AND r."systemKey" = 'member' LIMIT 1`,
+        [OWNER_A],
+      );
+      // rebaixa o owner do teste a Member (sem `billing:manage`)
+      await db.query(
+        `UPDATE "Membership" SET "roleId" = $1 WHERE "workspaceId" = $2
+           AND "userId" = (SELECT "id" FROM "User" WHERE "email" = $3)`,
+        [rows[0].role_id, rows[0].ws, OWNER_A],
+      );
+
+      await login(page, OWNER_A);
+      await page.getByRole('link', { name: 'Uso e plano' }).click();
+
+      // uso e plano aplicado continuam visíveis
+      await expect(page.getByTestId('usage-applied-plan')).toContainText(/Plano/);
+      await expect(page.getByTestId('usage-contacts-used')).toBeVisible();
+      // e a resposta da API não traz situação comercial nenhuma
+      const overview = await page.request.get('/api/usage');
+      const corpo = await overview.json();
+      expect(corpo.subscription).toBeNull();
+      expect(JSON.stringify(corpo)).not.toContain('priceCents');
+    } finally {
+      await db.end();
+    }
+  });
 });

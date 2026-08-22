@@ -1,6 +1,7 @@
 import { Controller, Get } from '@nestjs/common';
 import type { UsageOverviewDto } from '@veyra/contracts';
 import { AuthContext, CurrentAuth, RequirePermissions } from '../common/decorators';
+import { PermissionCheckService } from '../auth/permission-check.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { UsageService } from './usage.service';
 
@@ -9,6 +10,7 @@ export class UsageController {
   constructor(
     private readonly usage: UsageService,
     private readonly prisma: PrismaService,
+    private readonly permissions: PermissionCheckService,
   ) {}
 
   /**
@@ -20,11 +22,20 @@ export class UsageController {
   @Get()
   async overview(@CurrentAuth() auth: AuthContext): Promise<UsageOverviewDto> {
     const workspaceId = auth.workspaceId as string;
+    /**
+     * A ROTA é `workspace:read` — saber quanto falta para o teto é informação de
+     * trabalho. Mas a SITUAÇÃO COMERCIAL (status, preço, fim do período) é de
+     * quem gere billing: filtrar só na tela deixava a API entregando tudo a
+     * qualquer portador do medidor, inclusive convidado externo.
+     */
+    const podeVerBilling = await this.permissions.has('billing:manage');
     // raw justificado: Plan é catálogo GLOBAL (ADR-034), fora do client filtrado
-    const subscription = await this.prisma.raw.subscription.findFirst({
-      where: { workspaceId },
-      include: { plan: true },
-    });
+    const subscription = podeVerBilling
+      ? await this.prisma.raw.subscription.findFirst({
+          where: { workspaceId },
+          include: { plan: true },
+        })
+      : null;
     return {
       subscription: subscription
         ? {

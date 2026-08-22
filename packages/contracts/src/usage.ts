@@ -47,7 +47,12 @@ export interface AppliedPlanDto {
 }
 
 export interface UsageOverviewDto {
-  /** o que está CONTRATADO — pode estar cancelado ou vencido */
+  /**
+   * O que está CONTRATADO — pode estar cancelado ou vencido. `null` também
+   * quando quem pede NÃO tem `billing:manage`: situação comercial (status,
+   * preço, fim do período) é informação de negócio, e o medidor é de trabalho.
+   * O servidor não envia, em vez de a tela esconder (revisão da 9.1.c).
+   */
   subscription: SubscriptionDto | null;
   /** o que está VALENDO agora */
   appliedPlan: AppliedPlanDto;
