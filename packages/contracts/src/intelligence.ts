@@ -103,7 +103,7 @@ export interface AiRunDto {
 export interface AiUsageDto {
   /** `null` = omitido por falta de `billing:manage` (ADR-041) */
   totalCostCents: number | null;
-  /** true = havia valores monetários e eles foram omitidos */
+  /** true = os valores monetários foram omitidos por falta de `billing:manage` */
   monetaryRedacted?: boolean;
   runs: AiRunDto[];
 }

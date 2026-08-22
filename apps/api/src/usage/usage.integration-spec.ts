@@ -169,7 +169,29 @@ describe('Uso e quotas (integração)', () => {
     expect(runs.monetaryRedacted).toBeUndefined();
   });
 
+  /**
+   * Um run REAL. Sem isto o laço `for (const run of runs)` iterava zero vezes e
+   * a asserção do custo por execução era vácua — reverter a projeção não
+   * reprovava nada. É o campo mais granular, justamente o que motivou o achado.
+   */
+  const seedAiRun = async (costCents: number) => {
+    await prisma.raw.aiRun.create({
+      data: {
+        workspaceId: wsA.workspaceId,
+        capability: 'conversation_summary',
+        model: 'claude-haiku-4-5',
+        contextSummary: 'conversa com 3 mensagens',
+        status: 'ok',
+        inputTokens: 800,
+        outputTokens: 120,
+        costCents,
+        latencyMs: 420,
+      },
+    });
+  };
+
   it('P1: ADMIN administra a IA e NÃO vê o custo em dólar', async () => {
+    await seedAiRun(37);
     const usuario = await createUserFixture(prisma, 'admin-ia@veyra.test');
     await createMembershipFixture(prisma, wsA.workspaceId, usuario, wsA.roles.admin);
     const sessao = await loginAs('admin-ia@veyra.test');
@@ -185,9 +207,11 @@ describe('Uso e quotas (integração)', () => {
     const res = await get('/api/intelligence/usage', sessao).expect(200);
     expect(res.body.totalCostCents).toBeNull();
     expect(res.body.monetaryRedacted).toBe(true);
+    // o laço só prova algo se houver run: sem esta guarda ele iterava vazio
+    expect(res.body.runs.length).toBeGreaterThan(0);
     for (const run of res.body.runs) expect(run.costCents).toBeNull();
     // e o diagnóstico de administração continua: a rota não perdeu propósito
-    expect(Array.isArray(res.body.runs)).toBe(true);
+    expect(res.body.runs[0]).toMatchObject({ capability: 'conversation_summary', latencyMs: 420 });
   });
 
   it('MEMBER não administra a IA: negado antes de qualquer projeção', async () => {
@@ -198,10 +222,52 @@ describe('Uso e quotas (integração)', () => {
     await get('/api/intelligence/usage', sessao).expect(403);
   });
 
-  it('quem gere billing vê o custo de IA por execução', async () => {
+  it('razão de uso da métrica redigida vem em DECIS, e sem procedência do teto', async () => {
+    const membro = await createUserFixture(prisma, 'decis@veyra.test');
+    await createMembershipFixture(prisma, wsA.workspaceId, membro, wsA.roles.member);
+    const sessao = await loginAs('decis@veyra.test');
+    await setPlanLimit(prisma, 'ai_cost_cents', 500);
+    // 137 de 500 = 0,274: a razão exata devolveria o centavo (0,274 × 500 = 137)
+    await asWorkspace(() =>
+      app.get(UsageService).ensureCounterRow(wsA.workspaceId, 'ai_cost_cents'),
+    );
+    await prisma.raw.usageCounter.updateMany({
+      where: { workspaceId: wsA.workspaceId, metric: 'ai_cost_cents' },
+      data: { value: BigInt(137) },
+    });
+
+    const overview = (await get('/api/usage', sessao).expect(200)).body;
+    const custo = overview.metrics.find((m: { metric: string }) => m.metric === 'ai_cost_cents');
+
+    expect(custo.usedRatio).toBe(0.3); // decil, não 0.274
+    // e a procedência FIXARIA o denominador: também é omitida
+    expect(custo.limitSource).toBeNull();
+    // já a métrica não monetária mantém a procedência, que é informação de trabalho
+    const contacts = overview.metrics.find((m: { metric: string }) => m.metric === 'contacts');
+    expect(contacts.limitSource).toBe('plan');
+  });
+
+  it('teto ZERO é razão 1, não "sem teto" — o oposto da verdade', async () => {
+    const membro = await createUserFixture(prisma, 'zero@veyra.test');
+    await createMembershipFixture(prisma, wsA.workspaceId, membro, wsA.roles.member);
+    const sessao = await loginAs('zero@veyra.test');
+    await setPlanLimit(prisma, 'ai_cost_cents', 0);
+
+    const overview = (await get('/api/usage', sessao).expect(200)).body;
+    const custo = overview.metrics.find((m: { metric: string }) => m.metric === 'ai_cost_cents');
+
+    // bloqueio total; devolver null diria "sem teto definido" a quem já não vê valores
+    expect(custo.usedRatio).toBe(1);
+  });
+
+  it('quem gere billing vê o custo de IA POR EXECUÇÃO', async () => {
+    await seedAiRun(37);
+
     const res = await get('/api/intelligence/usage', sessionA).expect(200);
-    expect(res.body.totalCostCents).toBe(0);
+    expect(res.body.totalCostCents).toBe(37);
     expect(res.body.monetaryRedacted).toBeUndefined();
+    expect(res.body.runs).toHaveLength(1);
+    expect(res.body.runs[0].costCents).toBe(37);
   });
 
   it('quem gere billing recebe assinatura e valores monetários completos', async () => {

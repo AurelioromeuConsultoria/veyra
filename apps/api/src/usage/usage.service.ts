@@ -15,10 +15,22 @@ import type { AppliedPlanDto } from '@veyra/contracts';
 
 type AnyClient = Db | Prisma.TransactionClient;
 
-/** Razão de uso: inteira em pontos percentuais quando o valor é omitido. */
-const quantizeRatio = (bruto: number, quantizar: boolean): number => {
+/**
+ * Razão de uso, em DECIS quando o valor monetário é omitido.
+ *
+ * Um ponto percentual não bastava: o bucket é `teto/100`, então com o teto do
+ * plano-base (500 centavos) o erro cai a 2 centavos e, no piso de segurança
+ * (100), a reconstrução é EXATA. Decil dá bucket de 50 centavos no base e 10 no
+ * piso — e a procedência do teto deixa de sair junto, senão o denominador vem
+ * de graça na mesma resposta.
+ *
+ * Residual assumido: quem tem `intelligence:use` pode disparar runs e observar o
+ * degrau para calibrar o teto. Aceito — o que não pode é um único GET entregar o
+ * valor.
+ */
+const quantizeRatio = (bruto: number, emDecis: boolean): number => {
   const limitado = Math.min(1, Math.max(0, bruto));
-  return quantizar ? Math.round(limitado * 100) / 100 : limitado;
+  return emDecis ? Math.round(limitado * 10) / 10 : limitado;
 };
 
 /** Teto com PROCEDÊNCIA: de onde ele veio muda o que a tela precisa dizer. */
@@ -376,12 +388,11 @@ export class UsageService {
       where: { workspaceId, metric, period },
       select: { value: true },
     });
-    // métrica em dólar não devolve teto nem gasto no corpo do erro
-    const monetaria = MONETARY_UNITS[definition.unit];
+    // a redação monetária é da própria exceção, para valer nos três construtores
     return new QuotaExceededException(
       metric,
-      monetaria ? null : limit,
-      monetaria ? null : Number(row?.value ?? 0),
+      limit,
+      Number(row?.value ?? 0),
       definition.kind === 'counter' ? periodEnd() : null,
     );
   }
@@ -421,7 +432,9 @@ export class UsageService {
         unit: definition.unit,
         used: omitir ? null : used,
         limit: omitir ? null : teto,
-        limitSource: limit?.source ?? null,
+        // a procedência FIXA o denominador (piso do código = 100, plano padrão =
+        // 500): entregá-la junto da razão devolveria o valor omitido
+        limitSource: omitir ? null : (limit?.source ?? null),
         enforced: definition.enforced,
         /**
          * QUANTIZADA quando o valor é omitido: a razão exata em double permite
