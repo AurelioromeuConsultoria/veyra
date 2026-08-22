@@ -15,7 +15,8 @@ export interface UsageMetricDto {
   /**
    * Uso sobre o teto, de 0 a 1 — não monetário, então acompanha a métrica mesmo
    * quando os valores são omitidos. É o que permite dizer "próximo do limite"
-   * sem revelar centavos. `null` quando não há teto.
+   * sem revelar centavos. **Quantizado em decis** quando o valor monetário foi
+   * omitido: a razão exata reconstruiria o centavo. `null` quando não há teto.
    */
   usedRatio: number | null;
   /** true = há teto e valores, mas eles foram omitidos por falta de permissão */
@@ -24,8 +25,9 @@ export interface UsageMetricDto {
    * DE ONDE veio o teto. Sem isto, um cliente limitado por lacuna de catálogo vê
    * só um 402 inexplicável — o "mistério de suporte" que o ADR-041 quer evitar.
    * `plan` = do plano vigente; `default_plan` = herdado do plano padrão;
-   * `code_floor` = piso do código, porque o catálogo não resolveu; `null` = sem
-   * teto (métrica interna sem assinatura ativa).
+   * `code_floor` = piso do código, porque o catálogo não resolveu. `null` = sem
+   * teto (métrica interna sem assinatura ativa) **ou** omitido junto do valor
+   * monetário, porque a procedência fixaria o denominador da razão (ADR-041).
    */
   limitSource: 'plan' | 'default_plan' | 'code_floor' | null;
   /** false = declarada no catálogo, ainda não cobrada */

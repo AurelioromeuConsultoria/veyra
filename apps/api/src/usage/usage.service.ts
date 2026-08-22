@@ -439,8 +439,9 @@ export class UsageService {
         /**
          * QUANTIZADA quando o valor é omitido: a razão exata em double permite
          * reconstruir o valor (0.274 × 500 = 137), e o teto é inferível — poucos
-         * valores de catálogo, piso no código. Percentual inteiro serve à tela
-         * ("87% do limite") e não devolve o centavo.
+         * valores de catálogo, piso no código. Decil serve à tela ("30% do
+         * limite") sem devolver o centavo — ver `quantizeRatio`, que explica por
+         * que um ponto percentual NÃO bastava.
          *
          * Teto ZERO não é "sem teto": é bloqueio total, e devolver `null` diria
          * o oposto justamente a quem já não vê os números.
