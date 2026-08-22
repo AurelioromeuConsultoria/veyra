@@ -48,6 +48,17 @@ interface RawResponse {
   contentType?: string;
 }
 
+/**
+ * Destinatário no formato do PROVEDOR: só dígitos, que é exatamente o `wa_id`
+ * que a Meta nos entregou na ingestão.
+ *
+ * Guardamos `+E.164` na conversa porque é o formato correto para exibir e
+ * comparar; o `+` era repassado no envio. A API costuma tolerar, mas devolver ao
+ * provedor o identificador que ele mesmo emitiu elimina a dúvida — e era o item
+ * nº 1 da lista de conferência contra uma WABA real (ADR-039).
+ */
+const providerAddress = (to: string): string => to.replace(/\D/g, '');
+
 /** HTTPS com host allowlistado, sem redirect e com teto de corpo. */
 function call(
   url: string,
@@ -113,7 +124,7 @@ export class GraphApiTransport implements MetaTransport {
     return this.send(credential, {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
-      to,
+      to: providerAddress(to),
       type: 'text',
       text: { body, preview_url: false },
     });
@@ -128,7 +139,7 @@ export class GraphApiTransport implements MetaTransport {
     return this.send(credential, {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
-      to,
+      to: providerAddress(to),
       type: 'template',
       template: {
         name: template.name,
@@ -209,4 +220,4 @@ export class GraphApiTransport implements MetaTransport {
   }
 }
 
-export { hostAllowed };
+export { providerAddress, hostAllowed };

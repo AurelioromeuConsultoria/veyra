@@ -16,7 +16,8 @@
     "prisma:seed": "tsx prisma/seed.ts",
     "check:fk": "tsx scripts/check-cross-tenant-fk.ts",
     "provision": "tsx scripts/provision-workspace.ts",
-    "plan": "tsx scripts/set-plan.ts"
+    "plan": "tsx scripts/set-plan.ts",
+    "channel:whatsapp": "tsx scripts/register-whatsapp-channel.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.120.0",

@@ -5,6 +5,8 @@
  *
  *   pnpm --filter @veyra/api plan --slug acme --plan pro
  */
+import 'dotenv/config';
+import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '../src/generated/prisma/client';
 
 function arg(name: string): string | undefined {
@@ -21,7 +23,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const prisma = new PrismaClient();
+  const prisma = new PrismaClient({ adapter: new PrismaPg(process.env.DATABASE_URL) });
   try {
     const workspace = await prisma.workspace.findUnique({ where: { slug } });
     if (!workspace) throw new Error(`Workspace não encontrado: ${slug}`);

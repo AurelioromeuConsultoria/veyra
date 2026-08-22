@@ -1,4 +1,4 @@
-import { hostAllowed } from './meta.transport';
+import { hostAllowed, providerAddress } from './meta.transport';
 
 describe('allowlist de host do transporte da Meta', () => {
   it('aceita a Graph API e o CDN de mídia', () => {
@@ -18,5 +18,17 @@ describe('allowlist de host do transporte da Meta', () => {
     ]) {
       expect(hostAllowed(host)).toBe(false);
     }
+  });
+});
+
+describe('destinatário no formato do provedor (ADR-039)', () => {
+  it('remove o `+` e qualquer separador: é o `wa_id` que a Meta emitiu', () => {
+    // guardamos `+E.164` para exibir; o provedor identifica por dígitos
+    expect(providerAddress('+5511999998888')).toBe('5511999998888');
+    expect(providerAddress('+55 (11) 99999-8888')).toBe('5511999998888');
+  });
+
+  it('número já em dígitos passa intacto', () => {
+    expect(providerAddress('5511999998888')).toBe('5511999998888');
   });
 });
