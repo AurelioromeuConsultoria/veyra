@@ -369,6 +369,15 @@ export class IntelligenceService {
     return this.runs.list(limit);
   }
 
+  /**
+   * Retenção do CONTEÚDO (ADR-042): anula `result` de runs antigos, preservando
+   * custo e trilha. Roda no job diário, cross-workspace — por isso não passa
+   * pelo CLS de nenhuma request.
+   */
+  async purgeExpiredResults(days: number): Promise<number> {
+    return this.runs.purgeResultsOlderThan(days);
+  }
+
   async totalCostCents(): Promise<number> {
     return this.runs.totalCostCents();
   }

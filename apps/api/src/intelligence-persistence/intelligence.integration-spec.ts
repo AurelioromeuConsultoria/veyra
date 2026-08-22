@@ -13,6 +13,7 @@ import {
   type WorkspaceFixture,
 } from '../../test/integration/fixtures';
 import { resetDb } from '../../test/integration/harness';
+import { IntelligenceService } from '../intelligence/intelligence.service';
 import {
   LLM_CLIENT,
   type LlmClient,
@@ -606,5 +607,74 @@ describe('Intelligence v1 — consentimento, runs e propostas (integração)', (
     expect(usage.totalCostCents).toBeGreaterThan(0);
     expect(usage.runs.length).toBeGreaterThan(0);
     expect(JSON.stringify(usage)).not.toContain('desconto');
+  });
+
+  // ── Retenção do conteúdo (ADR-042) ────────────────────────────────────────
+
+  it('P0: expurgo ANULA o resultado antigo e PRESERVA custo e trilha', async () => {
+    const antigo = await prisma.raw.aiRun.create({
+      data: {
+        workspaceId: wsA.workspaceId,
+        capability: 'conversation_summary',
+        model: 'claude-haiku-4-5',
+        contextSummary: 'conversa com 3 mensagens',
+        status: 'ok',
+        inputTokens: 800,
+        outputTokens: 120,
+        costCents: 37,
+        latencyMs: 420,
+        action: 'none',
+        result: { summary: 'texto derivado da conversa do paciente' },
+        createdAt: new Date(Date.now() - 200 * 24 * 60 * 60 * 1000),
+      },
+    });
+    const recente = await prisma.raw.aiRun.create({
+      data: {
+        workspaceId: wsA.workspaceId,
+        capability: 'conversation_summary',
+        model: 'claude-haiku-4-5',
+        contextSummary: 'conversa recente',
+        status: 'ok',
+        costCents: 11,
+        result: { summary: 'ainda dentro do prazo' },
+      },
+    });
+
+    const limpos = await app.get(IntelligenceService).purgeExpiredResults(90);
+    expect(limpos).toBe(1);
+
+    const depois = await prisma.raw.aiRun.findFirst({ where: { id: antigo.id } });
+    /**
+     * O CONTEÚDO expira; o run NÃO. Apagar a linha destruiria a contabilidade do
+     * que já foi pago e a evidência de que a IA agiu — o que o ADR-030 manda
+     * preservar. Por isso a asserção é dupla.
+     */
+    expect(depois?.result).toBeNull();
+    expect(depois?.costCents).toBe(37);
+    expect(depois?.inputTokens).toBe(800);
+    expect(depois?.capability).toBe('conversation_summary');
+
+    // e o que está dentro do prazo permanece intacto
+    const naoTocado = await prisma.raw.aiRun.findFirst({ where: { id: recente.id } });
+    expect(naoTocado?.result).toEqual({ summary: 'ainda dentro do prazo' });
+  });
+
+  it('expurgo é IDEMPOTENTE: rodar de novo não reescreve linha já limpa', async () => {
+    await prisma.raw.aiRun.create({
+      data: {
+        workspaceId: wsA.workspaceId,
+        capability: 'next_action',
+        model: 'claude-haiku-4-5',
+        contextSummary: 'x',
+        status: 'ok',
+        result: { acao: 'ligar' },
+        createdAt: new Date(Date.now() - 200 * 24 * 60 * 60 * 1000),
+      },
+    });
+    const service = app.get(IntelligenceService);
+
+    expect(await service.purgeExpiredResults(90)).toBe(1);
+    // a segunda passada não conta a mesma linha: o filtro exige result presente
+    expect(await service.purgeExpiredResults(90)).toBe(0);
   });
 });

@@ -62,7 +62,9 @@ Primeiro canal externo REAL, com as restrições da plataforma tratadas como req
 - **9.1.b — Envio ✅** `MessageDispatch` reservado antes da chamada com a reserva de quota atrelada, classificação de falha em tabela isolada (retentável/permanente/ambígua), `unknown_after_dispatch` sem reenvio automático, política revalidada no worker, template registrado manualmente e exigido fora da janela, coleta de mídia com lease/fencing pelo transporte autenticado, e `messages_sent` cobrada.
 - **9.1.c — UI ✅** canal e janela restante na lista do inbox; janela, opt-in e motivo do bloqueio acima do compositor; compositor trocando para template quando a janela fecha; estado de despacho por mensagem; tela de Uso mostrando o plano **efetivamente aplicado** (ADR-041) e a procedência de cada teto. A UI **mostra o veredito do servidor** (`GET /api/conversations/:id/send-policy`), nunca recalcula política.
 - **Validação contra WABA real 🔜** (`docs/WABA_VALIDATION.md`) — pré-requisito da 9.2 e de qualquer piloto: a 9.1 foi construída contra transporte falso, e os testes provam coerência interna, não aceitação pela Meta.
-- **9.2 — Privacidade operacional**: retenção e expurgo de `AiRun.result` (dívida registrada na Entrega 7) e **scanner de antivírus** antes de qualquer arquivo sair para canal externo — hoje `scanStatus` nunca deixa `pending`, e o portão de saída externa já existe esperando por isso.
+- **9.2 — Privacidade operacional 🚧**
+  - **Retenção de `AiRun.result` ✅** (ADR-042): o conteúdo derivado de conversa expira por prazo próprio (`AI_RESULT_RETENTION_DAYS`, 90 dias) no job diário; a linha do run permanece, com custo e trilha.
+  - **Scanner de antivírus 🔜**: nenhum arquivo sai para canal externo sem verificação — hoje `scanStatus` nunca deixa `pending`, e o portão de saída já existe esperando por isso.
 - **9.3 — Sugestão de resposta**: a capacidade de IA entra AQUI, junto do canal, porque agora existe para onde enviar. Ação externa continua sendo `AiProposal` aprovada por humano.
 
 **Pronto quando:** conversa real de WhatsApp entra e sai do Veyra com opt-in verificado; arquivo sem scan não sai para canal externo; `AiRun.result` expira por idade.

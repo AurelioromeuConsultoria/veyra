@@ -30,6 +30,12 @@ const envSchema = z.object({
     .default('false')
     .transform((value) => value === 'true'),
   AUDIT_RETENTION_DAYS: z.coerce.number().int().min(30).max(3650).default(365),
+  /**
+   * Prazo do CONTEÚDO derivado de conversa em `AiRun.result` (ADR-042). Menor
+   * que o da auditoria de propósito: a trilha de quem fez o quê vale por mais
+   * tempo que o texto que um modelo escreveu sobre a conversa de um paciente.
+   */
+  AI_RESULT_RETENTION_DAYS: z.coerce.number().int().min(7).max(3650).default(90),
   // raiz do storage local (ADR-024); com S3 vira bucket + credencial cifrada
   STORAGE_ROOT: z.string().min(1).default('.storage'),
   // IA (Entrega 7): SEM chave o produto segue funcionando — cada capacidade

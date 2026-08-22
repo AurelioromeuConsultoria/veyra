@@ -54,6 +54,12 @@ export interface AiRunRepository {
     capability: string,
     target: { conversationId?: string; contactId?: string },
   ): Promise<{ id: string; result: Record<string, unknown>; createdAt: Date } | null>;
+  /**
+   * ANULA o `result` dos runs mais antigos que `days`, sem apagar a linha
+   * (ADR-042): o conteúdo derivado de conversa expira, a contabilidade de custo
+   * e a evidência de que a IA agiu permanecem. Devolve quantos foram limpos.
+   */
+  purgeResultsOlderThan(days: number): Promise<number>;
 }
 
 export interface AiProposalInput {

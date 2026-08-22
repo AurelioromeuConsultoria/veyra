@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { TasksService } from '../tasks/tasks.service';
@@ -106,6 +107,19 @@ export class PrismaAiRunRepository implements AiRunRepository {
       select: { costCents: true },
     } as never)) as unknown as { costCents: number }[];
     return rows.reduce((total, row) => total + row.costCents, 0);
+  }
+  /**
+   * `raw` justificado: expurgo CROSS-WORKSPACE (SECURITY.md §2), rotina de
+   * retenção como a de auditoria. Só toca runs que ainda têm conteúdo, para não
+   * reescrever linha já limpa a cada madrugada.
+   */
+  async purgeResultsOlderThan(days: number): Promise<number> {
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const { count } = await this.prisma.raw.aiRun.updateMany({
+      where: { createdAt: { lt: cutoff }, result: { not: Prisma.DbNull } },
+      data: { result: Prisma.DbNull },
+    });
+    return count;
   }
 }
 

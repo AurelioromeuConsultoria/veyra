@@ -1,7 +1,8 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PgBoss } from 'pg-boss';
 import { AuditService } from '../audit/audit.service';
+import { AI_RUN_REPOSITORY, type AiRunRepository } from '../intelligence/ports/repositories';
 import { AutomationsService } from '../automations/automations.service';
 import { MediaCollectorService } from '../channels/media-collector.service';
 import { WhatsappSendService } from '../channels/whatsapp-send.service';
@@ -34,6 +35,15 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     private readonly files: FilesService,
     private readonly usage: UsageService,
     private readonly automations: AutomationsService,
+    /**
+     * A PORTA do repositório, não o `IntelligenceService`: importar
+     * `IntelligenceModule` aqui criou ciclo de módulos (ele importa conversas,
+     * contatos, deals e tarefas), e sob ciclo o Nest resolve provider como
+     * `undefined` de forma NÃO determinística — a suíte quebrou em 38 pontos
+     * espalhados, com `Cannot read properties of undefined`. A porta vem da
+     * camada de persistência, que não depende de domínio (ADR-027).
+     */
+    @Inject(AI_RUN_REPOSITORY) private readonly aiRuns: AiRunRepository,
     private readonly whatsappSend: WhatsappSendService,
     private readonly mediaCollector: MediaCollectorService,
   ) {}
@@ -60,6 +70,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       const days = this.config.getOrThrow<number>('AUDIT_RETENTION_DAYS');
       const purged = await this.audit.purgeOlderThan(days);
       if (purged > 0) this.logger.log(`Retenção: ${purged} registros de auditoria expurgados`);
+      // conteúdo derivado de conversa tem prazo PRÓPRIO, menor (ADR-042)
+      const aiDays = this.config.getOrThrow<number>('AI_RESULT_RETENTION_DAYS');
+      const limpos = await this.aiRuns.purgeResultsOlderThan(aiDays);
+      if (limpos > 0) this.logger.log(`Retenção: ${limpos} resultados de IA expirados`);
     });
     await this.boss.schedule(RETENTION_QUEUE, '0 4 * * *', {}, { tz: 'America/Sao_Paulo' });
 
