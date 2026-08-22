@@ -86,7 +86,34 @@ Uma mensagem entregue em duplicidade para um número real é dano que não se
 desfaz. Use **um número de teste seu** para os itens 4, 6 e 9 — nunca um número
 de paciente. O item 9 é justamente o que provoca incerteza de propósito.
 
-## 5. Depois
+## 5. Como reportar uma falha
+
+Não cole corpo de erro cru. Token, `Authorization`, assinatura HMAC, ids de conta
+e números reais não precisam viajar para a integração ser corrigida — e, colados
+em issue ou chat, não voltam. Para consertar bastam **código, classificação,
+mensagem e o item do roteiro**.
+
+```
+pbpaste | pnpm --filter @veyra/api redact:meta
+```
+
+O redator preserva `code`, `type`, `message`, `name`/`language` de template e
+`messaging_product`; apaga token, `Authorization`, assinatura, `fbtrace_id`,
+`to`/`from`/`wa_id`, `phone_number_id` e qualquer sequência com cara de E.164 ou
+de token da Meta.
+
+**Falha fechado em dois níveis:** string em chave não allowlistada é redigida
+**de qualquer tamanho** (segredo curto passava, na primeira versão), e o texto
+que a gente preserva ainda perde segredo EMBUTIDO — `access_token=…`,
+`signature=…`, `client_secret: …`, hex longo, base64 longo e JWT —, porque a Meta
+ecoa pedaços da requisição dentro de `message`. O nome do parâmetro fica, o valor
+não: `access_token=[REDIGIDO]` ainda explica o erro.
+
+A lógica vive em `src/channels/meta-redact.ts`, com teste nas duas direções: que
+nada sensível sobrevive, e que o que conserta continua legível — inclusive nome
+longo de template, que é o dado do item 6.
+
+## 6. Depois
 
 Registrar o resultado de cada item aqui mesmo, com data. Item que falhar vira
 correção **antes** da 9.2: construir scanner e retenção sobre uma integração não
