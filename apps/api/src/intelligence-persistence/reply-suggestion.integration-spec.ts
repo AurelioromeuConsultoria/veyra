@@ -176,6 +176,31 @@ describe('Sugestão de resposta por IA — Entrega 9.3 (integração)', () => {
   };
 
   const propostas = () => prisma.raw.aiProposal.findMany({ orderBy: { createdAt: 'asc' } });
+
+  /** Proposta de TAREFA, para separar o que a restrição de tipo atinge. */
+  const seedTaskProposal = async (): Promise<string> => {
+    const run = await prisma.raw.aiRun.create({
+      data: {
+        workspaceId: wsA.workspaceId,
+        capability: 'next_action',
+        model: 'claude-sonnet-5',
+        contextSummary: 'contact:seed; sinais determinísticos',
+        status: 'ok',
+        action: 'proposed',
+      },
+    });
+    const proposta = await prisma.raw.aiProposal.create({
+      data: {
+        workspaceId: wsA.workspaceId,
+        runId: run.id,
+        type: 'create_task',
+        payload: { title: 'Ligar para o cliente', dueAt: new Date().toISOString() },
+        rationale: 'Semeada para o teste de descarte por tipo',
+        expiresAt: new Date(Date.now() + 60 * 60_000),
+      },
+    });
+    return proposta.id;
+  };
   const mensagensSaida = () => prisma.raw.message.findMany({ where: { direction: 'outbound' } });
 
   beforeEach(async () => {
@@ -495,7 +520,7 @@ describe('Sugestão de resposta por IA — Entrega 9.3 (integração)', () => {
     await consentir().expect(200);
     const proposalId = (await sugerir().expect(201)).body.proposalId;
 
-    await post(`/api/intelligence/proposals/${proposalId}/reject`, sessionA).expect(201);
+    await post(`/api/intelligence/proposals/${proposalId}/reject-reply`, sessionA).expect(201);
     expect(await mensagensSaida()).toEqual([]);
     expect(await prisma.raw.messageDispatch.count()).toBe(0);
     await drain();
@@ -605,7 +630,7 @@ describe('Sugestão de resposta por IA — Entrega 9.3 (integração)', () => {
       sessionB,
     ).expect(404);
     await aprovar(proposalId, sessionB).expect(404);
-    await post(`/api/intelligence/proposals/${proposalId}/reject`, sessionB).expect(404);
+    await post(`/api/intelligence/proposals/${proposalId}/reject-reply`, sessionB).expect(404);
 
     expect((await propostas())[0].status).toBe('pending');
     expect(await mensagensSaida()).toEqual([]);
@@ -674,10 +699,49 @@ describe('Sugestão de resposta por IA — Entrega 9.3 (integração)', () => {
     expect(filaOwner.body[0].type).toBe('send_message');
   });
 
-  it('a rota de tarefa não aprova rascunho de resposta', async () => {
+  it('a rota de tarefa não aprova nem descarta rascunho de resposta', async () => {
     await consentir().expect(200);
     const proposalId = (await sugerir().expect(201)).body.proposalId;
     await post(`/api/intelligence/proposals/${proposalId}/approve`, sessionA).expect(400);
+    // descartar pela fila genérica também é recusado: a rota é só de tarefa
+    await post(`/api/intelligence/proposals/${proposalId}/reject`, sessionA).expect(400);
+    expect((await propostas())[0].status).toBe('pending');
     expect(await mensagensSaida()).toEqual([]);
+  });
+
+  /**
+   * Descartar um rascunho é decisão sobre o que DEIXA de ser dito ao contato —
+   * ação sobre conteúdo de conversa, não mera limpeza de fila. Conhecer o id da
+   * proposta não pode ser a credencial que basta (ADR-044, adendo 2).
+   */
+  it('descartar rascunho exige as mesmas permissões cumulativas de aprovar', async () => {
+    await consentir().expect(200);
+    const proposalId = (await sugerir().expect(201)).body.proposalId;
+
+    // papel que aprova IA mas NÃO fala com o contato
+    await prisma.raw.rolePermission.deleteMany({
+      where: {
+        workspaceId: wsA.workspaceId,
+        roleId: wsA.roles.admin,
+        permissionKey: 'conversations:write',
+      },
+    });
+    const revisorId = await createUserFixture(prisma, 'revisor3-a@veyra.test');
+    await createMembershipFixture(prisma, wsA.workspaceId, revisorId, wsA.roles.admin);
+    const revisor = await loginAs('revisor3-a@veyra.test');
+
+    await post(`/api/intelligence/proposals/${proposalId}/reject-reply`, revisor).expect(403);
+    // nem pela porta de serviço: a rota genérica recusa o tipo, não o ator
+    await post(`/api/intelligence/proposals/${proposalId}/reject`, revisor).expect(400);
+    expect((await propostas())[0].status).toBe('pending'); // o rascunho sobrevive
+
+    /**
+     * E a mesma pessoa CONTINUA descartando proposta de tarefa: a restrição é
+     * do tipo de proposta, não uma amputação do papel de revisor.
+     */
+    const tarefa = await seedTaskProposal();
+    await post(`/api/intelligence/proposals/${tarefa}/reject`, revisor).expect(201);
+    const fila = await propostas();
+    expect(fila.find((p) => p.id === tarefa)!.status).toBe('rejected');
   });
 });

@@ -427,8 +427,10 @@ export function InboxPage() {
   });
 
   const rejectReply = useMutation({
+    // rota própria: descartar rascunho exige as MESMAS permissões cumulativas
+    // de aprová-lo (ADR-044, adendo 2)
     mutationFn: () =>
-      api.post<{ ok: true }>(`/api/intelligence/proposals/${reply?.proposalId}/reject`),
+      api.post<{ ok: true }>(`/api/intelligence/proposals/${reply?.proposalId}/reject-reply`),
     onSuccess: () => {
       setReply(null);
       setReplyNotice(null);
@@ -731,16 +733,22 @@ export function InboxPage() {
                       <Check size={13} />{' '}
                       {approveReply.isPending ? 'Enviando…' : 'Aprovar e enviar'}
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      disabled={rejectReply.isPending}
-                      onClick={() => rejectReply.mutate()}
-                    >
-                      <X size={13} /> Descartar
-                    </Button>
+                    {/* descartar é decisão sobre a conversa, como aprovar:
+                        sem as duas permissões não há ação utilizável aqui */}
+                    {canApproveReply ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={rejectReply.isPending}
+                        onClick={() => rejectReply.mutate()}
+                      >
+                        <X size={13} /> Descartar
+                      </Button>
+                    ) : null}
                     <span className="ml-auto font-mono text-[10px] text-muted-fg">
-                      a IA não envia nada por conta própria
+                      {canApproveReply
+                        ? 'a IA não envia nada por conta própria'
+                        : 'somente leitura: decidir sobre este rascunho exige aprovar IA e responder conversas'}
                     </span>
                   </div>
                 </>

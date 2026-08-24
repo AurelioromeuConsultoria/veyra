@@ -186,6 +186,14 @@ export class IntelligenceController {
     return this.intelligence.approveSendMessage(auth, id, body.body);
   }
 
+  /**
+   * Descarte da fila de TAREFAS. Recusa `send_message`: descartar um rascunho
+   * de resposta age sobre conteúdo de conversa, e conhecer o id não pode ser a
+   * credencial que basta (ADR-044, adendo 2).
+   */
+  /* sem `@Idempotent()` nas duas rejeições, ao contrário das aprovações: elas
+     não têm efeito externo a repetir, e a segunda chamada já devolve 400
+     "Proposta já revisada" — que é a resposta correta, não um replay */
   @RequirePermissions('intelligence:approve')
   @Post('proposals/:id/reject')
   async reject(
@@ -193,6 +201,21 @@ export class IntelligenceController {
     @Param('id', new ParseUUIDPipe()) id: string,
   ): Promise<{ ok: true }> {
     await this.intelligence.rejectProposal(auth, id);
+    return { ok: true };
+  }
+
+  /**
+   * Descartar rascunho de resposta exige as MESMAS permissões cumulativas de
+   * aprová-lo: quem não pode falar com o contato também não decide o que deixa
+   * de ser dito a ele.
+   */
+  @RequirePermissions('intelligence:approve', 'conversations:write')
+  @Post('proposals/:id/reject-reply')
+  async rejectReply(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<{ ok: true }> {
+    await this.intelligence.rejectReply(auth, id);
     return { ok: true };
   }
 

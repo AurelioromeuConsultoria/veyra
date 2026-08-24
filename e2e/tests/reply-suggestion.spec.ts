@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { OWNER_A } from '../env';
+import { E2E_PASSWORD_HASH, E2E_WEB_ORIGIN, OWNER_A } from '../env';
 import { login, openE2eDb } from './helpers';
 
 /**
@@ -152,6 +152,145 @@ test.describe('Sugestão de resposta por IA (UI)', () => {
       const ligado = page.getByLabel('Permitir uso de conteúdo de conversa');
       if (await ligado.isChecked()) await ligado.click();
       await expect(ligado).not.toBeChecked();
+    } finally {
+      await db.end();
+    }
+  });
+
+  /**
+   * Sem `conversations:write`, o rascunho continua LEGÍVEL (quem tem
+   * `conversations:read` já podia ler a conversa inteira), mas não há ação
+   * utilizável: nem enviar, nem descartar. Esconder só o enviar deixaria o
+   * descarte como um poder de decisão sobre a conversa concedido pelo id.
+   *
+   * O revisor é um USUÁRIO PRÓPRIO, não o owner rebaixado: rebaixar o usuário
+   * compartilhado deixa os specs seguintes na dependência de um `finally` que
+   * um timeout não executa.
+   */
+  test('sem as permissões cumulativas, o painel não oferece ação nenhuma', async ({ page }) => {
+    const db = await openE2eDb();
+    try {
+      const base = await db.query<{ ws: string }>(
+        `SELECT m."workspaceId" AS ws FROM "Membership" m
+           JOIN "User" u ON u."id" = m."userId" WHERE u."email" = $1 LIMIT 1`,
+        [OWNER_A],
+      );
+      const ws = base.rows[0].ws;
+
+      /**
+       * Papel de REVISOR: aprova IA e lê conversas, mas não responde. É o papel
+       * que o bloqueio existe para conter — ele conhece o id do rascunho pela
+       * própria fila de IA.
+       */
+      const papel = await db.query<{ id: string }>(
+        `INSERT INTO "Role" ("id","workspaceId","name","isSystem","updatedAt")
+         VALUES (gen_random_uuid(), $1, $2, FALSE, now()) RETURNING "id"`,
+        [ws, `Revisor de IA E2E ${Date.now()}`],
+      );
+      await db.query(
+        `INSERT INTO "RolePermission" ("id","workspaceId","roleId","permissionKey")
+         SELECT gen_random_uuid(), $1, $2, k FROM unnest($3::text[]) AS k`,
+        [
+          ws,
+          papel.rows[0].id,
+          [
+            'workspace:read',
+            'contacts:read',
+            'conversations:read',
+            'intelligence:use',
+            'intelligence:approve',
+          ],
+        ],
+      );
+      const email = `revisor-${Date.now()}@e2e.veyra`;
+      const revisor = await db.query<{ id: string }>(
+        `INSERT INTO "User" ("id","email","name","passwordHash","updatedAt")
+         VALUES (gen_random_uuid(), $1, 'Revisor E2E', $2, now()) RETURNING "id"`,
+        [email, E2E_PASSWORD_HASH],
+      );
+      await db.query(
+        `INSERT INTO "Membership" ("id","workspaceId","userId","roleId","updatedAt")
+         VALUES (gen_random_uuid(), $1, $2, $3, now())`,
+        [ws, revisor.rows[0].id, papel.rows[0].id],
+      );
+
+      const contato = await db.query<{ id: string }>(
+        `INSERT INTO "Contact" ("id","workspaceId","name","updatedAt")
+         VALUES (gen_random_uuid(), $1, 'Paciente Somente Leitura', now()) RETURNING "id"`,
+        [ws],
+      );
+      const canal = await db.query<{ id: string }>(
+        `INSERT INTO "Channel" ("id","workspaceId","type","name")
+         VALUES (gen_random_uuid(), $1, 'whatsapp', 'WhatsApp Revisor') RETURNING "id"`,
+        [ws],
+      );
+      const assunto = `Somente leitura ${Date.now()}`;
+      const conversa = await db.query<{ id: string }>(
+        `INSERT INTO "Conversation"
+           ("id","workspaceId","channelId","contactId","subject","externalAddress","lastInboundAt","lastMessageAt")
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, '+5511999993333', now() - interval '1 hour', now())
+         RETURNING "id"`,
+        [ws, canal.rows[0].id, contato.rows[0].id, assunto],
+      );
+      const run = await db.query<{ id: string }>(
+        `INSERT INTO "AiRun"
+           ("id","workspaceId","capability","model","contextSummary","status","action","conversationId")
+         VALUES (gen_random_uuid(), $1, 'reply_suggestion', 'claude-sonnet-5',
+                 'conversation:e2e; 1 mensagem (corpo)', 'ok', 'proposed', $2) RETURNING "id"`,
+        [ws, conversa.rows[0].id],
+      );
+      const proposta = await db.query<{ id: string }>(
+        `INSERT INTO "AiProposal"
+           ("id","workspaceId","runId","type","payload","rationale","conversationId","contactId","expiresAt","pendingReplyMark")
+         VALUES (gen_random_uuid(), $1, $2, 'send_message', $3::jsonb, 'Rascunho para o teste de permissão',
+                 $4, $5, now() + interval '6 hours', TRUE) RETURNING "id"`,
+        [
+          ws,
+          run.rows[0].id,
+          JSON.stringify({ body: 'Posso confirmar seu horário?' }),
+          conversa.rows[0].id,
+          contato.rows[0].id,
+        ],
+      );
+
+      await login(page, email);
+      await page.getByRole('link', { name: 'Inbox' }).click();
+      await page.getByRole('button', { name: new RegExp(assunto.slice(0, 12)) }).click();
+
+      const painel = page.getByTestId('reply-suggestion');
+      // o rascunho aparece — quem lê a conversa já podia ler o que foi escrito
+      await expect(page.getByLabel('Rascunho sugerido pela IA')).toHaveValue(
+        'Posso confirmar seu horário?',
+      );
+      // mas não há ação: enviar desabilitado, descartar ausente
+      await expect(painel.getByRole('button', { name: /Aprovar e enviar/ })).toBeDisabled();
+      await expect(painel.getByRole('button', { name: /Descartar/ })).toHaveCount(0);
+      await expect(painel).toContainText(/somente leitura/i);
+
+      /**
+       * E a tela NÃO é a fronteira: chamando a API direto, com requisição
+       * legítima do navegador. `Origin` e o token de CSRF precisam ir a sério —
+       * sem eles a recusa vem do guard de origem, e o teste passaria até com a
+       * rota sem decorator de permissão nenhum.
+       */
+      const csrf = (await page.context().cookies()).find((c) => c.name === 'veyra_csrf')?.value;
+      expect(csrf).toBeTruthy();
+      const cabecalhos = { Origin: E2E_WEB_ORIGIN, 'x-csrf-token': csrf as string };
+      for (const rota of ['reject-reply', 'approve-reply']) {
+        const res = await page.request.post(
+          `/api/intelligence/proposals/${proposta.rows[0].id}/${rota}`,
+          { data: {}, headers: cabecalhos },
+        );
+        expect(res.status(), rota).toBe(403);
+        // a recusa é de PERMISSÃO, não de origem: a distinção é o teste inteiro
+        expect(JSON.stringify(await res.json()), rota).toMatch(/Permiss/i);
+      }
+      // e o rascunho continua vivo depois das duas tentativas
+      const depois = await db.query<{ status: string }>(
+        `SELECT "status" FROM "AiProposal" WHERE "id" = $1`,
+        [proposta.rows[0].id],
+      );
+      expect(depois.rows[0].status).toBe('pending');
     } finally {
       await db.end();
     }

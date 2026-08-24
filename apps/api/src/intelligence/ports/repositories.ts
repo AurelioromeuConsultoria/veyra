@@ -117,11 +117,22 @@ export interface AiProposalRepository {
     limit: number,
     excludeTypes?: AiProposalType[],
   ): Promise<AiProposalRecord[]>;
-  /** Transições que NÃO executam nada (rejeitar, expirar). */
+  /**
+   * Transições que NÃO executam nada (rejeitar, expirar). O revisor viaja com o
+   * workspace porque a transição é AUDITADA: descartar um rascunho é decisão
+   * sobre a conversa (ADR-044, adendo 2), e mutação relevante gera `AuditLog`.
+   */
   transition(
     id: string,
     to: 'rejected' | 'expired',
-    reviewerMembershipId: string,
+    reviewer: ApprovalContext,
+    /**
+     * Quem PROVOCOU a transição. `system` para a expiração pelo relógio: quem
+     * a disparou apenas esbarrou numa proposta já vencida, e registrá-lo como
+     * autor da decisão seria atribuição falsa. A membership continua como
+     * contexto nos dois casos.
+     */
+    actorType?: 'user' | 'system',
   ): Promise<boolean>;
   /**
    * Reivindica → executa → conclui em UMA transação (ADR-030). Se qualquer

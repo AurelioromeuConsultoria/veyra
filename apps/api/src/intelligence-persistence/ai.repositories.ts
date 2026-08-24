@@ -182,23 +182,50 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
     } as never)) as unknown as AiProposalRecord[];
   }
 
-  /** Transições que não executam nada (rejeitar, expirar). */
+  /**
+   * Transições que não executam nada (rejeitar, expirar) — mas que são
+   * AUDITADAS na mesma transação: desde o adendo 2 do ADR-044, descartar um
+   * rascunho é ação sobre a conversa, e as colunas de revisão sozinhas não são
+   * trilha (CLAUDE.md §3.13). O ator é a PESSOA quando houve decisão — a IA
+   * propôs, o humano recusou —, e `system` quando quem expirou foi o relógio.
+   */
   async transition(
     id: string,
     to: 'rejected' | 'expired',
-    reviewerMembershipId: string,
+    reviewer: ApprovalContext,
+    actorType: 'user' | 'system' = 'user',
   ): Promise<boolean> {
-    const { count } = await this.prisma.db.aiProposal.updateMany({
-      where: { id, status: 'pending' },
-      data: {
-        status: to,
-        reviewedByMembershipId: reviewerMembershipId,
-        reviewedAt: new Date(),
-        // deixou de ser rascunho pendente: libera o unique da conversa
-        pendingReplyMark: null,
-      },
+    const db = this.prisma.db as unknown as TxRunner;
+    return db.$transaction(async (tx) => {
+      const alvo = (await tx.aiProposal.findFirst({
+        where: { id, status: 'pending' },
+        select: { id: true, type: true },
+      } as never)) as unknown as { id: string; type: string } | null;
+      if (!alvo) return false;
+
+      const { count } = await tx.aiProposal.updateMany({
+        where: { id, status: 'pending' },
+        data: {
+          status: to,
+          reviewedByMembershipId: reviewer.membershipId,
+          reviewedAt: new Date(),
+          // deixou de ser rascunho pendente: libera o unique da conversa
+          pendingReplyMark: null,
+        },
+      });
+      if (count === 0) return false;
+
+      await this.audit.record(tx, reviewer.workspaceId, `ai_proposal.${to}`, {
+        entityType: 'aiProposal',
+        entityId: id,
+        actor: { type: actorType, membershipId: reviewer.membershipId },
+        // allowlist de `aiProposal`: tipo e estado. O payload NUNCA — é texto
+        // de terceiro, e o motivo de a fila existir não é guardá-lo duas vezes
+        before: { type: alvo.type, status: 'pending' },
+        after: { type: alvo.type, status: to },
+      });
+      return count > 0;
     });
-    return count > 0;
   }
 
   /**

@@ -20,6 +20,7 @@ import {
   type AiRunAction,
   type AiRunRepository,
   type AiRunStatus,
+  type ApprovalContext,
   type PromptVersionRepository,
 } from './ports/repositories';
 import {
@@ -704,12 +705,18 @@ export class IntelligenceService {
     const proposal = await this.proposals.findById(id);
     if (!proposal) throw new NotFoundException('Proposta não encontrada');
     if (proposal.status !== 'pending') throw new BadRequestException('Proposta já revisada');
-    if (proposal.expiresAt.getTime() < Date.now()) {
-      await this.proposals.transition(id, 'expired', auth.membershipId as string);
-      throw new BadRequestException('Proposta expirada');
-    }
+    /**
+     * TIPO antes de qualquer efeito. Com a ordem invertida, quem só tem as
+     * permissões de tarefa carimbava `reviewedByMembershipId` numa proposta de
+     * conversa vencida — escrita num artefato de outro domínio, que é
+     * exatamente o que o adendo 2 do ADR-044 proíbe.
+     */
     if (proposal.type !== 'send_message') {
       throw new BadRequestException('Tipo de proposta não permitido nesta rota');
+    }
+    if (proposal.expiresAt.getTime() < Date.now()) {
+      await this.proposals.transition(id, 'expired', this.approver(auth), 'system');
+      throw new BadRequestException('Proposta expirada');
     }
     if (!proposal.conversationId) {
       throw new BadRequestException('Proposta sem conversa vinculada');
@@ -735,12 +742,13 @@ export class IntelligenceService {
     if (proposal.status !== 'pending') {
       throw new BadRequestException('Proposta já revisada');
     }
-    if (proposal.expiresAt.getTime() < Date.now()) {
-      await this.proposals.transition(id, 'expired', auth.membershipId as string);
-      throw new BadRequestException('Proposta expirada');
-    }
+    // tipo antes do efeito, como em `approveSendMessage`
     if (proposal.type !== 'create_task') {
       throw new BadRequestException('Tipo de proposta não permitido');
+    }
+    if (proposal.expiresAt.getTime() < Date.now()) {
+      await this.proposals.transition(id, 'expired', this.approver(auth), 'system');
+      throw new BadRequestException('Proposta expirada');
     }
     // revalida o payload NO ACEITE: entre propor e aprovar, nada garante que a
     // linha não foi adulterada por outro caminho
@@ -763,11 +771,44 @@ export class IntelligenceService {
     return result;
   }
 
+  /**
+   * Descarte da fila genérica: EXCLUSIVO de `create_task`. Descartar um rascunho
+   * de resposta é ação sobre conteúdo de conversa — vai pela rota própria, com
+   * as mesmas permissões cumulativas da aprovação (ADR-044, adendo 2).
+   */
   async rejectProposal(auth: AuthContext, id: string): Promise<void> {
     const proposal = await this.proposals.findById(id);
     if (!proposal) throw new NotFoundException('Proposta não encontrada');
-    const done = await this.proposals.transition(id, 'rejected', auth.membershipId as string);
+    if (proposal.type === 'send_message') {
+      throw new BadRequestException('Tipo de proposta não permitido nesta rota');
+    }
+    // vencida pelo relógio não é recusa, aqui como no rascunho: ninguém a
+    // descartou, ela caducou
+    const destino = proposal.expiresAt.getTime() < Date.now() ? 'expired' : 'rejected';
+    const done = await this.proposals.transition(id, destino, this.approver(auth));
     if (!done) throw new BadRequestException('Proposta já revisada');
+  }
+
+  /** Descarte de rascunho de resposta: `intelligence:approve` + `conversations:write`. */
+  async rejectReply(auth: AuthContext, id: string): Promise<void> {
+    const proposal = await this.proposals.findById(id);
+    if (!proposal) throw new NotFoundException('Proposta não encontrada');
+    if (proposal.type !== 'send_message') {
+      throw new BadRequestException('Tipo de proposta não permitido nesta rota');
+    }
+    /**
+     * Vencido pelo relógio não é recusa: ninguém o descartou, ele caducou. A
+     * distinção é a mesma que a supersessão faz, e mantê-la é o que impede a
+     * contabilidade de "quantos rascunhos foram recusados" de mentir.
+     */
+    const destino = proposal.expiresAt.getTime() < Date.now() ? 'expired' : 'rejected';
+    const done = await this.proposals.transition(id, destino, this.approver(auth));
+    if (!done) throw new BadRequestException('Proposta já revisada');
+  }
+
+  /** Contexto do revisor para o adaptador auditar a transição. */
+  private approver(auth: AuthContext): ApprovalContext {
+    return { workspaceId: auth.workspaceId as string, membershipId: auth.membershipId as string };
   }
 
   // ── Internos ──────────────────────────────────────────────────────────────
