@@ -138,6 +138,11 @@ export function InboxPage() {
   const canUseAi = hasPermission(user, 'intelligence:use');
   /** enviar rascunho de IA exige as DUAS: aprovar IA e responder (ADR-044.9) */
   const canApproveReply = hasPermission(user, 'intelligence:approve') && canWrite;
+  /**
+   * GERAR também exige responder: o rascunho novo supersede o pendente e
+   * invalida o trabalho que outra pessoa poderia aprovar (ADR-044, adendo 3).
+   */
+  const canSuggestReply = canUseAi && canWrite;
   const queryClient = useQueryClient();
 
   const [status, setStatus] = useState<'open' | 'pending' | 'closed' | 'all'>('open');
@@ -761,6 +766,7 @@ export function InboxPage() {
                     /* indisponibilidade vem do SERVIDOR: modo de envio e
                        consentimento de conteúdo — a tela não recalcula política */
                     disabled={
+                      !canSuggestReply ||
                       suggestReply.isPending ||
                       modo !== 'free_form' ||
                       aiConsent.data?.conversationContent !== true
@@ -770,11 +776,13 @@ export function InboxPage() {
                        culpava a autorização de IA numa conversa cujo problema
                        era a janela fechada. */
                     title={
-                      modo !== 'free_form'
-                        ? (policy.data?.reason ?? 'Fora da janela livre: sugestão indisponível')
-                        : aiConsent.data?.conversationContent !== true
-                          ? 'O workspace não autorizou usar conteúdo de conversa na IA (ajuste em Sinais)'
-                          : undefined
+                      !canSuggestReply
+                        ? 'Gerar rascunho substitui o pendente: exige poder responder a conversa'
+                        : modo !== 'free_form'
+                          ? (policy.data?.reason ?? 'Fora da janela livre: sugestão indisponível')
+                          : aiConsent.data?.conversationContent !== true
+                            ? 'O workspace não autorizou usar conteúdo de conversa na IA (ajuste em Sinais)'
+                            : undefined
                     }
                     onClick={() => suggestReply.mutate()}
                   >
@@ -782,11 +790,13 @@ export function InboxPage() {
                     {suggestReply.isPending ? 'Rascunhando…' : 'Sugerir resposta'}
                   </Button>
                   <span className="text-[11px] text-muted-fg">
-                    {modo !== 'free_form'
-                      ? (policy.data?.reason ?? 'Sugestão só dentro da janela livre de 24h')
-                      : aiConsent.data?.conversationContent !== true
-                        ? 'Sugestão indisponível: falta autorização de uso de conteúdo de conversa'
-                        : (replyNotice ?? 'A IA rascunha; você revisa e envia')}
+                    {!canSuggestReply
+                      ? 'Somente leitura: gerar rascunho substitui o pendente e exige responder conversas'
+                      : modo !== 'free_form'
+                        ? (policy.data?.reason ?? 'Sugestão só dentro da janela livre de 24h')
+                        : aiConsent.data?.conversationContent !== true
+                          ? 'Sugestão indisponível: falta autorização de uso de conteúdo de conversa'
+                          : (replyNotice ?? 'A IA rascunha; você revisa e envia')}
                   </span>
                 </div>
               )}

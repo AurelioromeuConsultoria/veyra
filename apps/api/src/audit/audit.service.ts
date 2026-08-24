@@ -51,7 +51,10 @@ export const AUDIT_FIELDS: Record<string, readonly string[]> = {
    * reescreveu antes de enviar (ADR-044.8).
    */
   message: ['externalId', 'direction', 'authorType'],
-  aiProposal: ['type', 'status'], // payload NUNCA — pode conter texto de terceiro
+  // payload NUNCA — pode conter texto de terceiro. `supersededByProposalId` é
+  // um id, não conteúdo: é o que liga o rascunho substituído ao que o
+  // substituiu (ADR-044, adendo 3)
+  aiProposal: ['type', 'status', 'supersededByProposalId'],
 };
 
 export interface AuditActorInput {

@@ -291,6 +291,32 @@ test.describe('Sugestão de resposta por IA (UI)', () => {
         [proposta.rows[0].id],
       );
       expect(depois.rows[0].status).toBe('pending');
+
+      /**
+       * GERAR também está fora de alcance (ADR-044, adendo 3): numa conversa
+       * SEM rascunho pendente, o botão aparece desabilitado e a tela explica.
+       * Sem esta parte, a regra nova só estaria coberta onde já havia rascunho.
+       */
+      const assunto2 = `Sem rascunho ${Date.now()}`;
+      const conversa2 = await db.query<{ id: string }>(
+        `INSERT INTO "Conversation"
+           ("id","workspaceId","channelId","contactId","subject","externalAddress","lastInboundAt","lastMessageAt")
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, '+5511999994444', now() - interval '1 hour', now())
+         RETURNING "id"`,
+        [ws, canal.rows[0].id, contato.rows[0].id, assunto2],
+      );
+      await page.reload();
+      await page.getByRole('button', { name: new RegExp(assunto2.slice(0, 12)) }).click();
+      await expect(painel.getByRole('button', { name: /Sugerir resposta/ })).toBeDisabled();
+      await expect(painel).toContainText(/gerar rascunho substitui o pendente/i);
+
+      // e a API recusa a geração direto, não só o botão
+      const gerar = await page.request.post(
+        `/api/intelligence/conversations/${conversa2.rows[0].id}/reply-suggestion`,
+        { data: {}, headers: cabecalhos },
+      );
+      expect(gerar.status()).toBe(403);
+      expect(JSON.stringify(await gerar.json())).toMatch(/Permiss/i);
     } finally {
       await db.end();
     }

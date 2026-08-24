@@ -158,7 +158,14 @@ export class IntelligenceController {
     return this.intelligence.pendingReply(id);
   }
 
-  @RequirePermissions('intelligence:use', 'conversations:read')
+  /**
+   * GERAR exige também `conversations:write` (ADR-044, adendo 3): o rascunho
+   * novo SUPERSEDE o pendente, invalidando o trabalho que outra pessoa poderia
+   * aprovar. Ler e analisar continua com `conversations:read`; substituir é
+   * escrita na conversa. Sem isto, a supersessão seria a exceção permanente ao
+   * modelo que o adendo 2 acabou de estabelecer.
+   */
+  @RequirePermissions('intelligence:use', 'conversations:read', 'conversations:write')
   @Idempotent()
   @Post('conversations/:id/reply-suggestion')
   suggestReply(

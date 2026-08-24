@@ -639,7 +639,7 @@ export class IntelligenceService {
     const expiresAt = new Date(
       Math.min(Date.now() + REPLY_TTL_MS, janela ?? Date.now() + REPLY_TTL_MS),
     );
-    const criada = await this.proposals.createReplySuperseding(workspaceId, {
+    const criada = await this.proposals.createReplySuperseding(this.approver(auth), {
       runId,
       // payload é SÓ o texto: sem destinatário, sem canal, sem anexo
       payload: { body: draft.body },

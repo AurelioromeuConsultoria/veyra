@@ -179,7 +179,8 @@ export interface AiProposalRepository {
    * do ponto de vista de quem pediu, existe um rascunho para revisar.
    */
   createReplySuperseding(
-    workspaceId: string,
+    /** quem gerou: vai para a trilha da supersessão, com o workspace */
+    author: ApprovalContext,
     // o tipo é fixo e não há deal: a assinatura não promete o que não usa
     proposal: Omit<AiProposalInput, 'type' | 'dealId' | 'conversationId'> & {
       conversationId: string;

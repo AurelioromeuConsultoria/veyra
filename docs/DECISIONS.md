@@ -478,7 +478,7 @@ O Core continua **não conhecendo o vertical** (§3.8): Clinics estende por exte
 2. Supersessão e criação acontecem na MESMA transação: gerar um rascunho novo marca o anterior como `expired` (não `rejected` — ninguém o recusou, ele ficou obsoleto) e insere o novo.
 3. Quando o banco recusa o segundo pendente, a geração perdedora devolve **o rascunho vencedor** em vez de um erro: quem pediu queria um rascunho para revisar, e existe um.
 
-A supersessão **não gera `AuditLog`**, enquanto o descarte e a expiração pelo relógio geram (adendo 2): quem ler `ai_proposal.expired` verá um subconjunto das expirações. É deliberado — a supersessão não é decisão sobre a conversa, é consequência de gerar outro rascunho, e o `AiRun` da geração mais a proposta substituta já contam essa história inteira. Registrado aqui para que a assimetria não vire dúvida numa auditoria futura.
+A supersessão gera `AuditLog` próprio (`ai_proposal.superseded`, adendo 3), distinto de `ai_proposal.expired`: ela invalida trabalho que outra pessoa poderia aprovar, então a trilha diz quem gerou o substituto e qual rascunho morreu.
 
 **Residual aceito:** o `proposalId` devolvido por uma geração pode já ter sido superseded por outra — inerente, e igual ao caso trivial de clicar "sugerir" duas vezes. Aprovar um rascunho obsoleto é recusado com motivo claro e **não envia nada**; a tela recarrega o pendente atual. E o run da geração perdedora fica registrado com `action='proposed'` embora seu rascunho tenha sido descartado: o custo foi real e a contabilidade não mente sobre ele, mas a contagem de runs "que propuseram" pode exceder a de propostas na fila.
 
@@ -488,6 +488,16 @@ A supersessão **não gera `AuditLog`**, enquanto o descarte e a expiração pel
 2. `POST /proposals/:id/reject` fica **exclusiva de `create_task`** e recusa `send_message`, como a rota de aprovação de tarefa já recusava. A restrição é do TIPO, não do ator: o mesmo revisor continua descartando propostas de tarefa.
 3. A tela segue a mesma regra: sem as duas permissões, o painel do inbox mostra o rascunho (quem tem `conversations:read` já podia ler a conversa) e **nenhuma ação utilizável** — enviar desabilitado, descartar ausente. Esconder apenas o envio deixaria o descarte como um poder de decisão concedido pelo id.
 
-**A supersessão é a exceção, e é diferente.** Gerar uma sugestão nova expira o rascunho pendente anterior (adendo 1) e exige apenas `intelligence:use` + `conversations:read` — conjunto mais fraco que o exigido para descartar. Não é a mesma coisa e não é o mesmo furo: a expiração acontece na MESMA transação que insere o substituto, e só depois de uma geração bem-sucedida (os ramos de quota, provedor indisponível e saída inválida retornam antes), então a conversa nunca fica sem rascunho para revisar. É **substituição atômica**, não veto — quem supersede não ganha voz na conversa nem impede a resposta, apenas troca um rascunho por outro que ele mesmo poderia ter pedido. O residual é churn e queima de quota por quem já lê a conversa.
+**Lição registrada:** "reduz poder" não é sinônimo de "não precisa de permissão". Destruir um artefato que só existe dentro de um domínio é ação daquele domínio. A supersessão, que substitui em vez de destruir, ficou registrada como exceção — e o adendo 3 a fechou.
 
-**Lição registrada:** "reduz poder" não é sinônimo de "não precisa de permissão". Destruir um artefato que só existe dentro de um domínio é ação daquele domínio — e o que distingue a supersessão é que ela não destrói, substitui.
+## Adendo 3 (2026-08-24) — gerar rascunho também exige `conversations:write`
+
+**Contexto:** o adendo 2 fechou o descarte e deixou a supersessão como exceção documentada: gerar uma sugestão nova expira o rascunho pendente (adendo 1) e exigia apenas `intelligence:use` + `conversations:read`. O argumento para mantê-la era que substituir não é destruir — a fila nunca fica vazia, e quem supersede não ganha voz na conversa. O usuário decidiu o contrário, e a decisão é melhor: **gerar rascunho novo altera o estado da conversa e invalida o trabalho de outra pessoa** — alguém pode estar a um clique de aprovar aquele texto.
+
+**Decisão:** `POST /intelligence/conversations/:id/reply-suggestion` exige `intelligence:use` + `conversations:read` + `conversations:write`.
+
+1. **Ler e analisar continua com `conversations:read`**: o `GET` do rascunho pendente não mudou. Quem revisa sem responder continua vendo a conversa inteira e o rascunho — só não substitui o que outra pessoa poderá enviar.
+2. **Toda supersessão gera `AuditLog`** (`ai_proposal.superseded`), na MESMA transação que expira o anterior e insere o substituto: ator é quem gerou, `entityId` é o rascunho substituído e `after.supersededByProposalId` aponta o que o substituiu. `supersededByProposalId` entrou na allowlist de `aiProposal` por ser **id, não conteúdo** — o corpo do rascunho nunca entra na trilha.
+3. **O trade-off é intencional e está aceito:** quem não pode escrever na conversa pode ler, analisar e revisar, mas não substituir. Vale para a tela também — sem `conversations:write` o botão de gerar aparece desabilitado, com o motivo.
+
+**Consequência:** o modelo de permissão fica coerente — decidir sobre um rascunho (aprovar, descartar) e produzir um que substitui outro são, todos, ações sobre a conversa. Some a única exceção permanente que o adendo 2 tinha aberto.

@@ -31,6 +31,26 @@ import { PromptHashMismatchError } from '../intelligence/ports/repositories';
 
 type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
 
+/**
+ * Reconhece a violação do unique do RASCUNHO PENDENTE — e só ela: engolir
+ * qualquer P2002 faria um unique futuro em `AiProposal` virar "outra geração
+ * venceu" em silêncio.
+ *
+ * A busca é no `meta` INTEIRO serializado, não em `meta.target`: com o driver
+ * adapter do Prisma 7 o alvo não vem em `target`, e sim em
+ * `meta.driverAdapterError.cause.constraint.fields`. Restringir a `target`
+ * fazia a condição nunca casar — o caminho de corrida vazava como 409
+ * "Registro duplicado" para quem só pediu uma sugestão, e só aparecia quando a
+ * corrida acontecia de verdade. É o motivo de esta função existir separada:
+ * a forma do erro é do provedor, e merece teste próprio.
+ */
+export function isPendingReplyConflict(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') {
+    return false;
+  }
+  return JSON.stringify(error.meta ?? '').includes('pendingReplyMark');
+}
+
 @Injectable()
 export class PrismaAiRunRepository implements AiRunRepository {
   constructor(private readonly prisma: PrismaService) {}
@@ -388,7 +408,7 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
    * (`pendingReplyMark`) é a garantia final: o banco recusa o segundo pendente.
    */
   async createReplySuperseding(
-    workspaceId: string,
+    author: ApprovalContext,
     proposal: Omit<AiProposalInput, 'type' | 'dealId' | 'conversationId'> & {
       conversationId: string;
     },
@@ -396,19 +416,40 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
     const db = this.prisma.db as unknown as TxRunner;
     try {
       return await db.$transaction(async (tx) => {
-        await tx.aiProposal.updateMany({
+        /**
+         * Os substituídos são lidos ANTES de expirar: a trilha precisa dizer
+         * QUAIS rascunhos morreram, e depois do `updateMany` não há como
+         * distingui-los de outros já expirados.
+         */
+        const substituidos = (await tx.aiProposal.findMany({
           where: {
             conversationId: proposal.conversationId,
             type: 'send_message',
             status: 'pending',
           },
-          // `expired`, não `rejected`: ninguém recusou — ficou obsoleto. Sem
-          // revisor, porque não houve revisão humana. A marca sai com o estado.
-          data: { status: 'expired', pendingReplyMark: null },
-        });
+          select: { id: true },
+        } as never)) as unknown as { id: string }[];
+
+        /**
+         * Expira EXATAMENTE os ids lidos, não o predicado de novo: em READ
+         * COMMITTED as duas sentenças enxergam snapshots diferentes, e um
+         * rascunho que nascesse entre elas seria expirado sem entrar na trilha
+         * — transição sem log, justamente o que a auditoria existe para
+         * impedir. Restringindo aos ids, um pendente novo sobrevive e faz a
+         * inserção bater no unique, caindo em `'concurrent'`, que já é o
+         * desfecho correto.
+         */
+        if (substituidos.length > 0) {
+          await tx.aiProposal.updateMany({
+            where: { id: { in: substituidos.map((anterior) => anterior.id) } },
+            // `expired`, não `rejected`: ninguém recusou — ficou obsoleto. Sem
+            // revisor, porque não houve revisão humana. A marca sai com o estado.
+            data: { status: 'expired', pendingReplyMark: null },
+          });
+        }
         const created = await tx.aiProposal.create({
           data: {
-            workspaceId,
+            workspaceId: author.workspaceId,
             runId: proposal.runId,
             type: 'send_message',
             payload: proposal.payload as object,
@@ -419,21 +460,27 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
             pendingReplyMark: true,
           },
         } as never);
-        return { id: (created as unknown as { id: string }).id };
+        const id = (created as unknown as { id: string }).id;
+
+        /**
+         * Supersessão é AUDITADA (ADR-044, adendo 3): ela invalida trabalho que
+         * outra pessoa poderia aprovar, então precisa dizer quem gerou o
+         * substituto e qual rascunho morreu. Ids e estados apenas — o corpo do
+         * rascunho jamais entra na trilha.
+         */
+        for (const anterior of substituidos) {
+          await this.audit.record(tx, author.workspaceId, 'ai_proposal.superseded', {
+            entityType: 'aiProposal',
+            entityId: anterior.id,
+            actor: { type: 'user', membershipId: author.membershipId },
+            before: { type: 'send_message', status: 'pending' },
+            after: { type: 'send_message', status: 'expired', supersededByProposalId: id },
+          });
+        }
+        return { id };
       });
     } catch (error) {
-      /**
-       * Só o unique do RASCUNHO PENDENTE vira `'concurrent'`. Engolir qualquer
-       * P2002 faria um unique futuro em `AiProposal` virar "outra geração
-       * venceu" em silêncio — o tipo de erro que some por anos.
-       */
-      if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2002' &&
-        JSON.stringify(error.meta?.target ?? '').includes('pendingReplyMark')
-      ) {
-        return 'concurrent';
-      }
+      if (isPendingReplyConflict(error)) return 'concurrent';
       throw error;
     }
   }

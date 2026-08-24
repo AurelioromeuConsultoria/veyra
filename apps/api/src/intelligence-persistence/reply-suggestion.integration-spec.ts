@@ -354,7 +354,18 @@ describe('Sugestão de resposta por IA — Entrega 9.3 (integração)', () => {
   it('duas gerações SIMULTÂNEAS não deixam dois rascunhos aprováveis', async () => {
     await consentir().expect(200);
     const [a, b] = await Promise.all([sugerir(), sugerir()]);
-    expect([a.status, b.status]).toEqual([201, 201]);
+    /**
+     * As DUAS recebem 201: quem perde a corrida no unique recebe de volta o
+     * rascunho vencedor, não um erro. Ver 409 aqui significa que a violação
+     * deixou de ser reconhecida — foi exatamente o que aconteceu quando a
+     * condição olhava só `meta.target` (ver `isPendingReplyConflict`).
+     */
+    if (a.status !== 201 || b.status !== 201) {
+      throw new Error(
+        `esperava 201 nas duas gerações; a=${a.status} ${JSON.stringify(a.body)} ` +
+          `b=${b.status} ${JSON.stringify(b.body)}`,
+      );
+    }
 
     const fila = await propostas();
     const pendentes = fila.filter((p) => p.status === 'pending');
@@ -655,6 +666,67 @@ describe('Sugestão de resposta por IA — Entrega 9.3 (integração)', () => {
     await aprovar(proposalId, revisor).expect(403);
     expect((await propostas())[0].status).toBe('pending');
     expect(await mensagensSaida()).toEqual([]);
+  });
+
+  /**
+   * Gerar SUBSTITUI o rascunho pendente — invalida trabalho que outra pessoa
+   * poderia aprovar e enviar. Ler e analisar continua sendo leitura; substituir
+   * é escrita na conversa (ADR-044, adendo 3).
+   */
+  it('gerar exige conversations:write: substituir rascunho é escrita na conversa', async () => {
+    await consentir().expect(200);
+    const anterior = (await sugerir().expect(201)).body.proposalId;
+
+    await prisma.raw.rolePermission.deleteMany({
+      where: {
+        workspaceId: wsA.workspaceId,
+        roleId: wsA.roles.admin,
+        permissionKey: 'conversations:write',
+      },
+    });
+    const analistaId = await createUserFixture(prisma, 'analista-a@veyra.test');
+    await createMembershipFixture(prisma, wsA.workspaceId, analistaId, wsA.roles.admin);
+    const analista = await loginAs('analista-a@veyra.test');
+
+    await sugerir(analista).expect(403);
+    expect(llm.calls).toHaveLength(1); // só a geração legítima do início
+    // o rascunho de quem pode responder continua vivo e aprovável
+    const fila = await propostas();
+    expect(fila).toHaveLength(1);
+    expect(fila[0]).toMatchObject({ id: anterior, status: 'pending' });
+
+    // e quem não pode escrever CONTINUA lendo o rascunho pendente
+    const leitura = await get(
+      `/api/intelligence/conversations/${conversationId}/reply-suggestion`,
+      analista,
+    ).expect(200);
+    expect(leitura.body.proposalId).toBe(anterior);
+  });
+
+  it('supersessão é auditada: quem gerou, qual rascunho morreu, sem conteúdo', async () => {
+    await consentir().expect(200);
+    const primeira = (await sugerir().expect(201)).body.proposalId;
+    const segunda = (await sugerir().expect(201)).body.proposalId;
+
+    const log = await prisma.raw.auditLog.findFirst({
+      where: { workspaceId: wsA.workspaceId, action: 'ai_proposal.superseded' },
+    });
+    expect(log).toBeTruthy();
+    expect(log!.entityId).toBe(primeira); // o rascunho substituído
+    expect(log!.actorType).toBe('user'); // quem gerou o substituto, não a IA
+    const membership = await prisma.raw.membership.findFirst({
+      where: { workspaceId: wsA.workspaceId },
+    });
+    expect(log!.actorMembershipId).toBe(membership!.id);
+    expect(log!.after).toMatchObject({ status: 'expired', supersededByProposalId: segunda });
+    // corpo do rascunho JAMAIS na trilha
+    expect(JSON.stringify(log!.after) + JSON.stringify(log!.before)).not.toContain('10h');
+
+    // a primeira geração, que não substituiu ninguém, não gera trilha à toa
+    const todos = await prisma.raw.auditLog.findMany({
+      where: { workspaceId: wsA.workspaceId, action: 'ai_proposal.superseded' },
+    });
+    expect(todos).toHaveLength(1);
   });
 
   it('gerar exige conversations:read: a IA não amplia o que a pessoa pode ler', async () => {
