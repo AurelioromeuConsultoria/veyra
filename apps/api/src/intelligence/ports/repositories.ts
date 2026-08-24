@@ -14,7 +14,7 @@ export const AI_CONSENT_REPOSITORY = Symbol('AI_CONSENT_REPOSITORY');
 export type AiRunStatus = 'ok' | 'refused' | 'error';
 export type AiRunAction = 'none' | 'proposed' | 'executed';
 export type AiProposalStatus = 'pending' | 'executing' | 'approved' | 'rejected' | 'expired';
-export type AiProposalType = 'create_task';
+export type AiProposalType = 'create_task' | 'send_message';
 
 /**
  * Registro de um run. `contextSummary` é a DESCRIÇÃO do contexto (quais
@@ -93,10 +93,30 @@ export interface CreateTaskExecution {
   contactId: string;
 }
 
+/**
+ * Aprovação de rascunho de resposta (ADR-044). `edited` distingue o texto que
+ * a IA escreveu do que o aprovador reescreveu: é o que decide a autoria da
+ * `Message` e vai para a auditoria.
+ */
+export interface SendMessageExecution {
+  conversationId: string;
+  body: string;
+  edited: boolean;
+}
+
 export interface AiProposalRepository {
   create(workspaceId: string, proposal: AiProposalInput): Promise<string>;
   findById(id: string): Promise<AiProposalRecord | null>;
-  list(status: AiProposalStatus | 'all', limit: number): Promise<AiProposalRecord[]>;
+  /**
+   * `excludeTypes` filtra no WHERE, não depois do `take`: excluir na aplicação
+   * devolvia página curta ou vazia para quem não lê conversas, escondendo
+   * propostas de tarefa que ele PODE ver.
+   */
+  list(
+    status: AiProposalStatus | 'all',
+    limit: number,
+    excludeTypes?: AiProposalType[],
+  ): Promise<AiProposalRecord[]>;
   /** Transições que NÃO executam nada (rejeitar, expirar). */
   transition(
     id: string,
@@ -115,6 +135,45 @@ export interface AiProposalRepository {
     input: CreateTaskExecution,
     approver: ApprovalContext,
   ): Promise<{ taskId: string } | 'not_pending'>;
+  /**
+   * Mesma garantia para o ENVIO (ADR-044.5): a proposta é reivindicada na
+   * MESMA transação que grava a mensagem, o despacho e o evento de outbox —
+   * duas aprovações simultâneas produzem uma mensagem, no máximo.
+   *
+   * A política de envio (janela, opt-in, quota) é reavaliada pelo serviço de
+   * domínio ANTES da transação: se mudou, isto LANÇA e a proposta permanece
+   * `pending` (ADR-044.6). O adaptador nunca escreve `Message` por conta
+   * própria — delega ao serviço de envio.
+   */
+  executeSendMessage(
+    id: string,
+    runId: string,
+    input: SendMessageExecution,
+    approver: ApprovalContext,
+  ): Promise<{ messageId: string } | 'not_pending'>;
+  /**
+   * Rascunho de resposta ainda pendente de UMA conversa. Método próprio em vez
+   * de filtrar `list('pending')`: a fila do workspace inteiro pode ser longa, e
+   * varrer os N primeiros esconderia o rascunho da conversa aberta.
+   */
+  findPendingReply(conversationId: string): Promise<AiProposalRecord | null>;
+  /**
+   * Cria o rascunho de resposta SUPERSEDINDO o pendente anterior da mesma
+   * conversa, numa transação só (ADR-044, adendo 1): um rascunho novo torna o
+   * anterior obsoleto, e dois pendentes na mesma conversa convidariam a aprovar
+   * os dois — duas mensagens reais para a mesma pessoa.
+   *
+   * `'concurrent'` = outra geração simultânea venceu a corrida (o banco recusou
+   * o segundo pendente). Quem chama devolve o rascunho vencedor, não um erro:
+   * do ponto de vista de quem pediu, existe um rascunho para revisar.
+   */
+  createReplySuperseding(
+    workspaceId: string,
+    // o tipo é fixo e não há deal: a assinatura não promete o que não usa
+    proposal: Omit<AiProposalInput, 'type' | 'dealId' | 'conversationId'> & {
+      conversationId: string;
+    },
+  ): Promise<{ id: string } | 'concurrent'>;
 }
 
 export interface AiConsentState {

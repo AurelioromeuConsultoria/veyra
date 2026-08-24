@@ -8,8 +8,11 @@ import {
   LeadScoreDto,
   ListProposalsInput,
   ListRunsInput,
+  ApproveSendMessageInput,
   NextActionDto,
+  ReplySuggestionDto,
   aiConsentSchema,
+  approveSendMessageSchema,
   listProposalsSchema,
   listRunsSchema,
 } from '@veyra/contracts';
@@ -95,9 +98,22 @@ export class IntelligenceController {
   @RequirePermissions('intelligence:approve', 'contacts:read')
   @Get('proposals')
   async listProposals(
+    @CurrentAuth() auth: AuthContext,
     @Query(new ZodPipe(listProposalsSchema)) query: ListProposalsInput,
   ): Promise<AiProposalDto[]> {
-    const rows = await this.intelligence.listProposals(query.status);
+    /**
+     * Proposta de RESPOSTA carrega texto derivado de conversa no payload. A
+     * rota exige `contacts:read`, que não é `conversations:read`: sem este
+     * filtro, quem só lê o CRM passaria a ler rascunhos de conversa pela fila
+     * de IA. Projeção de campo, não decisão de rota (SECURITY.md §4).
+     *
+     * O filtro desce até o WHERE: excluir depois do `take` devolvia página
+     * curta a quem tem direito às propostas de tarefa que ficaram de fora.
+     */
+    const podeLerConversa = await this.permissions.has(auth, 'conversations:read');
+    const rows = await this.intelligence.listProposals(query.status, {
+      includeReplyDrafts: podeLerConversa,
+    });
     return rows.map((row) => ({
       id: row.id,
       type: row.type,
@@ -127,6 +143,47 @@ export class IntelligenceController {
     @Param('id', new ParseUUIDPipe()) id: string,
   ): Promise<{ taskId: string }> {
     return this.intelligence.approveProposal(auth, id);
+  }
+
+  /**
+   * Sugestão de resposta (ADR-044). Gerar exige `conversations:read`: o
+   * rascunho nasce do corpo das mensagens — a capacidade nunca amplia o que a
+   * pessoa já podia ler. ENVIAR é outra rota, com outra permissão.
+   */
+  @RequirePermissions('intelligence:use', 'conversations:read')
+  @Get('conversations/:id/reply-suggestion')
+  async pendingReply(
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<ReplySuggestionDto | null> {
+    return this.intelligence.pendingReply(id);
+  }
+
+  @RequirePermissions('intelligence:use', 'conversations:read')
+  @Idempotent()
+  @Post('conversations/:id/reply-suggestion')
+  suggestReply(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<ReplySuggestionDto> {
+    return this.intelligence.suggestReply(auth, id);
+  }
+
+  /**
+   * Aprovar rascunho ENVIA a mensagem: exige `intelligence:approve` E
+   * `conversations:write`, cumulativamente (ADR-044.9). Rota separada da
+   * aprovação de tarefa porque cada tipo de proposta carrega a permissão do
+   * domínio do seu efeito — e RBAC aqui é declarativo, nunca decidido em
+   * runtime dentro do service.
+   */
+  @RequirePermissions('intelligence:approve', 'conversations:write')
+  @Idempotent()
+  @Post('proposals/:id/approve-reply')
+  approveReply(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body(new ZodPipe(approveSendMessageSchema)) body: ApproveSendMessageInput,
+  ): Promise<{ messageId: string }> {
+    return this.intelligence.approveSendMessage(auth, id, body.body);
   }
 
   @RequirePermissions('intelligence:approve')

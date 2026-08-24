@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ChannelsModule } from '../channels/channels.module';
 import { TasksModule } from '../tasks/tasks.module';
 import {
   AI_CONSENT_REPOSITORY,
@@ -14,9 +15,13 @@ import {
 } from './ai.repositories';
 
 /** Adaptadores Prisma das portas do módulo `intelligence` (ADR-027). */
-/** Importa TasksModule: a execução de proposta cria tarefa na MESMA transação. */
+/**
+ * Importa TasksModule: a execução de proposta cria tarefa na MESMA transação.
+ * Importa ChannelsModule: aprovar rascunho de resposta DELEGA ao serviço de
+ * envio, na mesma transação — o módulo de IA nunca escreve `Message` (ADR-044).
+ */
 @Module({
-  imports: [TasksModule],
+  imports: [TasksModule, ChannelsModule],
   providers: [
     { provide: AI_RUN_REPOSITORY, useClass: PrismaAiRunRepository },
     { provide: AI_PROPOSAL_REPOSITORY, useClass: PrismaAiProposalRepository },

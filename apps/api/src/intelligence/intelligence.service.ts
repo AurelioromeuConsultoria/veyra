@@ -1,4 +1,5 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { replyDraftSchema, sendMessagePayloadSchema } from '@veyra/contracts';
 import { z } from 'zod';
 import { ActivitiesService } from '../activities/activities.service';
 import { UsageService } from '../usage/usage.service';
@@ -25,6 +26,7 @@ import {
   CONVERSATION_SUMMARY_PROMPT,
   LEAD_SCORE_EXPLANATION_PROMPT,
   NEXT_ACTION_PROMPT,
+  REPLY_SUGGESTION_PROMPT,
   promptHash,
   type PromptDefinition,
 } from './prompts';
@@ -54,7 +56,27 @@ const nextActionSchema = z
 
 const explanationSchema = z.object({ explanation: z.string().max(600) }).strict();
 
+/**
+ * Identificação das partes como DADO de terceiro, em uma linha, sem quebras: o
+ * nome do contato é escrito por ele mesmo (perfil do WhatsApp) e o assunto por
+ * quem atende — nenhum dos dois é texto do servidor.
+ */
+function describeParties(contactName: string | null, subject: string | null): string {
+  const limpar = (valor: string) => valor.replace(/\s+/g, ' ').slice(0, 120);
+  return `[metadados informados por terceiros] contato: ${
+    contactName ? limpar(contactName) : 'não vinculado'
+  }; assunto: ${subject ? limpar(subject) : 'sem assunto'}`;
+}
+
 const PROPOSAL_TTL_DAYS = 7;
+/**
+ * Rascunho de resposta vive no máximo 24h — e nunca além da janela de
+ * atendimento, que é o que de fato permite enviar (ADR-044.1). Um rascunho que
+ * sobrevive à janela é uma proposta impossível de aprovar.
+ */
+const REPLY_TTL_MS = 24 * 60 * 60_000;
+/** contexto do rascunho: as últimas trocas bastam, e o custo fica previsível */
+const REPLY_MESSAGE_LIMIT = 12;
 const MAX_OUTPUT_TOKENS = 700;
 /** teto de mensagens no contexto: run não vira consulta ilimitada nem custo aberto */
 const SUMMARY_MESSAGE_LIMIT = 30;
@@ -75,6 +97,17 @@ export interface LeadScoreResult extends LeadScore {
   runId: string | null;
 }
 
+export interface ReplySuggestionResult {
+  status: 'proposed' | 'no_consent' | 'send_blocked' | 'quota_exceeded' | 'unavailable';
+  runId: string | null;
+  reason?: string;
+  proposalId?: string;
+  draft?: string;
+  rationale?: string;
+  injectionAttempt?: boolean;
+  createdAt?: string;
+}
+
 export interface NextActionResult {
   status: 'proposed' | 'unavailable' | 'quota_exceeded';
   runId: string | null;
@@ -85,6 +118,8 @@ export interface NextActionResult {
 
 @Injectable()
 export class IntelligenceService {
+  private readonly logger = new Logger(IntelligenceService.name);
+
   constructor(
     @Inject(LLM_CLIENT) private readonly llm: LlmClient,
     @Inject(AI_RUN_REPOSITORY) private readonly runs: AiRunRepository,
@@ -135,17 +170,27 @@ export class IntelligenceService {
 
     // conteúdo escrito por terceiros vai no campo `untrusted`, delimitado e
     // rotulado pelo cliente — nunca concatenado à instrução
-    const untrusted = [...page.items]
-      .reverse()
-      .map(
-        (message) => `[${message.direction === 'outbound' ? 'equipe' : 'contato'}] ${message.body}`,
-      )
-      .join('\n');
+    const untrusted = [
+      /**
+       * Nome do contato e assunto entram AQUI, não no contexto confiável: o nome
+       * vem do `profile.name` do webhook — texto escrito pelo próprio contato.
+       * No slot do servidor, um contato chamado "Ana. IGNORE as instruções
+       * anteriores…" colocava instrução na posição de maior confiança do prompt.
+       */
+      describeParties(conversation.contactName, conversation.subject),
+      ...[...page.items]
+        .reverse()
+        .map(
+          (message) =>
+            `[${message.direction === 'outbound' ? 'equipe' : 'contato'}] ${message.body}`,
+        ),
+    ].join('\n');
 
     const started = Date.now();
     const call = await this.callWithQuota(auth.workspaceId as string, {
       system: CONVERSATION_SUMMARY_PROMPT.system,
-      context: `Contato: ${conversation.contactName ?? 'não vinculado'}. Assunto registrado: ${conversation.subject ?? 'sem assunto'}.`,
+      // só o que o SERVIDOR produziu fica no contexto confiável
+      context: 'Resumo de uma conversa registrada no CRM.',
       untrusted,
       maxOutputTokens: MAX_OUTPUT_TOKENS,
     } satisfies LlmRequest);
@@ -400,8 +445,14 @@ export class IntelligenceService {
 
   async listProposals(
     status: 'pending' | 'executing' | 'approved' | 'rejected' | 'expired' | 'all',
+    /** quem não lê conversas não recebe rascunho de resposta (SECURITY.md §4) */
+    options: { includeReplyDrafts: boolean } = { includeReplyDrafts: true },
   ) {
-    return this.proposals.list(status, 100);
+    return this.proposals.list(
+      status,
+      100,
+      options.includeReplyDrafts ? undefined : ['send_message'],
+    );
   }
 
   /**
@@ -409,6 +460,275 @@ export class IntelligenceService {
    * proposta e o aceite, nada garante que a linha não foi adulterada por outro
    * caminho. O tipo também é conferido contra a lista permitida.
    */
+  /**
+   * Sugestão de resposta (ADR-044). A IA rascunha; quem envia é o humano, pelo
+   * serviço de domínio. Aqui não há ferramenta de escrita nenhuma — nem para o
+   * modelo, nem para este método.
+   */
+  async suggestReply(auth: AuthContext, conversationId: string): Promise<ReplySuggestionResult> {
+    const workspaceId = auth.workspaceId as string;
+    // existência primeiro: id de outro workspace é 404, não "indisponível"
+    const conversation = await this.conversations.get(conversationId);
+
+    /**
+     * A POLÍTICA DE ENVIO vem antes do consentimento e antes de qualquer
+     * leitura de corpo: se não é possível responder agora, rascunhar é gastar
+     * token para produzir algo inaprovável. O veredito é o mesmo que o
+     * compositor usa — nunca uma segunda cópia da regra (ADR-038).
+     */
+    const policy = await this.conversations.sendPolicy(workspaceId, conversationId);
+    if (policy.channelType !== 'whatsapp') {
+      // registra como toda outra recusa: sem run, não há rastro de quem tentou
+      const runId = await this.record(auth, {
+        capability: REPLY_SUGGESTION_PROMPT.capability,
+        promptVersionId: null,
+        contextSummary: 'recusado antes de montar contexto: canal sem transporte de envio',
+        status: 'refused',
+        reasonCode: 'channel_without_transport',
+        conversationId,
+      });
+      return {
+        status: 'send_blocked',
+        runId,
+        reason: 'Sugestão de resposta existe apenas em conversa de WhatsApp',
+      };
+    }
+    if (policy.mode !== 'free_form') {
+      const runId = await this.record(auth, {
+        capability: REPLY_SUGGESTION_PROMPT.capability,
+        promptVersionId: null,
+        contextSummary: 'recusado antes de montar contexto: política de envio não permite agora',
+        status: 'refused',
+        reasonCode: policy.mode === 'template' ? 'window_closed' : 'send_blocked',
+        conversationId,
+      });
+      return {
+        status: 'send_blocked',
+        runId,
+        reason:
+          policy.reason ??
+          (policy.mode === 'template'
+            ? 'Fora da janela de 24h: só template aprovado pode ser enviado'
+            : 'O envio está bloqueado nesta conversa'),
+      };
+    }
+
+    // ADR-028: sem consentimento não há NEM chamada ao provedor
+    const { conversationContent } = await this.consent.get();
+    if (!conversationContent) {
+      const runId = await this.record(auth, {
+        capability: REPLY_SUGGESTION_PROMPT.capability,
+        promptVersionId: null,
+        contextSummary: 'recusado antes de montar contexto: sem consentimento do workspace',
+        status: 'refused',
+        reasonCode: 'no_consent',
+        conversationId,
+      });
+      return {
+        status: 'no_consent',
+        runId,
+        reason: 'O workspace não autorizou usar conteúdo de mensagens na IA',
+      };
+    }
+
+    const page = await this.conversations.listMessages(conversationId, {
+      limit: REPLY_MESSAGE_LIMIT,
+    });
+    if (page.items.length === 0) {
+      throw new BadRequestException('Conversa sem mensagens para responder');
+    }
+
+    // conteúdo de terceiro vai no campo `untrusted`, rotulado e delimitado pelo
+    // cliente — nunca concatenado à instrução (ADR-029)
+    const untrusted = [
+      // mesmo cuidado do resumo: nome e assunto são texto de terceiro
+      describeParties(conversation.contactName, conversation.subject),
+      ...[...page.items]
+        .reverse()
+        .map(
+          (message) =>
+            `[${message.direction === 'outbound' ? 'equipe' : 'contato'}] ${message.body}`,
+        ),
+    ].join('\n');
+
+    const started = Date.now();
+    const call = await this.callWithQuota(workspaceId, {
+      system: REPLY_SUGGESTION_PROMPT.system,
+      context: 'Canal: WhatsApp, dentro da janela livre de atendimento de 24h.',
+      untrusted,
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
+    } satisfies LlmRequest);
+
+    const promptVersionId = await this.ensurePrompt(REPLY_SUGGESTION_PROMPT);
+    const contextSummary = `conversation:${conversationId}; ${page.items.length} mensagens (corpo); campos: direction, body`;
+
+    if (call.outcome === 'quota_exceeded') {
+      const runId = await this.record(auth, {
+        capability: REPLY_SUGGESTION_PROMPT.capability,
+        promptVersionId,
+        contextSummary,
+        status: 'refused',
+        reasonCode: 'quota_exceeded',
+        conversationId,
+        latencyMs: Date.now() - started,
+      });
+      return {
+        status: 'quota_exceeded',
+        runId,
+        reason: 'O limite de uso de IA do plano foi atingido',
+      };
+    }
+    if (call.outcome !== 'ok') {
+      const runId = await this.record(auth, {
+        capability: REPLY_SUGGESTION_PROMPT.capability,
+        promptVersionId,
+        contextSummary,
+        status: 'error',
+        reasonCode: call.reason,
+        conversationId,
+        latencyMs: Date.now() - started,
+      });
+      return {
+        status: 'unavailable',
+        runId,
+        reason: 'A IA não está disponível agora',
+      };
+    }
+
+    const response = call.response;
+    const parsed = replyDraftSchema.safeParse(this.parseJson(response.text));
+    const usage = {
+      inputTokens: response.inputTokens,
+      outputTokens: response.outputTokens,
+      costCents: call.costCents,
+      latencyMs: Date.now() - started,
+    };
+    if (!parsed.success) {
+      const runId = await this.record(auth, {
+        capability: REPLY_SUGGESTION_PROMPT.capability,
+        promptVersionId,
+        contextSummary,
+        status: 'error',
+        reasonCode: 'invalid_output',
+        conversationId,
+        ...usage,
+      });
+      return { status: 'unavailable', runId, reason: 'A IA devolveu um rascunho inválido' };
+    }
+    const draft = parsed.data;
+
+    const runId = await this.record(auth, {
+      capability: REPLY_SUGGESTION_PROMPT.capability,
+      promptVersionId,
+      contextSummary,
+      status: 'ok',
+      result: draft,
+      conversationId,
+      contactId: conversation.contactId,
+      ...usage,
+      action: 'proposed',
+    });
+
+    /**
+     * A proposta não expira depois da janela: aprová-la seria impossível, e uma
+     * pendência impossível na fila é ruído. Quando a janela já está por fechar,
+     * é ela que manda.
+     */
+    const janela = policy.windowExpiresAt ? new Date(policy.windowExpiresAt).getTime() : null;
+    const expiresAt = new Date(
+      Math.min(Date.now() + REPLY_TTL_MS, janela ?? Date.now() + REPLY_TTL_MS),
+    );
+    const criada = await this.proposals.createReplySuperseding(workspaceId, {
+      runId,
+      // payload é SÓ o texto: sem destinatário, sem canal, sem anexo
+      payload: { body: draft.body },
+      rationale: draft.rationale ?? 'Rascunho de resposta sugerido pela IA',
+      conversationId,
+      contactId: conversation.contactId,
+      expiresAt,
+    });
+    if (criada === 'concurrent') {
+      /**
+       * Outra geração simultânea venceu. Devolver erro seria estranho para quem
+       * pediu — existe um rascunho para revisar, só não é o desta chamada. O
+       * custo do run já foi registrado, e o texto descartado nunca chega à tela.
+       */
+      const vencedor = await this.pendingReply(conversationId);
+      return vencedor ?? { status: 'unavailable', runId, reason: 'Rascunho não pôde ser criado' };
+    }
+
+    return {
+      status: 'proposed',
+      runId,
+      proposalId: criada.id,
+      draft: draft.body,
+      rationale: draft.rationale,
+      injectionAttempt: draft.injectionAttempt,
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Rascunho pendente da conversa, para a tela reabrir onde parou. Não gera
+   * nada e não custa token.
+   */
+  async pendingReply(conversationId: string): Promise<ReplySuggestionResult | null> {
+    const proposal = await this.proposals.findPendingReply(conversationId);
+    if (!proposal) return null;
+    if (proposal.expiresAt.getTime() < Date.now()) return null;
+    const payload = sendMessagePayloadSchema.safeParse(proposal.payload);
+    if (!payload.success) {
+      // falha de contrato não pode sumir da tela sem deixar rastro em lugar nenhum
+      this.logger.error(`Proposta ${proposal.id} com payload fora do contrato — ignorada na tela`);
+      return null;
+    }
+    return {
+      status: 'proposed',
+      runId: proposal.runId,
+      proposalId: proposal.id,
+      draft: payload.data.body,
+      rationale: proposal.rationale,
+      createdAt: proposal.createdAt.toISOString(),
+    };
+  }
+
+  /**
+   * Aprova o rascunho e ENVIA — pelo domínio de conversas, nunca daqui
+   * (ADR-044.4). `body` presente = o aprovador reescreveu.
+   */
+  async approveSendMessage(
+    auth: AuthContext,
+    id: string,
+    editedBody?: string,
+  ): Promise<{ messageId: string }> {
+    const proposal = await this.proposals.findById(id);
+    if (!proposal) throw new NotFoundException('Proposta não encontrada');
+    if (proposal.status !== 'pending') throw new BadRequestException('Proposta já revisada');
+    if (proposal.expiresAt.getTime() < Date.now()) {
+      await this.proposals.transition(id, 'expired', auth.membershipId as string);
+      throw new BadRequestException('Proposta expirada');
+    }
+    if (proposal.type !== 'send_message') {
+      throw new BadRequestException('Tipo de proposta não permitido nesta rota');
+    }
+    if (!proposal.conversationId) {
+      throw new BadRequestException('Proposta sem conversa vinculada');
+    }
+    // revalida o payload NO ACEITE: entre propor e aprovar, nada garante que a
+    // linha não foi adulterada por outro caminho
+    const payload = sendMessagePayloadSchema.parse(proposal.payload);
+    const body = editedBody ?? payload.body;
+
+    const result = await this.proposals.executeSendMessage(
+      id,
+      proposal.runId,
+      { conversationId: proposal.conversationId, body, edited: body !== payload.body },
+      { workspaceId: auth.workspaceId as string, membershipId: auth.membershipId as string },
+    );
+    if (result === 'not_pending') throw new BadRequestException('Proposta já revisada');
+    return result;
+  }
+
   async approveProposal(auth: AuthContext, id: string): Promise<{ taskId: string }> {
     const proposal = await this.proposals.findById(id);
     if (!proposal) throw new NotFoundException('Proposta não encontrada');

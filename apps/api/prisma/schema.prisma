@@ -1073,6 +1073,8 @@ enum AiProposalStatus {
 /// contra esta lista e contra o schema Zod estrito do payload (ADR-029).
 enum AiProposalType {
   create_task
+  /// rascunho de resposta em conversa; aprovar delega ao envio (ADR-044)
+  send_message
 }
 
 /// Catálogo GLOBAL de prompts versionados (como Permission): mudar prompt é
@@ -1149,6 +1151,13 @@ model AiProposal {
   reviewedByMembershipId String?          @db.Uuid
   reviewedAt             DateTime?
   expiresAt              DateTime
+  /// RASCUNHO PENDENTE = TRUE; qualquer outro estado = NULL. Com o unique
+  /// composto abaixo, o banco garante no máximo um rascunho de resposta
+  /// pendente por conversa (ADR-044, adendo 1) — mesmo padrão de
+  /// `ContactChannelConsent.activeMark` e `Plan.isDefault`, porque Prisma não
+  /// expressa índice parcial. Só `send_message` usa a marca: proposta de tarefa
+  /// nasce com NULL e não é constrangida.
+  pendingReplyMark       Boolean?
   createdAt              DateTime         @default(now())
 
   workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -1159,6 +1168,8 @@ model AiProposal {
   reviewedBy   Membership?   @relation("ProposalReviewer", fields: [workspaceId, reviewedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([workspaceId, id])
+  /// no máximo UM rascunho de resposta pendente por conversa (ADR-044, adendo 1)
+  @@unique([workspaceId, conversationId, pendingReplyMark])
   @@index([workspaceId, status, createdAt(sort: Desc)])
 }
 

@@ -1,10 +1,12 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { TasksService } from '../tasks/tasks.service';
+import { WhatsappSendService } from '../channels/whatsapp-send.service';
 import type {
   AiConsentRepository,
+  AiProposalType,
   AiConsentState,
   AiProposalInput,
   AiProposalRecord,
@@ -17,6 +19,7 @@ import type {
   ConsentActor,
   CreateTaskExecution,
   PromptVersionRepository,
+  SendMessageExecution,
 } from '../intelligence/ports/repositories';
 import { PromptHashMismatchError } from '../intelligence/ports/repositories';
 
@@ -125,10 +128,19 @@ export class PrismaAiRunRepository implements AiRunRepository {
 
 @Injectable()
 export class PrismaAiProposalRepository implements AiProposalRepository {
+  private readonly logger = new Logger(PrismaAiProposalRepository.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly tasks: TasksService,
     private readonly audit: AuditService,
+    /**
+     * Serviço de DOMÍNIO do envio. Este adaptador não escreve `Message` nem
+     * fala com a Meta: ele COMPÕE as duas fases do envio (ADR-044.4). Toda a
+     * política — janela, opt-in, quota, append-only, dispatch, outbox —
+     * continua morando num lugar só.
+     */
+    private readonly send: WhatsappSendService,
   ) {}
 
   async create(workspaceId: string, proposal: AiProposalInput): Promise<string> {
@@ -155,9 +167,16 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
     return row;
   }
 
-  async list(status: AiProposalStatus | 'all', limit: number): Promise<AiProposalRecord[]> {
+  async list(
+    status: AiProposalStatus | 'all',
+    limit: number,
+    excludeTypes?: AiProposalType[],
+  ): Promise<AiProposalRecord[]> {
     return (await this.prisma.db.aiProposal.findMany({
-      where: status === 'all' ? {} : { status },
+      where: {
+        ...(status === 'all' ? {} : { status }),
+        ...(excludeTypes && excludeTypes.length > 0 ? { type: { notIn: excludeTypes } } : {}),
+      },
       orderBy: { createdAt: 'desc' },
       take: limit,
     } as never)) as unknown as AiProposalRecord[];
@@ -171,7 +190,13 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
   ): Promise<boolean> {
     const { count } = await this.prisma.db.aiProposal.updateMany({
       where: { id, status: 'pending' },
-      data: { status: to, reviewedByMembershipId: reviewerMembershipId, reviewedAt: new Date() },
+      data: {
+        status: to,
+        reviewedByMembershipId: reviewerMembershipId,
+        reviewedAt: new Date(),
+        // deixou de ser rascunho pendente: libera o unique da conversa
+        pendingReplyMark: null,
+      },
     });
     return count > 0;
   }
@@ -198,6 +223,7 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
           status: 'executing',
           reviewedByMembershipId: approver.membershipId,
           reviewedAt: new Date(),
+          pendingReplyMark: null,
         },
       });
       if (claimed.count === 0) return 'not_pending';
@@ -223,12 +249,166 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
         after: { title: input.title, status: 'open' },
       });
 
-      await tx.aiProposal.updateMany({
+      const concluida = await tx.aiProposal.updateMany({
         where: { id, status: 'executing' },
         data: { status: 'approved' },
       });
+      // impossível dentro da transação que fez o claim — e é por isso que vale
+      // gritar: `executing` órfão é o único estado que ninguém varre
+      if (concluida.count === 0) throw new Error('proposta perdeu o claim durante a execução');
       return { taskId };
     });
+  }
+
+  /**
+   * Aprovação de rascunho de resposta (ADR-044).
+   *
+   * A ordem é a mesma do caminho humano, e não por acaso: é literalmente o
+   * mesmo código. `prepareOutbound` avalia política e reserva quota FORA da
+   * transação — se a janela fechou, o opt-in caiu ou a quota estourou entre
+   * gerar e aprovar, ele LANÇA aqui, antes do claim, e a proposta permanece
+   * `pending`.
+   *
+   * Dentro da transação, o claim `pending → executing` e a escrita da mensagem
+   * são inseparáveis: duas aprovações simultâneas produzem uma mensagem e um
+   * dispatch, no máximo. Falha em qualquer ponto desfaz as duas coisas.
+   */
+  async executeSendMessage(
+    id: string,
+    runId: string,
+    input: SendMessageExecution,
+    approver: ApprovalContext,
+  ): Promise<{ messageId: string } | 'not_pending'> {
+    const prepared = await this.send.prepareOutbound(approver.workspaceId, {
+      conversationId: input.conversationId,
+    });
+
+    // a mensagem é da IA quando o texto aprovado é o que ela escreveu; se o
+    // aprovador reescreveu, a autoria é dele (ADR-044.8)
+    const authorType = input.edited ? 'user' : 'ai';
+    try {
+      const db = this.prisma.db as unknown as TxRunner;
+      const outcome = await db.$transaction(async (tx) => {
+        const claimed = await tx.aiProposal.updateMany({
+          where: { id, status: 'pending' },
+          data: {
+            status: 'executing',
+            reviewedByMembershipId: approver.membershipId,
+            reviewedAt: new Date(),
+            // sai da exclusividade de "pendente"; se a transação abortar, o
+            // rollback devolve a marca junto com o estado
+            pendingReplyMark: null,
+          },
+        });
+        if (claimed.count === 0) return 'not_pending' as const;
+
+        const { messageId } = await this.send.writeOutboundWithin(
+          tx,
+          approver.workspaceId,
+          prepared,
+          {
+            body: input.body,
+            authorType,
+            authorMembershipId: approver.membershipId,
+          },
+        );
+
+        await this.audit.record(tx, approver.workspaceId, 'message.created_from_ai_proposal', {
+          entityType: 'message',
+          entityId: messageId,
+          // actorId = AiRun; o aprovador vai no `actorMembershipId` (ADR-044.7)
+          actor: { type: 'ai', id: runId, membershipId: approver.membershipId },
+          // corpo JAMAIS: `authorType` já diz se o texto é do modelo ou da pessoa
+          after: { direction: 'outbound', authorType },
+        });
+
+        const concluida = await tx.aiProposal.updateMany({
+          where: { id, status: 'executing' },
+          data: { status: 'approved' },
+        });
+        if (concluida.count === 0) throw new Error('proposta perdeu o claim durante a execução');
+        return { messageId };
+      });
+      if (outcome === 'not_pending') {
+        /**
+         * Reserva sem mensagem: outra aprovação venceu o claim. A falha em
+         * liberar NÃO pode derrubar a resposta — o perdedor da corrida precisa
+         * receber "já revisada", não 500. Reserva não liberada cai no TTL, que
+         * é o comportamento já assumido em todo o caminho de envio.
+         */
+        await this.send.releaseReservation(prepared).catch((erro: unknown) => {
+          this.logger.warn(`Reserva ${prepared.reservationId} não liberada: ${String(erro)}`);
+        });
+      }
+      return outcome;
+    } catch (error) {
+      await this.send.releaseReservation(prepared);
+      throw error;
+    }
+  }
+
+  async findPendingReply(conversationId: string): Promise<AiProposalRecord | null> {
+    return (await this.prisma.db.aiProposal.findFirst({
+      where: { conversationId, type: 'send_message', status: 'pending' },
+      orderBy: { createdAt: 'desc' },
+    } as never)) as unknown as AiProposalRecord | null;
+  }
+
+  /**
+   * Supersede o anterior e cria o novo na MESMA transação (ADR-044, adendo 1).
+   * Fora de transação, duas gerações simultâneas superseiam uma à outra e podem
+   * deixar zero pendentes — ou duas, se a supersessão falhar. O unique parcial
+   * (`pendingReplyMark`) é a garantia final: o banco recusa o segundo pendente.
+   */
+  async createReplySuperseding(
+    workspaceId: string,
+    proposal: Omit<AiProposalInput, 'type' | 'dealId' | 'conversationId'> & {
+      conversationId: string;
+    },
+  ): Promise<{ id: string } | 'concurrent'> {
+    const db = this.prisma.db as unknown as TxRunner;
+    try {
+      return await db.$transaction(async (tx) => {
+        await tx.aiProposal.updateMany({
+          where: {
+            conversationId: proposal.conversationId,
+            type: 'send_message',
+            status: 'pending',
+          },
+          // `expired`, não `rejected`: ninguém recusou — ficou obsoleto. Sem
+          // revisor, porque não houve revisão humana. A marca sai com o estado.
+          data: { status: 'expired', pendingReplyMark: null },
+        });
+        const created = await tx.aiProposal.create({
+          data: {
+            workspaceId,
+            runId: proposal.runId,
+            type: 'send_message',
+            payload: proposal.payload as object,
+            rationale: proposal.rationale,
+            contactId: proposal.contactId ?? null,
+            conversationId: proposal.conversationId,
+            expiresAt: proposal.expiresAt,
+            pendingReplyMark: true,
+          },
+        } as never);
+        return { id: (created as unknown as { id: string }).id };
+      });
+    } catch (error) {
+      /**
+       * Só o unique do RASCUNHO PENDENTE vira `'concurrent'`. Engolir qualquer
+       * P2002 faria um unique futuro em `AiProposal` virar "outra geração
+       * venceu" em silêncio — o tipo de erro que some por anos.
+       */
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002' &&
+        JSON.stringify(error.meta?.target ?? '').includes('pendingReplyMark')
+      ) {
+        return 'concurrent';
+      }
+      throw error;
+    }
   }
 }
 

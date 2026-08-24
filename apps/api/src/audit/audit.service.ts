@@ -45,8 +45,12 @@ export const AUDIT_FIELDS: Record<string, readonly string[]> = {
    * `externalId` é o wamid — identificador DO PROVEDOR, não conteúdo nem
    * segredo — e é o único ponto de retomada quando perdemos a posse depois de
    * um envio bem-sucedido. Corpo da mensagem JAMAIS entra aqui.
+   *
+   * `authorType` responde "quanto do que saiu daqui foi escrito por modelo":
+   * `ai` = o rascunho da IA foi aprovado como estava; `user` = o aprovador
+   * reescreveu antes de enviar (ADR-044.8).
    */
-  message: ['externalId', 'direction'],
+  message: ['externalId', 'direction', 'authorType'],
   aiProposal: ['type', 'status'], // payload NUNCA — pode conter texto de terceiro
 };
 

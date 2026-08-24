@@ -46,12 +46,14 @@ Nota de engenharia (herdada do Norteie): tipar o ToolSet explicitamente — a in
 | --- | --------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------- | ------------------------------- |
 | 1   | **Resumo de conversa**      | conversationId                       | Resumo estruturado (participantes, assunto, pendências, sentimento)                             | Não                             |
 | 2   | **Extração de intenção**    | mensagem/conversa                    | Intenção classificada (catálogo: comprar, cancelar, dúvida, reclamação…) + confiança            | Não                             |
-| 3   | **Sugestão de resposta**    | conversationId + contexto do contato | Rascunho de resposta (tom do workspace)                                                         | Sim → `AiProposal` (enviar)     |
+| 3   | **Sugestão de resposta** ✅ | conversationId (janela livre de 24h) | Rascunho de resposta editável, validado por Zod estrito                                         | Sim → `AiProposal.send_message` |
 | 4   | **Próxima ação**            | contactId ou dealId                  | Ação recomendada + justificativa (ligar, agendar, proposta…)                                    | Sim → `AiProposal` (criar task) |
 | 5   | **Lead scoring explicável** | contactId/dealId                     | Score 0–100 + **fatores explicáveis** (recência, engajamento, fit, estágio) — nunca score opaco | Não                             |
 | 6   | **Oportunidade parada**     | job periódico por workspace          | Deals com `stalledSince` acima do limiar + motivo provável + próxima ação                       | Sim → `AiProposal`              |
 | 7   | **Limpeza de dados**        | job/pedido                           | Duplicatas prováveis, campos inconsistentes, sugestão de merge                                  | Sim → `AiProposal` (merge)      |
 | 8   | **Previsão de pipeline**    | pipelineId + período                 | Forecast com intervalos + premissas explicitadas                                                | Não                             |
+
+**Sugestão de resposta (Entrega 9.3, ADR-044)**, por ser a primeira com efeito externo irreversível: só existe dentro da janela livre de WhatsApp; exige `AiConsent` vigente (sem ele, nenhuma chamada sai); o modelo não tem nenhuma ferramenta de escrita, e a proposta nasce `pending`. Aprovar exige `intelligence:approve` **e** `conversations:write`, delega ao serviço de envio do domínio — janela, opt-in, quota, `Message` append-only, `MessageDispatch` e outbox são os mesmos do envio humano — e a proposta é reivindicada na MESMA transação da escrita. Se a política mudou entre gerar e aprovar, o aceite falha e a proposta continua `pending`. A autoria da mensagem é `ai` quando o texto aprovado é o da IA e `user` quando o aprovador reescreveu.
 
 Capacidades 5–8 preferem sinais determinísticos calculáveis sem LLM (recência, valores, movimentação) com o LLM por cima para explicação/síntese — barato, testável, e o fallback já existe.
 
@@ -81,3 +83,4 @@ Capacidades 5–8 preferem sinais determinísticos calculáveis sem LLM (recênc
 - Ver dados fora do workspace do run ou além das permissões da membership.
 - Operar sem registro de `AiRun`.
 - Aparecer no produto como chat genérico desacoplado do fluxo de trabalho.
+- Escrever `Message` ou falar com transporte externo: mesmo aprovada, a ação passa pelo serviço de domínio (ADR-044).

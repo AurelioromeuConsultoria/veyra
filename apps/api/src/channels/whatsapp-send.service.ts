@@ -31,6 +31,34 @@ export interface OutboundRequest {
 }
 
 /**
+ * MARCA DE FASE: símbolo local, não exportado. Como o campo é obrigatório e o
+ * símbolo é inalcançável de fora, só `prepareOutbound` produz um
+ * `PreparedOutbound` — nenhum chamador futuro monta um à mão e escreve+enfileira
+ * um envio sem passar por janela, opt-in e quota. Fantasma: não existe em runtime.
+ */
+declare const marcaDePreparo: unique symbol;
+
+/**
+ * Resultado da fase de PREPARO: política aprovada e quota reservada. A reserva
+ * já existe aqui — quem prepara é responsável por liberá-la se a escrita não
+ * acontecer (`releaseReservation`).
+ */
+export interface PreparedOutbound {
+  readonly [marcaDePreparo]: never;
+  conversationId: string;
+  channelId: string;
+  reservationId: string;
+  template?: { name: string; language: string; params: string[] };
+}
+
+/** Quem escreve: o caminho humano e o de IA divergem só aqui (ADR-044.8). */
+export interface OutboundAuthor {
+  body: string;
+  authorType: 'user' | 'system' | 'ai';
+  authorMembershipId: string | null;
+}
+
+/**
  * Envio pelo canal externo (ADR-039). A ordem importa e é esta:
  *
  *   valida política → RESERVA quota → cria Message → cria Dispatch(reserved)
@@ -61,6 +89,37 @@ export class WhatsappSendService {
     workspaceId: string,
     input: OutboundRequest,
   ): Promise<{ messageId: string }> {
+    const prepared = await this.prepareOutbound(workspaceId, input);
+    try {
+      const db = this.prisma.db as unknown as TxRunner;
+      return await db.$transaction((tx) =>
+        this.writeOutboundWithin(tx, workspaceId, prepared, {
+          body: input.body,
+          authorType: input.actorMembershipId ? 'user' : 'system',
+          authorMembershipId: input.actorMembershipId,
+        }),
+      );
+    } catch (error) {
+      // a mensagem não foi criada: a reserva não pode ficar pendurada
+      await this.releaseReservation(prepared);
+      throw error;
+    }
+  }
+
+  /**
+   * FASE 1 — política e quota, sempre FORA de transação. A reserva de quota é
+   * um efeito com TTL próprio (ADR-033) e a avaliação de política lê estado que
+   * não pertence à transação de escrita.
+   *
+   * Existe separada de `enqueueOutbound` para que a aprovação de uma proposta
+   * de IA use a MESMA avaliação, em vez de uma segunda cópia que envelheceria
+   * em silêncio (ADR-044.4). Ela lança ANTES de qualquer escrita — é o que
+   * mantém a proposta `pending` quando a janela fechou (ADR-044.6).
+   */
+  async prepareOutbound(
+    workspaceId: string,
+    input: Pick<OutboundRequest, 'conversationId' | 'template'>,
+  ): Promise<PreparedOutbound> {
     const conversation = await this.loadConversation(input.conversationId);
     const decision = await this.evaluate(workspaceId, conversation, input.template);
     if (!decision.allowed) throw new BadRequestException(this.explain(decision.reason));
@@ -71,51 +130,70 @@ export class WhatsappSendService {
       // 402 estruturado, como o resto do sistema (ADR-033) — não um 400 genérico
       throw await this.usage.quotaExceeded(workspaceId, 'messages_sent');
     }
+    // o ÚNICO cast para a marca de fase, aqui, depois de política e quota
+    return {
+      conversationId: conversation.id,
+      channelId: conversation.channelId,
+      reservationId: reservation.reservationId,
+      template: input.template,
+    } as PreparedOutbound;
+  }
 
-    try {
-      const db = this.prisma.db as unknown as TxRunner;
-      return await db.$transaction(async (tx) => {
-        const message = await tx.message.create({
-          data: {
-            conversationId: conversation.id,
-            channelId: conversation.channelId,
-            direction: 'outbound',
-            authorType: input.actorMembershipId ? 'user' : 'system',
-            authorMembershipId: input.actorMembershipId,
-            body: input.body,
-          },
-        } as never);
-        const messageId = (message as unknown as { id: string }).id;
+  /**
+   * FASE 2 — escrita, DENTRO da transação de quem chama. Mensagem append-only,
+   * despacho `reserved` e evento de outbox nascem juntos ou não nascem: o
+   * worker só encontra o que a transação commitou.
+   *
+   * A aprovação de proposta de IA passa por aqui com a MESMA transação em que
+   * faz o CAS da proposta — é o que garante no máximo uma mensagem sob
+   * aprovação concorrente (ADR-044.5).
+   */
+  async writeOutboundWithin(
+    tx: Db,
+    workspaceId: string,
+    prepared: PreparedOutbound,
+    author: OutboundAuthor,
+  ): Promise<{ messageId: string }> {
+    const message = await tx.message.create({
+      data: {
+        conversationId: prepared.conversationId,
+        channelId: prepared.channelId,
+        direction: 'outbound',
+        authorType: author.authorType,
+        authorMembershipId: author.authorMembershipId,
+        body: author.body,
+      },
+    } as never);
+    const messageId = (message as unknown as { id: string }).id;
 
-        await tx.messageDispatch.create({
-          data: {
-            messageId,
-            state: 'reserved',
-            reservationId: reservation.reservationId,
-            // guardado para o worker REVALIDAR o mesmo envio que foi pedido
-            templateName: input.template?.name ?? null,
-            templateLanguage: input.template?.language ?? null,
-            templateParams: input.template ? (input.template.params as object) : undefined,
-          },
-        } as never);
-        await tx.conversation.updateMany({
-          where: { id: conversation.id },
-          data: { lastMessageAt: new Date() },
-        });
-        await this.outbox.enqueue(
-          tx,
-          workspaceId,
-          'whatsapp.send_pending',
-          { messageId },
-          `whatsapp.send_pending:${messageId}`,
-        );
-        return { messageId };
-      });
-    } catch (error) {
-      // a mensagem não foi criada: a reserva não pode ficar pendurada
-      await this.usage.release(reservation.reservationId);
-      throw error;
-    }
+    await tx.messageDispatch.create({
+      data: {
+        messageId,
+        state: 'reserved',
+        reservationId: prepared.reservationId,
+        // guardado para o worker REVALIDAR o mesmo envio que foi pedido
+        templateName: prepared.template?.name ?? null,
+        templateLanguage: prepared.template?.language ?? null,
+        templateParams: prepared.template ? (prepared.template.params as object) : undefined,
+      },
+    } as never);
+    await tx.conversation.updateMany({
+      where: { id: prepared.conversationId },
+      data: { lastMessageAt: new Date() },
+    });
+    await this.outbox.enqueue(
+      tx,
+      workspaceId,
+      'whatsapp.send_pending',
+      { messageId },
+      `whatsapp.send_pending:${messageId}`,
+    );
+    return { messageId };
+  }
+
+  /** Desfaz o preparo quando a escrita não aconteceu. */
+  async releaseReservation(prepared: PreparedOutbound): Promise<void> {
+    await this.usage.release(prepared.reservationId);
   }
 
   /**

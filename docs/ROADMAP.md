@@ -65,7 +65,7 @@ Primeiro canal externo REAL, com as restrições da plataforma tratadas como req
 - **9.2 — Privacidade operacional ✅**
   - **Retenção de `AiRun.result` ✅** (ADR-042): o conteúdo derivado de conversa expira por prazo próprio (`AI_RESULT_RETENTION_DAYS`, 90 dias) no job diário; a linha do run permanece, com custo e trilha.
   - **Scanner de antivírus ✅** (ADR-043): ClamAV atrás da porta `FILE_SCANNER`, varredura com lease/fencing, quarentena TERMINAL com a linha preservada como evidência e os bytes removidos após a transação, com confirmação do driver. Sem `CLAMAV_HOST` nada é liberado: o arquivo fica `pending`, que não sai para fora.
-- **9.3 — Sugestão de resposta**: a capacidade de IA entra AQUI, junto do canal, porque agora existe para onde enviar. Ação externa continua sendo `AiProposal` aprovada por humano.
+- **9.3 — Sugestão de resposta** ✅: a capacidade de IA entra AQUI, junto do canal, porque agora existe para onde enviar. Ação externa continua sendo `AiProposal` aprovada por humano. Entregue: rascunho estruturado sem ferramenta de escrita, proposta `send_message` pendente, aprovação delegando ao serviço de envio na MESMA transação do CAS da proposta, política reavaliada no aceite (proposta sobrevive a `pending`), autoria `ai`/`user` conforme edição, RBAC cumulativo e painel de revisão no inbox (ADR-044).
 
 **Pronto quando:** conversa real de WhatsApp entra e sai do Veyra com opt-in verificado; arquivo sem scan não sai para canal externo; `AiRun.result` expira por idade.
 
