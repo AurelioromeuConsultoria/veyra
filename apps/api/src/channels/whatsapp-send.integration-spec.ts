@@ -13,6 +13,7 @@ import {
   createUserFixture,
   createWorkspaceFixture,
   seedPermissionCatalog,
+  makeRetriableNow,
   setPlanLimit,
   type WorkspaceFixture,
 } from '../../test/integration/fixtures';
@@ -240,10 +241,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     await expectEnvios(criada.body.id, 1);
 
     // devolve o evento a pending, como um lease expirado faria
-    await prisma.raw.outboxEvent.updateMany({
-      where: { eventType: 'whatsapp.send_pending' },
-      data: { status: 'pending', nextRetryAt: new Date(), claimToken: null, leaseExpiresAt: null },
-    });
+    await makeRetriableNow(prisma, 'whatsapp.send_pending');
     await drain();
 
     // o dispatch não está mais `reserved`: nada é reenviado
@@ -434,18 +432,12 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     // dispatch: só o relógio do backoff é adiantado, como o tempo faria
     transport.nextSend = { ok: true, externalId: 'wamid.NA_SEGUNDA' };
     /**
-     * Backoff JÁ VENCIDO, não "agora": o claim compara `nextRetryAt <= now()`
-     * com o relógio do POSTGRES, e `new Date()` vem do Node. Um desvio de
-     * milissegundos entre os dois deixava a linha inelegível e a drenagem
-     * seguinte não reivindicava o evento — falha intermitente de 1 em 6, com o
-     * dispatch preso em `failed_before_send`. O diagnóstico mostrou
-     * `nextRetryAt` 2 ms à frente de `agora`; recuar segundos tira o relógio da
-     * equação sem enfraquecer o que o teste prova.
+     * Agenda pelo relógio do BANCO. A versão anterior recuava 5 s no relógio do
+     * Node para escapar do desvio entre os dois — tratava o sintoma. A causa
+     * (misturar as duas fontes de tempo) foi corrigida em produção, e aqui o
+     * teste passa a exercitar o caminho real, sem margem artificial.
      */
-    await prisma.raw.outboxEvent.updateMany({
-      where: { eventType: 'whatsapp.send_pending' },
-      data: { nextRetryAt: new Date(Date.now() - 5_000) },
-    });
+    await makeRetriableNow(prisma, 'whatsapp.send_pending');
     await drain();
 
     dispatch = await prisma.raw.messageDispatch.findFirst({ where: { messageId: criada.body.id } });
@@ -459,6 +451,14 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
       const ev = await prisma.raw.outboxEvent.findFirst({
         where: { eventType: 'whatsapp.send_pending' },
       });
+      // o que o BANCO enxerga: elegibilidade é decidida lá, não aqui
+      const [visaoDoBanco] = await prisma.raw.$queryRawUnsafe<Record<string, unknown>[]>(
+        `SELECT "status", "attempts",
+                "nextRetryAt" <= now() AS "elegivel",
+                EXTRACT(EPOCH FROM (now() - "nextRetryAt"))::float8 AS "vencidoHaSegundos",
+                (SELECT count(*)::int FROM "OutboxEvent" WHERE "status" = 'pending') AS "pendentes"
+           FROM "OutboxEvent" WHERE "eventType" = 'whatsapp.send_pending'`,
+      );
       throw new Error(
         `retentativa não concluiu: dispatch=${JSON.stringify({
           state: dispatch?.state,
@@ -469,7 +469,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
           attempts: ev?.attempts,
           nextRetryAt: ev?.nextRetryAt?.toISOString(),
           agora: new Date().toISOString(),
-        })} envios=${JSON.stringify(transport.sends)}`,
+        })} banco=${JSON.stringify(visaoDoBanco)} envios=${JSON.stringify(transport.sends)}`,
       );
     }
     expect(dispatch).toMatchObject({ state: 'sent', externalId: 'wamid.NA_SEGUNDA' });
@@ -1433,6 +1433,68 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/anexo/i);
     expect(transport.sends).toEqual([]);
+  });
+
+  it('P1: evento morto COM despacho liquida a reserva CERTA, não uma nula', async () => {
+    const criada = await sendMessage({ direction: 'outbound', body: 'Pode ter saído' }).expect(201);
+    const antes = await prisma.raw.messageDispatch.findFirst({
+      where: { messageId: criada.body.id },
+    });
+    expect(antes?.reservationId).not.toBeNull(); // há reserva para liquidar
+    // em voo: lease vencido COM marcador de despacho
+    await prisma.raw.messageDispatch.updateMany({
+      where: { messageId: criada.body.id },
+      data: {
+        state: 'sending',
+        claimToken: '77777777-7777-4777-8777-777777777777',
+        leaseExpiresAt: new Date(Date.now() - 60_000),
+        dispatchedAt: new Date(Date.now() - 60_000),
+      },
+    });
+
+    await app.get(WhatsappSendService).markExhausted(wsA.workspaceId, criada.body.id);
+
+    /**
+     * `RETURNING` entrega valores PÓS-escrita: devolver a coluna que o próprio
+     * UPDATE zera daria `null`, e a reserva ficaria pendurada até o TTL — teto
+     * encolhido em silêncio. A CTE preserva o id antigo, e é ele que liquida.
+     */
+    const dispatch = await prisma.raw.messageDispatch.findFirst({
+      where: { messageId: criada.body.id },
+    });
+    expect(dispatch).toMatchObject({ state: 'unknown_after_dispatch', reservationId: null });
+    // COBRADA (pode ter saído), e a reserva não sobrou pendurada
+    const contador = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },
+    });
+    expect(Number(contador?.value ?? 0)).toBe(1);
+    expect(await prisma.raw.usageReservation.count({ where: {} })).toBe(0);
+  });
+
+  it('P1: evento morto SEM despacho libera a reserva certa e devolve a quota', async () => {
+    const criada = await sendMessage({ direction: 'outbound', body: 'Nunca saiu' }).expect(201);
+    await prisma.raw.messageDispatch.updateMany({
+      where: { messageId: criada.body.id },
+      data: {
+        state: 'sending',
+        claimToken: '88888888-8888-4888-8888-888888888888',
+        leaseExpiresAt: new Date(Date.now() - 60_000),
+        dispatchedAt: null,
+      },
+    });
+
+    await app.get(WhatsappSendService).markExhausted(wsA.workspaceId, criada.body.id);
+
+    const dispatch = await prisma.raw.messageDispatch.findFirst({
+      where: { messageId: criada.body.id },
+    });
+    expect(dispatch).toMatchObject({ state: 'failed_permanent', reservationId: null });
+    // DEVOLVIDA: nada saiu, então o teto não pode ficar consumido
+    const contador = await prisma.raw.usageCounter.findFirst({
+      where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },
+    });
+    expect(Number(contador?.value ?? 0)).toBe(0);
+    expect(await prisma.raw.usageReservation.count({ where: {} })).toBe(0);
   });
 
   it('P0: cota esgotada aparece na política, não só no 402', async () => {

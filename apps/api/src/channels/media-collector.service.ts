@@ -257,17 +257,18 @@ export class MediaCollectorService {
 
   /** Renova o lease; `false` = a posse já não é nossa. */
   private async renewLease(item: ClaimedMedia): Promise<boolean> {
-    const { count } = await this.prisma.raw.inboundMedia.updateMany({
-      // `workspaceId` explícito mesmo com a PK no where: é a regra de todo `raw`
-      // do projeto (§3.3), e o hábito é o que impede o próximo erro de encanamento
-      where: {
-        workspaceId: item.workspaceId,
-        id: item.id,
-        claimToken: item.claimToken,
-        state: 'pending',
-      },
-      data: { leaseExpiresAt: new Date(Date.now() + LEASE_MS) },
-    });
+    // horário do BANCO: o claim compara o lease em SQL, e renovar com o relógio
+    // do processo faria a duração real variar com o desvio entre app e banco
+    const count = await this.prisma.raw.$executeRawUnsafe(
+      `UPDATE "InboundMedia"
+          SET "leaseExpiresAt" = now() + ($4::bigint * interval '1 millisecond')
+        WHERE "workspaceId" = $1::uuid AND "id" = $2::uuid
+          AND "claimToken" = $3::uuid AND "state" = 'pending'`,
+      item.workspaceId,
+      item.id,
+      item.claimToken,
+      LEASE_MS,
+    );
     return count > 0;
   }
 

@@ -191,10 +191,17 @@ export class OutboxService {
    * imediatamente, em vez de continuar entregando em duplicidade.
    */
   async renewLease(id: string, claimToken: string): Promise<boolean> {
-    const { count } = await this.prisma.raw.outboxEvent.updateMany({
-      where: { id, claimToken, status: 'processing' },
-      data: { leaseExpiresAt: new Date(Date.now() + LEASE_MS) },
-    });
+    // horário do BANCO: o claim compara `leaseExpiresAt < now()` em SQL, então
+    // renovar com o relógio do processo faria a duração real do lease variar
+    // com o desvio entre app e banco
+    const count = await this.prisma.raw.$executeRawUnsafe(
+      `UPDATE "OutboxEvent"
+          SET "leaseExpiresAt" = now() + ($3::bigint * interval '1 millisecond')
+        WHERE "id" = $1::uuid AND "claimToken" = $2::uuid AND "status" = 'processing'`,
+      id,
+      claimToken,
+      LEASE_MS,
+    );
     return count > 0;
   }
 
@@ -230,19 +237,42 @@ export class OutboxService {
     error: string,
   ): Promise<'retry' | 'dead' | 'lost'> {
     const dead = attempts >= MAX_ATTEMPTS;
-    const { count } = await this.prisma.raw.outboxEvent.updateMany({
-      where: { id, claimToken, status: 'processing' },
-      data: {
-        // volta para `pending` (com backoff) ou morre; nos dois casos o lease
-        // é liberado — só o claim o define
-        status: dead ? 'dead' : 'pending',
-        lastError: error.slice(0, 500),
-        nextRetryAt: dead ? undefined : new Date(Date.now() + BASE_DELAY_MS * 5 ** (attempts - 1)),
-        claimedAt: null,
-        leaseExpiresAt: null,
-        claimToken: null,
-      },
-    });
+    const backoffMs = BASE_DELAY_MS * 5 ** (attempts - 1);
+    /**
+     * O BACKOFF É CALCULADO NO POSTGRES, não com `new Date()` da aplicação.
+     *
+     * O claim compara `nextRetryAt <= now()` com o relógio do BANCO. Escrever
+     * esse horário com o relógio do processo mistura duas fontes de tempo: com o
+     * app adiantado, a retentativa atrasa o tanto do desvio; com o app atrasado,
+     * o evento é reivindicado ANTES do backoff pedido — e várias instâncias
+     * podem discordar entre si. Um desvio de 47 s num ambiente de
+     * desenvolvimento tornou isso visível como falha de teste; em produção seria
+     * entrega atrasada ou martelada, silenciosamente.
+     *
+     * `raw` justificado: só em SQL o horário nasce do mesmo relógio que o
+     * compara. O `workspaceId` não entra porque o dispatcher é cross-workspace
+     * (SECURITY.md §2) e a chave é o par id+claimToken, que é o fencing.
+     */
+    const count = await this.prisma.raw.$executeRawUnsafe(
+      `UPDATE "OutboxEvent"
+          SET "status" = $4::"OutboxStatus",
+              "lastError" = $5,
+              "nextRetryAt" = CASE
+                WHEN $6::boolean THEN "nextRetryAt"
+                ELSE now() + ($7::bigint * interval '1 millisecond')
+              END,
+              "claimedAt" = NULL,
+              "leaseExpiresAt" = NULL,
+              "claimToken" = NULL
+        WHERE "id" = $1::uuid AND "claimToken" = $2::uuid AND "status" = $3::"OutboxStatus"`,
+      id,
+      claimToken,
+      'processing',
+      dead ? 'dead' : 'pending',
+      error.slice(0, 500),
+      dead,
+      backoffMs,
+    );
     if (count === 0) {
       this.logger.warn(`Lease perdido ao falhar ${id} — reagendamento ignorado`);
       return 'lost';

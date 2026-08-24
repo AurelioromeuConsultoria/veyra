@@ -155,3 +155,47 @@ export async function setPlanLimit(
     update: { value: BigInt(value) },
   });
 }
+
+/**
+ * Torna um evento do outbox reivindicável, com o backoff JÁ VENCIDO pelo
+ * relógio do BANCO.
+ *
+ * Vencido há um minuto, não "exatamente agora": agendar para o instante presente
+ * deixa a elegibilidade na dependência de microssegundos entre a escrita e o
+ * claim — e um lock ainda não liberado é pulado em silêncio pelo `SKIP LOCKED`.
+ * O diagnóstico capturou o caso: `elegivel: true` com "vencido há 0,6 ms",
+ * medido depois da drenagem que não reivindicou nada. A margem exprime o que o
+ * teste quer dizer ("o backoff já passou") sem trazer de volta o relógio do
+ * processo, que era o defeito original.
+ *
+ * Escrever `nextRetryAt: new Date()` do Node misturava relógios: o claim compara
+ * com `now()` do Postgres, e qualquer desvio entre processo e banco deixava a
+ * linha inelegível — foi a causa da "flake de 1 em 6" (o desvio era de 2 ms) e,
+ * com o relógio da VM 47 s atrás, de dezenas de falhas simultâneas. O horário
+ * tem de nascer de quem o compara.
+ */
+export async function makeRetriableNowById(prisma: PrismaService, id: string): Promise<void> {
+  await prisma.raw.$executeRawUnsafe(
+    `UPDATE "OutboxEvent"
+        SET "nextRetryAt" = now() - interval '1 minute', "status" = 'pending',
+            "claimToken" = NULL, "leaseExpiresAt" = NULL
+      WHERE "id" = $1::uuid`,
+    id,
+  );
+}
+
+export async function makeRetriableNow(prisma: PrismaService, eventType: string): Promise<void> {
+  /**
+   * Só ADIANTA o relógio de quem já está `pending`. A primeira versão também
+   * zerava `status` e `claimToken`, o que RESSUSCITAVA eventos entregues ou
+   * mortos do mesmo tipo — e o `drain` seguinte reivindicava o revivido em vez
+   * do alvo, quebrando testes que não tinham nada a ver com o horário. Para
+   * reabrir um evento específico existe `makeRetriableNowById`.
+   */
+  await prisma.raw.$executeRawUnsafe(
+    `UPDATE "OutboxEvent"
+        SET "nextRetryAt" = now() - interval '1 minute'
+      WHERE "eventType" = $1 AND "status" = 'pending'`,
+    eventType,
+  );
+}

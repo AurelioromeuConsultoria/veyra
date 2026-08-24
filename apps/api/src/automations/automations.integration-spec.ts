@@ -12,6 +12,7 @@ import {
   createWorkspaceFixture,
   seedPermissionCatalog,
   type WorkspaceFixture,
+  makeRetriableNow,
 } from '../../test/integration/fixtures';
 import { resetDb } from '../../test/integration/harness';
 import { MAX_ATTEMPTS } from '../outbox/outbox.service';
@@ -165,10 +166,7 @@ describe('Automações (integração)', () => {
     expect(await prisma.raw.task.count()).toBe(1);
 
     // devolve o evento de contato para pending, como um retry faria
-    await prisma.raw.outboxEvent.updateMany({
-      where: { eventType: 'contact.created' },
-      data: { status: 'pending', nextRetryAt: new Date(), claimToken: null, leaseExpiresAt: null },
-    });
+    await makeRetriableNow(prisma, 'contact.created');
     await drain();
 
     // a execução é única por (automação, evento): nada rodou de novo
@@ -318,10 +316,7 @@ describe('Automações (integração)', () => {
       where: { id: criada.id },
       data: { actionConfig: { title: 'Ligar para {{name}}', dueInDays: 1 } },
     });
-    await prisma.raw.outboxEvent.updateMany({
-      where: { eventType: 'contact.created' },
-      data: { nextRetryAt: new Date() },
-    });
+    await makeRetriableNow(prisma, 'contact.created');
     await drain();
 
     const tasks = await prisma.raw.task.findMany();
@@ -336,11 +331,12 @@ describe('Automações (integração)', () => {
     });
     await post('/api/contacts', sessionA, { name: 'Sem conserto' }).expect(201);
 
-    // simula a ÚLTIMA tentativa
+    // simula a ÚLTIMA tentativa; o horário vem do BANCO, que é quem compara
     await prisma.raw.outboxEvent.updateMany({
       where: { eventType: 'contact.created' },
-      data: { attempts: MAX_ATTEMPTS - 1, nextRetryAt: new Date() },
+      data: { attempts: MAX_ATTEMPTS - 1 },
     });
+    await makeRetriableNow(prisma, 'contact.created');
     await drain(1);
 
     const execucao = await prisma.raw.automationExecution.findFirst();

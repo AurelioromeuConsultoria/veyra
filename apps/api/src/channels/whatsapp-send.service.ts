@@ -441,57 +441,69 @@ export class WhatsappSendService {
    * exceção era engolida pelo dispatcher e o dispatch ficava mentindo mesmo).
    */
   async markExhausted(workspaceId: string, messageId: string): Promise<void> {
+    /**
+     * UM comando, decidido inteiramente pelo BANCO.
+     *
+     * A versão anterior lia a linha, decidia em JS e escrevia — e comparava
+     * `leaseExpiresAt` com `new Date()` do processo, enquanto o claim e a
+     * varredura comparam com `now()` do Postgres. Com o app adiantado, um lease
+     * VIVO parecia vencido e esta rotina rebaixava o despacho debaixo do dono:
+     * ele enviava, perdia o fencing, e a mensagem entregue aparecia como "não
+     * enviada". Com o app atrasado, o oposto — nada era encerrado.
+     *
+     * `raw` justificado: só em SQL a elegibilidade e a escrita usam o mesmo
+     * relógio, num único statement atômico. `workspaceId` explícito no WHERE.
+     */
+    const [linha] = await this.prisma.raw.$queryRawUnsafe<
+      { reservationId: string | null; despachou: boolean }[]
+    >(
+      /**
+       * O `reservationId` ANTIGO vem de uma CTE que lê e TRAVA a linha antes do
+       * UPDATE. `RETURNING` entrega valores PÓS-escrita, então devolver a coluna
+       * que o próprio comando zera daria sempre `null` — e a liquidação perderia
+       * a reserva, deixando-a pendurada até o TTL. É o mesmo defeito que
+       * `resolveAbandonedInFlight` já tinha evitado; reintroduzi ao reescrever.
+       *
+       * `FOR UPDATE` na CTE garante que ninguém mude o estado entre a leitura da
+       * reserva e a escrita — a decisão continua sendo de um único comando.
+       */
+      `WITH alvo AS (
+         SELECT "messageId",
+                "reservationId" AS "reservaAntiga",
+                ("dispatchedAt" IS NOT NULL) AS "despachou"
+           FROM "MessageDispatch"
+          WHERE "workspaceId" = $1::uuid
+            AND "messageId" = $2::uuid
+            AND ("state" IN ('reserved', 'failed_before_send')
+                 OR ("state" = 'sending' AND "leaseExpiresAt" < now()))
+          FOR UPDATE
+       )
+       UPDATE "MessageDispatch" AS d
+          SET "state" = CASE WHEN alvo."despachou"
+                             THEN 'unknown_after_dispatch'::"DispatchState"
+                             ELSE 'failed_permanent'::"DispatchState" END,
+              "errorCode" = CASE WHEN alvo."despachou"
+                                 THEN 'retries_exhausted_in_flight'
+                                 ELSE 'retries_exhausted' END,
+              "claimToken" = NULL,
+              "leaseExpiresAt" = NULL,
+              "reservationId" = NULL,
+              "updatedAt" = now()
+         FROM alvo
+        WHERE d."messageId" = alvo."messageId"
+      RETURNING alvo."reservaAntiga" AS "reservationId", alvo."despachou" AS "despachou"`,
+      workspaceId,
+      messageId,
+    );
+    if (!linha) return; // nada elegível: o dono vivo decide
+
     await this.cls.run(async () => {
       this.cls.set('workspaceId', workspaceId);
-      const agora = new Date();
-      /**
-       * `sending` só é elegível se o lease NÃO estiver vivo — a mesma guarda do
-       * claim e da varredura. Sem ela, um evento que morre enquanto OUTRO worker
-       * detém a posse fazia esta rotina sobrescrever `failed_permanent` debaixo
-       * dele: o worker enviava, perdia o fencing e a mensagem entregue aparecia
-       * como "Não enviada", convidando ao reenvio manual.
-       */
-      const posseLivre = {
-        OR: [
-          { state: { in: ['reserved', 'failed_before_send'] as never } },
-          { state: 'sending' as never, leaseExpiresAt: { lt: agora } },
-        ],
-      };
-      const linha = await this.prisma.db.messageDispatch.findFirst({
-        where: { messageId, ...posseLivre },
-        select: { state: true, dispatchedAt: true, reservationId: true },
-      });
-      if (!linha) return;
-
-      const despachou = linha.dispatchedAt !== null;
-      /**
-       * A GUARDA VAI NO `where`, não em JS: entre a leitura e a escrita o estado
-       * pode mudar (varredura concorrente, ou dono vivo concluindo), e escrever
-       * por `messageId` puro sobrescreveria um estado terminal já cobrado — a
-       * mesma mentira de entrega que a varredura permeável causava. Se não
-       * escrevermos nada, não liquidamos quota nenhuma.
-       */
-      const { count } = await this.prisma.db.messageDispatch.updateMany({
-        where: {
-          messageId,
-          ...posseLivre,
-          ...(despachou ? { dispatchedAt: { not: null } } : { dispatchedAt: null }),
-        },
-        data: {
-          // COM marcador de despacho pode ter saído: nunca "não enviou"
-          state: despachou ? 'unknown_after_dispatch' : 'failed_permanent',
-          errorCode: despachou ? 'retries_exhausted_in_flight' : 'retries_exhausted',
-          claimToken: null,
-          leaseExpiresAt: null,
-          reservationId: null,
-        },
-      });
-      if (count === 0) return; // outro dono decidiu antes: nada a liquidar
-      await this.settleQuotaFor(workspaceId, linha.reservationId, despachou);
-      if (despachou) {
-        this.logger.error(`Envio ${messageId} esgotou tentativas em voo — marcado incerto`);
-      }
+      await this.settleQuotaFor(workspaceId, linha.reservationId, linha.despachou);
     });
+    if (linha.despachou) {
+      this.logger.error(`Envio ${messageId} esgotou tentativas em voo — marcado incerto`);
+    }
   }
 
   /**

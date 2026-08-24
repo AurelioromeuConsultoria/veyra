@@ -12,6 +12,7 @@ import {
   createWorkspaceFixture,
   seedPermissionCatalog,
   type WorkspaceFixture,
+  makeRetriableNowById,
 } from '../../test/integration/fixtures';
 import { resetDb } from '../../test/integration/harness';
 import { MAX_ATTEMPTS, OutboxService } from './outbox.service';
@@ -324,7 +325,17 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
     await webhooks.deliver(claimedFail);
     const afterFail = await prisma.raw.outboxEvent.findFirst({ where: { id: pending!.id } });
     expect(afterFail!.status).toBe('pending'); // reagendado
-    expect(afterFail!.nextRetryAt.getTime()).toBeGreaterThan(Date.now());
+    /**
+     * Backoff conferido contra o relógio do BANCO, que é quem o compara no
+     * claim. Comparar com `Date.now()` do Node media a diferença entre dois
+     * relógios, não o backoff — e passava ou falhava conforme o desvio.
+     */
+    const [{ atrasoSegundos }] = await prisma.raw.$queryRawUnsafe<{ atrasoSegundos: number }[]>(
+      `SELECT EXTRACT(EPOCH FROM ("nextRetryAt" - now()))::float8 AS "atrasoSegundos"
+         FROM "OutboxEvent" WHERE "id" = $1::uuid`,
+      pending!.id,
+    );
+    expect(atrasoSegundos).toBeGreaterThan(0);
     expect(afterFail!.lastError).toBeTruthy();
     // registrou a tentativa
     expect(await prisma.raw.webhookDelivery.count({ where: { outboxEventId: pending!.id } })).toBe(
@@ -333,11 +344,23 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
 
     // no limite de tentativas vira dead (o backoff acima já foi conferido;
     // aqui só adiantamos o relógio para o evento voltar a ser reivindicável)
-    await prisma.raw.outboxEvent.updateMany({
-      where: { id: pending!.id },
-      data: { nextRetryAt: new Date() },
-    });
-    const [claimedDying] = await claimAll(MAX_ATTEMPTS);
+    // POR ID: o helper por tipo reabriria outros eventos e o claim seguinte
+    // pegaria o errado — foi o que quebrou este teste na primeira versão
+    await makeRetriableNowById(prisma, pending!.id);
+    const lote = await claimAll(MAX_ATTEMPTS);
+    if (lote.length === 0) {
+      // DIAGNÓSTICO: claim vazio aqui é intermitente; sem o estado da linha e o
+      // relógio do banco, "undefined.eventType" não diz nada sobre a causa
+      const [estado] = await prisma.raw.$queryRawUnsafe<Record<string, unknown>[]>(
+        `SELECT "status", "attempts", "claimToken" IS NOT NULL AS "temToken",
+                EXTRACT(EPOCH FROM ("nextRetryAt" - now()))::float8 AS "faltamSegundos",
+                "leaseExpiresAt" IS NOT NULL AS "temLease"
+           FROM "OutboxEvent" WHERE "id" = $1::uuid`,
+        pending!.id,
+      );
+      throw new Error(`claim vazio: ${JSON.stringify(estado)}`);
+    }
+    const [claimedDying] = lote;
     await webhooks.deliver(claimedDying);
     const dead = await prisma.raw.outboxEvent.findFirst({ where: { id: pending!.id } });
     expect(dead!.status).toBe('dead');
@@ -631,5 +654,56 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
       url: 'https://exemplo.com/hook',
       events: ['deal.won'],
     }).expect(403);
+  });
+
+  it('P0: o backoff é calculado pelo relógio do BANCO, não pelo do processo', async () => {
+    /**
+     * Defeito de produção corrigido aqui: `markFailed` agendava com
+     * `new Date()` da aplicação enquanto o claim compara com `now()` do
+     * Postgres. Com o app adiantado a retentativa atrasa o tanto do desvio; com
+     * o app atrasado o evento é reivindicado ANTES do backoff pedido. Um desvio
+     * de 47 s num ambiente local tornou isso visível; em produção, com várias
+     * instâncias, os relógios divergem sem ninguém perceber.
+     *
+     * O teste força um desvio ARTIFICIAL no lado da aplicação e prova que o
+     * agendamento não se move: se o horário viesse do processo, o atraso medido
+     * mudaria junto com o relógio falso.
+     */
+    const outbox = app.get(OutboxService);
+    await post('/api/contacts', sessionA, { name: 'Backoff' }).expect(201);
+    const [claimed] = await claimAll(1);
+
+    const relogioReal = Date.now;
+    // aplicação "adiantada" em uma hora
+    Date.now = () => relogioReal.call(Date) + 3_600_000;
+    try {
+      await outbox.markFailed(claimed.id, claimed.claimToken, 1, 'falha simulada');
+    } finally {
+      Date.now = relogioReal;
+    }
+
+    const [{ atrasoSegundos }] = await prisma.raw.$queryRawUnsafe<{ atrasoSegundos: number }[]>(
+      `SELECT EXTRACT(EPOCH FROM ("nextRetryAt" - now()))::float8 AS "atrasoSegundos"
+         FROM "OutboxEvent" WHERE "id" = $1::uuid`,
+      claimed.id,
+    );
+    // primeira tentativa = 60 s de backoff; a hora de desvio NÃO entra na conta
+    expect(atrasoSegundos).toBeGreaterThan(50);
+    expect(atrasoSegundos).toBeLessThan(70);
+  });
+
+  it('evento MORTO não tem o backoff reescrito', async () => {
+    const outbox = app.get(OutboxService);
+    await post('/api/contacts', sessionA, { name: 'Morto' }).expect(201);
+    const [claimed] = await claimAll(1);
+    const antes = await prisma.raw.outboxEvent.findFirst({ where: { id: claimed.id } });
+
+    const desfecho = await outbox.markFailed(claimed.id, claimed.claimToken, MAX_ATTEMPTS, 'fim');
+
+    expect(desfecho).toBe('dead');
+    const depois = await prisma.raw.outboxEvent.findFirst({ where: { id: claimed.id } });
+    // `dead` não volta a ser reivindicado: mexer no horário só confundiria a leitura
+    expect(depois?.nextRetryAt.getTime()).toBe(antes?.nextRetryAt.getTime());
+    expect(depois?.status).toBe('dead');
   });
 });
