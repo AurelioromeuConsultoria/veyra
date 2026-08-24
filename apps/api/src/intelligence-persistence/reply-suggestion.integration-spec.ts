@@ -1,4 +1,5 @@
 import { createHmac } from 'node:crypto';
+import { Client } from 'pg';
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { CryptoService } from '../common/crypto.service';
@@ -176,6 +177,43 @@ describe('Sugestão de resposta por IA — Entrega 9.3 (integração)', () => {
   };
 
   const propostas = () => prisma.raw.aiProposal.findMany({ orderBy: { createdAt: 'asc' } });
+
+  /**
+   * Espera N requisições ficarem BLOQUEADAS no lock de linha. É o que torna a
+   * corrida determinística: sem isto, o teste dependeria de quem chegasse
+   * primeiro ao Postgres — exatamente a intermitência que já custou caro aqui.
+   */
+  const esperarBloqueados = async (cliente: Client, quantos: number) => {
+    for (let tentativa = 0; tentativa < 200; tentativa += 1) {
+      /**
+       * `pg_locks` é a fonte certa: mostra o lock REALMENTE não concedido, no
+       * instante. `pg_stat_activity.wait_event_type` fica obsoleto em sessão
+       * ociosa — a primeira versão deste helper contava esse lixo e "esperava"
+       * por acidente.
+       *
+       * `DISTINCT pid` porque um bloqueado gera mais de uma linha (lock de
+       * tupla e de transação). E SEM filtrar pelo texto da consulta: o segundo
+       * bloqueado aparece com `query` obsoleto (a conexão consta `idle` embora
+       * a transação esteja esperando), então filtrar por `AiProposal` o perdia.
+       * Em `--runInBand`, com pg-boss em stub, as únicas sessões deste banco são
+       * as do app e esta — e a falha é RUIDOSA (a asserção quebra), nunca um
+       * verde falso.
+       */
+      const { rows } = await cliente.query<{ n: string }>(
+        `SELECT count(DISTINCT l.pid)::text AS n
+           FROM pg_locks l
+           JOIN pg_stat_activity a ON a.pid = l.pid
+          WHERE NOT l.granted
+            AND l.pid <> pg_backend_pid()
+            AND a.datname = current_database()`,
+      );
+      if (Number(rows[0].n) >= quantos) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error(
+      `esperava ${quantos} escrita(s) em AiProposal bloqueada(s) no lock e não houve`,
+    );
+  };
 
   /** Proposta de TAREFA, para separar o que a restrição de tipo atinge. */
   const seedTaskProposal = async (): Promise<string> => {
@@ -392,6 +430,101 @@ describe('Sugestão de resposta por IA — Entrega 9.3 (integração)', () => {
     expect(res.status).toBe(400);
     expect(await mensagensSaida()).toEqual([]);
     expect(await prisma.raw.usageReservation.count()).toBe(0);
+  });
+
+  /**
+   * CORRIDA REAL entre gerar e aprovar, com o entrelaçamento forçado: a geração
+   * lê o rascunho como pendente, a aprovação o conclui, e só então a geração
+   * chega à escrita. Sem o predicado repetido no WHERE da expiração, o update
+   * destrava, reavalia a linha nova e grava `expired` por cima de `approved` —
+   * a mensagem saiu para o paciente e a trilha diria que o rascunho foi
+   * substituído.
+   *
+   * O lock de linha em OUTRA conexão é o que torna a ordem determinística:
+   * enfileira a aprovação, depois a geração, e libera as duas de uma vez.
+   */
+  it('aprovação que vence a corrida NÃO é sobrescrita pela supersessão', async () => {
+    await consentir().expect(200);
+    const proposalId = (await sugerir().expect(201)).body.proposalId;
+
+    const trava = new Client({ connectionString: process.env.DATABASE_URL });
+    await trava.connect();
+    let emVoo: Promise<unknown>[] = [];
+    const [resAprovacao, resGeracao] = await (async () => {
+      try {
+        await trava.query('BEGIN');
+        await trava.query('SELECT 1 FROM "AiProposal" WHERE id = $1 FOR UPDATE', [proposalId]);
+
+        /**
+         * `.then()` DISPARA a requisição: o `Test` do supertest é preguiçoso e
+         * só sai do lugar quando alguém o aguarda. Sem isto, nada chegava ao
+         * lock e a espera falhava — a corrida nunca acontecia.
+         */
+        const aprovacao = aprovar(proposalId).then((r) => r);
+        await esperarBloqueados(trava, 1);
+
+        // 2) geração LÊ o rascunho ainda pendente e para na escrita, atrás dela
+        const geracao = sugerir().then((r) => r);
+        await esperarBloqueados(trava, 2);
+
+        // 3) libera: a aprovação commita primeiro, a geração retoma depois
+        await trava.query('COMMIT');
+        // `return await`: o `finally` só solta a conexão depois das respostas
+        emVoo = [aprovacao, geracao];
+        return await Promise.all([aprovacao, geracao]);
+      } finally {
+        // solta o lock mesmo se a espera falhar — senão o `resetDb` do próximo
+        // caso trava no `TRUNCATE` e a suíte inteira pendura
+        await trava.end();
+        // e não deixa requisição em voo atravessar para o caso seguinte
+        await Promise.allSettled(emVoo);
+      }
+    })();
+    expect(resAprovacao.status).toBe(201);
+    expect(resGeracao.status).toBe(201);
+
+    // a proposta aprovada CONTINUA aprovada
+    const aprovada = await prisma.raw.aiProposal.findFirst({ where: { id: proposalId } });
+    expect(aprovada).toMatchObject({ status: 'approved', pendingReplyMark: null });
+
+    // a mensagem existe — foi enviada de verdade
+    const mensagens = await mensagensSaida();
+    expect(mensagens).toHaveLength(1);
+
+    // e NÃO há trilha dizendo que ela foi supersedida
+    const supersessoes = await prisma.raw.auditLog.findMany({
+      where: { workspaceId: wsA.workspaceId, action: 'ai_proposal.superseded' },
+    });
+    expect(supersessoes).toEqual([]);
+
+    // o rascunho novo nasceu normalmente, sem atropelar o que já saiu
+    const pendentes = (await propostas()).filter((p) => p.status === 'pending');
+    expect(pendentes).toHaveLength(1);
+    expect(pendentes[0].id).not.toBe(proposalId);
+  });
+
+  /** O inverso: quem supersede primeiro deixa a aprovação sem o que enviar. */
+  it('supersessão que vence a corrida impede o envio posterior', async () => {
+    await consentir().expect(200);
+    const proposalId = (await sugerir().expect(201)).body.proposalId;
+
+    await sugerir().expect(201); // supersede o anterior
+    const res = await aprovar(proposalId);
+    expect(res.status).toBe(400);
+
+    expect(await mensagensSaida()).toEqual([]);
+    expect(await prisma.raw.messageDispatch.count()).toBe(0);
+    expect(await prisma.raw.usageReservation.count()).toBe(0);
+    await drain();
+    expect(transport.sends).toEqual([]);
+
+    const antiga = await prisma.raw.aiProposal.findFirst({ where: { id: proposalId } });
+    expect(antiga).toMatchObject({ status: 'expired' });
+    // e a trilha registra a supersessão, com o substituto
+    const log = await prisma.raw.auditLog.findFirst({
+      where: { action: 'ai_proposal.superseded', entityId: proposalId },
+    });
+    expect(log).toBeTruthy();
   });
 
   it('rascunho novo supersede o anterior da mesma conversa', async () => {

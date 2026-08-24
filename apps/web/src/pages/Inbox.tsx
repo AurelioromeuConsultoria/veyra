@@ -136,13 +136,21 @@ export function InboxPage() {
   const { data: user } = useSession();
   const canWrite = hasPermission(user, 'conversations:write');
   const canUseAi = hasPermission(user, 'intelligence:use');
+  /**
+   * O rascunho nasce do corpo das mensagens: TODA consulta de sugestão exige
+   * `conversations:read` no servidor. Sem checar aqui, um papel customizado com
+   * `intelligence:use` e sem leitura de conversa disparava consultas que
+   * voltavam 403 — erro silencioso, que a tela não sabia explicar.
+   */
+  const canReadConversations = hasPermission(user, 'conversations:read');
+  const canReadWorkspace = hasPermission(user, 'workspace:read');
   /** enviar rascunho de IA exige as DUAS: aprovar IA e responder (ADR-044.9) */
   const canApproveReply = hasPermission(user, 'intelligence:approve') && canWrite;
   /**
    * GERAR também exige responder: o rascunho novo supersede o pendente e
    * invalida o trabalho que outra pessoa poderia aprovar (ADR-044, adendo 3).
    */
-  const canSuggestReply = canUseAi && canWrite;
+  const canSuggestReply = canUseAi && canReadConversations && canWrite;
   const queryClient = useQueryClient();
 
   const [status, setStatus] = useState<'open' | 'pending' | 'closed' | 'all'>('open');
@@ -180,7 +188,9 @@ export function InboxPage() {
       api.get<ConversationSummaryDto | null>(
         `/api/intelligence/conversations/${selectedId}/summary`,
       ),
-    enabled: selectedId !== null && canUseAi,
+    // mesma regra do rascunho: a rota do resumo é `intelligence:use` +
+    // `conversations:read`, e a tela não pode pedir o que o servidor negará
+    enabled: selectedId !== null && canUseAi && canReadConversations,
   });
 
   /**
@@ -191,7 +201,8 @@ export function InboxPage() {
   const aiConsent = useQuery({
     queryKey: ['ai-consent'],
     queryFn: () => api.get<AiConsentDto>('/api/intelligence/consent'),
-    enabled: canUseAi,
+    // a rota de consentimento é `workspace:read` — não presuma que todo papel a tem
+    enabled: canUseAi && canReadWorkspace,
   });
 
   /** rascunho pendente já gerado: a tela reabre onde parou, sem custar token */
@@ -201,7 +212,7 @@ export function InboxPage() {
       api.get<ReplySuggestionDto | null>(
         `/api/intelligence/conversations/${selectedId}/reply-suggestion`,
       ),
-    enabled: selectedId !== null && canUseAi,
+    enabled: selectedId !== null && canUseAi && canReadConversations,
   });
 
   const messages = useQuery({
@@ -572,7 +583,7 @@ export function InboxPage() {
                 {selected.assigneeName ? ` · ${selected.assigneeName}` : ''}
               </p>
             </div>
-            {canUseAi ? (
+            {canUseAi && canReadConversations ? (
               <Button
                 size="sm"
                 variant="ghost"
@@ -689,7 +700,7 @@ export function InboxPage() {
           </div>
 
           {/* ── rascunho de resposta da IA (ADR-044) ───────────────────── */}
-          {canUseAi && externo ? (
+          {canUseAi && canReadConversations && externo ? (
             <div
               className="border-t border-ai/30 bg-ai/5 px-5 py-2.5"
               data-testid="reply-suggestion"

@@ -431,22 +431,32 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
         } as never)) as unknown as { id: string }[];
 
         /**
-         * Expira EXATAMENTE os ids lidos, não o predicado de novo: em READ
-         * COMMITTED as duas sentenças enxergam snapshots diferentes, e um
-         * rascunho que nascesse entre elas seria expirado sem entrar na trilha
-         * — transição sem log, justamente o que a auditoria existe para
-         * impedir. Restringindo aos ids, um pendente novo sobrevive e faz a
-         * inserção bater no unique, caindo em `'concurrent'`, que já é o
-         * desfecho correto.
+         * Expira id A ID, e SEMPRE com o predicado repetido na escrita
+         * (`status: 'pending'`, `type: 'send_message'`). Duas razões, ambas
+         * aprendidas caro neste projeto:
+         *
+         * 1. Sem o predicado no WHERE da escrita, uma aprovação que commite
+         *    entre a leitura e a atualização é SOBRESCRITA: em READ COMMITTED
+         *    o update destrava, reavalia a linha nova e — se o predicado não
+         *    estiver ali — grava `expired` por cima de `approved`. A mensagem
+         *    foi enviada e a proposta diria que foi supersedida.
+         * 2. Sem o id, o predicado sozinho pegaria também um rascunho nascido
+         *    entre as duas sentenças, que a trilha não registrou.
+         *
+         * Por linha, e não em lote, porque a auditoria precisa saber QUAIS
+         * foram de fato expirados: `updateMany` devolve contagem, não ids.
          */
-        if (substituidos.length > 0) {
-          await tx.aiProposal.updateMany({
-            where: { id: { in: substituidos.map((anterior) => anterior.id) } },
+        const expirados: string[] = [];
+        for (const anterior of substituidos) {
+          const { count } = await tx.aiProposal.updateMany({
+            where: { id: anterior.id, status: 'pending', type: 'send_message' },
             // `expired`, não `rejected`: ninguém recusou — ficou obsoleto. Sem
             // revisor, porque não houve revisão humana. A marca sai com o estado.
             data: { status: 'expired', pendingReplyMark: null },
           });
+          if (count === 1) expirados.push(anterior.id);
         }
+
         const created = await tx.aiProposal.create({
           data: {
             workspaceId: author.workspaceId,
@@ -467,11 +477,14 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
          * outra pessoa poderia aprovar, então precisa dizer quem gerou o
          * substituto e qual rascunho morreu. Ids e estados apenas — o corpo do
          * rascunho jamais entra na trilha.
+         *
+         * Só entra quem foi REALMENTE expirado: um rascunho aprovado no meio da
+         * corrida não é supersedido, e a trilha não pode dizer que foi.
          */
-        for (const anterior of substituidos) {
+        for (const expirado of expirados) {
           await this.audit.record(tx, author.workspaceId, 'ai_proposal.superseded', {
             entityType: 'aiProposal',
-            entityId: anterior.id,
+            entityId: expirado,
             actor: { type: 'user', membershipId: author.membershipId },
             before: { type: 'send_message', status: 'pending' },
             after: { type: 'send_message', status: 'expired', supersededByProposalId: id },
