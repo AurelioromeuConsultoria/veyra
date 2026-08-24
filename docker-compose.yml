@@ -17,5 +17,29 @@ services:
       timeout: 3s
       retries: 10
 
+  # Scanner de arquivos (ADR-043). OPCIONAL no desenvolvimento: sem CLAMAV_HOST a
+  # aplicação devolve `unavailable`, o arquivo fica `pending` e não sai para canal
+  # externo — a ausência degrada para o seguro. Suba com `--profile scanner`.
+  clamav:
+    image: clamav/clamav:1.4
+    profiles: ['scanner']
+    ports:
+      # LOOPBACK: clamd não tem autenticação e é, por definição, um parser de
+      # entrada hostil — publicá-lo em 0.0.0.0 daria varredura anônima a quem
+      # alcançasse a máquina na rede
+      - '127.0.0.1:3310:3310'
+    volumes:
+      # sem isto, cada recriação do container baixa a base de assinaturas de novo
+      - veyra_clamav:/var/lib/clamav
+    healthcheck:
+      # o primeiro boot baixa a base de assinaturas e leva minutos; o healthcheck
+      # é o que distingue "subindo" de "pronto para escanear"
+      test: ['CMD', 'clamdcheck.sh']
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 300s
+
 volumes:
   veyra_pgdata:
+  veyra_clamav:

@@ -998,6 +998,22 @@ model FileObject {
   sizeBytes              Int
   uploadedByMembershipId String         @db.Uuid
   scanStatus             FileScanStatus @default(pending)
+  /// instante do VEREDITO do scanner; null = ainda não verificado
+  scannedAt              DateTime?
+  /// código curto do scanner (nome da ameaça ou motivo da falha) — nunca saída bruta
+  scanError              String?
+  scanAttempts           Int            @default(0)
+  /// LEASE + FENCING da varredura: ler bytes e escanear leva tempo, e dois
+  /// workers no mesmo arquivo desperdiçariam trabalho e embaralhariam o estado
+  scanClaimToken         String?        @db.Uuid
+  scanLeaseExpiresAt     DateTime?
+  /**
+   * Instante em que os bytes SAÍRAM do storage, gravado só com confirmação do
+   * driver (ADR-043). Para `quarantined`, null significa "malware ainda no
+   * disco" — pendência de limpeza que um job idempotente retenta. Nunca volta
+   * o arquivo para `pending` nem apaga a linha.
+   */
+  bytesPurgedAt          DateTime?
   createdAt              DateTime       @default(now())
 
   workspace     Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -1009,6 +1025,9 @@ model FileObject {
   @@unique([workspaceId, key])
   @@index([workspaceId, createdAt(sort: Desc)])
   @@index([workspaceId, scanStatus])
+  // varredura e limpeza são CROSS-WORKSPACE: os índices não lideram por workspace
+  @@index([scanStatus, scanLeaseExpiresAt])
+  @@index([scanStatus, bytesPurgedAt])
 }
 
 /// Anexo de mensagem: as DUAS pontas em FK composta — anexo não alcança

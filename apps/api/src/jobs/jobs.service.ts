@@ -6,6 +6,7 @@ import { AI_RUN_REPOSITORY, type AiRunRepository } from '../intelligence/ports/r
 import { AutomationsService } from '../automations/automations.service';
 import { MediaCollectorService } from '../channels/media-collector.service';
 import { WhatsappSendService } from '../channels/whatsapp-send.service';
+import { FileScanService } from '../files/file-scan.service';
 import { FilesService } from '../files/files.service';
 import { UsageService } from '../usage/usage.service';
 import { INTERNAL_EVENT_TYPES, OutboxService, type ClaimedEvent } from '../outbox/outbox.service';
@@ -16,6 +17,7 @@ const RETENTION_QUEUE = 'audit-retention';
 const RESERVATION_QUEUE = 'usage-reservations';
 const DISPATCH_REAP_QUEUE = 'dispatch-reap';
 const MEDIA_QUEUE = 'inbound-media';
+const SCAN_QUEUE = 'file-scan';
 
 /**
  * Jobs no MESMO Postgres (pg-boss, ADR-007). Kill switch: DISABLE_JOBS.
@@ -33,6 +35,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     private readonly webhooks: WebhooksService,
     private readonly audit: AuditService,
     private readonly files: FilesService,
+    private readonly fileScan: FileScanService,
     private readonly usage: UsageService,
     private readonly automations: AutomationsService,
     /**
@@ -103,6 +106,22 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       await this.whatsappSend.reapStaleDispatches();
     });
     await this.boss.schedule(DISPATCH_REAP_QUEUE, '*/5 * * * *', {}, { tz: 'America/Sao_Paulo' });
+
+    /**
+     * Varredura de arquivos e limpeza dos bytes em quarentena (ADR-043). As duas
+     * no mesmo ciclo, mas independentes: a limpeza roda mesmo quando não há
+     * nada novo para escanear, porque ela existe justamente para retentar
+     * remoção física que falhou antes.
+     */
+    await this.boss.createQueue(SCAN_QUEUE);
+    await this.boss.work(SCAN_QUEUE, async () => {
+      const { clean, quarantined } = await this.fileScan.scanPending();
+      if (clean + quarantined > 0) {
+        this.logger.log(`Varredura: ${clean} limpo(s), ${quarantined} em quarentena`);
+      }
+      await this.fileScan.purgeQuarantinedBytes();
+    });
+    await this.boss.schedule(SCAN_QUEUE, '* * * * *', {}, { tz: 'America/Sao_Paulo' });
   }
 
   async onModuleDestroy(): Promise<void> {

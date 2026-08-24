@@ -36,6 +36,13 @@ const envSchema = z.object({
    * tempo que o texto que um modelo escreveu sobre a conversa de um paciente.
    */
   AI_RESULT_RETENTION_DAYS: z.coerce.number().int().min(7).max(3650).default(90),
+  /**
+   * ClamAV (ADR-043). AUSENTE = sem scanner: o arquivo fica `pending` e não sai
+   * para canal externo. A falta de scanner degrada para o seguro, não para o
+   * liberado — por isso é opcional em vez de obrigatório.
+   */
+  CLAMAV_HOST: z.string().min(1).optional(),
+  CLAMAV_PORT: z.coerce.number().int().min(1).max(65535).default(3310),
   // raiz do storage local (ADR-024); com S3 vira bucket + credencial cifrada
   STORAGE_ROOT: z.string().min(1).default('.storage'),
   // IA (Entrega 7): SEM chave o produto segue funcionando — cada capacidade

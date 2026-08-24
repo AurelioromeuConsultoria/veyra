@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, normalize, resolve, sep } from 'node:path';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -13,6 +13,13 @@ export interface StorageDriver {
   put(key: string, bytes: Buffer): Promise<void>;
   get(key: string): Promise<Buffer>;
   delete(key: string): Promise<void>;
+  /**
+   * O objeto ainda existe? É a CONFIRMAÇÃO exigida pelo ADR-043 antes de marcar
+   * bytes de malware como removidos: o `delete` do driver local usa
+   * `rm(force: true)`, que não falha quando o arquivo não existe — "não lançou"
+   * nunca foi prova de remoção.
+   */
+  exists(key: string): Promise<boolean>;
 }
 
 export class UnsafeKeyError extends Error {}
@@ -59,5 +66,14 @@ export class LocalDiskDriver implements StorageDriver {
 
   async delete(key: string): Promise<void> {
     await rm(this.pathFor(key), { force: true });
+  }
+
+  async exists(key: string): Promise<boolean> {
+    try {
+      await access(this.pathFor(key));
+      return true;
+    } catch {
+      return false;
+    }
   }
 }

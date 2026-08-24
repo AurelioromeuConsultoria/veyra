@@ -286,6 +286,15 @@ export class FilesService {
       where: { id },
     })) as unknown as FileRow | null;
     if (!existing) throw new NotFoundException('Arquivo não encontrado');
+    if (existing.scanStatus === 'quarantined') {
+      /**
+       * A LINHA da quarentena é a evidência de que o arquivo existiu e foi
+       * barrado (ADR-043 §4) — apagá-la torna o sumiço indistinguível de bug, e
+       * qualquer um com `files:write` poderia destruir o registro do incidente.
+       * Os bytes já saíram do disco; não há nada a liberar aqui.
+       */
+      throw new ForbiddenException('Arquivo em quarentena não pode ser excluído');
+    }
 
     const workspaceId = auth.workspaceId as string;
     const storageLimit = await this.usage.prepareConsume(workspaceId, 'storage_bytes');
@@ -298,7 +307,18 @@ export class FilesService {
         before: { fileName: existing.fileName, mimeType: existing.mimeType },
         after: null,
       });
-      await tx.fileObject.deleteMany({ where: { id } });
+      /**
+       * O predicado da guarda vai NO DELETE, não só na leitura acima: uma
+       * quarentena comitada entre o `findFirst` e este comando apagaria a linha
+       * apesar da checagem (TOCTOU). Zero linhas = alguém pôs em quarentena
+       * agora, e a evidência não pode ser destruída.
+       */
+      const { count } = await tx.fileObject.deleteMany({
+        where: { id, scanStatus: { not: 'quarantined' } },
+      });
+      if (count === 0) {
+        throw new ForbiddenException('Arquivo em quarentena não pode ser excluído');
+      }
       await this.usage.consume(tx, workspaceId, 'storage_bytes', -existing.sizeBytes, storageLimit);
       await this.outbox.enqueue(
         tx,

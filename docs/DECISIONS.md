@@ -425,3 +425,26 @@ O Core continua **não conhecendo o vertical** (§3.8): Clinics estende por exte
 **Alternativas descartadas:** (a) _apagar o run inteiro_ — perde custo e trilha, e o custo é a base do teto de plano (ADR-041); (b) _cifrar em vez de expirar_ — troca um problema de retenção por um de gestão de chave, e não atende exclusão; (c) _expurgo sob demanda por workspace_ — necessário para LGPD, mas não substitui prazo automático; entra quando existir o fluxo de exclusão, e este ADR não o dispensa.
 
 **Consequências:** depois de 90 dias, um resumo antigo some da tela e a próxima visita gera outro (com custo novo). Preço aceito: o insight é barato de refazer e o dado é de terceiro. A contabilidade de custo permanece íntegra para sempre — ou até a retenção de `AiRun` como linha, que **não existe** e fica registrada como dívida com gatilho de volume.
+
+## ADR-043 — Scanner de arquivos: quarentena é terminal, e os bytes saem com confirmação
+
+**Status:** aceito · **Data:** 2026-08-22
+
+**Contexto:** `FileObject.scanStatus` existe desde a Entrega 6.3 com o portão de saída externa (`assertSendableExternally`) esperando por ele — mas nunca deixava `pending`, porque não havia scanner. Com canal externo real (9.1), o portão passou a importar de verdade: arquivo não verificado não pode sair para um paciente.
+
+**Decisão:**
+
+1. **Integrar, não construir** (CLAUDE.md §3.15): ClamAV via `clamd`, atrás de uma porta `FILE_SCANNER` — mesmo desenho de `LLM_CLIENT` (ADR-029) e `META_TRANSPORT` (ADR-037). Escrever heurística de malware seria construir mal o que existe maduro e atualizado diariamente.
+2. **Sem scanner configurado, o arquivo fica `pending`** — e `pending` não sai para canal externo. A ausência de scanner degrada para o comportamento seguro que já existia, em vez de liberar.
+3. **A varredura é job com claim, lease e fencing**, como a coleta de mídia (ADR-037): ler bytes e escanear leva tempo, e dois workers no mesmo arquivo desperdiçariam trabalho e embaralhariam estado.
+4. **Quarentena é TERMINAL.** Infectado nunca volta para `pending`, nunca é baixado, visualizado, reenviado ou anexado a envio externo — e a **linha permanece**, com `scannedAt` e trilha em `AuditLog`. Apagar a linha destruiria a evidência de que o arquivo existiu e foi barrado.
+5. **Os bytes saem do storage depois da transação que registra a quarentena**, nunca dentro dela (ADR-024 já separava efeito externo de transação). Guardar malware no nosso disco é passivo sem contrapartida: o download já está bloqueado, então os bytes não servem a ninguém.
+6. **A limpeza só é dada como concluída com CONFIRMAÇÃO do driver.** `bytesPurgedAt` é gravado apenas depois de o driver confirmar ausência — e por isso o contrato do `StorageDriver` ganhou `exists()`: o `delete` do driver local usa `rm(force: true)`, que **não falha quando o arquivo não existe**, então "não lançou" jamais foi prova de remoção.
+7. **A quota de armazenamento volta com os bytes.** `storage_bytes` é gauge cobrado: sem devolver, o workspace pagaria para sempre por bytes destruídos, e alguns arquivos infectados consumiriam o teto sem ocupar disco. A devolução e a marca `bytesPurgedAt` commitam na MESMA transação, depois da confirmação física — marcar primeiro tiraria o arquivo da fila com a quota inflada, que é o defeito simétrico ao do item anterior. Por isso `remove()` recusa arquivo em quarentena também por contabilidade: devolveria de novo bytes já devolvidos.
+8. **Falha na remoção física não desfaz nada**: a linha continua `quarantined` com `bytesPurgedAt` nulo, e um job **idempotente** tenta de novo. O estado inverso — banco dizendo `pending` enquanto o arquivo sumiu — é o que esta ordem impede.
+
+**Alternativas descartadas:** (a) _apagar a linha junto dos bytes_ — perde a evidência, e um arquivo que some sem rastro é indistinguível de bug; (b) _manter os bytes indefinidamente em quarentena_ — passivo de malware no nosso storage, sem uso possível; (c) _escanear de forma síncrona no upload_ — prende a requisição pelo tempo do ClamAV e derruba o upload quando o scanner cai, trocando disponibilidade por uma verificação que pode ser feita antes do único momento que importa (a saída).
+
+**Residual aceito:** o `zPING`→`PONG` que confirma a identidade do clamd roda em OUTRA conexão que a do veredito — atrás de DNS round-robin ou balanceador, quem responde `PONG` pode não ser quem escaneia, e `PONG` não é autenticação. Ele é defesa em profundidade e cumpre o que promete (fechar o caso provável do host apontado para o serviço errado); quem sustenta a garantia é o parser fail-closed mais a regra de rede da §7 — instância nossa, mesmo limite de rede.
+
+**Consequências:** existe uma janela entre o upload e o veredito em que o arquivo é `pending`: baixável internamente, barrado para fora. É a mesma janela que a política de §7.5 já assumia. E existe um estado observável de "quarentena com bytes ainda no disco" — deliberado, porque a alternativa seria mentir sobre a remoção.
