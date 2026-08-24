@@ -163,7 +163,9 @@ export function SignalsPage() {
               <div className="flex items-start gap-3">
                 <div className="min-w-0 flex-1">
                   <p className="text-[13px] font-medium">
-                    {String(proposal.payload.title ?? 'Ação proposta')}
+                    {proposal.type === 'send_message'
+                      ? String(proposal.payload.body ?? 'Rascunho de resposta')
+                      : String(proposal.payload.title ?? 'Ação proposta')}
                   </p>
                   <p className="mt-0.5 text-xs text-muted-fg">{proposal.rationale}</p>
                   <p className="mt-1 font-mono text-[10px] uppercase tracking-wider text-ai">
@@ -171,7 +173,17 @@ export function SignalsPage() {
                     {dateTimeFormat.format(new Date(proposal.expiresAt))}
                   </p>
                 </div>
-                {proposal.status === 'pending' && canApprove ? (
+                {/**
+                 * Rascunho de resposta NÃO é aprovado aqui: enviar exige ler a
+                 * conversa inteira e poder editar o texto antes (ADR-044). O
+                 * botão desta fila executaria a ação sem o contexto que a
+                 * decisão precisa — e a rota de tarefa recusa este tipo.
+                 */}
+                {proposal.type === 'send_message' ? (
+                  <span className="shrink-0 text-[11px] text-muted-fg">
+                    Revisar no Inbox, na conversa
+                  </span>
+                ) : proposal.status === 'pending' && canApprove ? (
                   <div className="flex shrink-0 gap-1">
                     <Button size="sm" variant="primary" onClick={() => approve.mutate(proposal.id)}>
                       <Check size={13} /> Aprovar

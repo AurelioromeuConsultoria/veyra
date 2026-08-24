@@ -1,5 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
+  AiConsentDto,
   ConsentStatus,
   ConversationSummaryDto,
   ConversationDto,
@@ -9,10 +10,11 @@ import type {
   MessageDispatchState,
   MessageDto,
   MessagePageDto,
+  ReplySuggestionDto,
   SendPolicyDto,
 } from '@veyra/contracts';
 import { clsx } from 'clsx';
-import { MessageSquarePlus, Paperclip, Send, Sparkles, X } from 'lucide-react';
+import { Check, MessageSquarePlus, Paperclip, Send, Sparkles, WandSparkles, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '../components/ui/button';
 import { Input, Select } from '../components/ui/input';
@@ -134,6 +136,8 @@ export function InboxPage() {
   const { data: user } = useSession();
   const canWrite = hasPermission(user, 'conversations:write');
   const canUseAi = hasPermission(user, 'intelligence:use');
+  /** enviar rascunho de IA exige as DUAS: aprovar IA e responder (ADR-044.9) */
+  const canApproveReply = hasPermission(user, 'intelligence:approve') && canWrite;
   const queryClient = useQueryClient();
 
   const [status, setStatus] = useState<'open' | 'pending' | 'closed' | 'all'>('open');
@@ -144,6 +148,14 @@ export function InboxPage() {
   const [templateParams, setTemplateParams] = useState<string[]>([]);
   const [attachments, setAttachments] = useState<FileObjectDto[]>([]);
   const [summary, setSummary] = useState<ConversationSummaryDto | null>(null);
+  /** rascunho da IA em revisão: editável ANTES de aprovar (ADR-044) */
+  const [reply, setReply] = useState<{
+    proposalId: string;
+    body: string;
+    injection: boolean;
+  } | null>(null);
+  /** motivo de indisponibilidade — sempre o texto que o SERVIDOR mandou */
+  const [replyNotice, setReplyNotice] = useState<string | null>(null);
   const [subject, setSubject] = useState('');
   const [error, setError] = useState<string | null>(null);
 
@@ -162,6 +174,27 @@ export function InboxPage() {
     queryFn: () =>
       api.get<ConversationSummaryDto | null>(
         `/api/intelligence/conversations/${selectedId}/summary`,
+      ),
+    enabled: selectedId !== null && canUseAi,
+  });
+
+  /**
+   * Consentimento de conteúdo é fato do SERVIDOR (ADR-028): a tela precisa dele
+   * para explicar a indisponibilidade ANTES do clique, em vez de deixar o
+   * atendente descobrir pelo resultado de um run recusado.
+   */
+  const aiConsent = useQuery({
+    queryKey: ['ai-consent'],
+    queryFn: () => api.get<AiConsentDto>('/api/intelligence/consent'),
+    enabled: canUseAi,
+  });
+
+  /** rascunho pendente já gerado: a tela reabre onde parou, sem custar token */
+  const pendingReply = useQuery({
+    queryKey: ['ai-reply', selectedId],
+    queryFn: () =>
+      api.get<ReplySuggestionDto | null>(
+        `/api/intelligence/conversations/${selectedId}/reply-suggestion`,
       ),
     enabled: selectedId !== null && canUseAi,
   });
@@ -240,7 +273,27 @@ export function InboxPage() {
     setDraft('');
     setAttachments([]);
     setError(null);
+    setReply(null);
+    setReplyNotice(null);
   }, [selectedId]);
+
+  /**
+   * Semeia o painel com o rascunho que o servidor já tem. Só quando NÃO há um
+   * em revisão: sobrescrever apagaria a edição em curso do atendente.
+   */
+  useEffect(() => {
+    const pendente = pendingReply.data;
+    if (!pendente || pendente.status !== 'proposed' || !pendente.proposalId) return;
+    setReply((atual) =>
+      atual
+        ? atual
+        : {
+            proposalId: pendente.proposalId as string,
+            body: pendente.draft ?? '',
+            injection: pendente.injectionAttempt ?? false,
+          },
+    );
+  }, [pendingReply.data]);
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['conversations'] });
@@ -315,6 +368,74 @@ export function InboxPage() {
       void queryClient.invalidateQueries({ queryKey: ['ai-summary'] });
     },
     onError: (e) => setError(e instanceof ApiError ? e.message : 'Falha ao resumir'),
+  });
+
+  /**
+   * Gera o rascunho. A IA não envia nada: o resultado é uma PROPOSTA pendente
+   * que uma pessoa lê, edita e aprova (ADR-044).
+   */
+  const suggestReply = useMutation({
+    mutationFn: () =>
+      api.post<ReplySuggestionDto>(
+        `/api/intelligence/conversations/${selectedId}/reply-suggestion`,
+      ),
+    onSuccess: (result) => {
+      if (result.status === 'proposed' && result.proposalId) {
+        setReply({
+          proposalId: result.proposalId,
+          body: result.draft ?? '',
+          injection: result.injectionAttempt ?? false,
+        });
+        setReplyNotice(null);
+      } else {
+        setReply(null);
+        // o motivo vem do servidor: a tela não deduz janela, consentimento nem cota
+        setReplyNotice(result.reason ?? 'Sugestão indisponível agora');
+      }
+      void queryClient.invalidateQueries({ queryKey: ['ai-reply'] });
+      void queryClient.invalidateQueries({ queryKey: ['ai-proposals'] });
+    },
+    onError: (e) => setError(e instanceof ApiError ? e.message : 'Falha ao sugerir resposta'),
+  });
+
+  const approveReply = useMutation({
+    // o corpo enviado é o que está NA TELA: o servidor compara com o rascunho
+    // original e decide a autoria da mensagem (IA ou quem editou)
+    mutationFn: () =>
+      api.post<{ messageId: string }>(
+        `/api/intelligence/proposals/${reply?.proposalId}/approve-reply`,
+        { body: reply?.body.trim() },
+      ),
+    onSuccess: () => {
+      setReply(null);
+      setReplyNotice(null);
+      setError(null);
+      void queryClient.invalidateQueries({ queryKey: ['ai-reply'] });
+      void queryClient.invalidateQueries({ queryKey: ['ai-proposals'] });
+      invalidate();
+    },
+    onError: (e) => {
+      // política pode ter mudado entre gerar e aprovar: a proposta CONTINUA
+      // pendente, e o motivo do servidor é o que aparece
+      setError(e instanceof ApiError ? e.message : 'Falha ao enviar a resposta sugerida');
+      void queryClient.invalidateQueries({ queryKey: ['send-policy'] });
+      // pode ter sido superseded por um rascunho novo: recarrega o pendente
+      // atual em vez de deixar a tela segurando um id morto
+      setReply(null);
+      void queryClient.invalidateQueries({ queryKey: ['ai-reply'] });
+    },
+  });
+
+  const rejectReply = useMutation({
+    mutationFn: () =>
+      api.post<{ ok: true }>(`/api/intelligence/proposals/${reply?.proposalId}/reject`),
+    onSuccess: () => {
+      setReply(null);
+      setReplyNotice(null);
+      void queryClient.invalidateQueries({ queryKey: ['ai-reply'] });
+      void queryClient.invalidateQueries({ queryKey: ['ai-proposals'] });
+    },
+    onError: (e) => setError(e instanceof ApiError ? e.message : 'Falha ao descartar o rascunho'),
   });
 
   const changeStatus = useMutation({
@@ -515,6 +636,14 @@ export function InboxPage() {
               >
                 <div className="flex items-baseline gap-2">
                   <span className="text-[11px] font-medium">{message.authorName ?? '—'}</span>
+                  {/* o texto é do modelo, aprovado por uma pessoa: sem este selo,
+                      a resposta a "quanto do que saiu daqui foi escrito por IA"
+                      só existia na auditoria (ADR-044.8) */}
+                  {message.authorType === 'ai' ? (
+                    <span className="rounded border border-ai/40 px-1 font-mono text-[9px] uppercase tracking-wider text-ai">
+                      IA
+                    </span>
+                  ) : null}
                   <span className="font-mono text-[10px] tabular-nums text-muted-fg">
                     {timeFormat.format(new Date(message.createdAt))}
                   </span>
@@ -551,6 +680,110 @@ export function InboxPage() {
               </p>
             ) : null}
           </div>
+
+          {/* ── rascunho de resposta da IA (ADR-044) ───────────────────── */}
+          {canUseAi && externo ? (
+            <div
+              className="border-t border-ai/30 bg-ai/5 px-5 py-2.5"
+              data-testid="reply-suggestion"
+            >
+              {reply ? (
+                <>
+                  <p className="text-[11px] font-medium uppercase tracking-wider text-ai">
+                    Rascunho sugerido · revise antes de enviar
+                  </p>
+                  <textarea
+                    className="mt-1.5 w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-[13px] outline-none focus:border-accent"
+                    rows={3}
+                    value={reply.body}
+                    aria-label="Rascunho sugerido pela IA"
+                    onChange={(e) =>
+                      setReply((atual) => (atual ? { ...atual, body: e.target.value } : atual))
+                    }
+                  />
+                  {reply.injection ? (
+                    <p className="mt-1 text-xs text-warning">
+                      Atenção: o conteúdo desta conversa tentou dar instruções ao assistente — leia
+                      o rascunho com cuidado.
+                    </p>
+                  ) : null}
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      /* enviar exige aprovar IA E responder; o veredito de
+                         política continua sendo do servidor */
+                      disabled={
+                        !canApproveReply ||
+                        reply.body.trim().length === 0 ||
+                        modo !== 'free_form' ||
+                        approveReply.isPending
+                      }
+                      title={
+                        !canApproveReply
+                          ? 'Enviar rascunho da IA exige aprovar sugestões e responder conversas'
+                          : modo !== 'free_form'
+                            ? (policy.data?.reason ?? 'Envio bloqueado agora')
+                            : undefined
+                      }
+                      onClick={() => approveReply.mutate()}
+                    >
+                      <Check size={13} />{' '}
+                      {approveReply.isPending ? 'Enviando…' : 'Aprovar e enviar'}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      disabled={rejectReply.isPending}
+                      onClick={() => rejectReply.mutate()}
+                    >
+                      <X size={13} /> Descartar
+                    </Button>
+                    <span className="ml-auto font-mono text-[10px] text-muted-fg">
+                      a IA não envia nada por conta própria
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="text-ai"
+                    /* indisponibilidade vem do SERVIDOR: modo de envio e
+                       consentimento de conteúdo — a tela não recalcula política */
+                    disabled={
+                      suggestReply.isPending ||
+                      modo !== 'free_form' ||
+                      aiConsent.data?.conversationContent !== true
+                    }
+                    /* MESMA ORDEM do servidor: ele avalia a política de envio
+                       antes do consentimento (ADR-044). Invertida, a tela
+                       culpava a autorização de IA numa conversa cujo problema
+                       era a janela fechada. */
+                    title={
+                      modo !== 'free_form'
+                        ? (policy.data?.reason ?? 'Fora da janela livre: sugestão indisponível')
+                        : aiConsent.data?.conversationContent !== true
+                          ? 'O workspace não autorizou usar conteúdo de conversa na IA (ajuste em Sinais)'
+                          : undefined
+                    }
+                    onClick={() => suggestReply.mutate()}
+                  >
+                    <WandSparkles size={13} />{' '}
+                    {suggestReply.isPending ? 'Rascunhando…' : 'Sugerir resposta'}
+                  </Button>
+                  <span className="text-[11px] text-muted-fg">
+                    {modo !== 'free_form'
+                      ? (policy.data?.reason ?? 'Sugestão só dentro da janela livre de 24h')
+                      : aiConsent.data?.conversationContent !== true
+                        ? 'Sugestão indisponível: falta autorização de uso de conteúdo de conversa'
+                        : (replyNotice ?? 'A IA rascunha; você revisa e envia')}
+                  </span>
+                </div>
+              )}
+            </div>
+          ) : null}
 
           {error ? (
             <p role="alert" className="px-5 pb-1 text-sm text-negative">
