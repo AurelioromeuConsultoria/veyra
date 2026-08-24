@@ -148,7 +148,14 @@ export class FileScanService {
 
     if (veredito.status === 'clean') {
       const { count } = await this.prisma.raw.fileObject.updateMany({
-        where: { id: arquivo.id, scanClaimToken: arquivo.claimToken, scanStatus: 'pending' },
+        // `workspaceId` explícito: a regra do projeto para todo `raw` (§3.3), e
+        // o comentário três blocos abaixo a ensina — não vale contrariá-la aqui
+        where: {
+          workspaceId: arquivo.workspaceId,
+          id: arquivo.id,
+          scanClaimToken: arquivo.claimToken,
+          scanStatus: 'pending',
+        },
         data: {
           scanStatus: 'clean',
           scannedAt: new Date(),
@@ -184,9 +191,21 @@ export class FileScanService {
        * deste `tx` precisa levar `workspaceId` explícito — não há filtro herdado.
        */
       this.cls.set('workspaceId', arquivo.workspaceId);
-      return this.prisma.raw.$transaction(async (tx) => {
+      /**
+       * Client FILTRADO aqui dentro: estamos no CLS do workspace da linha, e o
+       * filtro mecânico vale mais que a convenção — foi a ausência dele que
+       * deixou três escritas sem tenant no where. O `raw` fica onde é
+       * inevitável: o claim cross-workspace.
+       */
+      const db = this.prisma.db as unknown as TxRunner;
+      return db.$transaction(async (tx) => {
         const escrito = await tx.fileObject.updateMany({
-          where: { id: arquivo.id, scanClaimToken: arquivo.claimToken, scanStatus: 'pending' },
+          where: {
+            workspaceId: arquivo.workspaceId,
+            id: arquivo.id,
+            scanClaimToken: arquivo.claimToken,
+            scanStatus: 'pending',
+          },
           data: {
             scanStatus: 'quarantined',
             scannedAt: new Date(),
@@ -259,7 +278,9 @@ export class FileScanService {
       await this.usage.ensureCounterRow(workspaceId, 'storage_bytes');
       return await this.cls.run(async () => {
         this.cls.set('workspaceId', workspaceId);
-        const db = this.prisma.raw as unknown as TxRunner;
+        // filtrado: o CLS já tem o workspace da linha (mesma razão do bloco da
+        // quarentena); o `workspaceId` no where fica como redundância honesta
+        const db = this.prisma.db as unknown as TxRunner;
         return db.$transaction(async (tx) => {
           const { count } = await tx.fileObject.updateMany({
             // `workspaceId` explícito: `raw` do projeto sempre leva o tenant no
@@ -324,13 +345,17 @@ export class FileScanService {
    * seria reivindicado no ciclo seguinte, martelando um scanner que está fora.
    */
   private async release(arquivo: ClaimedFile, motivo: string): Promise<'retry'> {
+    // `raw` justificado: o adiamento tem de nascer do relógio do BANCO, que é o
+    // mesmo que o claim compara — o client filtrado não expressa `now() +
+    // interval`. `workspaceId` explícito, como todo `raw` do projeto (§3.3).
     await this.prisma.raw.$executeRawUnsafe(
       `UPDATE "FileObject"
           SET "scanClaimToken" = NULL,
-              "scanLeaseExpiresAt" = now() + ($3::bigint * interval '1 millisecond'),
+              "scanLeaseExpiresAt" = now() + ($4::bigint * interval '1 millisecond'),
               "scanAttempts" = GREATEST("scanAttempts" - 1, 0),
-              "scanError" = $4
-        WHERE "id" = $1::uuid AND "scanClaimToken" = $2::uuid`,
+              "scanError" = $5
+        WHERE "workspaceId" = $1::uuid AND "id" = $2::uuid AND "scanClaimToken" = $3::uuid`,
+      arquivo.workspaceId,
       arquivo.id,
       arquivo.claimToken,
       RETRY_DELAY_MS,

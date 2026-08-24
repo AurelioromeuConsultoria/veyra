@@ -111,7 +111,11 @@ export class ClamavScanner implements FileScanner {
       const socket = new Socket();
       let saida = '';
       // prazo ABSOLUTO: o do socket só conta ociosidade
-      const prazo = setTimeout(() => encerrar(new Error('ScannerDeadline')), TIMEOUT_MS * 2);
+      // `unref`: uma varredura em voo não deve segurar o event loop no shutdown
+      const prazo = setTimeout(
+        () => encerrar(new Error('ScannerDeadline')),
+        TIMEOUT_MS * 2,
+      ).unref();
       const encerrar = (erro?: Error) => {
         clearTimeout(prazo);
         socket.destroy();
