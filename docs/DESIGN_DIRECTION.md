@@ -24,31 +24,59 @@ O Veyra deve parecer um produto internacional, premium e deliberado. Cada escolh
 | IA como chat flutuante desconectado                                      | IA aparece como sinais/insights/próximas ações no fluxo |
 | Skeleton screens infinitos e spinners gigantes                           | Perceived performance é design                          |
 
-## 3. Tipografia — três papéis (fontes a validar na Fase 2 de UI)
+## 3. Tipografia — três papéis (fixados)
 
-| Papel          | Uso                                             | Direção de escolha                                                                                                                                                                     |
-| -------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Display**    | Títulos de página, números-herói de dashboards  | Grotesca contemporânea com personalidade discreta (candidatas: Söhne-like open source — ex. Inter Display ajustada, General Sans, Switzer) — peso 600–700, tracking levemente negativo |
-| **UI / corpo** | Todo o resto                                    | Sans humanista neutra e altamente legível em 13–14px (candidatas: Inter, Instrument Sans — **não** repetir o par do Norteie por identidade)                                            |
-| **Dados**      | Valores monetários, datas, IDs, eyebrows/labels | Mono com `tabular-nums` obrigatório em qualquer coluna numérica (candidatas: IBM Plex Mono, Commit Mono)                                                                               |
+Fontes instaladas por npm (`@fontsource*`), servidas pelo próprio bundle: offline, reprodutível e sem CDN de terceiros. Tokens: `--font-display`, `--font-sans`, `--font-mono`.
 
-Regra: os três papéis não se substituem. Número de dinheiro nunca em display; título nunca em mono.
+| Papel          | Fonte                                                                   | Uso                                                                                                        |
+| -------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| **Display**    | **Familjen Grotesk Variable** (`@fontsource-variable/familjen-grotesk`) | Títulos de página, números-herói, wordmark. Peso 620–650, tracking −0,018 a −0,022em                       |
+| **UI / corpo** | **Instrument Sans Variable** (`@fontsource-variable/instrument-sans`)   | Todo o resto. Deliberadamente **não é Inter** — Inter é o default de todo dashboard gerado por IA          |
+| **Dados**      | **IBM Plex Mono** (`@fontsource/ibm-plex-mono`, estático 400/500/600)   | Dinheiro, datas, IDs, eyebrows/labels em caixa alta e qualquer coluna numérica — sempre com `tabular-nums` |
 
-## 4. Cor — tokens e disciplina
+> Nota: não existe pacote variável publicado de IBM Plex Mono; usa-se a versão estática (subsets latin/latin-ext nos pesos 400/500/600), como o próprio §3 previa.
 
-Implementação: tokens CSS-first (Tailwind v4 `@theme`), claro como `:root`, dark via classe. Paleta exata definida na Fase de UI; a estrutura e a disciplina definem-se agora:
+**Escala fixa** (tokens `--text-*`; um componente escolhe um degrau, nunca inventa um tamanho):
 
-| Token                                                | Papel                                                                                                                                                                                                                         |
-| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--background`                                       | Fundo mineral (off-white quente no claro; grafite azulado profundo no dark)                                                                                                                                                   |
-| `--surface` / `--surface-2`                          | Cards/painéis e hover/campos                                                                                                                                                                                                  |
-| `--border`                                           | Hairlines de baixo contraste                                                                                                                                                                                                  |
-| `--foreground` / `--muted-fg`                        | Grafite de texto e secundário                                                                                                                                                                                                 |
-| `--accent` / `--accent-fg`                           | **A única cor de marca** — gasta com parcimônia: ação primária, foco, marcador ativo, assinatura da marca. Direção: um tom mineral profundo (verde-abissal, azul-ardósia ou cobre queimado — decidir com testes de contraste) |
-| `--positive` / `--negative` / `--warning` / `--info` | Semânticos: dinheiro/ganho, perda/atraso, atenção, informação — nunca decorativos                                                                                                                                             |
-| `--ai`                                               | Sinal de inteligência: um matiz próprio e sutil que marca insights/sugestões de IA (borda/ícone), para o usuário reconhecer proveniência sem estridência                                                                      |
+| Degrau                         | Tamanho    | Papel                                     |
+| ------------------------------ | ---------- | ----------------------------------------- |
+| `display-lg`                   | 28px       | Número-herói, marca em tela cheia         |
+| `display-md`                   | 22px       | Título de página                          |
+| `display-sm`                   | 18px       | Título de painel, cabeçalho de conversa   |
+| `body`                         | 14px       | Corpo padrão                              |
+| `body-sm`                      | 13px       | Corpo denso (tabela, thread, card)        |
+| `data` / `data-sm` / `data-xs` | 12/11/10px | Dado em mono: valores, carimbos, eyebrows |
 
-Regras: acento nunca em fundo de área grande; semânticos nunca para "dar cor"; contraste AA mínimo em texto normal, AAA em texto denso do modo operacional.
+Regra: os três papéis não se substituem. Número de dinheiro nunca em display; título nunca em mono; eyebrow é dado (mono, caixa alta, `letter-spacing` 0,12em), não título.
+
+## 4. Cor — paleta fechada e disciplina
+
+Implementação: tokens CSS-first (Tailwind v4 `@theme`), claro em `:root`, dark por classe `.dark` (`apps/web/src/index.css`). A paleta abaixo é a **definitiva** — mudança de direção exige ADR.
+
+| Token             | Claro     | Escuro    | Papel                                                                                          |
+| ----------------- | --------- | --------- | ---------------------------------------------------------------------------------------------- |
+| `--background`    | `#f6f3ed` | `#0d1219` | Calcário quente / grafite azulado profundo — nunca branco puro, nunca preto                    |
+| `--surface`       | `#fdfcfa` | `#1b2532` | Cartão, painel, balão recebido                                                                 |
+| `--surface-2`     | `#ede8de` | `#26323f` | Hover, campo, trilho, chip                                                                     |
+| `--border`        | `#e1dbcf` | `#33404f` | Hairline padrão                                                                                |
+| `--border-strong` | `#cfc7b6` | `#4a5867` | Divisor deliberado, trilho de scroll, marcador de vazio                                        |
+| `--foreground`    | `#1d2321` | `#e6ebf1` | Grafite de texto (14,4:1 no claro; 15,7:1 no escuro)                                           |
+| `--muted-fg`      | `#4f564f` | `#a8b3c1` | Secundário — 6,9:1 no claro e 8,8:1 no escuro (7,3:1 sobre `--surface`: AAA no denso)          |
+| `--accent`        | `#1c5a56` | `#5fb6ac` | **Verde-abissal: a única cor de marca.** Ação primária, foco, marcador ativo, wordmark         |
+| `--accent-hover`  | `#174b48` | `#72c3ba` | Estado hover da ação primária                                                                  |
+| `--accent-active` | `#123c3a` | `#4e9d94` | Estado pressionado                                                                             |
+| `--accent-fg`     | `#f6faf8` | `#08100f` | Texto sobre o acento (7,5:1 e 8,0:1)                                                           |
+| `--positive`      | `#2c6a45` | `#68c48d` | Ganho, dinheiro confirmado                                                                     |
+| `--negative`      | `#9c2b24` | `#f0847c` | Perda, falha, janela em risco (< 2h)                                                           |
+| `--warning`       | `#845310` | `#dcac57` | Atenção: janela 2–6h, teto de plano, entrega não confirmada                                    |
+| `--info`          | `#1d5a85` | `#86bee4` | Informação neutra                                                                              |
+| `--ai`            | `#8f4a22` | `#e59a69` | **Cobre queimado** — proveniência de IA. Quente, distinto do acento, lê como anotação à margem |
+
+Regras: acento nunca em fundo de área grande; semânticos nunca para "dar cor"; contraste AA mínimo em texto normal, AAA (≈7:1) em texto denso do modo operacional. Tint de superfície sempre por opacidade do próprio token (8–12%), nunca por um hex novo.
+
+**Separação de plano no escuro (medida, não estimada).** A primeira paleta noturna era cinza quase acromática e colocava `--surface` a 1,07:1 de `--background`: no inbox escuro, o painel da lista e a área da thread liam como a mesma superfície. Os neutros noturnos agora carregam azul (matiz ≈ 215) e a escada é explícita — `--surface` 1,21:1 e `--surface-2` 1,44:1 sobre o fundo, `--border` a 1,78:1. Hierarquia por contraste de superfície + hairline; sombra continua reservada a camada flutuante. Texto normal ≥ 4,5:1 e denso ≈ 7:1 sobre o plano em que de fato aparece — medir de novo a cada mexida na paleta.
+
+**Por que cobre em `--ai`, e não violeta:** violeta é o clichê de "IA" em todo produto do mercado — datar o Veyra em seis meses seria de graça. O cobre é quente, distingue-se do verde da marca à primeira vista e tem a semântica certa: anotação à margem de um texto que continua sendo do usuário.
 
 ## 5. Superfícies e forma
 
@@ -56,6 +84,12 @@ Regras: acento nunca em fundo de área grande; semânticos nunca para "dar cor";
 - Profundidade por contraste de superfície e hairlines, não por sombras pesadas; sombra só em camadas flutuantes (popover, dialog, drag).
 - Movimento: 150–200ms ease-out, entrada com stagger sutil; `prefers-reduced-motion` desliga tudo; nenhuma animação em loop exceto indicadores de processamento.
 - Foco visível global (`:focus-visible` com anel no acento) — teclado é cidadão de primeira classe no modo operacional.
+
+**Contêiner nunca fica oco.** Uma coluna de kanban com um card não se estica até o rodapé da viewport: altura pelo conteúdo com piso utilizável (~200px), e a zona de soltura cresce **enquanto o arrasto dura** (`Pipeline.tsx`). Densidade é feature; vazio estrutural não é.
+
+**Corte de conteúdo sempre se anuncia.** Quando uma faixa rola na horizontal (board de pipeline), a borda recebe esmaecimento para o fundo **apenas quando há conteúdo além** — mais um controle de rolagem rotulado (`Ver próximas etapas`), que também é o caminho de teclado para as etapas terminais. Barra decorativa permanente, nunca.
+
+**Vazio ancorado recebe marco, não invenção.** A thread do inbox continua ancorada embaixo (convenção de conversa); o topo do bloco carrega um marco **verdadeiro** — a data em que a conversa foi criada quando toda a história está em tela, ou o aviso de que só a página mais recente está carregada. Nunca um placeholder que finja um dado que o servidor não deu.
 
 ## 6. IA na interface
 
@@ -67,6 +101,13 @@ A IA aparece em três formas, sempre marcadas com o token `--ai` e rotuladas com
 
 Nunca: chat genérico flutuante, "✨ pergunte à IA" onipresente, resultados sem explicação.
 
+### 6.1 Assinaturas visuais (implementadas)
+
+Duas formas são exclusivas do Veyra e reaparecem sempre iguais:
+
+1. **Medidor de janela** (`components/ui/window-meter.tsx`) — a janela de 24h do canal externo é a coisa mais característica do produto. Vira uma hairline de 2px que se esvazia sob o cabeçalho da conversa, com o tempo exato em mono, e um chip compacto na linha da lista. Urgência por cor: **> 6h** neutro, **2–6h** `--warning`, **< 2h** `--negative`, **fechada** estado explícito ("fechada · só template"). O instante vem do servidor (`SendPolicyDto.windowExpiresAt`); o cliente só lê o relógio — política de envio nunca é recalculada na tela (ADR-038).
+2. **Marca de proveniência da IA** (`components/ui/ai.tsx`, utilitário `.ai-mark`) — tudo que o modelo escreveu recebe um filete de 2px em cobre à esquerda e um selo "IA" em mono caixa-alta: painel de rascunho no inbox, selo de autoria na thread, card de resumo e fila de propostas em Sinais.
+
 ## 7. Voz do produto
 
 pt-BR direta e profissional. Botões dizem o que fazem ("Criar oportunidade", "Enviar proposta"). Vazios orientam a próxima ação ("Nenhum contato ainda — importe uma lista ou crie o primeiro"). Erros dizem o que aconteceu e o que fazer, sem culpa e sem humor forçado. Terminologia consistente com o glossário do domínio (deal = "oportunidade" na UI).
@@ -75,4 +116,4 @@ pt-BR direta e profissional. Botões dizem o que fazem ("Criar oportunidade", "E
 
 - Todo componente novo nasce dos primitivos acessíveis (Radix/shadcn à la carte — só os necessários) + tokens; nunca de cópia de template.
 - Telas de referência (pipeline, inbox, tabela de contatos, dashboard executivo) recebem mock antes de código na Fase de UI.
-- Este documento evolui por ADR quando a direção mudar; a paleta final e as fontes escolhidas serão registradas aqui com os valores exatos.
+- Este documento evolui por ADR quando a direção mudar. A paleta final e as fontes escolhidas estão registradas em §3 e §4 com os valores exatos; a implementação vive em `apps/web/src/index.css` (tokens) e `apps/web/src/components/ui/` (primitivos).

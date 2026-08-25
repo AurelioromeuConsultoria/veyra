@@ -1,9 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AiConsentDto, AiProposalDto, AiUsageDto } from '@veyra/contracts';
 import { clsx } from 'clsx';
-import { Check, Sparkles, X } from 'lucide-react';
+import { Check, X } from 'lucide-react';
 import { useState } from 'react';
+import { AiSeal } from '../components/ui/ai';
 import { Button } from '../components/ui/button';
+import { EmptyState, PageBody, PageHeader, Panel, PanelHeader } from '../components/ui/page';
 import { api, ApiError } from '../lib/api';
 import { hasPermission, useSession } from '../lib/session';
 
@@ -85,17 +87,14 @@ export function SignalsPage() {
   });
 
   return (
-    <div className="flex h-screen flex-col">
-      <header className="flex items-center gap-3 border-b border-border px-5 py-3">
-        <Sparkles size={15} className="text-ai" />
-        <div className="mr-auto">
-          <h1 className="text-sm font-semibold">Sinais</h1>
-          <p className="text-xs text-muted-fg">
-            Propostas da IA aguardando decisão humana — nada é executado sem aprovação.
-          </p>
-        </div>
+    <div className="flex h-full flex-col">
+      <PageHeader
+        eyebrow="Inteligência"
+        title="Sinais"
+        meta="Propostas da IA aguardando decisão humana — nada é executado sem aprovação."
+      >
         {canManage ? (
-          <span className="font-mono text-xs tabular-nums text-muted-fg">
+          <span className="num text-data text-muted-fg">
             {/* valor em dólar só para quem gere billing; os demais veem o
                 volume de execuções, que é o diagnóstico de administração */}
             {usage.data?.totalCostCents !== null && usage.data
@@ -105,160 +104,173 @@ export function SignalsPage() {
                 : '—'}
           </span>
         ) : null}
-      </header>
+      </PageHeader>
 
-      <div className="flex-1 overflow-auto p-5">
+      <PageBody className="space-y-6">
         {error ? (
-          <p role="alert" className="mb-4 text-sm text-negative">
+          <p role="alert" className="text-body-sm text-negative">
             {error}
           </p>
         ) : null}
 
         {/* consentimento: sem ele, resumo de conversa nem chama o provedor */}
-        <section className="mb-6 max-w-2xl rounded-md border border-border p-3">
-          <h2 className="text-xs font-medium uppercase tracking-wider text-muted-fg">
-            Uso de conteúdo de conversa
-          </h2>
-          <p className="mt-1 text-[13px] text-muted-fg">
-            Resumir conversas envia o texto das mensagens ao provedor de IA. Desligado, a capacidade
-            não é oferecida e nenhuma chamada acontece.
-          </p>
-          <label className="mt-2 flex items-center gap-2 text-[13px]">
-            <input
-              type="checkbox"
-              checked={consent.data?.conversationContent ?? false}
-              disabled={!canManage || toggleConsent.isPending}
-              onChange={(e) => toggleConsent.mutate(e.target.checked)}
-              aria-label="Permitir uso de conteúdo de conversa"
-            />
-            Permitir uso de conteúdo de conversa
-            {!canManage ? (
-              <span className="text-xs text-muted-fg">(requer permissão de configuração)</span>
-            ) : null}
-          </label>
-        </section>
+        <Panel className="max-w-3xl">
+          <PanelHeader title="Uso de conteúdo de conversa" />
+          <div className="px-4 py-3">
+            <p className="max-w-prose text-body-sm text-muted-fg">
+              Resumir conversas envia o texto das mensagens ao provedor de IA. Desligado, a
+              capacidade não é oferecida e nenhuma chamada acontece.
+            </p>
+            <label className="mt-3 flex items-center gap-2 text-body-sm">
+              <input
+                type="checkbox"
+                checked={consent.data?.conversationContent ?? false}
+                disabled={!canManage || toggleConsent.isPending}
+                onChange={(e) => toggleConsent.mutate(e.target.checked)}
+                aria-label="Permitir uso de conteúdo de conversa"
+              />
+              Permitir uso de conteúdo de conversa
+              {!canManage ? (
+                <span className="text-data text-muted-fg">(requer permissão de configuração)</span>
+              ) : null}
+            </label>
+          </div>
+        </Panel>
 
-        {!canApprove ? (
-          <p className="mb-6 max-w-2xl text-sm text-muted-fg">
-            A fila de propostas é visível para quem pode aprová-las.
-          </p>
-        ) : null}
+        <Panel className="max-w-4xl">
+          <PanelHeader title="Propostas" meta={proposals.data ? `${proposals.data.length}` : ''}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setStatus(status === 'pending' ? 'all' : 'pending')}
+            >
+              {status === 'pending' ? 'Ver todas' : 'Só pendentes'}
+            </Button>
+          </PanelHeader>
 
-        <div className="mb-2 flex items-center gap-2">
-          <h2 className="mr-auto text-xs font-medium uppercase tracking-wider text-muted-fg">
-            Propostas
-          </h2>
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => setStatus(status === 'pending' ? 'all' : 'pending')}
-          >
-            {status === 'pending' ? 'Ver todas' : 'Só pendentes'}
-          </Button>
-        </div>
-
-        <ul className="mb-8 max-w-3xl space-y-2">
-          {(proposals.data ?? []).map((proposal) => (
-            <li key={proposal.id} className="rounded-md border border-ai/30 bg-ai/5 p-3">
-              <div className="flex items-start gap-3">
-                <div className="min-w-0 flex-1">
-                  <p className="text-[13px] font-medium">
-                    {proposal.type === 'send_message'
-                      ? String(proposal.payload.body ?? 'Rascunho de resposta')
-                      : String(proposal.payload.title ?? 'Ação proposta')}
-                  </p>
-                  <p className="mt-0.5 text-xs text-muted-fg">{proposal.rationale}</p>
-                  <p className="mt-1 font-mono text-[10px] uppercase tracking-wider text-ai">
-                    {proposal.type} · {statusLabels[proposal.status]} · expira em{' '}
-                    {dateTimeFormat.format(new Date(proposal.expiresAt))}
-                  </p>
-                </div>
-                {/**
-                 * Rascunho de resposta NÃO é aprovado aqui: enviar exige ler a
-                 * conversa inteira e poder editar o texto antes (ADR-044). O
-                 * botão desta fila executaria a ação sem o contexto que a
-                 * decisão precisa — e a rota de tarefa recusa este tipo.
-                 */}
-                {proposal.type === 'send_message' ? (
-                  <span className="shrink-0 text-[11px] text-muted-fg">
-                    Revisar no Inbox, na conversa
-                  </span>
-                ) : proposal.status === 'pending' && canApprove ? (
-                  <div className="flex shrink-0 gap-1">
-                    <Button size="sm" variant="primary" onClick={() => approve.mutate(proposal.id)}>
-                      <Check size={13} /> Aprovar
-                    </Button>
-                    <Button size="sm" variant="ghost" onClick={() => reject.mutate(proposal.id)}>
-                      <X size={13} /> Recusar
-                    </Button>
+          {!canApprove ? (
+            <p className="px-4 py-6 text-body-sm text-muted-fg">
+              A fila de propostas é visível para quem pode aprová-las.
+            </p>
+          ) : (
+            <ul>
+              {(proposals.data ?? []).map((proposal) => (
+                <li
+                  key={proposal.id}
+                  className="ai-mark flex items-start gap-3 border-b border-border/70 px-4 py-3 last:border-b-0"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <AiSeal />
+                      <span className="eyebrow text-ai">{proposal.type}</span>
+                      <span className="eyebrow text-muted-fg">{statusLabels[proposal.status]}</span>
+                    </div>
+                    <p className="mt-1.5 text-body-sm font-medium">
+                      {proposal.type === 'send_message'
+                        ? String(proposal.payload.body ?? 'Rascunho de resposta')
+                        : String(proposal.payload.title ?? 'Ação proposta')}
+                    </p>
+                    <p className="mt-0.5 text-data text-muted-fg">{proposal.rationale}</p>
+                    <p className="num mt-1.5 text-data-sm text-muted-fg">
+                      expira em {dateTimeFormat.format(new Date(proposal.expiresAt))}
+                    </p>
                   </div>
-                ) : null}
-              </div>
-            </li>
-          ))}
-          {proposals.data && proposals.data.length === 0 ? (
-            <li className="py-12 text-center text-sm text-muted-fg">Nenhuma proposta pendente.</li>
-          ) : null}
-        </ul>
+                  {/**
+                   * Rascunho de resposta NÃO é aprovado aqui: enviar exige ler a
+                   * conversa inteira e poder editar o texto antes (ADR-044). O
+                   * botão desta fila executaria a ação sem o contexto que a
+                   * decisão precisa — e a rota de tarefa recusa este tipo.
+                   */}
+                  {proposal.type === 'send_message' ? (
+                    <span className="shrink-0 text-data text-muted-fg">
+                      Revisar no Inbox, na conversa
+                    </span>
+                  ) : proposal.status === 'pending' && canApprove ? (
+                    <div className="flex shrink-0 gap-1.5">
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        onClick={() => approve.mutate(proposal.id)}
+                      >
+                        <Check size={13} /> Aprovar
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={() => reject.mutate(proposal.id)}>
+                        <X size={13} /> Recusar
+                      </Button>
+                    </div>
+                  ) : null}
+                </li>
+              ))}
+              {proposals.data && proposals.data.length === 0 ? (
+                <li>
+                  <EmptyState
+                    title="Nenhuma proposta pendente."
+                    hint="Sugestões aparecem aqui quando a IA propõe uma próxima ação."
+                  />
+                </li>
+              ) : null}
+            </ul>
+          )}
+        </Panel>
 
         {canManage ? (
-          <h2 className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-fg">
-            Execuções recentes
-          </h2>
+          <Panel className="max-w-4xl">
+            <PanelHeader title="Execuções recentes" />
+            <table className="w-full border-collapse text-body-sm">
+              <thead>
+                <tr className="border-b border-border bg-surface-2/50">
+                  {['Quando', 'Capacidade', 'Resultado', 'Tokens', 'Custo'].map((header) => (
+                    <th key={header} className="eyebrow px-4 py-2 text-left text-muted-fg">
+                      {header}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {(usage.data?.runs ?? []).map((run) => (
+                  <tr key={run.id} className="border-b border-border/60 last:border-b-0">
+                    <td className="num whitespace-nowrap px-4 py-2 text-data text-muted-fg">
+                      {dateTimeFormat.format(new Date(run.createdAt))}
+                    </td>
+                    <td className="num px-4 py-2 text-data">{run.capability}</td>
+                    <td className="px-4 py-2">
+                      <span
+                        className={clsx(
+                          'num text-data',
+                          run.status === 'ok' ? 'text-positive' : 'text-warning',
+                        )}
+                      >
+                        {run.status}
+                        {run.reasonCode ? ` · ${run.reasonCode}` : ''}
+                      </span>
+                    </td>
+                    <td className="num px-4 py-2 text-data text-muted-fg">
+                      {run.inputTokens + run.outputTokens}
+                    </td>
+                    <td className="num px-4 py-2 text-data">
+                      {run.costCents === null ? (
+                        <span className="text-muted-fg">—</span>
+                      ) : (
+                        money(run.costCents)
+                      )}
+                    </td>
+                  </tr>
+                ))}
+                {usage.data && usage.data.runs.length === 0 ? (
+                  <tr>
+                    <td colSpan={5}>
+                      <EmptyState
+                        title="Nenhuma execução ainda."
+                        hint="Cada uso de IA registra modelo, tokens, custo e resultado."
+                      />
+                    </td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </Panel>
         ) : null}
-        <table className="w-full max-w-4xl border-collapse text-[13px]">
-          <thead>
-            <tr className="border-b border-border">
-              {['Quando', 'Capacidade', 'Resultado', 'Tokens', 'Custo'].map((header) => (
-                <th
-                  key={header}
-                  className="py-2 text-left text-[11px] font-medium uppercase tracking-wider text-muted-fg"
-                >
-                  {header}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {(usage.data?.runs ?? []).map((run) => (
-              <tr key={run.id} className="border-b border-border/60">
-                <td className="whitespace-nowrap py-1.5 font-mono text-xs tabular-nums text-muted-fg">
-                  {dateTimeFormat.format(new Date(run.createdAt))}
-                </td>
-                <td className="py-1.5 font-mono text-xs">{run.capability}</td>
-                <td className="py-1.5">
-                  <span
-                    className={clsx(
-                      'text-xs',
-                      run.status === 'ok' ? 'text-positive' : 'text-warning',
-                    )}
-                  >
-                    {run.status}
-                    {run.reasonCode ? ` · ${run.reasonCode}` : ''}
-                  </span>
-                </td>
-                <td className="py-1.5 font-mono text-xs tabular-nums text-muted-fg">
-                  {run.inputTokens + run.outputTokens}
-                </td>
-                <td className="py-1.5 font-mono text-xs tabular-nums">
-                  {run.costCents === null ? (
-                    <span className="text-muted-fg">—</span>
-                  ) : (
-                    money(run.costCents)
-                  )}
-                </td>
-              </tr>
-            ))}
-            {usage.data && usage.data.runs.length === 0 ? (
-              <tr>
-                <td colSpan={5} className="py-12 text-center text-sm text-muted-fg">
-                  Nenhuma execução ainda.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
+      </PageBody>
     </div>
   );
 }

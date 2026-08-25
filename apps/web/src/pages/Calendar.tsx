@@ -87,11 +87,11 @@ export function CalendarPage() {
   const today = new Date().toDateString();
 
   return (
-    <div className="flex h-screen flex-col">
-      <header className="flex items-center gap-3 border-b border-border px-5 py-3">
+    <div className="flex h-full flex-col">
+      <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-surface px-6 py-3.5">
         <div className="mr-auto">
-          <h1 className="text-sm font-semibold">Agenda</h1>
-          <p className="text-xs text-muted-fg">
+          <h1 className="text-display-md">Agenda</h1>
+          <p className="text-data text-muted-fg">
             {rangeFormat.format(from)} – {rangeFormat.format(addDays(to, -1))}
           </p>
         </div>
@@ -180,7 +180,7 @@ export function CalendarPage() {
             <div key={day.toISOString()} className="min-w-0 border-r border-border last:border-r-0">
               <div
                 className={clsx(
-                  'sticky top-0 border-b border-border bg-background px-2 py-1.5 text-[11px] uppercase tracking-wider',
+                  'sticky top-0 border-b border-border bg-background px-2 py-1.5 text-data-sm uppercase tracking-wider',
                   day.toDateString() === today ? 'text-accent' : 'text-muted-fg',
                 )}
               >
@@ -198,7 +198,7 @@ export function CalendarPage() {
                     )}
                   >
                     <div className="flex items-start gap-1">
-                      <span className="min-w-0 flex-1 truncate text-[12px] font-medium">
+                      <span className="min-w-0 flex-1 truncate text-data font-medium">
                         {event.title}
                       </span>
                       {canWrite ? (
@@ -212,12 +212,12 @@ export function CalendarPage() {
                         </button>
                       ) : null}
                     </div>
-                    <div className="font-mono text-[10px] tabular-nums text-muted-fg">
+                    <div className="num text-data-xs text-muted-fg">
                       {hourFormat.format(new Date(event.startAt))}–
                       {hourFormat.format(new Date(event.endAt))}
                     </div>
                     {event.contactName ? (
-                      <div className="truncate text-[11px] text-muted-fg">{event.contactName}</div>
+                      <div className="truncate text-data-sm text-muted-fg">{event.contactName}</div>
                     ) : null}
                   </li>
                 ))}

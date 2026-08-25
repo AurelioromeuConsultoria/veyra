@@ -14,7 +14,7 @@ import type {
   Paginated,
   TagDto,
 } from '@veyra/contracts';
-import { ArrowDown, ArrowUp, Plus, Search, Upload } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Plus, Search, Upload } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
@@ -22,6 +22,7 @@ import { Timeline } from '../components/Timeline';
 import { Button } from '../components/ui/button';
 import { Drawer } from '../components/ui/drawer';
 import { Field, Input, Select } from '../components/ui/input';
+import { EmptyState, PageBody, PageHeader, Panel } from '../components/ui/page';
 import { TagBadge } from '../components/ui/tag-badge';
 import { api, ApiError, toQuery } from '../lib/api';
 import { hasPermission, useSession } from '../lib/session';
@@ -101,8 +102,32 @@ export function ContactsPage() {
 
   const columns = useMemo(
     () => [
-      columnHelper.accessor('name', { header: 'Nome' }),
-      columnHelper.accessor((row) => row.emails[0] ?? '', { id: 'email', header: 'E-mail' }),
+      columnHelper.accessor('name', {
+        header: 'Nome',
+        cell: (info) => (
+          <span className="flex items-center gap-2.5">
+            <span
+              aria-hidden
+              className="num flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-surface-2 text-data-xs text-muted-fg"
+            >
+              {info
+                .getValue()
+                .trim()
+                .split(/\s+/)
+                .slice(0, 2)
+                .map((part) => part[0])
+                .join('')
+                .toUpperCase()}
+            </span>
+            <span className="font-medium">{info.getValue()}</span>
+          </span>
+        ),
+      }),
+      columnHelper.accessor((row) => row.emails[0] ?? '', {
+        id: 'email',
+        header: 'E-mail',
+        cell: (info) => <span className="text-muted-fg">{info.getValue()}</span>,
+      }),
       columnHelper.accessor('companyName', { header: 'Empresa' }),
       columnHelper.accessor('tags', {
         header: 'Tags',
@@ -114,11 +139,14 @@ export function ContactsPage() {
           </span>
         ),
       }),
-      columnHelper.accessor('ownerName', { header: 'Dono' }),
+      columnHelper.accessor('ownerName', {
+        header: 'Dono',
+        cell: (info) => <span className="text-muted-fg">{info.getValue() ?? '—'}</span>,
+      }),
       columnHelper.accessor('createdAt', {
         header: 'Criado',
         cell: (info) => (
-          <span className="font-mono text-xs tabular-nums text-muted-fg">
+          <span className="num text-data text-muted-fg">
             {dateFormat.format(new Date(info.getValue()))}
           </span>
         ),
@@ -139,24 +167,32 @@ export function ContactsPage() {
   const sortable: Record<string, SortBy> = { name: 'name', createdAt: 'createdAt' };
 
   return (
-    <div className="flex h-screen flex-col">
-      <header className="flex items-center gap-3 border-b border-border px-5 py-3">
-        <div className="mr-auto">
-          <h1 className="text-sm font-semibold">Contatos</h1>
-          <p className="font-mono text-xs tabular-nums text-muted-fg">{total} no total</p>
-        </div>
+    <div className="flex h-full flex-col">
+      <PageHeader
+        title="Contatos"
+        meta={
+          <span className="num">
+            {total} {status === 'active' ? 'ativos' : 'arquivados'}
+          </span>
+        }
+      >
+        {/* larguras INTENCIONAIS: a busca tem tamanho fixo, o filtro tem o
+            tamanho do seu conteúdo e os botões não quebram em duas linhas */}
         <div className="relative">
-          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg" />
+          <Search
+            size={14}
+            aria-hidden
+            className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-fg"
+          />
           <Input
-            className="h-8 w-64 pl-8"
-            placeholder="Buscar por nome ou e-mail…"
+            className="w-80 pl-9"
+            placeholder="Buscar nome ou e-mail…"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             aria-label="Buscar contatos"
           />
         </div>
         <Select
-          className="h-8 w-auto"
           value={status}
           onChange={(e) => {
             setStatus(e.target.value as 'active' | 'archived');
@@ -170,92 +206,105 @@ export function ContactsPage() {
         {canWrite ? (
           <>
             <ImportButton onDone={invalidate} />
-            <Button variant="primary" size="sm" onClick={() => setDrawer('create')}>
+            <Button variant="primary" onClick={() => setDrawer('create')}>
               <Plus size={14} /> Novo contato
             </Button>
           </>
         ) : null}
-      </header>
+      </PageHeader>
 
-      <div className="flex-1 overflow-auto">
-        <table className="w-full border-collapse text-[13px]">
-          <thead className="sticky top-0 z-10 bg-background">
-            {table.getHeaderGroups().map((headerGroup) => (
-              <tr key={headerGroup.id} className="border-b border-border">
-                {headerGroup.headers.map((header) => {
-                  const sortKey = sortable[header.column.id];
-                  return (
-                    <th
-                      key={header.id}
-                      className="px-5 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-muted-fg"
-                    >
-                      {sortKey ? (
-                        <button
-                          type="button"
-                          className="inline-flex items-center gap-1 hover:text-foreground"
-                          onClick={() => toggleSort(sortKey)}
-                        >
-                          {flexRender(header.column.columnDef.header, header.getContext())}
-                          {sortBy === sortKey ? (
-                            sortDir === 'asc' ? (
-                              <ArrowUp size={11} />
+      <PageBody>
+        {/* o painel ABRAÇA os dados: cinco linhas não esticam por 600px de nada */}
+        <Panel className="rise">
+          <table className="w-full border-collapse text-body-sm">
+            <thead>
+              {table.getHeaderGroups().map((headerGroup) => (
+                <tr key={headerGroup.id} className="border-b border-border bg-surface-2/50">
+                  {headerGroup.headers.map((header) => {
+                    const sortKey = sortable[header.column.id];
+                    return (
+                      <th key={header.id} className="eyebrow px-4 py-2 text-left text-muted-fg">
+                        {sortKey ? (
+                          <button
+                            type="button"
+                            className="inline-flex items-center gap-1 transition-colors hover:text-foreground"
+                            onClick={() => toggleSort(sortKey)}
+                          >
+                            {flexRender(header.column.columnDef.header, header.getContext())}
+                            {sortBy === sortKey ? (
+                              sortDir === 'asc' ? (
+                                <ArrowUp size={11} />
+                              ) : (
+                                <ArrowDown size={11} />
+                              )
                             ) : (
-                              <ArrowDown size={11} />
-                            )
-                          ) : null}
-                        </button>
-                      ) : (
-                        flexRender(header.column.columnDef.header, header.getContext())
-                      )}
-                    </th>
-                  );
-                })}
-              </tr>
-            ))}
-          </thead>
-          <tbody>
-            {table.getRowModel().rows.map((row) => (
-              <tr
-                key={row.id}
-                className="cursor-pointer border-b border-border/60 hover:bg-surface-2"
-                onClick={() => setDrawer(row.original)}
-              >
-                {row.getVisibleCells().map((cell) => (
-                  <td key={cell.id} className="px-5 py-1.5">
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </td>
-                ))}
-              </tr>
-            ))}
-            {contacts.data && contacts.data.items.length === 0 ? (
-              <tr>
-                <td
-                  colSpan={columns.length}
-                  className="px-5 py-16 text-center text-sm text-muted-fg"
+                              <ArrowUpDown size={11} className="opacity-30" />
+                            )}
+                          </button>
+                        ) : (
+                          flexRender(header.column.columnDef.header, header.getContext())
+                        )}
+                      </th>
+                    );
+                  })}
+                </tr>
+              ))}
+            </thead>
+            <tbody>
+              {table.getRowModel().rows.map((row) => (
+                <tr
+                  key={row.id}
+                  tabIndex={0}
+                  className="cursor-pointer border-b border-border/60 transition-colors last:border-b-0 hover:bg-surface-2/70 focus-visible:bg-surface-2"
+                  onClick={() => setDrawer(row.original)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') setDrawer(row.original);
+                  }}
                 >
-                  {search
-                    ? 'Nenhum contato para esta busca.'
-                    : 'Nenhum contato ainda — crie o primeiro ou importe uma lista.'}
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
+                  {row.getVisibleCells().map((cell) => (
+                    <td key={cell.id} className="px-4 py-2 align-middle">
+                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+              {contacts.data && contacts.data.items.length === 0 ? (
+                <tr>
+                  <td colSpan={columns.length}>
+                    <EmptyState
+                      title={
+                        search
+                          ? 'Nenhum contato para esta busca.'
+                          : 'Nenhum contato ainda — crie o primeiro ou importe uma lista.'
+                      }
+                      hint={
+                        search
+                          ? 'Tente outro trecho do nome ou do e-mail.'
+                          : 'A importação aceita CSV com nome, e-mail e telefone.'
+                      }
+                    />
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
 
-      <footer className="flex items-center justify-between border-t border-border px-5 py-2 text-xs text-muted-fg">
-        <span className="font-mono tabular-nums">
-          {from}–{to} de {total}
-        </span>
-        <span className="flex gap-1">
-          <Button size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
-            Anterior
-          </Button>
-          <Button size="sm" disabled={to >= total} onClick={() => setPage((p) => p + 1)}>
-            Próxima
-          </Button>
-        </span>
-      </footer>
+          {/* rodapé do PAINEL: o intervalo e a paginação vivem com a tabela */}
+          <footer className="flex items-center gap-3 border-t border-border bg-surface-2/40 px-4 py-2">
+            <span className="num text-data-sm text-muted-fg">
+              {from}–{to} de {total}
+            </span>
+            <span className="ml-auto flex gap-1.5">
+              <Button size="sm" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+                Anterior
+              </Button>
+              <Button size="sm" disabled={to >= total} onClick={() => setPage((p) => p + 1)}>
+                Próxima
+              </Button>
+            </span>
+          </footer>
+        </Panel>
+      </PageBody>
 
       <Drawer
         open={drawer !== 'closed'}
@@ -323,10 +372,12 @@ function ImportButton({ onDone }: { onDone: () => void }) {
           e.target.value = '';
         }}
       />
-      <Button size="sm" onClick={() => fileInput.current?.click()} disabled={importCsv.isPending}>
+      <Button onClick={() => fileInput.current?.click()} disabled={importCsv.isPending}>
         <Upload size={14} /> {importCsv.isPending ? 'Importando…' : 'Importar CSV'}
       </Button>
-      {feedback ? <span className="text-xs text-muted-fg">{feedback}</span> : null}
+      {feedback ? (
+        <span className="whitespace-nowrap text-data text-muted-fg">{feedback}</span>
+      ) : null}
     </>
   );
 }
@@ -417,7 +468,7 @@ function ContactForm({
         <Input {...form.register('phone')} disabled={!canWrite} />
       </Field>
       <Field label="Empresa">
-        <Select {...form.register('companyId')} disabled={!canWrite}>
+        <Select full {...form.register('companyId')} disabled={!canWrite}>
           <option value="">— sem empresa —</option>
           {companies.map((company) => (
             <option key={company.id} value={company.id}>
@@ -428,7 +479,7 @@ function ContactForm({
       </Field>
       {members.length > 0 ? (
         <Field label="Dono">
-          <Select {...form.register('ownerMembershipId')} disabled={!canWrite}>
+          <Select full {...form.register('ownerMembershipId')} disabled={!canWrite}>
             <option value="">— sem dono —</option>
             {members.map((member) => (
               <option key={member.membershipId} value={member.membershipId}>
@@ -444,9 +495,7 @@ function ContactForm({
 
       {tags.length > 0 ? (
         <fieldset>
-          <legend className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-muted-fg">
-            Tags
-          </legend>
+          <legend className="eyebrow mb-1.5 block text-muted-fg">Tags</legend>
           <div className="flex flex-wrap gap-1.5">
             {tags.map((tag) => {
               const active = tagIds.includes(tag.id);
@@ -482,16 +531,14 @@ function ContactForm({
       ))}
 
       {error ? (
-        <p role="alert" className="text-sm text-negative">
+        <p role="alert" className="text-body-sm text-negative">
           {error}
         </p>
       ) : null}
 
       {contact ? (
         <section className="border-t border-border pt-4">
-          <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-fg">
-            Histórico
-          </h3>
+          <h3 className="eyebrow mb-2.5 text-muted-fg">Histórico</h3>
           <Timeline contactId={contact.id} />
         </section>
       ) : null}
@@ -553,6 +600,7 @@ function CustomFieldInput({
       return (
         <Field label={label}>
           <Select
+            full
             value={typeof value === 'string' ? value : ''}
             disabled={disabled}
             onChange={(e) => onChange(e.target.value || null)}
@@ -570,9 +618,7 @@ function CustomFieldInput({
       const selected = Array.isArray(value) ? (value as string[]) : [];
       return (
         <fieldset>
-          <legend className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-muted-fg">
-            {label}
-          </legend>
+          <legend className="eyebrow mb-1.5 block text-muted-fg">{label}</legend>
           <div className="flex flex-wrap gap-1.5">
             {def.options.map((option) => {
               const active = selected.includes(option);

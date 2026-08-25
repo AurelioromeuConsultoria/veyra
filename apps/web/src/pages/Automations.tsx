@@ -5,6 +5,7 @@ import { Plus, Trash2, Workflow } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '../components/ui/button';
 import { Field, Input, Select } from '../components/ui/input';
+import { Panel } from '../components/ui/page';
 import { api, ApiError } from '../lib/api';
 
 const dateTimeFormat = new Intl.DateTimeFormat('pt-BR', {
@@ -78,18 +79,18 @@ export function AutomationsPage() {
   });
 
   return (
-    <div className="flex h-screen flex-col">
-      <header className="flex items-center gap-3 border-b border-border px-5 py-3">
+    <div className="flex h-full flex-col">
+      <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-surface px-6 py-3.5">
         <Workflow size={15} className="text-muted-fg" />
         <div>
-          <h1 className="text-sm font-semibold">Automações</h1>
-          <p className="text-xs text-muted-fg">
+          <h1 className="text-display-md">Automações</h1>
+          <p className="text-data text-muted-fg">
             Quando algo acontece, crie a tarefa certa — catálogo fechado, sem código.
           </p>
         </div>
       </header>
 
-      <div className="flex-1 overflow-auto p-5">
+      <div className="min-h-0 flex-1 overflow-auto p-6">
         <form
           className="mb-6 flex max-w-3xl flex-wrap items-end gap-2"
           onSubmit={(e) => {
@@ -110,7 +111,7 @@ export function AutomationsPage() {
           </div>
           <Field label="Quando">
             <Select
-              className="h-8 w-auto"
+              size="sm"
               value={trigger}
               onChange={(e) => setTrigger(e.target.value as AutomationTrigger)}
               aria-label="Gatilho"
@@ -168,7 +169,7 @@ export function AutomationsPage() {
               )}
             >
               <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-medium">{automation.name}</p>
+                <p className="text-body-sm font-medium">{automation.name}</p>
                 <p className="mt-0.5 text-xs text-muted-fg">
                   {triggerLabels[automation.trigger]} → criar “{automation.actionConfig.title}”
                   {automation.actionConfig.dueInDays > 0
@@ -190,55 +191,54 @@ export function AutomationsPage() {
             </li>
           ))}
           {automations.data && automations.data.length === 0 ? (
-            <li className="py-10 text-center text-sm text-muted-fg">Nenhuma automação ainda.</li>
+            <li className="py-10 text-center text-body-sm text-muted-fg">
+              Nenhuma automação ainda.
+            </li>
           ) : null}
         </ul>
 
-        <h2 className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-fg">
-          Execuções recentes
-        </h2>
-        <table className="w-full max-w-3xl border-collapse text-[13px]">
-          <thead>
-            <tr className="border-b border-border">
-              {['Quando', 'Automação', 'Resultado'].map((header) => (
-                <th
-                  key={header}
-                  className="py-2 text-left text-[11px] font-medium uppercase tracking-wider text-muted-fg"
-                >
-                  {header}
-                </th>
+        <h2 className="mb-2 eyebrow text-muted-fg">Execuções recentes</h2>
+        <Panel className="max-w-3xl">
+          <table className="w-full border-collapse text-body-sm">
+            <thead>
+              <tr className="border-b border-border bg-surface-2/50">
+                {['Quando', 'Automação', 'Resultado'].map((header) => (
+                  <th key={header} className="py-2 text-left eyebrow text-muted-fg">
+                    {header}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {(executions.data ?? []).map((execution) => (
+                <tr key={execution.id} className="border-b border-border/60 last:border-b-0">
+                  <td className="whitespace-nowrap py-1.5 num text-data text-muted-fg">
+                    {dateTimeFormat.format(new Date(execution.createdAt))}
+                  </td>
+                  <td className="py-1.5">{execution.automationName}</td>
+                  <td className="py-1.5">
+                    <span
+                      className={clsx(
+                        'text-xs',
+                        execution.status === 'executed' ? 'text-positive' : 'text-muted-fg',
+                      )}
+                    >
+                      {statusLabels[execution.status]}
+                      {execution.reason ? ` · ${execution.reason}` : ''}
+                    </span>
+                  </td>
+                </tr>
               ))}
-            </tr>
-          </thead>
-          <tbody>
-            {(executions.data ?? []).map((execution) => (
-              <tr key={execution.id} className="border-b border-border/60">
-                <td className="whitespace-nowrap py-1.5 font-mono text-xs tabular-nums text-muted-fg">
-                  {dateTimeFormat.format(new Date(execution.createdAt))}
-                </td>
-                <td className="py-1.5">{execution.automationName}</td>
-                <td className="py-1.5">
-                  <span
-                    className={clsx(
-                      'text-xs',
-                      execution.status === 'executed' ? 'text-positive' : 'text-muted-fg',
-                    )}
-                  >
-                    {statusLabels[execution.status]}
-                    {execution.reason ? ` · ${execution.reason}` : ''}
-                  </span>
-                </td>
-              </tr>
-            ))}
-            {executions.data && executions.data.length === 0 ? (
-              <tr>
-                <td colSpan={3} className="py-10 text-center text-sm text-muted-fg">
-                  Nenhuma execução ainda.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
+              {executions.data && executions.data.length === 0 ? (
+                <tr>
+                  <td colSpan={3} className="py-10 text-center text-body-sm text-muted-fg">
+                    Nenhuma execução ainda.
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </Panel>
       </div>
     </div>
   );

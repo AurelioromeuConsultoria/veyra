@@ -2,6 +2,7 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import type { AuditEntryDto, AuditPageDto } from '@veyra/contracts';
 import { useState } from 'react';
 import { Select } from '../components/ui/input';
+import { Panel } from '../components/ui/page';
 import { api, toQuery } from '../lib/api';
 
 const dateTimeFormat = new Intl.DateTimeFormat('pt-BR', {
@@ -47,16 +48,16 @@ export function AuditPage() {
   const items = audit.data?.items ?? [];
 
   return (
-    <div className="flex h-screen flex-col">
-      <header className="flex items-center gap-3 border-b border-border px-5 py-3">
+    <div className="flex h-full flex-col">
+      <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-surface px-6 py-3.5">
         <div className="mr-auto">
-          <h1 className="text-sm font-semibold">Auditoria</h1>
-          <p className="text-xs text-muted-fg">
+          <h1 className="text-display-md">Auditoria</h1>
+          <p className="text-data text-muted-fg">
             Registro append-only de quem alterou o quê — só campos auditáveis.
           </p>
         </div>
         <Select
-          className="h-8 w-auto"
+          size="sm"
           value={entityType}
           onChange={(e) => setEntityType(e.target.value)}
           aria-label="Filtrar por entidade"
@@ -70,50 +71,49 @@ export function AuditPage() {
         </Select>
       </header>
 
-      <div className="flex-1 overflow-auto">
-        <table className="w-full border-collapse text-[13px]">
-          <thead className="sticky top-0 z-10 bg-background">
-            <tr className="border-b border-border">
-              {['Quando', 'Quem', 'Ação', 'Entidade', 'Mudança'].map((header) => (
-                <th
-                  key={header}
-                  className="px-5 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-muted-fg"
-                >
-                  {header}
-                </th>
+      <div className="min-h-0 flex-1 overflow-auto p-6">
+        <Panel>
+          <table className="w-full border-collapse text-body-sm">
+            <thead>
+              <tr className="border-b border-border bg-surface-2/50">
+                {['Quando', 'Quem', 'Ação', 'Entidade', 'Mudança'].map((header) => (
+                  <th key={header} className="eyebrow px-4 py-2 text-left text-muted-fg">
+                    {header}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((entry) => (
+                <tr key={entry.id} className="border-b border-border/60 last:border-b-0">
+                  <td className="whitespace-nowrap px-5 py-1.5 num text-data text-muted-fg">
+                    {dateTimeFormat.format(new Date(entry.createdAt))}
+                  </td>
+                  <td className="px-4 py-2">
+                    {entry.actorLabel ?? '—'}
+                    {entry.actorType !== 'user' ? (
+                      <span className="ml-1 text-data-sm text-muted-fg">({entry.actorType})</span>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-2 num text-data">{entry.action}</td>
+                  <td className="px-4 py-2">
+                    {entityLabels[entry.entityType] ?? entry.entityType}
+                  </td>
+                  <td className="max-w-md truncate px-5 py-1.5 text-muted-fg" title={diff(entry)}>
+                    {diff(entry)}
+                  </td>
+                </tr>
               ))}
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((entry) => (
-              <tr key={entry.id} className="border-b border-border/60">
-                <td className="whitespace-nowrap px-5 py-1.5 font-mono text-xs tabular-nums text-muted-fg">
-                  {dateTimeFormat.format(new Date(entry.createdAt))}
-                </td>
-                <td className="px-5 py-1.5">
-                  {entry.actorLabel ?? '—'}
-                  {entry.actorType !== 'user' ? (
-                    <span className="ml-1 text-[11px] text-muted-fg">({entry.actorType})</span>
-                  ) : null}
-                </td>
-                <td className="px-5 py-1.5 font-mono text-xs">{entry.action}</td>
-                <td className="px-5 py-1.5">
-                  {entityLabels[entry.entityType] ?? entry.entityType}
-                </td>
-                <td className="max-w-md truncate px-5 py-1.5 text-muted-fg" title={diff(entry)}>
-                  {diff(entry)}
-                </td>
-              </tr>
-            ))}
-            {audit.data && items.length === 0 ? (
-              <tr>
-                <td colSpan={5} className="px-5 py-16 text-center text-sm text-muted-fg">
-                  Nenhum registro no período.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
+              {audit.data && items.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-5 py-16 text-center text-body-sm text-muted-fg">
+                    Nenhum registro no período.
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </Panel>
       </div>
     </div>
   );

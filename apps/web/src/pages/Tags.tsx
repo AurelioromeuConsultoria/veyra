@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { Button } from '../components/ui/button';
 import { Input, Select } from '../components/ui/input';
 import { TagBadge } from '../components/ui/tag-badge';
+import { Panel } from '../components/ui/page';
 import { api, ApiError } from '../lib/api';
 import { hasPermission, useSession } from '../lib/session';
 
@@ -36,15 +37,13 @@ export function TagsPage() {
   });
 
   return (
-    <div className="flex h-screen flex-col">
-      <header className="border-b border-border px-5 py-3">
-        <h1 className="text-sm font-semibold">Tags</h1>
-        <p className="font-mono text-xs tabular-nums text-muted-fg">
-          {tags.data?.length ?? 0} no total
-        </p>
+    <div className="flex h-full flex-col">
+      <header className="shrink-0 border-b border-border bg-surface px-6 py-3.5">
+        <h1 className="text-display-md">Tags</h1>
+        <p className="num text-data text-muted-fg">{tags.data?.length ?? 0} no total</p>
       </header>
 
-      <div className="flex-1 overflow-auto p-5">
+      <div className="min-h-0 flex-1 overflow-auto p-6">
         {canWrite ? (
           <form
             className="mb-6 flex items-end gap-2"
@@ -78,59 +77,55 @@ export function TagsPage() {
               <Plus size={14} /> Criar
             </Button>
             {error ? (
-              <p role="alert" className="text-sm text-negative">
+              <p role="alert" className="text-body-sm text-negative">
                 {error}
               </p>
             ) : null}
           </form>
         ) : null}
 
-        <table className="w-full max-w-2xl border-collapse text-[13px]">
-          <thead>
-            <tr className="border-b border-border">
-              <th className="py-2 text-left text-[11px] font-medium uppercase tracking-wider text-muted-fg">
-                Tag
-              </th>
-              <th className="py-2 text-left text-[11px] font-medium uppercase tracking-wider text-muted-fg">
-                Em uso
-              </th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {(tags.data ?? []).map((tag) => (
-              <tr key={tag.id} className="border-b border-border/60">
-                <td className="py-2">
-                  <TagBadge name={tag.name} color={tag.color} />
-                </td>
-                <td className="py-2 font-mono text-xs tabular-nums text-muted-fg">
-                  {tag.usageCount}
-                </td>
-                <td className="py-2 text-right">
-                  {canWrite ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      aria-label={`Excluir tag ${tag.name}`}
-                      onClick={() => {
-                        if (window.confirm(`Excluir a tag "${tag.name}"?`)) remove.mutate(tag.id);
-                      }}
-                    >
-                      <Trash2 size={14} />
-                    </Button>
-                  ) : null}
-                </td>
+        <Panel className="max-w-2xl">
+          <table className="w-full border-collapse text-body-sm">
+            <thead>
+              <tr className="border-b border-border bg-surface-2/50">
+                <th className="py-2 text-left eyebrow text-muted-fg">Tag</th>
+                <th className="py-2 text-left eyebrow text-muted-fg">Em uso</th>
+                <th />
               </tr>
-            ))}
-            {tags.data && tags.data.length === 0 ? (
-              <tr>
-                <td colSpan={3} className="py-10 text-center text-sm text-muted-fg">
-                  Nenhuma tag ainda.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {(tags.data ?? []).map((tag) => (
+                <tr key={tag.id} className="border-b border-border/60 last:border-b-0">
+                  <td className="py-2">
+                    <TagBadge name={tag.name} color={tag.color} />
+                  </td>
+                  <td className="py-2 num text-data text-muted-fg">{tag.usageCount}</td>
+                  <td className="py-2 text-right">
+                    {canWrite ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`Excluir tag ${tag.name}`}
+                        onClick={() => {
+                          if (window.confirm(`Excluir a tag "${tag.name}"?`)) remove.mutate(tag.id);
+                        }}
+                      >
+                        <Trash2 size={14} />
+                      </Button>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+              {tags.data && tags.data.length === 0 ? (
+                <tr>
+                  <td colSpan={3} className="py-10 text-center text-body-sm text-muted-fg">
+                    Nenhuma tag ainda.
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </Panel>
       </div>
     </div>
   );

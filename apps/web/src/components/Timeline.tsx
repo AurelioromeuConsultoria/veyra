@@ -43,20 +43,20 @@ export function Timeline({ contactId, dealId }: { contactId?: string; dealId?: s
     enabled: Boolean(contactId ?? dealId),
   });
 
-  if (!activities.data) return <p className="text-xs text-muted-fg">Carregando…</p>;
+  if (!activities.data) return <p className="text-data text-muted-fg">Carregando…</p>;
   if (activities.data.items.length === 0) {
-    return <p className="text-xs text-muted-fg">Nada aconteceu por aqui ainda.</p>;
+    return <p className="text-data text-muted-fg">Nada aconteceu por aqui ainda.</p>;
   }
 
   return (
     <ol className="space-y-2.5">
       {activities.data.items.map((activity) => (
-        <li key={activity.id} className="flex gap-2.5 text-[13px]">
-          <span aria-hidden className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-border" />
+        <li key={activity.id} className="flex gap-2.5 text-body-sm">
+          <span aria-hidden className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-border-strong" />
           <span className="min-w-0">
             <span className="font-medium">{activity.actorName ?? 'Sistema'}</span>{' '}
             <span className="text-muted-fg">{describe(activity)}</span>
-            <time className="ml-1 font-mono text-[11px] tabular-nums text-muted-fg">
+            <time className="ml-1 num text-data-sm text-muted-fg">
               {dateTimeFormat.format(new Date(activity.occurredAt))}
             </time>
           </span>

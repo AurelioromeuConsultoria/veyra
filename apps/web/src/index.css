@@ -1,44 +1,129 @@
 @import 'tailwindcss';
 
 /*
- * Tokens iniciais da direção "Mineral" (docs/DESIGN_DIRECTION.md).
- * Placeholders estruturais: a paleta definitiva e as fontes serão fixadas na
- * fase de UI — a ESTRUTURA dos tokens (claro-padrão em :root, dark por classe,
- * um único acento, semânticos separados) já é a definitiva.
+ * Tipografia — três papéis que não se substituem (docs/DESIGN_DIRECTION.md §3).
+ * Pacotes npm (offline, reprodutível): nada de CDN de fonte.
+ *   display → Familjen Grotesk Variable (grotesca com personalidade contida)
+ *   corpo   → Instrument Sans Variable  (humanista; deliberadamente não é Inter)
+ *   dados   → IBM Plex Mono (estático: não existe eixo variável publicado)
  */
-:root {
-  --background: #f7f6f3; /* off-white mineral quente */
-  --surface: #ffffff;
-  --surface-2: #efede8;
-  --border: #e0ddd5;
-  --foreground: #22272e; /* grafite profundo */
-  --muted-fg: #6b7280;
-  --accent: #1f5f5b; /* acento único provisório (verde-abissal) */
-  --accent-fg: #f7fbfa;
-  --positive: #157347;
-  --negative: #b42328;
-  --warning: #92600a;
-  --info: #1d6fa5;
-  --ai: #5b4b8a; /* proveniência de IA — sutil, nunca estridente */
-  --ring: var(--accent);
-}
+@import '@fontsource-variable/familjen-grotesk/index.css';
+@import '@fontsource-variable/instrument-sans/index.css';
+@import '@fontsource/ibm-plex-mono/latin-400.css';
+@import '@fontsource/ibm-plex-mono/latin-500.css';
+@import '@fontsource/ibm-plex-mono/latin-600.css';
+@import '@fontsource/ibm-plex-mono/latin-ext-400.css';
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* ── Escala de tipo: explícita, não valores soltos por componente ──────────
+ * display 28/22/18 · corpo 14/13 · dado 12/11/10. Um componente escolhe um
+ * degrau desta escala; nunca inventa um tamanho novo.
+ */
+@theme {
+  --font-display:
+    'Familjen Grotesk Variable', 'Familjen Grotesk', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Instrument Sans Variable', 'Instrument Sans', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  --text-display-lg: 1.75rem; /* 28 — número-herói, título de tela cheia */
+  --text-display-lg--line-height: 1.12;
+  --text-display-lg--letter-spacing: -0.022em;
+  --text-display-lg--font-weight: 650;
+
+  --text-display-md: 1.375rem; /* 22 — título de página */
+  --text-display-md--line-height: 1.18;
+  --text-display-md--letter-spacing: -0.02em;
+  --text-display-md--font-weight: 640;
+
+  --text-display-sm: 1.125rem; /* 18 — título de painel/seção forte */
+  --text-display-sm--line-height: 1.25;
+  --text-display-sm--letter-spacing: -0.018em;
+  --text-display-sm--font-weight: 620;
+
+  --text-body: 0.875rem; /* 14 — corpo padrão */
+  --text-body--line-height: 1.5;
+  --text-body-sm: 0.8125rem; /* 13 — corpo denso (tabela, thread) */
+  --text-body-sm--line-height: 1.45;
+
+  --text-data: 0.75rem; /* 12 — dinheiro, data, id */
+  --text-data--line-height: 1.35;
+  --text-data-sm: 0.6875rem; /* 11 — carimbo, meta */
+  --text-data-sm--line-height: 1.3;
+  --text-data-xs: 0.625rem; /* 10 — eyebrow, selo */
+  --text-data-xs--line-height: 1.2;
+
+  /* Forma: raio contido; nada de pill generalizado (§5) */
+  --radius-card: 0.625rem;
+  --radius-control: 0.4375rem;
+
+  /* Profundidade: hairline é a regra; sombra só em camada flutuante */
+  --shadow-float: 0 18px 40px -24px rgb(29 35 33 / 0.45), 0 2px 8px -4px rgb(29 35 33 / 0.16);
+  --shadow-raised: 0 1px 2px rgb(29 35 33 / 0.05);
+
+  --ease-out: cubic-bezier(0.2, 0.65, 0.3, 1);
+}
+
+/* ── Paleta mineral — claro é o padrão (§1) ───────────────────────────────
+ * Calcário quente no fundo, grafite no texto, UM acento (verde-abissal).
+ * Contraste medido: texto normal ≥ 4.5:1, denso ≥ 6:1 sobre background.
+ */
+:root {
+  --background: #f6f3ed; /* calcário quente — nunca branco puro */
+  --surface: #fdfcfa; /* cartão/painel */
+  --surface-2: #ede8de; /* hover, campo, trilho */
+  --border: #e1dbcf; /* hairline */
+  --border-strong: #cfc7b6; /* divisor deliberado, trilho de scroll */
+  --foreground: #1d2321; /* grafite profundo */
+  --muted-fg: #4f564f; /* secundário — 6.9:1 no fundo */
+
+  --accent: #1c5a56; /* verde-abissal: a ÚNICA cor de marca */
+  --accent-hover: #174b48;
+  --accent-active: #123c3a;
+  --accent-fg: #f6faf8;
+
+  --positive: #2c6a45;
+  --negative: #9c2b24;
+  --warning: #845310;
+  --info: #1d5a85;
+  --ai: #8f4a22; /* cobre queimado: anotação à margem, não clichê violeta */
+
+  --ring: var(--accent);
+  --scrollbar: #cfc7b6;
+}
+
+/* ── Paleta noturna — grafite AZULADO, não preto (§1) ─────────────────────
+ * Não é inversão da clara: é uma paleta própria. Duas correções guiam os
+ * valores abaixo — (a) matiz: todos os neutros carregam azul (hue ≈ 215) em
+ * vez do cinza quase acromático anterior; (b) separação de plano: `surface`
+ * estava a 1.07:1 de `background`, o que fazia painel e página lerem como a
+ * mesma superfície no inbox escuro. Agora são 1.21:1, com a hierarquia
+ * carregada por contraste de superfície + hairline — nunca por sombra pesada.
+ */
 :root.dark {
-  --background: #14181f;
-  --surface: #1b212b;
-  --surface-2: #232b37;
-  --border: #2e3947;
-  --foreground: #e7eaef;
-  --muted-fg: #8b95a5;
-  --accent: #3fa39c;
-  --accent-fg: #0c1514;
-  --positive: #3ecf8e;
-  --negative: #f07178;
-  --warning: #d9a441;
-  --info: #6cb8e6;
-  --ai: #9d8cd4;
+  --background: #0d1219; /* grafite azulado profundo — nunca preto */
+  --surface: #1b2532; /* painel/cartão: +1.21:1 sobre o fundo */
+  --surface-2: #26323f; /* hover, campo, chip: +1.44:1 sobre o fundo */
+  --border: #33404f; /* hairline — 1.78:1 sobre o fundo */
+  --border-strong: #4a5867;
+  --foreground: #e6ebf1; /* 15.7:1 no fundo, 12.9:1 no painel */
+  --muted-fg: #a8b3c1; /* 8.8:1 no fundo e 7.3:1 no painel (AAA no denso) */
+
+  --accent: #5fb6ac;
+  --accent-hover: #72c3ba;
+  --accent-active: #4e9d94;
+  --accent-fg: #08100f;
+
+  --positive: #68c48d;
+  --negative: #f0847c;
+  --warning: #dcac57;
+  --info: #86bee4;
+  --ai: #e59a69; /* mesmo cobre, recalibrado para o noturno */
+
+  --ring: var(--accent);
+  --scrollbar: #4a5867;
+  --shadow-float: 0 18px 40px -24px rgb(0 0 0 / 0.7), 0 2px 8px -4px rgb(0 0 0 / 0.45);
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.3);
 }
 
 @theme inline {
@@ -46,9 +131,12 @@
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
   --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
   --color-foreground: var(--foreground);
   --color-muted-fg: var(--muted-fg);
   --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-active: var(--accent-active);
   --color-accent-fg: var(--accent-fg);
   --color-positive: var(--positive);
   --color-negative: var(--negative);
@@ -57,12 +145,113 @@
   --color-ai: var(--ai);
 }
 
-body {
-  background-color: var(--background);
-  color: var(--foreground);
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    scrollbar-color: var(--scrollbar) transparent;
+    scrollbar-width: thin;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    line-height: 1.5;
+    background-color: var(--background);
+    color: var(--foreground);
+  }
+
+  /* display nunca vira corpo e corpo nunca vira título */
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    letter-spacing: -0.02em;
+  }
+
+  /* teclado é cidadão de primeira classe no modo operacional (§5) */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  /* controles nativos herdam o acento: um só lugar decide */
+  input[type='checkbox'],
+  input[type='radio'] {
+    accent-color: var(--accent);
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--accent) 22%, transparent);
+  }
+
+  /* WebKit: mesmo trilho mineral do Firefox */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--scrollbar);
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  /* movimento é opcional: quem pediu menos, recebe nenhum (§5) */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }
 
-:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 2px;
+/* ── Utilitários da identidade ────────────────────────────────────────────*/
+
+/** Eyebrow/label: mono em caixa alta — papel de DADO, nunca de título. */
+@utility eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--text-data-xs);
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/** Qualquer número que se compara na vertical. */
+@utility num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/**
+ * Marca de proveniência da IA (§6): filete de 2px em cobre à esquerda.
+ * É o que permite reconhecer origem sem estridência — e sem violeta.
+ */
+@utility ai-mark {
+  border-left: 2px solid var(--ai);
+  background-color: color-mix(in oklab, var(--ai) 6%, transparent);
+}
+
+/** Entrada com stagger sutil; desligada por prefers-reduced-motion. */
+@utility rise {
+  animation: veyra-rise 200ms var(--ease-out) both;
+}
+
+@keyframes veyra-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }

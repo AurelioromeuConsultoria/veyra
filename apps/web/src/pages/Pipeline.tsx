@@ -2,19 +2,67 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { BoardColumnDto, BoardDto, ContactDto, DealDto, Paginated } from '@veyra/contracts';
 import { clsx } from 'clsx';
-import { Plus } from 'lucide-react';
-import { useState } from 'react';
+import { ChevronLeft, ChevronRight, Plus } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { Timeline } from '../components/Timeline';
 import { Button } from '../components/ui/button';
 import { Drawer } from '../components/ui/drawer';
 import { Field, Input, Select } from '../components/ui/input';
+import { PageHeader } from '../components/ui/page';
 import { api, ApiError } from '../lib/api';
+import { formatCents } from '../lib/format';
 import { hasPermission, useSession } from '../lib/session';
 
-const money = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' });
-const formatCents = (cents: number) => money.format(cents / 100);
+/** Coluna e folga em px — o board rola de uma etapa por vez (w-[17.5rem]). */
+const COLUMN_WIDTH_PX = 280;
+const COLUMN_GAP_PX = 12;
+
+/**
+ * Afordância de rolagem horizontal: o board tem mais etapas do que cabem na
+ * tela e a coluna cortada na borda não dizia nada a quem olha ("Ganhou" e
+ * "Perdeu" simplesmente não existiam). Devolve se há conteúdo ANTES e DEPOIS
+ * das bordas para desenhar o esmaecimento — nunca uma barra decorativa fixa.
+ */
+function useHorizontalOverflow() {
+  const viewport = useRef<HTMLDivElement>(null);
+  const track = useRef<HTMLDivElement>(null);
+  const [edges, setEdges] = useState({ start: false, end: false });
+
+  useEffect(() => {
+    const el = viewport.current;
+    if (!el) return;
+    const update = () => {
+      const max = el.scrollWidth - el.clientWidth;
+      setEdges({ start: el.scrollLeft > 1, end: max > 1 && el.scrollLeft < max - 1 });
+    };
+    update();
+    el.addEventListener('scroll', update, { passive: true });
+    // o board chega depois da query: o conteúdo muda de largura sem que o
+    // viewport mude de tamanho — por isso o trilho também é observado
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    if (track.current) observer.observe(track.current);
+    return () => {
+      el.removeEventListener('scroll', update);
+      observer.disconnect();
+    };
+  }, []);
+
+  /** Uma etapa por gesto — a largura da coluna mais a folga entre elas. */
+  const scrollByColumn = (direction: -1 | 1) => {
+    const el = viewport.current;
+    if (!el) return;
+    const smooth = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    el.scrollBy({
+      left: direction * (COLUMN_WIDTH_PX + COLUMN_GAP_PX),
+      behavior: smooth ? 'smooth' : 'auto',
+    });
+  };
+
+  return { viewport, track, scrollByColumn, ...edges };
+}
 
 const dealFormSchema = z.object({
   title: z.string().trim().min(1, 'Informe o título').max(160),
@@ -29,6 +77,10 @@ export function PipelinePage() {
   const queryClient = useQueryClient();
   const [drawer, setDrawer] = useState<'closed' | 'create' | DealDto>('closed');
   const [focusedDeal, setFocusedDeal] = useState<string | null>(null);
+  // arrasto em curso: as colunas crescem só enquanto ele dura, para que soltar
+  // continue fácil sem que a coluna vire um retângulo oco o tempo todo
+  const [dragging, setDragging] = useState(false);
+  const overflow = useHorizontalOverflow();
 
   const board = useQuery({
     queryKey: ['board'],
@@ -65,41 +117,95 @@ export function PipelinePage() {
     move.mutate({ dealId: focusedDeal, stageId: target.stageId });
   }
 
+  const abertoCents = columns.reduce((sum, column) => sum + column.totalCents, 0);
+  const abertoCount = columns.reduce((sum, column) => sum + column.deals.length, 0);
+
   return (
-    <div className="flex h-screen flex-col">
-      <header className="flex items-center gap-3 border-b border-border px-5 py-3">
-        <div className="mr-auto">
-          <h1 className="text-sm font-semibold">{board.data?.pipelineName ?? 'Pipeline'}</h1>
-          <p className="font-mono text-xs tabular-nums text-muted-fg">
-            {formatCents(columns.reduce((sum, column) => sum + column.totalCents, 0))} em aberto
-          </p>
-        </div>
-        <p className="hidden text-xs text-muted-fg lg:block">
-          Selecione um card e use <kbd className="font-mono">[</kbd> ou{' '}
-          <kbd className="font-mono">]</kbd> para mover
+    <div className="flex h-full flex-col">
+      <PageHeader
+        eyebrow="Pipeline"
+        title={board.data?.pipelineName ?? 'Pipeline'}
+        meta={
+          <span className="num">
+            {formatCents(abertoCents)} em aberto · {abertoCount} oportunidades
+          </span>
+        }
+      >
+        <p className="hidden items-center gap-1.5 text-data text-muted-fg lg:flex">
+          Selecione um card e use
+          <kbd className="num rounded-sm border border-border bg-surface-2 px-1 text-data-sm">
+            [
+          </kbd>
+          <kbd className="num rounded-sm border border-border bg-surface-2 px-1 text-data-sm">
+            ]
+          </kbd>
+          para mover
         </p>
         {canWrite ? (
-          <Button variant="primary" size="sm" onClick={() => setDrawer('create')}>
+          <Button variant="primary" onClick={() => setDrawer('create')}>
             <Plus size={14} /> Nova oportunidade
           </Button>
         ) : null}
-      </header>
+      </PageHeader>
 
-      <div className="flex-1 overflow-x-auto">
-        <div className="flex h-full min-w-max gap-3 p-4">
-          {columns.map((column) => (
-            <Column
-              key={column.stageId}
-              column={column}
-              focusedDeal={focusedDeal}
-              canWrite={canWrite}
-              onFocusDeal={setFocusedDeal}
-              onOpenDeal={setDrawer}
-              onMoveFocused={moveFocused}
-              onDropDeal={(dealId) => move.mutate({ dealId, stageId: column.stageId })}
-            />
-          ))}
+      <div className="relative min-h-0 flex-1">
+        <div ref={overflow.viewport} className="h-full overflow-auto">
+          {/* sem `h-full`: a faixa tem a altura da coluna mais cheia, não a da
+                viewport — e `stretch` (padrão) mantém o rodapé alinhado */}
+          <div ref={overflow.track} className="flex min-w-max gap-3 p-5">
+            {columns.map((column) => (
+              <Column
+                key={column.stageId}
+                column={column}
+                focusedDeal={focusedDeal}
+                canWrite={canWrite}
+                dragging={dragging}
+                onDragStateChange={setDragging}
+                onFocusDeal={setFocusedDeal}
+                onOpenDeal={setDrawer}
+                onMoveFocused={moveFocused}
+                onDropDeal={(dealId) => move.mutate({ dealId, stageId: column.stageId })}
+              />
+            ))}
+          </div>
         </div>
+        {/* esmaecimento só quando há etapa fora de vista — some quando não há */}
+        <div
+          aria-hidden
+          className={clsx(
+            'pointer-events-none absolute inset-y-0 left-0 w-12 bg-gradient-to-r from-background via-background/75 to-transparent transition-opacity duration-150',
+            overflow.start ? 'opacity-100' : 'opacity-0',
+          )}
+        />
+        <div
+          aria-hidden
+          className={clsx(
+            'pointer-events-none absolute inset-y-0 right-0 w-16 bg-gradient-to-l from-background via-background/75 to-transparent transition-opacity duration-150',
+            overflow.end ? 'opacity-100' : 'opacity-0',
+          )}
+        />
+        {/* o esmaecimento avisa; o botão resolve — e é a única forma de chegar
+            às etapas terminais sem trackpad horizontal ou foco em card */}
+        {overflow.start ? (
+          <Button
+            size="icon"
+            aria-label="Ver etapas anteriores"
+            className="absolute left-2 top-[1.625rem] shadow-float"
+            onClick={() => overflow.scrollByColumn(-1)}
+          >
+            <ChevronLeft size={16} />
+          </Button>
+        ) : null}
+        {overflow.end ? (
+          <Button
+            size="icon"
+            aria-label="Ver próximas etapas"
+            className="absolute right-2 top-[1.625rem] shadow-float"
+            onClick={() => overflow.scrollByColumn(1)}
+          >
+            <ChevronRight size={16} />
+          </Button>
+        ) : null}
       </div>
 
       <Drawer
@@ -128,6 +234,8 @@ function Column({
   column,
   focusedDeal,
   canWrite,
+  dragging,
+  onDragStateChange,
   onFocusDeal,
   onOpenDeal,
   onMoveFocused,
@@ -136,6 +244,8 @@ function Column({
   column: BoardColumnDto;
   focusedDeal: string | null;
   canWrite: boolean;
+  dragging: boolean;
+  onDragStateChange: (dragging: boolean) => void;
   onFocusDeal: (id: string) => void;
   onOpenDeal: (deal: DealDto) => void;
   onMoveFocused: (direction: -1 | 1) => void;
@@ -146,8 +256,12 @@ function Column({
     <section
       aria-label={column.stageName}
       className={clsx(
-        'flex w-72 shrink-0 flex-col rounded-lg border bg-surface',
-        dragOver ? 'border-accent' : 'border-border',
+        // altura pelo CONTEÚDO com piso utilizável: a coluna inteira continua
+        // sendo alvo de soltura, mas sem esticar até o rodapé da viewport e
+        // virar um retângulo oco de 650px quando há um card só
+        'flex w-[17.5rem] shrink-0 flex-col rounded-card border bg-surface-2/40 transition-[min-height,background-color,border-color] duration-150',
+        dragging ? 'min-h-[22rem]' : 'min-h-[12.5rem]',
+        dragOver ? 'border-accent bg-accent/5' : 'border-border',
       )}
       onDragOver={(e) => {
         if (!canWrite) return;
@@ -157,6 +271,7 @@ function Column({
       onDragLeave={() => setDragOver(false)}
       onDrop={(e) => {
         setDragOver(false);
+        onDragStateChange(false);
         // dado de drop é ENTRADA NÃO CONFIÁVEL (pode vir de outra origem):
         // só um uuid vira path de request
         const dropped = e.dataTransfer.getData('text/plain');
@@ -168,11 +283,9 @@ function Column({
         }
       }}
     >
-      <header className="flex items-baseline justify-between border-b border-border px-3 py-2">
-        <span className="text-xs font-medium uppercase tracking-wider text-muted-fg">
-          {column.stageName}
-        </span>
-        <span className="font-mono text-[11px] tabular-nums text-muted-fg">
+      <header className="flex items-baseline justify-between gap-2 border-b border-border px-3 py-2.5">
+        <span className="eyebrow truncate text-muted-fg">{column.stageName}</span>
+        <span className="num shrink-0 text-data-sm text-muted-fg">
           {column.deals.length} · {formatCents(column.totalCents)}
         </span>
       </header>
@@ -183,7 +296,11 @@ function Column({
               tabIndex={0}
               draggable={canWrite}
               aria-label={`${deal.title}, ${column.stageName}`}
-              onDragStart={(e) => e.dataTransfer.setData('text/plain', deal.id)}
+              onDragStart={(e) => {
+                e.dataTransfer.setData('text/plain', deal.id);
+                onDragStateChange(true);
+              }}
+              onDragEnd={() => onDragStateChange(false)}
               onFocus={() => onFocusDeal(deal.id)}
               onClick={() => onOpenDeal(deal)}
               onKeyDown={(e) => {
@@ -199,30 +316,43 @@ function Column({
                 }
               }}
               className={clsx(
-                'cursor-pointer rounded-md border bg-background p-2.5 transition-colors',
-                focusedDeal === deal.id ? 'border-accent' : 'border-border hover:bg-surface-2',
+                'cursor-pointer rounded-control border bg-surface p-3 shadow-raised transition-colors duration-150',
+                focusedDeal === deal.id
+                  ? 'border-accent ring-1 ring-accent/30'
+                  : 'border-border hover:border-border-strong',
               )}
             >
-              <p className="text-[13px] font-medium">{deal.title}</p>
+              <p className="text-body-sm font-medium">{deal.title}</p>
               {(deal.contactName ?? deal.companyName) ? (
-                <p className="truncate text-xs text-muted-fg">
+                <p className="mt-0.5 truncate text-data text-muted-fg">
                   {deal.contactName ?? deal.companyName}
                 </p>
               ) : null}
-              <p className="mt-1.5 flex items-center justify-between font-mono text-[11px] tabular-nums">
-                <span>{formatCents(deal.amountCents)}</span>
+              <p className="mt-2.5 flex items-baseline justify-between gap-2">
+                <span className="num text-data text-foreground">
+                  {formatCents(deal.amountCents)}
+                </span>
                 {/* sinal de "parado": insumo do lead scoring da Entrega 7 */}
+                {/* "0d" sozinho era críptico: o número precisa dizer de que
+                    tempo se trata — dias desde a entrada NESTA etapa */}
                 {deal.daysInStage >= 7 ? (
-                  <span className="text-warning">{deal.daysInStage}d parado</span>
+                  <span className="num shrink-0 rounded-sm bg-warning/12 px-1 text-data-sm text-warning">
+                    {deal.daysInStage}d parado
+                  </span>
                 ) : (
-                  <span className="text-muted-fg">{deal.daysInStage}d</span>
+                  <span className="num shrink-0 text-data-sm text-muted-fg">
+                    {deal.daysInStage}d na etapa
+                  </span>
                 )}
               </p>
             </article>
           </li>
         ))}
         {column.deals.length === 0 ? (
-          <li className="px-1 py-6 text-center text-xs text-muted-fg">Vazio</li>
+          <li className="flex flex-col items-center gap-1.5 px-1 py-8 text-center">
+            <span aria-hidden className="h-px w-8 bg-border-strong" />
+            <span className="text-data text-muted-fg">Nenhuma oportunidade nesta etapa</span>
+          </li>
         ) : null}
       </ul>
     </section>
@@ -286,7 +416,7 @@ function DealForm({
           <Input inputMode="decimal" {...form.register('amount')} disabled={!canWrite} />
         </Field>
         <Field label="Contato">
-          <Select {...form.register('contactId')} disabled={!canWrite}>
+          <Select full {...form.register('contactId')} disabled={!canWrite}>
             <option value="">— sem contato —</option>
             {contacts.map((contact) => (
               <option key={contact.id} value={contact.id}>
@@ -296,7 +426,7 @@ function DealForm({
           </Select>
         </Field>
         {error ? (
-          <p role="alert" className="text-sm text-negative">
+          <p role="alert" className="text-body-sm text-negative">
             {error}
           </p>
         ) : null}
@@ -322,9 +452,7 @@ function DealForm({
 
       {deal ? (
         <section>
-          <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-fg">
-            Histórico
-          </h3>
+          <h3 className="eyebrow mb-2.5 text-muted-fg">Histórico</h3>
           <Timeline dealId={deal.id} />
         </section>
       ) : null}

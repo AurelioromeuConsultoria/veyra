@@ -16,12 +16,14 @@ import type {
 import { clsx } from 'clsx';
 import { Check, MessageSquarePlus, Paperclip, Send, Sparkles, WandSparkles, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { AiPanel, AiSeal } from '../components/ui/ai';
 import { Button } from '../components/ui/button';
-import { Input, Select } from '../components/ui/input';
+import { Input, Select, Textarea } from '../components/ui/input';
+import { EmptyState } from '../components/ui/page';
+import { WindowChip, WindowMeter } from '../components/ui/window-meter';
 import { api, ApiError, toQuery } from '../lib/api';
+import { dayLabel, fullStamp, relativeStamp, timeOfDay } from '../lib/format';
 import { hasPermission, useSession } from '../lib/session';
-
-const timeFormat = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
 
 const statusLabels: Record<ConversationStatus, string> = {
   open: 'Aberta',
@@ -43,41 +45,27 @@ const DISPATCH_LABEL: Record<MessageDispatchState, { texto: string; tom: string 
   unknown_after_dispatch: { texto: 'Entrega não confirmada', tom: 'text-warning' },
 };
 
-/** Restante da janela, compacto, para a linha da lista. */
-function WindowChip({ expiresAt }: { expiresAt: string | null }) {
-  if (!expiresAt) return null;
-  const restante = new Date(expiresAt).getTime() - Date.now();
-  if (restante <= 0) {
-    return <span className="shrink-0 font-mono text-[9px] text-warning">fechada</span>;
-  }
-  const horas = Math.floor(restante / 3_600_000);
-  return (
-    <span className="shrink-0 font-mono text-[9px] tabular-nums text-muted-fg">
-      {horas > 0 ? `${horas}h` : `${Math.floor(restante / 60_000)}min`}
-    </span>
-  );
-}
-
 /**
- * Estado do canal externo acima do compositor: janela, opt-in e o motivo quando
- * o envio está bloqueado. É o que evita o atendente descobrir a regra pelo erro.
+ * Estado do canal externo acima do compositor: opt-in e o motivo quando o envio
+ * está bloqueado. É o que evita o atendente descobrir a regra pelo erro.
+ *
+ * O TEMPO restante não se repete aqui: ele é o medidor de janela sob o
+ * cabeçalho da conversa (assinatura visual). Só a janela FECHADA reaparece
+ * junto do compositor, porque nesse estado ela é a condição que bloqueia.
  */
 function PolicyBanner({ policy }: { policy: SendPolicyDto }) {
-  const restante = policy.windowExpiresAt
-    ? new Date(policy.windowExpiresAt).getTime() - Date.now()
-    : null;
-  const horas = restante !== null && restante > 0 ? Math.floor(restante / 3_600_000) : 0;
-  const minutos =
-    restante !== null && restante > 0 ? Math.floor((restante % 3_600_000) / 60_000) : 0;
+  const fechada =
+    policy.windowExpiresAt === null || new Date(policy.windowExpiresAt).getTime() - Date.now() <= 0;
   return (
-    <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px]" data-testid="send-policy">
-      {restante !== null && restante > 0 ? (
-        <span className="font-mono tabular-nums text-muted-fg">
-          janela {horas}h{String(minutos).padStart(2, '0')}
+    <div
+      className="mb-2.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-data-sm"
+      data-testid="send-policy"
+    >
+      {fechada ? (
+        <span className="num rounded-sm bg-warning/12 px-1.5 py-0.5 text-warning">
+          janela fechada
         </span>
-      ) : (
-        <span className="font-mono text-warning">janela fechada</span>
-      )}
+      ) : null}
       <ConsentBadge status={policy.consentStatus} />
       {policy.reason ? (
         <span className={clsx(policy.mode === 'blocked' ? 'text-negative' : 'text-muted-fg')}>
@@ -97,7 +85,11 @@ function ConsentBadge({ status }: { status: ConsentStatus | null }) {
       : status === 'revoked'
         ? { texto: 'opt-in revogado', tom: 'text-negative' }
         : { texto: 'sem opt-in', tom: 'text-muted-fg' };
-  return <span className={clsx('font-mono', rotulo.tom)}>{rotulo.texto}</span>;
+  return (
+    <span className={clsx('num rounded-sm bg-surface-2 px-1.5 py-0.5', rotulo.tom)}>
+      {rotulo.texto}
+    </span>
+  );
 }
 
 /** Código do provedor não é mensagem: quem atende lê a frase, não o número. */
@@ -125,10 +117,10 @@ function DispatchBadge({ state, error }: { state: MessageDispatchState; error: s
   // código desconhecido não vira texto na cara do usuário: some em silêncio
   const motivo = error ? DISPATCH_ERROR_LABEL[error] : undefined;
   return (
-    <p className={clsx('mt-1 font-mono text-[10px]', rotulo.tom)}>
+    <span className={clsx('num text-data-xs', rotulo.tom)}>
       {rotulo.texto}
       {motivo ? ` · ${motivo}` : ''}
-    </p>
+    </span>
   );
 }
 
@@ -474,14 +466,59 @@ export function InboxPage() {
   const shownSummary =
     summary ?? (savedSummary.data && savedSummary.data.status === 'ok' ? savedSummary.data : null);
 
+  /**
+   * Agrupamento por AUTOR: repetir nome e data completa em toda mensagem
+   * transformava a thread num relatório. Um bloco por autor, hora por mensagem
+   * — e a quebra também acontece quando passa muito tempo ou vira o dia.
+   */
+  const groups: {
+    key: string;
+    day: string;
+    direction: MessageDto['direction'];
+    authorType: MessageDto['authorType'];
+    authorName: string | null;
+    messages: MessageDto[];
+  }[] = [];
+  for (const message of thread) {
+    const anterior = groups.at(-1);
+    const mesmoDia =
+      anterior !== undefined &&
+      new Date(anterior.messages.at(-1)!.createdAt).toDateString() ===
+        new Date(message.createdAt).toDateString();
+    const proximoNoTempo =
+      anterior !== undefined &&
+      new Date(message.createdAt).getTime() -
+        new Date(anterior.messages.at(-1)!.createdAt).getTime() <
+        15 * 60_000;
+    if (
+      anterior &&
+      mesmoDia &&
+      proximoNoTempo &&
+      anterior.direction === message.direction &&
+      anterior.authorType === message.authorType &&
+      anterior.authorName === message.authorName
+    ) {
+      anterior.messages.push(message);
+    } else {
+      groups.push({
+        key: message.id,
+        day: new Date(message.createdAt).toDateString(),
+        direction: message.direction,
+        authorType: message.authorType,
+        authorName: message.authorName,
+        messages: [message],
+      });
+    }
+  }
+
   return (
-    <div className="flex h-screen">
+    <div className="flex h-full">
       {/* ── lista densa ─────────────────────────────────────────────────── */}
-      <div className="flex w-80 shrink-0 flex-col border-r border-border">
-        <header className="flex items-center gap-2 border-b border-border px-4 py-3">
-          <h1 className="mr-auto text-sm font-semibold">Inbox</h1>
+      <div className="flex w-[19.5rem] shrink-0 flex-col border-r border-border bg-surface">
+        <header className="flex items-center gap-2 border-b border-border px-4 py-3.5">
+          <h1 className="mr-auto text-display-sm">Inbox</h1>
           <Select
-            className="h-7 w-auto text-xs"
+            size="sm"
             value={status}
             onChange={(e) => setStatus(e.target.value as typeof status)}
             aria-label="Filtrar por status"
@@ -502,7 +539,7 @@ export function InboxPage() {
             }}
           >
             <Input
-              className="h-8 text-xs"
+              className="h-8 text-data"
               placeholder="Nova conversa…"
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
@@ -510,8 +547,8 @@ export function InboxPage() {
             />
             <Button
               type="submit"
-              size="sm"
-              variant="ghost"
+              size="icon"
+              variant="secondary"
               disabled={!subject.trim() || createConversation.isPending}
               aria-label="Criar conversa"
             >
@@ -520,74 +557,102 @@ export function InboxPage() {
           </form>
         ) : null}
 
-        <ul className="flex-1 overflow-auto">
-          {items.map((conversation) => (
-            <li key={conversation.id}>
-              <button
-                type="button"
-                onClick={() => {
-                  setSelectedId(conversation.id);
-                  setSummary(null);
-                }}
-                aria-current={conversation.id === selectedId}
-                className={clsx(
-                  'w-full border-b border-border/60 px-4 py-2.5 text-left hover:bg-surface-2',
-                  conversation.id === selectedId && 'bg-surface-2',
-                )}
-              >
-                <div className="flex items-baseline gap-2">
-                  <span className="truncate text-[13px] font-medium">
-                    {conversation.contactName ?? conversation.subject ?? 'Sem assunto'}
-                  </span>
-                  {conversation.channelType !== 'internal' ? (
-                    <span className="shrink-0 rounded border border-border px-1 font-mono text-[9px] uppercase tracking-wider text-muted-fg">
-                      {conversation.channelType}
+        <ul className="min-h-0 flex-1 overflow-auto">
+          {items.map((conversation) => {
+            const ativa = conversation.id === selectedId;
+            const titulo = conversation.contactName ?? conversation.subject ?? 'Sem assunto';
+            // legenda: o assunto quando há contato, o aviso quando não há
+            const legenda = conversation.contactName
+              ? conversation.subject
+              : conversation.subject
+                ? 'Sem contato'
+                : null;
+            return (
+              <li key={conversation.id}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedId(conversation.id);
+                    setSummary(null);
+                  }}
+                  aria-current={ativa}
+                  className={clsx(
+                    'relative w-full border-b border-border/70 py-2.5 pl-4 pr-3 text-left transition-colors duration-150',
+                    ativa ? 'bg-surface-2' : 'hover:bg-surface-2/60',
+                  )}
+                >
+                  <span
+                    aria-hidden
+                    className={clsx(
+                      'absolute inset-y-0 left-0 w-0.5',
+                      ativa ? 'bg-accent' : 'bg-transparent',
+                    )}
+                  />
+                  <div className="flex items-baseline gap-2">
+                    <span className="min-w-0 flex-1 truncate text-body-sm font-medium">
+                      {titulo}
                     </span>
-                  ) : null}
-                  {/* janela na LINHA serve triagem: quem está perto de fechar é
-                      quem precisa de resposta agora */}
-                  <WindowChip expiresAt={conversation.windowExpiresAt} />
-                  <span className="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-muted-fg">
-                    {timeFormat.format(new Date(conversation.lastMessageAt))}
-                  </span>
-                </div>
-                <div className="mt-0.5 flex items-center gap-1.5">
-                  <span className="truncate text-xs text-muted-fg">
-                    {conversation.contactName ? (conversation.subject ?? '—') : 'Sem contato'}
-                  </span>
-                  {conversation.status !== 'open' ? (
-                    <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wider text-warning">
-                      {statusLabels[conversation.status]}
+                    {/* UM carimbo de tempo, relativo: data completa competia
+                        com o nome do contato */}
+                    <span className="num shrink-0 text-data-sm text-muted-fg">
+                      {relativeStamp(conversation.lastMessageAt)}
                     </span>
+                  </div>
+                  {legenda ? (
+                    <p className="mt-0.5 truncate text-data text-muted-fg">{legenda}</p>
                   ) : null}
-                </div>
-              </button>
-            </li>
-          ))}
+                  <div className="mt-1.5 flex items-center gap-1.5">
+                    {conversation.channelType !== 'internal' ? (
+                      <span className="eyebrow rounded-sm bg-surface-2 px-1 py-px text-muted-fg">
+                        {conversation.channelType}
+                      </span>
+                    ) : null}
+                    {/* janela na LINHA serve triagem: quem está perto de fechar
+                        é quem precisa de resposta agora */}
+                    <WindowChip expiresAt={conversation.windowExpiresAt} />
+                    {conversation.status !== 'open' ? (
+                      <span className="eyebrow ml-auto text-muted-fg">
+                        {statusLabels[conversation.status]}
+                      </span>
+                    ) : null}
+                  </div>
+                </button>
+              </li>
+            );
+          })}
           {conversations.data && items.length === 0 ? (
-            <li className="px-4 py-16 text-center text-sm text-muted-fg">Nenhuma conversa aqui.</li>
+            <li>
+              <EmptyState
+                title="Nenhuma conversa aqui."
+                hint="Troque o filtro de status ou abra uma conversa nova."
+              />
+            </li>
           ) : null}
         </ul>
       </div>
 
       {/* ── conversa ────────────────────────────────────────────────────── */}
       {selected ? (
-        <div className="flex flex-1 flex-col">
-          <header className="flex items-center gap-3 border-b border-border px-5 py-3">
+        <div className="flex min-w-0 flex-1 flex-col">
+          <header className="flex items-center gap-3 border-b border-border bg-surface px-6 py-3">
             <div className="mr-auto min-w-0">
-              <h2 className="truncate text-sm font-semibold">
+              <h2 className="truncate text-display-sm">
                 {selected.contactName ?? selected.subject ?? 'Conversa'}
               </h2>
-              <p className="truncate text-xs text-muted-fg">
-                {selected.subject ?? '—'} · canal {selected.channelType}
-                {selected.assigneeName ? ` · ${selected.assigneeName}` : ''}
+              <p className="mt-0.5 flex items-center gap-2 truncate text-data text-muted-fg">
+                {selected.contactName && selected.subject ? (
+                  <span className="truncate">{selected.subject}</span>
+                ) : null}
+                <span className="eyebrow rounded-sm bg-surface-2 px-1 py-px">
+                  {selected.channelType}
+                </span>
+                {selected.assigneeName ? <span>{selected.assigneeName}</span> : null}
               </p>
             </div>
             {canUseAi && canReadConversations ? (
               <Button
                 size="sm"
-                variant="ghost"
-                className="text-ai"
+                variant="ai"
                 disabled={summarize.isPending}
                 onClick={() => summarize.mutate()}
               >
@@ -596,7 +661,7 @@ export function InboxPage() {
             ) : null}
             {canWrite ? (
               <Select
-                className="h-7 w-auto text-xs"
+                size="sm"
                 value={selected.status}
                 onChange={(e) => changeStatus.mutate(e.target.value as ConversationStatus)}
                 aria-label="Status da conversa"
@@ -610,108 +675,184 @@ export function InboxPage() {
             ) : null}
           </header>
 
-          {shownSummary ? (
-            <div className="border-b border-ai/30 bg-ai/5 px-5 py-3">
-              {shownSummary.status === 'ok' ? (
-                <>
-                  <p className="text-[11px] font-medium uppercase tracking-wider text-ai">
-                    Resumo · {shownSummary.sentiment}
-                  </p>
-                  <p className="mt-1 text-[13px]">{shownSummary.summary}</p>
-                  {shownSummary.pendencies && shownSummary.pendencies.length > 0 ? (
-                    <ul className="mt-1.5 list-inside list-disc text-xs text-muted-fg">
-                      {shownSummary.pendencies.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  ) : null}
-                  {shownSummary.injectionAttempt ? (
-                    <p className="mt-1.5 text-xs text-warning">
-                      Atenção: o conteúdo desta conversa tentou dar instruções ao assistente.
-                    </p>
-                  ) : null}
-                </>
-              ) : (
-                <p className="text-[13px] text-muted-fg">
-                  {shownSummary.status === 'no_consent'
-                    ? 'Resumo indisponível: o workspace não autorizou o uso de conteúdo de conversa (ajuste em Sinais).'
-                    : 'Resumo indisponível no momento.'}
-                </p>
-              )}
-            </div>
+          {/* ASSINATURA: a janela de 24h como medidor, não como texto de debug */}
+          {policy.data && policy.data.channelType !== 'internal' ? (
+            <WindowMeter expiresAt={policy.data.windowExpiresAt} />
           ) : null}
 
-          <div ref={threadRef} className="flex-1 space-y-3 overflow-auto px-5 py-4">
-            {thread.map((message) => (
-              <div
-                key={message.id}
-                className={clsx(
-                  'max-w-[70%] rounded-md border px-3 py-2',
-                  message.direction === 'outbound'
-                    ? 'ml-auto border-accent/30 bg-accent/5'
-                    : 'border-border bg-surface',
-                )}
+          {shownSummary ? (
+            shownSummary.status === 'ok' ? (
+              <AiPanel
+                title={`Resumo · ${shownSummary.sentiment}`}
+                className="border-b border-border"
               >
-                <div className="flex items-baseline gap-2">
-                  <span className="text-[11px] font-medium">{message.authorName ?? '—'}</span>
-                  {/* o texto é do modelo, aprovado por uma pessoa: sem este selo,
-                      a resposta a "quanto do que saiu daqui foi escrito por IA"
-                      só existia na auditoria (ADR-044.8) */}
-                  {message.authorType === 'ai' ? (
-                    <span className="rounded border border-ai/40 px-1 font-mono text-[9px] uppercase tracking-wider text-ai">
-                      IA
-                    </span>
-                  ) : null}
-                  <span className="font-mono text-[10px] tabular-nums text-muted-fg">
-                    {timeFormat.format(new Date(message.createdAt))}
-                  </span>
-                </div>
-                {/* React escapa por padrão: corpo de mensagem nunca vira HTML */}
-                <p className="mt-1 whitespace-pre-wrap text-[13px]">{message.body}</p>
-                {message.attachments.length > 0 ? (
-                  <ul className="mt-1.5 space-y-0.5">
-                    {message.attachments.map((file) => (
-                      <li key={file.fileObjectId}>
-                        {/* download passa pelo endpoint autorizado, nunca por URL pública */}
-                        <a
-                          className="flex items-center gap-1 text-[11px] text-accent hover:underline"
-                          href={`/api/files/${file.fileObjectId}/content`}
-                        >
-                          <Paperclip size={11} />
-                          <span className="truncate">{file.fileName}</span>
-                          <span className="font-mono tabular-nums text-muted-fg">
-                            {Math.ceil(file.sizeBytes / 1024)} kB
-                          </span>
-                        </a>
+                <p className="text-body-sm">{shownSummary.summary}</p>
+                {shownSummary.pendencies && shownSummary.pendencies.length > 0 ? (
+                  <ul className="mt-2 space-y-1">
+                    {shownSummary.pendencies.map((item) => (
+                      <li key={item} className="flex gap-2 text-data text-muted-fg">
+                        <span aria-hidden className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-ai" />
+                        {item}
                       </li>
                     ))}
                   </ul>
                 ) : null}
-                {message.dispatchState ? (
-                  <DispatchBadge state={message.dispatchState} error={message.dispatchError} />
+                {shownSummary.injectionAttempt ? (
+                  <p className="mt-2 text-data text-warning">
+                    Atenção: o conteúdo desta conversa tentou dar instruções ao assistente.
+                  </p>
                 ) : null}
-              </div>
-            ))}
-            {messages.data && thread.length === 0 ? (
-              <p className="py-16 text-center text-sm text-muted-fg">
-                Nenhuma mensagem registrada ainda.
-              </p>
-            ) : null}
+              </AiPanel>
+            ) : (
+              <AiPanel title="Resumo indisponível" className="border-b border-border">
+                <p className="text-body-sm text-muted-fg">
+                  {shownSummary.status === 'no_consent'
+                    ? 'Resumo indisponível: o workspace não autorizou o uso de conteúdo de conversa (ajuste em Sinais).'
+                    : 'Resumo indisponível no momento.'}
+                </p>
+              </AiPanel>
+            )
+          ) : null}
+
+          {/* mensagens ancoradas embaixo (convenção de conversa); o topo do
+              bloco é um MARCO REAL — quando toda a história está carregada, a
+              data em que a conversa nasceu; quando não está, o aviso de que só
+              a página mais recente está em tela. Sem isso, a thread curta
+              começava no meio de um vazio sem explicação. */}
+          <div ref={threadRef} className="min-h-0 flex-1 overflow-auto px-6 py-5">
+            <div className="flex min-h-full flex-col justify-end gap-4">
+              {thread.length > 0 ? (
+                <div className="flex flex-col items-center gap-0.5 text-center">
+                  {messages.data?.nextCursor ? (
+                    <>
+                      <span className="text-body-sm text-muted-fg">
+                        Histórico mais antigo não carregado
+                      </span>
+                      <span className="num text-data text-muted-fg">
+                        em tela: as {thread.length} mensagens mais recentes
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-body-sm text-muted-fg">Início da conversa</span>
+                      <span className="num text-data text-muted-fg">
+                        criada em {fullStamp(selected.createdAt)}
+                        {selected.channelType !== 'internal' ? ` · ${selected.channelType}` : ''}
+                      </span>
+                    </>
+                  )}
+                </div>
+              ) : null}
+              {groups.map((group, index) => {
+                const saida = group.direction === 'outbound';
+                const daIa = group.authorType === 'ai';
+                const novoDia = index === 0 || groups[index - 1].day !== group.day;
+                return (
+                  <div key={group.key} className="space-y-2">
+                    {novoDia ? (
+                      <div className="flex items-center gap-3 pb-1 pt-2">
+                        <span aria-hidden className="h-px flex-1 bg-border" />
+                        <span className="eyebrow text-muted-fg">
+                          {dayLabel(group.messages[0].createdAt)}
+                        </span>
+                        <span aria-hidden className="h-px flex-1 bg-border" />
+                      </div>
+                    ) : null}
+                    <div
+                      className={clsx('flex flex-col gap-1', saida ? 'items-end' : 'items-start')}
+                    >
+                      <div className="flex items-center gap-1.5 px-0.5">
+                        <span className="text-data-sm font-medium text-muted-fg">
+                          {group.authorName ?? (saida ? 'Você' : 'Contato')}
+                        </span>
+                        {/* UMA hora por bloco: a thread agrupa por autor, e a hora de
+                            cada frase virava uma coluna de ruído */}
+                        <span className="num text-data-xs text-muted-fg">
+                          {timeOfDay(group.messages[0].createdAt)}
+                        </span>
+                        {/* o texto é do modelo, aprovado por uma pessoa: sem este
+                          selo, "quanto do que saiu daqui foi escrito por IA" só
+                          existia na auditoria (ADR-044.8) */}
+                        {daIa ? <AiSeal /> : null}
+                      </div>
+                      {group.messages.map((message) => (
+                        <div
+                          key={message.id}
+                          className={clsx(
+                            'flex max-w-[76%] items-end gap-2',
+                            saida && 'flex-row-reverse',
+                          )}
+                        >
+                          <div
+                            title={fullStamp(message.createdAt)}
+                            className={clsx(
+                              'min-w-24 rounded-card border px-3.5 py-2.5',
+                              saida
+                                ? 'rounded-br-sm border-accent/25 bg-accent/8'
+                                : 'rounded-bl-sm border-border bg-surface shadow-raised',
+                              // proveniência: filete de cobre à esquerda do que a IA escreveu
+                              daIa && 'border-l-2 border-l-ai',
+                            )}
+                          >
+                            {/* React escapa por padrão: corpo de mensagem nunca vira HTML */}
+                            <p className="whitespace-pre-wrap text-body-sm">{message.body}</p>
+                            {message.attachments.length > 0 ? (
+                              <ul className="mt-2 space-y-1 border-t border-border/70 pt-2">
+                                {message.attachments.map((file) => (
+                                  <li key={file.fileObjectId}>
+                                    {/* download passa pelo endpoint autorizado, nunca por URL pública */}
+                                    <a
+                                      className="flex items-center gap-1.5 text-data text-accent hover:underline"
+                                      href={`/api/files/${file.fileObjectId}/content`}
+                                    >
+                                      <Paperclip size={11} />
+                                      <span className="truncate">{file.fileName}</span>
+                                      <span className="num text-data-sm text-muted-fg">
+                                        {Math.ceil(file.sizeBytes / 1024)} kB
+                                      </span>
+                                    </a>
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : null}
+                          </div>
+                          {message.dispatchState ? (
+                            <DispatchBadge
+                              state={message.dispatchState}
+                              error={message.dispatchError}
+                            />
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+              {messages.data && thread.length === 0 ? (
+                <EmptyState
+                  title="Nenhuma mensagem registrada ainda."
+                  hint="Escreva abaixo para registrar a primeira mensagem desta conversa."
+                />
+              ) : null}
+            </div>
           </div>
 
           {/* ── rascunho de resposta da IA (ADR-044) ───────────────────── */}
           {canUseAi && canReadConversations && externo ? (
             <div
-              className="border-t border-ai/30 bg-ai/5 px-5 py-2.5"
+              className="ai-mark border-t border-border px-6 py-3"
               data-testid="reply-suggestion"
             >
               {reply ? (
                 <>
-                  <p className="text-[11px] font-medium uppercase tracking-wider text-ai">
-                    Rascunho sugerido · revise antes de enviar
-                  </p>
-                  <textarea
-                    className="mt-1.5 w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-[13px] outline-none focus:border-accent"
+                  <div className="flex items-center gap-2">
+                    <AiSeal />
+                    <span className="eyebrow text-ai">
+                      Rascunho sugerido · revise antes de enviar
+                    </span>
+                  </div>
+                  <Textarea
+                    className="mt-2 bg-surface"
                     rows={3}
                     value={reply.body}
                     aria-label="Rascunho sugerido pela IA"
@@ -720,12 +861,12 @@ export function InboxPage() {
                     }
                   />
                   {reply.injection ? (
-                    <p className="mt-1 text-xs text-warning">
+                    <p className="mt-1.5 text-data text-warning">
                       Atenção: o conteúdo desta conversa tentou dar instruções ao assistente — leia
                       o rascunho com cuidado.
                     </p>
                   ) : null}
-                  <div className="mt-1.5 flex items-center gap-2">
+                  <div className="mt-2 flex items-center gap-2">
                     <Button
                       size="sm"
                       variant="primary"
@@ -761,7 +902,7 @@ export function InboxPage() {
                         <X size={13} /> Descartar
                       </Button>
                     ) : null}
-                    <span className="ml-auto font-mono text-[10px] text-muted-fg">
+                    <span className="num ml-auto text-data-sm text-muted-fg">
                       {canApproveReply
                         ? 'a IA não envia nada por conta própria'
                         : 'somente leitura: decidir sobre este rascunho exige aprovar IA e responder conversas'}
@@ -769,11 +910,10 @@ export function InboxPage() {
                   </div>
                 </>
               ) : (
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
                   <Button
                     size="sm"
-                    variant="ghost"
-                    className="text-ai"
+                    variant="ai"
                     /* indisponibilidade vem do SERVIDOR: modo de envio e
                        consentimento de conteúdo — a tela não recalcula política */
                     disabled={
@@ -800,7 +940,7 @@ export function InboxPage() {
                     <WandSparkles size={13} />{' '}
                     {suggestReply.isPending ? 'Rascunhando…' : 'Sugerir resposta'}
                   </Button>
-                  <span className="text-[11px] text-muted-fg">
+                  <span className="text-data text-muted-fg">
                     {!canSuggestReply
                       ? 'Somente leitura: gerar rascunho substitui o pendente e exige responder conversas'
                       : modo !== 'free_form'
@@ -815,14 +955,14 @@ export function InboxPage() {
           ) : null}
 
           {error ? (
-            <p role="alert" className="px-5 pb-1 text-sm text-negative">
+            <p role="alert" className="border-t border-border px-6 pt-2 text-body-sm text-negative">
               {error}
             </p>
           ) : null}
 
           {canWrite ? (
             <form
-              className="border-t border-border px-5 py-3"
+              className="border-t border-border bg-surface px-6 py-3"
               onSubmit={(e) => {
                 e.preventDefault();
                 // MESMO predicado do botão: os campos de parâmetro estão dentro
@@ -831,7 +971,7 @@ export function InboxPage() {
               }}
             >
               {externo && !policy.data ? (
-                <p className="mb-2 text-[11px] text-muted-fg">
+                <p className="mb-2 text-data text-muted-fg">
                   {policy.isError
                     ? 'Não foi possível verificar a política de envio deste canal'
                     : 'Verificando política de envio…'}
@@ -841,8 +981,9 @@ export function InboxPage() {
                 <PolicyBanner policy={policy.data} />
               ) : null}
               {modo === 'template' ? (
-                <div className="mb-2 space-y-1.5" data-testid="template-composer">
+                <div className="mb-2.5 space-y-1.5" data-testid="template-composer">
                   <Select
+                    full
                     aria-label="Template aprovado"
                     value={templateName}
                     onChange={(e) => {
@@ -881,7 +1022,7 @@ export function InboxPage() {
                   {attachments.map((file) => (
                     <li
                       key={file.id}
-                      className="flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[11px]"
+                      className="flex items-center gap-1.5 rounded-sm border border-border bg-surface-2 px-1.5 py-0.5 text-data"
                     >
                       <Paperclip size={10} />
                       <span className="max-w-40 truncate">{file.fileName}</span>
@@ -899,8 +1040,8 @@ export function InboxPage() {
                 </ul>
               ) : null}
               <div className="flex items-end gap-2">
-                <textarea
-                  className="min-h-[38px] flex-1 resize-y rounded-md border border-border bg-background px-3 py-2 text-[13px] outline-none focus:border-accent"
+                <Textarea
+                  className="min-h-[38px] flex-1"
                   rows={1}
                   placeholder="Registrar mensagem…"
                   value={draft}
@@ -921,7 +1062,7 @@ export function InboxPage() {
                 >
                   Recebida
                 </Button>
-                <label className="cursor-pointer rounded px-2 py-1.5 text-muted-fg hover:bg-surface-2">
+                <label className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-control text-muted-fg transition-colors hover:bg-surface-2 hover:text-foreground">
                   <Paperclip size={14} />
                   <span className="sr-only">Anexar arquivo</span>
                   <input
@@ -954,8 +1095,11 @@ export function InboxPage() {
           ) : null}
         </div>
       ) : (
-        <div className="flex flex-1 items-center justify-center text-sm text-muted-fg">
-          Selecione uma conversa.
+        <div className="flex flex-1 items-center justify-center">
+          <EmptyState
+            title="Selecione uma conversa."
+            hint="A lista à esquerda mostra o canal e quanto resta da janela de 24h de cada uma."
+          />
         </div>
       )}
     </div>

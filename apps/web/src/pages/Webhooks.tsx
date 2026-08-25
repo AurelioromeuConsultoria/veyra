@@ -5,6 +5,7 @@ import { Copy, Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '../components/ui/button';
 import { Field, Input } from '../components/ui/input';
+import { Panel } from '../components/ui/page';
 import { api, ApiError } from '../lib/api';
 
 const allEvents = webhookEventSchema.options;
@@ -53,15 +54,15 @@ export function WebhooksPage() {
   });
 
   return (
-    <div className="flex h-screen flex-col">
-      <header className="border-b border-border px-5 py-3">
-        <h1 className="text-sm font-semibold">Webhooks</h1>
-        <p className="text-xs text-muted-fg">
+    <div className="flex h-full flex-col">
+      <header className="shrink-0 border-b border-border bg-surface px-6 py-3.5">
+        <h1 className="text-display-md">Webhooks</h1>
+        <p className="text-data text-muted-fg">
           Entrega assinada (HMAC), com retry e pausa automática após falhas.
         </p>
       </header>
 
-      <div className="flex-1 overflow-auto p-5">
+      <div className="min-h-0 flex-1 overflow-auto p-6">
         {freshSecret ? (
           <div className="mb-5 rounded-md border border-accent/40 bg-accent/5 p-3">
             <p className="text-xs font-medium uppercase tracking-wider text-accent">
@@ -74,7 +75,7 @@ export function WebhooksPage() {
             <div className="mt-2 flex items-center gap-2">
               <code
                 data-testid="webhook-secret"
-                className="flex-1 truncate rounded bg-surface-2 px-2 py-1 font-mono text-xs"
+                className="flex-1 truncate rounded bg-surface-2 px-2 py-1 num text-data"
               >
                 {freshSecret}
               </code>
@@ -108,9 +109,7 @@ export function WebhooksPage() {
             />
           </Field>
           <fieldset>
-            <legend className="mb-1.5 block text-xs font-medium uppercase tracking-wider text-muted-fg">
-              Eventos
-            </legend>
+            <legend className="mb-1.5 block eyebrow text-muted-fg">Eventos</legend>
             <div className="flex flex-wrap gap-1.5">
               {allEvents.map((event) => {
                 const active = events.includes(event);
@@ -125,7 +124,7 @@ export function WebhooksPage() {
                       )
                     }
                     className={clsx(
-                      'rounded-full border px-2 py-0.5 font-mono text-[11px]',
+                      'num rounded-full border px-2 py-0.5 text-data-sm',
                       active
                         ? 'border-accent/40 bg-accent/10 text-accent'
                         : 'border-border text-muted-fg hover:bg-surface-2',
@@ -138,7 +137,7 @@ export function WebhooksPage() {
             </div>
           </fieldset>
           {error ? (
-            <p role="alert" className="text-sm text-negative">
+            <p role="alert" className="text-body-sm text-negative">
               {error}
             </p>
           ) : null}
@@ -151,63 +150,60 @@ export function WebhooksPage() {
           </Button>
         </form>
 
-        <table className="w-full max-w-4xl border-collapse text-[13px]">
-          <thead>
-            <tr className="border-b border-border">
-              {['URL', 'Eventos', 'Status', 'Falhas', ''].map((header, i) => (
-                <th
-                  key={`${header}-${i}`}
-                  className="py-2 text-left text-[11px] font-medium uppercase tracking-wider text-muted-fg"
-                >
-                  {header}
-                </th>
+        <Panel className="max-w-4xl">
+          <table className="w-full border-collapse text-body-sm">
+            <thead>
+              <tr className="border-b border-border bg-surface-2/50">
+                {['URL', 'Eventos', 'Status', 'Falhas', ''].map((header, i) => (
+                  <th key={`${header}-${i}`} className="py-2 text-left eyebrow text-muted-fg">
+                    {header}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {(webhooks.data ?? []).map((webhook) => (
+                <tr key={webhook.id} className="border-b border-border/60 last:border-b-0">
+                  <td className="max-w-xs truncate py-2 num text-data">{webhook.url}</td>
+                  <td className="py-2 text-xs text-muted-fg">{webhook.events.join(', ')}</td>
+                  <td className="py-2">
+                    <span
+                      className={clsx(
+                        'text-xs',
+                        webhook.status === 'active' ? 'text-positive' : 'text-warning',
+                      )}
+                    >
+                      {statusLabels[webhook.status]}
+                    </span>
+                  </td>
+                  <td className="py-2 num text-data text-muted-fg">{webhook.failureCount}</td>
+                  <td className="py-2 text-right">
+                    <Button size="sm" variant="ghost" onClick={() => toggle.mutate(webhook)}>
+                      {webhook.status === 'active' ? 'Pausar' : 'Reativar'}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      aria-label={`Excluir webhook ${webhook.url}`}
+                      onClick={() => {
+                        if (window.confirm('Excluir este webhook?')) remove.mutate(webhook.id);
+                      }}
+                    >
+                      <Trash2 size={14} />
+                    </Button>
+                  </td>
+                </tr>
               ))}
-            </tr>
-          </thead>
-          <tbody>
-            {(webhooks.data ?? []).map((webhook) => (
-              <tr key={webhook.id} className="border-b border-border/60">
-                <td className="max-w-xs truncate py-2 font-mono text-xs">{webhook.url}</td>
-                <td className="py-2 text-xs text-muted-fg">{webhook.events.join(', ')}</td>
-                <td className="py-2">
-                  <span
-                    className={clsx(
-                      'text-xs',
-                      webhook.status === 'active' ? 'text-positive' : 'text-warning',
-                    )}
-                  >
-                    {statusLabels[webhook.status]}
-                  </span>
-                </td>
-                <td className="py-2 font-mono text-xs tabular-nums text-muted-fg">
-                  {webhook.failureCount}
-                </td>
-                <td className="py-2 text-right">
-                  <Button size="sm" variant="ghost" onClick={() => toggle.mutate(webhook)}>
-                    {webhook.status === 'active' ? 'Pausar' : 'Reativar'}
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    aria-label={`Excluir webhook ${webhook.url}`}
-                    onClick={() => {
-                      if (window.confirm('Excluir este webhook?')) remove.mutate(webhook.id);
-                    }}
-                  >
-                    <Trash2 size={14} />
-                  </Button>
-                </td>
-              </tr>
-            ))}
-            {webhooks.data && webhooks.data.length === 0 ? (
-              <tr>
-                <td colSpan={5} className="py-12 text-center text-sm text-muted-fg">
-                  Nenhum webhook configurado.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
+              {webhooks.data && webhooks.data.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="py-12 text-center text-body-sm text-muted-fg">
+                    Nenhum webhook configurado.
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </Panel>
       </div>
     </div>
   );

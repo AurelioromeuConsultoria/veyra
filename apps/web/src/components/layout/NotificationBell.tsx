@@ -51,19 +51,19 @@ export function NotificationBell() {
         onClick={() => setOpen((v) => !v)}
         aria-label={unread > 0 ? `Notificações (${unread} não lidas)` : 'Notificações'}
         aria-expanded={open}
-        className="relative flex w-full items-center gap-2 rounded px-2 py-1.5 text-sm text-muted-fg hover:bg-surface-2"
+        className="relative flex w-full items-center gap-2.5 rounded-control px-2.5 py-1.5 text-body-sm text-muted-fg transition-colors hover:bg-surface-2 hover:text-foreground"
       >
         <Bell size={15} />
         Notificações
         {unread > 0 ? (
-          <span className="ml-auto rounded-full bg-accent px-1.5 font-mono text-[10px] tabular-nums text-background">
+          <span className="num ml-auto rounded-full bg-accent px-1.5 text-data-xs text-accent-fg">
             {unread}
           </span>
         ) : null}
       </button>
 
       {open ? (
-        <div className="absolute bottom-full left-0 z-20 mb-1 w-72 rounded-md border border-border bg-surface shadow-lg">
+        <div className="absolute bottom-full left-0 z-20 mb-1.5 w-72 overflow-hidden rounded-card border border-border bg-surface shadow-float">
           <div className="flex items-center gap-2 border-b border-border px-3 py-2">
             <span className="text-xs font-medium uppercase tracking-wider text-muted-fg">
               Notificações
@@ -71,7 +71,7 @@ export function NotificationBell() {
             {unread > 0 ? (
               <button
                 type="button"
-                className="ml-auto text-xs text-accent hover:underline"
+                className="ml-auto text-data text-accent hover:underline"
                 onClick={() => markAll.mutate()}
               >
                 Marcar todas
@@ -90,15 +90,15 @@ export function NotificationBell() {
                     notification.readAt === null ? 'hover:bg-surface-2' : 'opacity-60',
                   )}
                 >
-                  <p className="text-[13px]">{describe(notification)}</p>
-                  <p className="mt-0.5 font-mono text-[10px] tabular-nums text-muted-fg">
+                  <p className="text-body-sm">{describe(notification)}</p>
+                  <p className="mt-0.5 num text-data-xs text-muted-fg">
                     {timeFormat.format(new Date(notification.createdAt))}
                   </p>
                 </button>
               </li>
             ))}
             {items.length === 0 ? (
-              <li className="px-3 py-8 text-center text-xs text-muted-fg">Nada por aqui.</li>
+              <li className="px-3 py-8 text-center text-data text-muted-fg">Nada por aqui.</li>
             ) : null}
           </ul>
         </div>

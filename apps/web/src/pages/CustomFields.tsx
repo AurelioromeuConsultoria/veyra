@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { Button } from '../components/ui/button';
 import { Drawer } from '../components/ui/drawer';
 import { Field, Input, Select } from '../components/ui/input';
+import { Panel } from '../components/ui/page';
 import { api, ApiError } from '../lib/api';
 import { hasPermission, useSession } from '../lib/session';
 
@@ -53,11 +54,11 @@ export function CustomFieldsPage() {
   });
 
   return (
-    <div className="flex h-screen flex-col">
-      <header className="flex items-center gap-3 border-b border-border px-5 py-3">
+    <div className="flex h-full flex-col">
+      <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-surface px-6 py-3.5">
         <div className="mr-auto">
-          <h1 className="text-sm font-semibold">Campos personalizados</h1>
-          <p className="text-xs text-muted-fg">
+          <h1 className="text-display-md">Campos personalizados</h1>
+          <p className="text-data text-muted-fg">
             Estenda contatos e empresas sem tocar no modelo — a base dos verticais.
           </p>
         </div>
@@ -68,65 +69,67 @@ export function CustomFieldsPage() {
         ) : null}
       </header>
 
-      <div className="flex-1 overflow-auto">
-        <table className="w-full border-collapse text-[13px]">
-          <thead className="sticky top-0 z-10 bg-background">
-            <tr className="border-b border-border">
-              {['Entidade', 'Chave', 'Rótulo', 'Tipo', 'Obrigatório', 'Opções', ''].map(
-                (header, index) => (
-                  <th
-                    key={`${header}-${index}`}
-                    className="px-5 py-2 text-left text-[11px] font-medium uppercase tracking-wider text-muted-fg"
-                  >
-                    {header}
-                  </th>
-                ),
-              )}
-            </tr>
-          </thead>
-          <tbody>
-            {(fields.data ?? []).map((field) => (
-              <tr key={field.id} className="border-b border-border/60">
-                <td className="px-5 py-1.5">
-                  {field.entityType === 'contact' ? 'Contato' : 'Empresa'}
-                </td>
-                <td className="px-5 py-1.5 font-mono text-xs">{field.key}</td>
-                <td className="px-5 py-1.5">{field.label}</td>
-                <td className="px-5 py-1.5">{typeLabels[field.type]}</td>
-                <td className="px-5 py-1.5">{field.required ? 'Sim' : '—'}</td>
-                <td className="max-w-xs truncate px-5 py-1.5 text-muted-fg">
-                  {field.options.join(', ') || '—'}
-                </td>
-                <td className="px-5 py-1.5 text-right">
-                  {canManage ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      aria-label={`Excluir campo ${field.label}`}
-                      onClick={() => {
-                        if (
-                          window.confirm(
-                            `Excluir "${field.label}"? Os valores gravados serão apagados.`,
-                          )
-                        )
-                          remove.mutate(field.id);
-                      }}
+      <div className="min-h-0 flex-1 overflow-auto p-6">
+        <Panel>
+          <table className="w-full border-collapse text-body-sm">
+            <thead>
+              <tr className="border-b border-border bg-surface-2/50">
+                {['Entidade', 'Chave', 'Rótulo', 'Tipo', 'Obrigatório', 'Opções', ''].map(
+                  (header, index) => (
+                    <th
+                      key={`${header}-${index}`}
+                      className="eyebrow px-4 py-2 text-left text-muted-fg"
                     >
-                      <Trash2 size={14} />
-                    </Button>
-                  ) : null}
-                </td>
+                      {header}
+                    </th>
+                  ),
+                )}
               </tr>
-            ))}
-            {fields.data && fields.data.length === 0 ? (
-              <tr>
-                <td colSpan={7} className="px-5 py-16 text-center text-sm text-muted-fg">
-                  Nenhum campo personalizado ainda.
-                </td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {(fields.data ?? []).map((field) => (
+                <tr key={field.id} className="border-b border-border/60 last:border-b-0">
+                  <td className="px-4 py-2">
+                    {field.entityType === 'contact' ? 'Contato' : 'Empresa'}
+                  </td>
+                  <td className="px-4 py-2 num text-data">{field.key}</td>
+                  <td className="px-4 py-2">{field.label}</td>
+                  <td className="px-4 py-2">{typeLabels[field.type]}</td>
+                  <td className="px-4 py-2">{field.required ? 'Sim' : '—'}</td>
+                  <td className="max-w-xs truncate px-5 py-1.5 text-muted-fg">
+                    {field.options.join(', ') || '—'}
+                  </td>
+                  <td className="px-4 py-2 text-right">
+                    {canManage ? (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`Excluir campo ${field.label}`}
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `Excluir "${field.label}"? Os valores gravados serão apagados.`,
+                            )
+                          )
+                            remove.mutate(field.id);
+                        }}
+                      >
+                        <Trash2 size={14} />
+                      </Button>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+              {fields.data && fields.data.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="px-5 py-16 text-center text-body-sm text-muted-fg">
+                    Nenhum campo personalizado ainda.
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </Panel>
       </div>
 
       <Drawer open={open} onOpenChange={setOpen} title="Novo campo personalizado">
@@ -212,7 +215,7 @@ function FieldForm({ onDone }: { onDone: () => void }) {
         <input type="checkbox" {...form.register('required')} /> Obrigatório
       </label>
       {error ? (
-        <p role="alert" className="text-sm text-negative">
+        <p role="alert" className="text-body-sm text-negative">
           {error}
         </p>
       ) : null}
