@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './components/layout/AppShell';
 import { useSession } from './lib/session';
 import { LoginPage } from './pages/Login';
+import { TodayPage } from './pages/Today';
 
 /**
  * Code-splitting por rota: o chunk inicial carrega só login + shell; kanban,
@@ -64,7 +65,13 @@ export function App() {
             </Protected>
           }
         >
-          <Route path="/" element={<Navigate to="/pipeline" replace />} />
+          {/*
+            `/` era um redirect para o board: entrar no produto caía direto numa
+            tabela, e a visão executiva do §1 do DESIGN_DIRECTION não existia em
+            lugar nenhum. Hoje é a raiz e NÃO é lazy — é a primeira tela depois
+            do login, e um chunk a mais ali seria um branco desnecessário.
+          */}
+          <Route path="/" element={<TodayPage />} />
           <Route path="/pipeline" element={<PipelinePage />} />
           <Route path="/contacts" element={<ContactsPage />} />
           <Route path="/companies" element={<CompaniesPage />} />

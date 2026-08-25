@@ -5,7 +5,7 @@ import { Copy, Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '../components/ui/button';
 import { Field, Input } from '../components/ui/input';
-import { Panel } from '../components/ui/page';
+import { EmptyState, Panel } from '../components/ui/page';
 import { api, ApiError } from '../lib/api';
 
 const allEvents = webhookEventSchema.options;
@@ -196,8 +196,11 @@ export function WebhooksPage() {
               ))}
               {webhooks.data && webhooks.data.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="py-12 text-center text-body-sm text-muted-fg">
-                    Nenhum webhook configurado.
+                  <td colSpan={5}>
+                    <EmptyState
+                      title="Nenhum webhook configurado."
+                      hint="Um webhook avisa outro sistema quando algo acontece aqui. Informe a URL acima e escolha os eventos."
+                    />
                   </td>
                 </tr>
               ) : null}

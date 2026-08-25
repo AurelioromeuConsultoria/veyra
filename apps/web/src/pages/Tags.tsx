@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { Button } from '../components/ui/button';
 import { Input, Select } from '../components/ui/input';
 import { TagBadge } from '../components/ui/tag-badge';
-import { Panel } from '../components/ui/page';
+import { EmptyState, Panel } from '../components/ui/page';
 import { api, ApiError } from '../lib/api';
 import { hasPermission, useSession } from '../lib/session';
 
@@ -118,8 +118,11 @@ export function TagsPage() {
               ))}
               {tags.data && tags.data.length === 0 ? (
                 <tr>
-                  <td colSpan={3} className="py-10 text-center text-body-sm text-muted-fg">
-                    Nenhuma tag ainda.
+                  <td colSpan={3}>
+                    <EmptyState
+                      title="Nenhuma tag ainda."
+                      hint="Tags são o recorte livre da base: crie a primeira acima e aplique-a na ficha de um contato."
+                    />
                   </td>
                 </tr>
               ) : null}

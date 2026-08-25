@@ -2,7 +2,7 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import type { AuditEntryDto, AuditPageDto } from '@veyra/contracts';
 import { useState } from 'react';
 import { Select } from '../components/ui/input';
-import { Panel } from '../components/ui/page';
+import { EmptyState, Panel } from '../components/ui/page';
 import { api, toQuery } from '../lib/api';
 
 const dateTimeFormat = new Intl.DateTimeFormat('pt-BR', {
@@ -106,8 +106,11 @@ export function AuditPage() {
               ))}
               {audit.data && items.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-5 py-16 text-center text-body-sm text-muted-fg">
-                    Nenhum registro no período.
+                  <td colSpan={5}>
+                    <EmptyState
+                      title="Nenhum registro no período."
+                      hint="A trilha guarda quem mudou o quê. Amplie o intervalo ou tire o filtro de entidade para ver mais."
+                    />
                   </td>
                 </tr>
               ) : null}

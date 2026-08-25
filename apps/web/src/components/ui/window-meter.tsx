@@ -63,14 +63,33 @@ export function WindowChip({ expiresAt }: { expiresAt: string | null }) {
  * Medidor sob o cabeçalho da conversa: a hairline se esvazia conforme a janela
  * queima. Fechada é estado EXPLÍCITO — trilho cheio, apagado e rotulado.
  */
-export function WindowMeter({ expiresAt }: { expiresAt: string | null }) {
+export function WindowMeter({
+  expiresAt,
+  variant = 'panel',
+}: {
+  expiresAt: string | null;
+  /**
+   * `panel` — sob o cabeçalho da conversa: rótulo, trilho e tempo exato.
+   * `inline` — só o trilho, para quando o tempo JÁ é o número-herói ao lado
+   * (visão executiva). Repetir "2h18" duas vezes na mesma linha não informa
+   * duas vezes; o que a assinatura acrescenta ali é a barra que se esvazia.
+   */
+  variant?: 'panel' | 'inline';
+}) {
   useMinuteTick(expiresAt !== null);
   const state = windowState(expiresAt);
   if (state.urgency === 'none') return null;
   const closed = state.urgency === 'closed';
   return (
-    <div className="flex items-center gap-2.5 border-b border-border bg-surface px-6 py-1.5">
-      <span className="eyebrow shrink-0 text-muted-fg">Janela 24h</span>
+    <div
+      className={clsx(
+        'flex items-center gap-2.5',
+        variant === 'panel' && 'border-b border-border bg-surface px-6 py-1.5',
+      )}
+    >
+      {variant === 'panel' ? (
+        <span className="eyebrow shrink-0 text-muted-fg">Janela 24h</span>
+      ) : null}
       <span
         className="relative h-0.5 flex-1 overflow-hidden rounded-full bg-border"
         role="meter"
@@ -89,9 +108,11 @@ export function WindowMeter({ expiresAt }: { expiresAt: string | null }) {
           style={closed ? undefined : { width: `${Math.max(state.fraction * 100, 1.5)}%` }}
         />
       </span>
-      <span className={clsx('num shrink-0 text-data-sm', tone[state.urgency].text)}>
-        {closed ? 'fechada · só template' : `${state.label} restantes`}
-      </span>
+      {variant === 'panel' ? (
+        <span className={clsx('num shrink-0 text-data-sm', tone[state.urgency].text)}>
+          {closed ? 'fechada · só template' : `${state.label} restantes`}
+        </span>
+      ) : null}
     </div>
   );
 }

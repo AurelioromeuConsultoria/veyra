@@ -16,6 +16,7 @@ import type {
 import { clsx } from 'clsx';
 import { Check, MessageSquarePlus, Paperclip, Send, Sparkles, WandSparkles, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { AiPanel, AiSeal } from '../components/ui/ai';
 import { Button } from '../components/ui/button';
 import { Input, Select, Textarea } from '../components/ui/input';
@@ -145,8 +146,18 @@ export function InboxPage() {
   const canSuggestReply = canUseAi && canReadConversations && canWrite;
   const queryClient = useQueryClient();
 
+  /**
+   * `?c=<id>` é o caminho de ENTRADA vindo de fora do inbox (a visão Hoje leva
+   * a janela que está fechando direto para a conversa dela). Sem isso, "abrir
+   * o inbox" deixava a pessoa procurando na lista aquilo que a tela anterior
+   * já sabia apontar.
+   */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const deepLink = searchParams.get('c');
   const [status, setStatus] = useState<'open' | 'pending' | 'closed' | 'all'>('open');
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(deepLink);
+  /** id vindo de fora que ainda não foi localizado na lista carregada */
+  const [linking, setLinking] = useState<string | null>(deepLink);
   const [draft, setDraft] = useState('');
   /** template escolhido no compositor, quando a janela exige um */
   const [templateName, setTemplateName] = useState('');
@@ -164,6 +175,24 @@ export function InboxPage() {
   const [subject, setSubject] = useState('');
   const [error, setError] = useState<string | null>(null);
 
+  /**
+   * O parâmetro é consumido UMA vez e sai da URL: mantido, ele reabriria a
+   * conversa antiga a cada troca de seleção, e a barra de endereços passaria a
+   * mentir sobre o que está na tela.
+   */
+  useEffect(() => {
+    if (!deepLink) return;
+    setSelectedId(deepLink);
+    setLinking(deepLink);
+    setSearchParams(
+      (params) => {
+        params.delete('c');
+        return params;
+      },
+      { replace: true },
+    );
+  }, [deepLink, setSearchParams]);
+
   const listParams = { status, limit: 50 };
   const conversations = useQuery({
     queryKey: ['conversations', listParams],
@@ -172,6 +201,22 @@ export function InboxPage() {
   });
   const items = conversations.data?.items ?? [];
   const selected = items.find((c) => c.id === selectedId) ?? null;
+
+  /**
+   * A conversa apontada de fora pode não caber no filtro corrente — uma proposta
+   * de IA vive numa conversa que talvez esteja "pendente". Em vez de abrir uma
+   * área vazia sem explicação, o filtro se abre para "todas" UMA vez, e só
+   * enquanto o link de entrada ainda não foi resolvido: trocar de filtro à mão
+   * depois disso continua valendo.
+   */
+  useEffect(() => {
+    if (!linking || !conversations.isSuccess) return;
+    if (items.some((c) => c.id === linking) || status === 'all') {
+      setLinking(null);
+      return;
+    }
+    setStatus('all');
+  }, [linking, conversations.isSuccess, items, status]);
 
   /** resumo já GRAVADO da conversa: aparece sem custar um run novo */
   const savedSummary = useQuery({

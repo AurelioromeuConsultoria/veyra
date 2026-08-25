@@ -17,6 +17,7 @@ import type {
 import { ArrowDown, ArrowUp, ArrowUpDown, Plus, Search, Upload } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
+import { useSearchParams } from 'react-router-dom';
 import { z } from 'zod';
 import { Timeline } from '../components/Timeline';
 import { Button } from '../components/ui/button';
@@ -55,6 +56,32 @@ export function ContactsPage() {
   const [sortBy, setSortBy] = useState<SortBy>('createdAt');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [drawer, setDrawer] = useState<'closed' | 'create' | ContactDto>('closed');
+
+  /**
+   * `?c=<id>` é como a busca global entrega um contato: ela abre a FICHA, não
+   * uma lista pré-filtrada que ainda exigiria achar a linha. O contato é lido
+   * pelo endpoint de item porque ele pode não estar na página corrente da
+   * tabela — e o parâmetro sai da URL assim que vira estado de tela.
+   */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const deepLink = searchParams.get('c');
+  const linked = useQuery({
+    queryKey: ['contact', deepLink],
+    queryFn: () => api.get<ContactDto>(`/api/contacts/${deepLink}`),
+    enabled: deepLink !== null,
+  });
+
+  useEffect(() => {
+    if (!linked.data) return;
+    setDrawer(linked.data);
+    setSearchParams(
+      (params) => {
+        params.delete('c');
+        return params;
+      },
+      { replace: true },
+    );
+  }, [linked.data, setSearchParams]);
 
   useEffect(() => {
     const timer = setTimeout(() => {

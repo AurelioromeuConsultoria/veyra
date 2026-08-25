@@ -9,7 +9,7 @@ import { Button } from '../components/ui/button';
 import { Drawer } from '../components/ui/drawer';
 import { Field, Input, Select } from '../components/ui/input';
 import { TagBadge } from '../components/ui/tag-badge';
-import { Panel } from '../components/ui/page';
+import { EmptyState, Panel } from '../components/ui/page';
 import { api, ApiError, toQuery } from '../lib/api';
 import { hasPermission, useSession } from '../lib/session';
 
@@ -119,8 +119,11 @@ export function CompaniesPage() {
               ))}
               {companies.data && companies.data.items.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-5 py-16 text-center text-body-sm text-muted-fg">
-                    Nenhuma empresa ainda — crie a primeira.
+                  <td colSpan={6}>
+                    <EmptyState
+                      title="Nenhuma empresa ainda."
+                      hint="Empresas agrupam contatos e oportunidades de uma mesma conta — crie a primeira e vincule os contatos que já existem."
+                    />
                   </td>
                 </tr>
               ) : null}

@@ -122,8 +122,9 @@ export function PipelinePage() {
 
   return (
     <div className="flex h-full flex-col">
+      {/* o eyebrow "Pipeline" saiu: a seção agora vive no rastro do
+          cabeçalho da aplicação, e repeti-la aqui era eco, não hierarquia */}
       <PageHeader
-        eyebrow="Pipeline"
         title={board.data?.pipelineName ?? 'Pipeline'}
         meta={
           <span className="num">

@@ -43,7 +43,6 @@ export function UsagePage() {
   return (
     <div className="flex h-full flex-col">
       <PageHeader
-        eyebrow="Configuração"
         title="Uso e plano"
         meta={
           <>

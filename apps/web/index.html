@@ -3,6 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      Marca própria em SVG (apps/web/public/favicon.svg). Declarar o ícone aqui
+      também encerra o GET /favicon.ico que o navegador fazia às cegas e que
+      voltava 404 no console.
+    -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="mask-icon" href="/favicon.svg" color="#1c5a56" />
+    <!-- calcário quente / grafite azulado: os mesmos tokens da paleta (§4) -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f3ed" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0d1219" />
+    <!-- título de partida; cada rota reescreve com seção e workspace -->
     <title>Veyra</title>
   </head>
   <body>

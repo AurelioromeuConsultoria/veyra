@@ -5,7 +5,7 @@ import { Plus } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '../components/ui/button';
 import { Input, Select } from '../components/ui/input';
-import { Panel } from '../components/ui/page';
+import { EmptyState, PageBody, PageHeader, Panel } from '../components/ui/page';
 import { api, ApiError, toQuery } from '../lib/api';
 import { hasPermission, useSession } from '../lib/session';
 
@@ -49,11 +49,12 @@ export function TasksPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-surface px-6 py-3.5">
-        <div className="mr-auto">
-          <h1 className="text-display-md">Tarefas</h1>
-          <p className="num text-data text-muted-fg">{tasks.data?.total ?? 0} no total</p>
-        </div>
+      {/* o cabeçalho era um clone à mão do PageHeader — duas versões do mesmo
+          bloco divergem na primeira mexida; agora é o primitivo */}
+      <PageHeader
+        title="Tarefas"
+        meta={<span className="num">{tasks.data?.total ?? 0} no total</span>}
+      >
         <Select
           size="sm"
           value={status}
@@ -64,9 +65,9 @@ export function TasksPage() {
           <option value="done">Concluídas</option>
           <option value="all">Todas</option>
         </Select>
-      </header>
+      </PageHeader>
 
-      <div className="min-h-0 flex-1 overflow-auto p-6">
+      <PageBody>
         {canWrite ? (
           <form
             className="mb-5 flex items-center gap-2"
@@ -134,14 +135,29 @@ export function TasksPage() {
                 ) : null}
               </li>
             ))}
-            {items.length === 0 ? (
-              <li className="px-4 py-14 text-center text-body-sm text-muted-fg">
-                Nenhuma tarefa {status === 'open' ? 'aberta' : ''} — bom sinal.
+            {tasks.data && items.length === 0 ? (
+              <li>
+                <EmptyState
+                  title={
+                    status === 'open'
+                      ? 'Nenhuma tarefa aberta.'
+                      : status === 'done'
+                        ? 'Nenhuma tarefa concluída ainda.'
+                        : 'Nenhuma tarefa neste workspace.'
+                  }
+                  hint={
+                    status === 'done'
+                      ? 'Marque uma tarefa como concluída e ela aparece aqui.'
+                      : canWrite
+                        ? 'Anote o próximo passo no campo acima — tarefa com prazo aparece em Hoje.'
+                        : 'Quem tem permissão de escrita cria tarefas para o time.'
+                  }
+                />
               </li>
             ) : null}
           </ul>
         </Panel>
-      </div>
+      </PageBody>
     </div>
   );
 }

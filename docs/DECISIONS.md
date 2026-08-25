@@ -501,3 +501,21 @@ A supersessão gera `AuditLog` próprio (`ai_proposal.superseded`, adendo 3), di
 3. **O trade-off é intencional e está aceito:** quem não pode escrever na conversa pode ler, analisar e revisar, mas não substituir. Vale para a tela também — sem `conversations:write` o botão de gerar aparece desabilitado, com o motivo.
 
 **Consequência:** o modelo de permissão fica coerente — decidir sobre um rascunho (aprovar, descartar) e produzir um que substitui outro são, todos, ações sobre a conversa. Some a única exceção permanente que o adendo 2 tinha aberto.
+
+## ADR-045 — O produto tem moldura e tem entrada: `Hoje` como raiz, e uma faixa de aplicação
+
+**Status:** aceito · **Data:** 2026-08-25
+
+**Contexto:** a identidade visual foi executada (fontes, paleta, medidor de janela, marca de cobre da IA) e o produto continuou parecendo "um conjunto de páginas". A avaliação do usuário nomeou o que faltava melhor do que qualquer métrica: _"não tem topo, já começa com a página"_ e _"ainda sem personalidade"_. Duas ausências estruturais explicavam isso. A primeira: não havia moldura — nenhuma faixa constante dizendo onde a pessoa está, sem busca global, com notificação e conta escondidas no rodapé da barra lateral. A segunda, mais séria: `DESIGN_DIRECTION.md §1` promete **duas densidades** — a executiva, com respiro e poucos números grandes, e a operacional, densa — e só a operacional existia. `/` redirecionava para `/pipeline`: entrar no produto era cair numa tabela, e a identidade nunca tinha um lugar para respirar.
+
+**Decisão:**
+
+1. **`/` deixa de ser redirect e vira tela: `Hoje`**, destino do login. É a visão executiva do §1 — hierarquia tipográfica forte, números em mono, espaço.
+2. **Só dado que já existe.** Nenhuma métrica nova, nenhum endpoint novo, nenhum gráfico decorativo: janelas fechando vêm de `GET /api/conversations`, propostas pendentes de `GET /api/intelligence/proposals`, tarefas de `GET /api/tasks`, funil do mesmo dado do pipeline, teto de plano do `usedRatio` que o servidor já calcula. Cada número responde uma pergunta e leva ao lugar onde se age. Dashboard cujo gráfico não responde pergunta é proibido pelo §2 do documento de design, e a regra vale para a nossa própria tela inicial.
+3. **A janela de 24h é o herói.** É a coisa mais característica deste produto — a regra da plataforma que governa se dá para responder agora. Na `Hoje` ela deixa de ser detalhe de rodapé e vira o número grande da tela.
+4. **Faixa de aplicação persistente**: rastro (workspace / bloco / seção), busca global por `⌘K` e o cluster de notificação, tema e conta. A busca tem **duas fontes reais** — contatos e seções —, e a de contatos só é disparada com `contacts:read`: a tela não pede o que o servidor negaria.
+5. **`src/lib/nav.ts` é o mapa único de seções**, lido pela lateral, pelo rastro e pela busca. Três listas paralelas divergiriam na primeira seção nova.
+
+**Alternativas descartadas:** (a) _manter `/pipeline` como entrada_ — pipeline é trabalho de vendas, não o estado do dia de quem atende, e deixaria o produto sem nenhuma superfície de respiro; (b) _dashboard com KPIs configuráveis_ — é produto de outro tamanho, e o MVP não tem pergunta nem dado para sustentá-lo; (c) _busca global sem fonte real, só navegação_ — atalho de teclado vestido de busca, que ensina o usuário a não confiar no campo.
+
+**Consequências:** o login agora termina em `Hoje`, e os testes de ponta a ponta que interagiam com a tabela logo após entrar passaram a navegar explicitamente (`e2e/tests/helpers.ts` ganhou o destino como parâmetro). A `Hoje` depende de quatro endpoints: se algum ficar lento, é a primeira tela que sofre — cada bloco carrega e falha de forma independente, e nenhum bloqueia os outros. E existe uma tela a mais para manter em toda mudança de domínio: o preço de ter uma entrada.

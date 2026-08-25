@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Veyra">
+  <!--
+    Marca do Veyra — desenhada, não emprestada de biblioteca de ícones.
+
+    Ladrilho mineral no verde-abissal (o único acento da marca) com um "V" de
+    peso ASSIMÉTRICO: o braço esquerdo cheio, o direito reduzido a uma hairline.
+    A assimetria não é maneirismo — é a mesma ideia do medidor de janela (§6.1),
+    a linha que se esvazia, e é o que separa este V de um checkmark genérico.
+
+    Cores exatas dos tokens de docs/DESIGN_DIRECTION.md §4: nada de hex novo.
+    A variante noturna existe porque o ladrilho #1c5a56 desaparece contra a aba
+    escura do navegador; é o mesmo acento recalibrado, nunca outra cor.
+  -->
+  <style>
+    .tile { fill: #1c5a56; }
+    .ink  { stroke: #f6f3ed; }
+    @media (prefers-color-scheme: dark) {
+      .tile { fill: #2f8079; }
+      .ink  { stroke: #08100f; }
+    }
+  </style>
+  <rect class="tile" width="32" height="32" rx="7.5" />
+  <g class="ink" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9.6 8.6 L16 23.4" stroke-width="4.2" />
+    <path d="M16 23.4 L22.4 8.6" stroke-width="1.7" />
+  </g>
+</svg>

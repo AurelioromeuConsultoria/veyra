@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { NotificationDto, NotificationPageDto } from '@veyra/contracts';
 import { clsx } from 'clsx';
 import { Bell } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../../lib/api';
 
 const timeFormat = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
@@ -21,9 +21,33 @@ function describe(notification: NotificationDto): string {
   }
 }
 
+/**
+ * O sino mora no CABEÇALHO (não mais no rodapé da lateral, onde ninguém
+ * procurava por ele). Botão de ícone com o contador em cima: a caixa pessoal
+ * precisa se anunciar sem ocupar uma linha de navegação.
+ */
 export function NotificationBell() {
   const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
+
+  /** Popover aberto se fecha por Esc e por clique fora — sem isso ele fica
+   *  pendurado sobre a tela enquanto a pessoa tenta trabalhar embaixo. */
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    const onPointer = (event: PointerEvent) => {
+      if (!box.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('pointerdown', onPointer);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('pointerdown', onPointer);
+    };
+  }, [open]);
 
   const notifications = useQuery({
     queryKey: ['notifications'],
@@ -45,29 +69,37 @@ export function NotificationBell() {
   const items = notifications.data?.items ?? [];
 
   return (
-    <div className="relative">
+    <div className="relative" ref={box}>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-label={unread > 0 ? `Notificações (${unread} não lidas)` : 'Notificações'}
         aria-expanded={open}
-        className="relative flex w-full items-center gap-2.5 rounded-control px-2.5 py-1.5 text-body-sm text-muted-fg transition-colors hover:bg-surface-2 hover:text-foreground"
+        aria-haspopup="dialog"
+        className={clsx(
+          'relative rounded-control p-2 transition-colors duration-150 hover:bg-surface-2 hover:text-foreground',
+          open ? 'bg-surface-2 text-foreground' : 'text-muted-fg',
+        )}
       >
-        <Bell size={15} />
-        Notificações
+        <Bell size={15} aria-hidden />
         {unread > 0 ? (
-          <span className="num ml-auto rounded-full bg-accent px-1.5 text-data-xs text-accent-fg">
+          <span
+            aria-hidden
+            className="num absolute -right-0.5 -top-0.5 min-w-4 rounded-full bg-accent px-1 text-center text-data-xs leading-4 text-accent-fg"
+          >
             {unread}
           </span>
         ) : null}
       </button>
 
       {open ? (
-        <div className="absolute bottom-full left-0 z-20 mb-1.5 w-72 overflow-hidden rounded-card border border-border bg-surface shadow-float">
+        <div
+          role="dialog"
+          aria-label="Notificações"
+          className="absolute right-0 top-full z-30 mt-1.5 w-80 overflow-hidden rounded-card border border-border bg-surface shadow-float"
+        >
           <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-            <span className="text-xs font-medium uppercase tracking-wider text-muted-fg">
-              Notificações
-            </span>
+            <span className="eyebrow text-muted-fg">Notificações</span>
             {unread > 0 ? (
               <button
                 type="button"
@@ -98,7 +130,12 @@ export function NotificationBell() {
               </li>
             ))}
             {items.length === 0 ? (
-              <li className="px-3 py-8 text-center text-data text-muted-fg">Nada por aqui.</li>
+              <li className="px-3 py-8 text-center">
+                <p className="text-body-sm">Nada por aqui.</p>
+                <p className="mt-1 text-data text-muted-fg">
+                  Avisamos quando alguém atribuir uma conversa ou marcar você num evento.
+                </p>
+              </li>
             ) : null}
           </ul>
         </div>

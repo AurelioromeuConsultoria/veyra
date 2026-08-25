@@ -11,7 +11,8 @@ test.describe('Auth (UI)', () => {
     await expect(page.getByRole('alert')).toContainText('Credenciais inválidas');
 
     await login(page, OWNER_A);
-    await expect(page.getByText('ACME', { exact: true })).toBeVisible(); // workspace na sidebar
+    // o workspace deixou o rodapé da lateral e abre o rastro do cabeçalho
+    await expect(page.getByText('ACME', { exact: true })).toBeVisible();
   });
 
   test('rota protegida sem sessão redireciona para /login; sair encerra a sessão', async ({

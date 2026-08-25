@@ -8,8 +8,8 @@ O Veyra deve parecer um produto internacional, premium e deliberado. Cada escolh
 
 - **Modo claro mineral é o padrão.** CRM se usa 8 horas por dia sob luz de escritório; claro-padrão comunica ferramenta profissional (Linear, Stripe Dashboard aos poucos entenderam isso ao contrário — nós começamos certo para o nosso público).
 - **Dark mode sofisticado** como opção: não é inversão automática — é uma paleta noturna própria (grafites azulados profundos, o mesmo acento recalibrado), definida junto com a clara nos mesmos tokens.
-- **Duas densidades deliberadas:**
-  - **Visão executiva** — dashboards e visões de resumo: respiro, hierarquia tipográfica forte, poucos números grandes, insights de IA em destaque.
+- **Duas densidades deliberadas** (implementação e regras em §5.2):
+  - **Visão executiva** — a tela `Hoje` (rota `/`, destino do login): respiro, hierarquia tipográfica forte, poucos números grandes, sinais de IA em destaque.
   - **Modo operacional denso** — tabelas, pipeline, inbox, timeline: alta densidade de informação, linhas compactas, colunas configuráveis, teclado em primeira classe. Densidade é feature, não falha estética.
 
 ## 2. Anti-padrões (o que o Veyra nunca parece)
@@ -90,6 +90,40 @@ Regras: acento nunca em fundo de área grande; semânticos nunca para "dar cor";
 **Corte de conteúdo sempre se anuncia.** Quando uma faixa rola na horizontal (board de pipeline), a borda recebe esmaecimento para o fundo **apenas quando há conteúdo além** — mais um controle de rolagem rotulado (`Ver próximas etapas`), que também é o caminho de teclado para as etapas terminais. Barra decorativa permanente, nunca.
 
 **Vazio ancorado recebe marco, não invenção.** A thread do inbox continua ancorada embaixo (convenção de conversa); o topo do bloco carrega um marco **verdadeiro** — a data em que a conversa foi criada quando toda a história está em tela, ou o aviso de que só a página mais recente está carregada. Nunca um placeholder que finja um dado que o servidor não deu.
+
+### 5.1 Moldura da aplicação (implementada)
+
+Sem uma faixa constante o produto lia como um conjunto de páginas soltas — a barra lateral e, colada nela, a tela. A moldura tem **duas peças com papéis distintos**:
+
+| Peça                                              | Papel                                                                                                                                                                                                                                                                                    |
+| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Barra lateral** (`layout/AppShell.tsx`)         | Diz **o que existe**: wordmark + navegação em três blocos (Trabalho, Inteligência, Configuração). Não tem mais rodapé — notificação, tema e sessão moravam no canto onde ninguém procura por eles.                                                                                       |
+| **Faixa superior** (`layout/AppHeader.tsx`, 52px) | Diz **onde você está, o que procura e quem é você**: rastro `workspace / bloco / seção` (papel de DADO — mono, 11px, muted; nunca um segundo título), busca global no centro com o atalho impresso, e à direita sino, tema e sessão. `Sair` é botão visível, não item de menu escondido. |
+
+O rastro tem três degraus porque o do meio (**o bloco**) é a única informação que o título da página não dá — e o rastro é o único elemento que não muda de assunto quando a página troca de nome (o board mostra o nome do pipeline; o inbox, o assunto da conversa). Em contrapartida, o `eyebrow` do `PageHeader` que repetia a seção **saiu** de Pipeline, Sinais e Uso e plano: quando a moldura nasceu, ele virou eco.
+
+**Busca global** (`layout/GlobalSearch.tsx`, `⌘K`/`Ctrl+K`): duas fontes e só duas, porque só duas existem de verdade — contatos (`GET /api/contacts?search=`) e as seções do mapa único (`lib/nav.ts`). Categoria que nunca traz resultado é pior que ausência: ensina a não confiar na busca. A consulta de contato só é **disparada** para quem tem `contacts:read`. Teclado completo: setas, Enter, Esc, `aria-activedescendant` sobre um `listbox` real.
+
+**`lib/nav.ts` é o mapa único** das seções, lido pela lateral, pelo rastro e pela busca. Três listas paralelas divergiriam na primeira seção nova — e a busca passaria a oferecer um destino que a permissão nega.
+
+### 5.2 As duas densidades, na prática
+
+O §1 prometia duas densidades e por muito tempo só a densa existia: entrar no produto caía direto numa tabela, e a identidade não tinha um só lugar para respirar.
+
+| Densidade            | Onde                                             | Regras                                                                                                                                                                                                                                                                 |
+| -------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Visão executiva**  | `pages/Today.tsx` — a rota `/`, destino do login | Respiro (container de 64rem, blocos a 40px), display-lg no título, número-herói em mono, entrada com `rise` escalonado. **Nenhum número que não venha de endpoint existente**; cada bloco responde uma pergunta escrita ao lado do título e leva ao lugar onde se age. |
+| **Modo operacional** | pipeline, inbox, contatos, tabelas, timeline     | `PageHeader` + conteúdo denso, linhas compactas, teclado em primeira classe. **Sem animação de entrada**: quem trabalha aqui volta à mesma tela dezenas de vezes por hora.                                                                                             |
+
+**A tela `Hoje` em quatro blocos, nesta ordem de importância** — janelas de 24h (herói: o tempo restante **vira** o número em display, colorido pela urgência, com o medidor inline logo abaixo); "Aguardando você" (propostas de IA em cobre + tarefas vencendo); funil (uma faixa compacta de valor por etapa, uma linha — não um dashboard); plano (**só** as métricas com `usedRatio ≥ 0,8`; se nenhuma, uma linha discreta). Cada bloco carrega a permissão que o servidor exige e **não dispara chamada que voltaria 403**.
+
+Regra que nasceu aqui: **o rótulo não promete urgência que não existe** — o bloco se chama "Janelas fechando" só quando alguma está abaixo de 6h; caso contrário, "Janelas de 24h". E janela **fechada** não desenha medidor na variante inline: sem o rótulo do painel, um trilho cheio e apagado lê igual a uma janela quase inteira.
+
+**Parcimônia do acento na visão executiva.** Os links "ver tudo" de cada bloco são cinza com seta, não verdes: quatro links no acento numa tela só transformariam a única cor de marca em decoração. O acento fica com o wordmark, o marcador da seção ativa e a ação primária.
+
+### 5.3 Marca de aba
+
+`apps/web/public/favicon.svg` — ladrilho no verde-abissal com um "V" de peso **assimétrico** (braço esquerdo cheio, direito reduzido a uma hairline). A assimetria é a mesma ideia do medidor de janela (§6.1), e é o que separa este V de um checkmark genérico. Nenhum hex fora dos tokens do §4; variante noturna porque o ladrilho escuro some contra a aba escura do navegador. `<title>` por rota traz seção e workspace — quem opera dois clientes em duas abas não adivinha pelo ícone.
 
 ## 6. IA na interface
 

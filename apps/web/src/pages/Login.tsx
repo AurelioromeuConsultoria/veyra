@@ -1,5 +1,6 @@
 import { zodResolver } from '@hookform/resolvers/zod';
 import { loginSchema, type LoginInput } from '@veyra/contracts';
+import { useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { Navigate } from 'react-router-dom';
 import { Button } from '../components/ui/button';
@@ -12,7 +13,14 @@ export function LoginPage() {
   const login = useLogin();
   const form = useForm<LoginInput>({ resolver: zodResolver(loginSchema) });
 
-  if (!isLoading && user) return <Navigate to="/contacts" replace />;
+  /** sair devolve a aba ao estado neutro; sem isto o título fica preso na
+   *  última seção (e no nome do workspace de quem acabou de sair) */
+  useEffect(() => {
+    document.title = 'Entrar · Veyra';
+  }, []);
+
+  // o destino do login é a visão do dia, não uma tabela
+  if (!isLoading && user) return <Navigate to="/" replace />;
 
   return (
     <main className="flex min-h-screen">

@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { Button } from '../components/ui/button';
 import { Drawer } from '../components/ui/drawer';
 import { Field, Input, Select } from '../components/ui/input';
-import { Panel } from '../components/ui/page';
+import { EmptyState, Panel } from '../components/ui/page';
 import { api, ApiError } from '../lib/api';
 import { hasPermission, useSession } from '../lib/session';
 
@@ -122,8 +122,11 @@ export function CustomFieldsPage() {
               ))}
               {fields.data && fields.data.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-5 py-16 text-center text-body-sm text-muted-fg">
-                    Nenhum campo personalizado ainda.
+                  <td colSpan={7}>
+                    <EmptyState
+                      title="Nenhum campo personalizado ainda."
+                      hint="Campos guardam o que é específico da sua operação e aparecem na ficha do contato assim que criados."
+                    />
                   </td>
                 </tr>
               ) : null}

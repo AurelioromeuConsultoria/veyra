@@ -4,7 +4,7 @@ import { login } from './helpers';
 
 test.describe('Contatos (UI)', () => {
   test('criar contato pela UI, ver na tabela densa e buscar', async ({ page }) => {
-    await login(page, OWNER_A);
+    await login(page, OWNER_A, 'Contatos');
 
     await page.getByRole('button', { name: 'Novo contato' }).click();
     await page.getByLabel('Nome').fill('Ana Prospect E2E');
@@ -27,7 +27,7 @@ test.describe('Contatos (UI)', () => {
   }) => {
     const contextA = await browser.newContext();
     const pageA = await contextA.newPage();
-    await login(pageA, OWNER_A);
+    await login(pageA, OWNER_A, 'Contatos');
     await pageA.getByRole('button', { name: 'Novo contato' }).click();
     await pageA.getByLabel('Nome').fill('Segredo do A');
     await pageA.getByRole('button', { name: 'Salvar' }).click();
@@ -36,14 +36,14 @@ test.describe('Contatos (UI)', () => {
 
     const contextB = await browser.newContext();
     const pageB = await contextB.newPage();
-    await login(pageB, OWNER_B);
+    await login(pageB, OWNER_B, 'Contatos');
     await expect(pageB.getByText('BETA', { exact: true })).toBeVisible();
     await expect(pageB.getByText(/Segredo do A/)).toHaveCount(0);
     await contextB.close();
   });
 
   test('import básico por CSV pela UI (critério da entrega)', async ({ page }) => {
-    await login(page, OWNER_A);
+    await login(page, OWNER_A, 'Contatos');
     await page.getByLabel('Arquivo CSV').setInputFiles({
       name: 'contatos.csv',
       mimeType: 'text/csv',
@@ -57,7 +57,7 @@ test.describe('Contatos (UI)', () => {
   });
 
   test('editar e arquivar contato pelo drawer', async ({ page }) => {
-    await login(page, OWNER_A);
+    await login(page, OWNER_A, 'Contatos');
     const row = page.getByRole('row', { name: /Ana Prospect E2E/ });
     await row.click();
     await page.getByLabel('Nome').fill('Ana Prospect Editada');

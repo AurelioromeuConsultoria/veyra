@@ -5,7 +5,7 @@ import { Plus, Trash2, Workflow } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '../components/ui/button';
 import { Field, Input, Select } from '../components/ui/input';
-import { Panel } from '../components/ui/page';
+import { EmptyState, Panel } from '../components/ui/page';
 import { api, ApiError } from '../lib/api';
 
 const dateTimeFormat = new Intl.DateTimeFormat('pt-BR', {
@@ -191,8 +191,11 @@ export function AutomationsPage() {
             </li>
           ))}
           {automations.data && automations.data.length === 0 ? (
-            <li className="py-10 text-center text-body-sm text-muted-fg">
-              Nenhuma automação ainda.
+            <li>
+              <EmptyState
+                title="Nenhuma automação ainda."
+                hint="Uma automação reage a um gatilho do domínio — contato criado, oportunidade movida — e executa uma ação. Monte a primeira no formulário acima."
+              />
             </li>
           ) : null}
         </ul>
@@ -231,8 +234,11 @@ export function AutomationsPage() {
               ))}
               {executions.data && executions.data.length === 0 ? (
                 <tr>
-                  <td colSpan={3} className="py-10 text-center text-body-sm text-muted-fg">
-                    Nenhuma execução ainda.
+                  <td colSpan={3}>
+                    <EmptyState
+                      title="Nenhuma execução ainda."
+                      hint="Cada disparo registra gatilho, resultado e horário assim que uma automação ativa encontrar seu evento."
+                    />
                   </td>
                 </tr>
               ) : null}

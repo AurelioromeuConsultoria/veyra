@@ -89,7 +89,6 @@ export function SignalsPage() {
   return (
     <div className="flex h-full flex-col">
       <PageHeader
-        eyebrow="Inteligência"
         title="Sinais"
         meta="Propostas da IA aguardando decisão humana — nada é executado sem aprovação."
       >
