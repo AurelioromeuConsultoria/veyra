@@ -39,7 +39,7 @@ Diagnóstico de 25/08/2026 (`deploy/staging/diagnose.sh`):
 - **Nada de `docker system prune`.** Ele apaga volume e imagem dos vizinhos.
   Para limpar o Veyra, use os comandos com `-p veyra-staging`.
 
-## 2. Diagnóstico (rode ANTES de tudo)
+## 2.1 Diagnóstico (rode ANTES de tudo, e sempre que a VPS mudar de forma)
 
 ```bash
 scp deploy/staging/diagnose.sh usuario@77.37.43.5:/tmp/
@@ -56,57 +56,107 @@ que decidem a configuração:
 | Que faixas de IP as redes já usam? | seção `REDES`             | se `172.x` colidir, fixe outra faixa em `networks.veyra.ipam`                                                                              |
 | Qual a arquitetura do host?        | seção `HOST` (`uname -m`) | `clamav/clamav:1.4` **não publica imagem arm64**: em host ARM o scanner precisa de outra imagem, e sem scanner todo arquivo fica `pending` |
 
-## 3. Provisionamento inicial (uma vez)
+## 3. Provisionamento inicial (uma vez), pelo Coolify
+
+O Veyra entra como **recurso do Coolify**, no mesmo caminho do resto da casa
+(decisão da operação, ADR-046). O painel passa a ser dono de três coisas que,
+em compose puro, seriam nossas: o nome do projeto, o roteamento no Traefik e
+**as variáveis de ambiente**.
+
+### 3.1 Criar o recurso
+
+No painel (`https://coolify.verboplus.com.br`):
+
+1. **Novo projeto** → nome `veyra`, ambiente `staging`.
+2. **Nova resource** → tipo **Docker Compose** a partir do repositório
+   `AurelioromeuConsultoria/veyra`, branch `main`.
+3. **Base directory** `/` e **Docker Compose Location**
+   `deploy/staging/docker-compose.yml`.
+
+### 3.2 Domínio
+
+No serviço **`web`**, defina a variável que o Coolify lê para gerar as labels
+do Traefik e pedir o certificado:
+
+```
+SERVICE_FQDN_WEB_8080=https://veyra-staging.malachdigital.com.br
+```
+
+Não acrescente labels de Traefik à mão: duas regras para o mesmo host fazem o
+roteamento depender da ordem de leitura do proxy.
+
+### 3.3 Variáveis e segredos
+
+Todas no painel, no recurso (não no serviço), marcando como **build-time = não**.
+A lista completa e comentada está em `deploy/staging/.env.example`; o mínimo:
+
+| Variável                                              | Observação                                          |
+| ----------------------------------------------------- | --------------------------------------------------- |
+| `VEYRA_HOST`                                          | `veyra-staging.malachdigital.com.br`                |
+| `VEYRA_ENV`                                           | `staging` — **é o que autoriza o transporte falso** |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | senha gerada, nunca reaproveitada                   |
+| `JWT_SECRET`                                          | ≥32 caracteres, `openssl rand -base64 48`           |
+| `TOKEN_ENCRYPTION_KEY`                                | **independente** do JWT                             |
+| `META_APP_SECRET` / `META_WEBHOOK_VERIFY_TOKEN`       | valores de TESTE, nunca os do app real              |
+| `META_TRANSPORT_MODE`                                 | `fake` — nada sai para a Meta (ADR-046)             |
+| `ANTHROPIC_API_KEY`                                   | com chave, a IA funciona e o custo é real           |
+| `CLAMAV_HOST`                                         | **vazio** (scanner desligado, ver §2)               |
+| `RESTIC_REPOSITORY` / `RESTIC_PASSWORD` / `AWS_*`     | backup; pode ficar vazio até você decidir o destino |
+
+> **Mudança de regra, e ela é sua para aceitar.** O pedido original dizia
+> "segredos exclusivamente em arquivo fora do repositório, por exemplo
+> `/opt/veyra-staging/.env`". Com o Coolify, eles passam a viver **no banco de
+> dados do Coolify** — que fica na mesma VPS e é acessível a quem entra no
+> painel. Continua fora do repositório e fora de log, mas a superfície mudou:
+> quem tem o painel tem os segredos. Se preferir manter o arquivo, veja §11.2.
+
+### 3.4 Primeiro deploy
+
+Botão **Deploy**. O Coolify clona, constrói as três imagens e sobe. Acompanhe
+o log do deploy — a primeira construção leva alguns minutos.
+
+### 3.5 Schema, catálogo e workspace
+
+Pelo **terminal do Coolify** no container `api` (ou por `docker exec` no host):
 
 ```bash
-# 3.1 diretório e segredos — fora do repositório, dono root, 0600
-sudo install -d -o root -g root -m 0750 /opt/veyra-staging
-sudo install -o root -g root -m 0600 /dev/null /opt/veyra-staging/.env
-sudo nano /opt/veyra-staging/.env          # base: deploy/staging/.env.example
-
-# 3.2 código
-sudo git clone https://github.com/AurelioromeuConsultoria/veyra.git /opt/veyra-staging/app
-cd /opt/veyra-staging/app
-
-# 3.3 imagens
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml build
-
-# 3.4 banco e scanner primeiro (ClamAV baixa a base: minutos)
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml up -d db clamav
-
-# 3.5 schema
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
-  run --rm api npx prisma migrate deploy
-
-# 3.6 catálogo de permissões (CLI compilado; sem ele o provisionamento falha
-#     na FK de RolePermission)
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
-  run --rm api node dist/cli/seed-permissions.js
-
-# 3.7 tudo no ar
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml up -d
-
-# 3.8 workspace e dono (o token do convite aparece UMA vez)
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
-  exec api node dist/cli/provision.js \
+npx prisma migrate deploy                 # schema
+node dist/cli/seed-permissions.js         # catálogo de permissões
+node dist/cli/provision.js \
   --name "Veyra Staging" --slug staging --owner-email voce@exemplo.com
 ```
 
-Depois: aponte o DNS, aplique o trecho do proxy, emita o certificado pelo fluxo
-que a VPS já usa e valide `https://$VEYRA_HOST/api/health`.
+O token do convite aparece **uma única vez** — copie na hora.
+
+### 3.6 Anote os nomes reais
+
+O Coolify prefixa volumes e rede com o id do recurso. Antes de precisar
+restaurar, guarde os nomes:
+
+```bash
+docker volume ls | grep -i veyra
+docker ps --format '{{.Names}}' | grep -i veyra
+```
 
 ## 4. Deploy de atualização
 
+1. **Backup antes**, se a atualização trouxer migration (§5).
+2. No painel, aponte o recurso para a tag/commit desejado — nunca deixe em
+   `main` flutuante: deploy que muda sozinho quando alguém empurra código não
+   é deploy, é surpresa.
+3. **Deploy**.
+4. Assim que o container `api` subir, rode a migration pelo terminal:
+
 ```bash
-cd /opt/veyra-staging/app
-git fetch --tags && git checkout <tag-ou-sha>       # sempre imutável, nunca "main"
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml build
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
-  run --rm api npx prisma migrate deploy            # migration ANTES do código novo
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml up -d
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml ps
+npx prisma migrate deploy
 curl -fsS https://$VEYRA_HOST/api/health
 ```
+
+**A ordem importa.** O Prisma exige schema compatível no boot, então o ideal é
+migrar ANTES do código novo assumir. Como o Coolify sobe tudo de uma vez, a
+janela entre o container novo e a migration é real: para migration destrutiva,
+faça em duas etapas (código que tolera as duas formas → migration → limpeza),
+como manda o hook de migration destrutiva.
 
 **Migration antes do código** porque o Prisma exige schema compatível no boot.
 Migration destrutiva quebra essa ordem: nesse caso, deploy em duas etapas
@@ -115,12 +165,9 @@ migration destrutiva.
 
 ## 5. Rollback
 
-```bash
-# 5.1 código: volte à tag anterior e suba
-git checkout <tag-anterior>
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml build
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml up -d
-```
+No painel, o Coolify guarda os deploys anteriores: **Redeploy** do commit
+anterior devolve o código. É o caminho mais curto e o motivo pelo qual o
+recurso deve apontar para tag/commit, não para `main`.
 
 **Migration não tem rollback automático, e isto é deliberado**: `migrate deploy`
 não desfaz. Se a migration nova for incompatível com o código antigo, a volta é
@@ -128,8 +175,8 @@ por restauração de banco (§6.2) — por isso o backup roda ANTES de todo depl
 com migration:
 
 ```bash
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
-  run --rm backup /usr/local/bin/backup.sh
+# pelo terminal do Coolify, no container `backup`
+/usr/local/bin/backup.sh
 ```
 
 ## 6. Backup e restauração
@@ -138,32 +185,35 @@ O backup roda diariamente às `BACKUP_AT` (UTC) num container próprio: dump
 lógico do Postgres + storage, cifrados pelo restic, para um destino **externo à
 VPS**. Backup no mesmo disco que ele protege não é backup.
 
-```bash
-# 6.1 sob demanda / verificação
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
-  run --rm backup /usr/local/bin/backup.sh
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
-  run --rm backup /usr/local/bin/restore.sh listar
-```
+Pelo terminal do Coolify, no container `backup`:
 
 ```bash
-# 6.2 restauração do banco — PARE a API antes: restaurar com escrita em curso
-# produz estado que nenhum dos dois lados reconhece
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml stop api web
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
-  run --rm backup /usr/local/bin/restore.sh banco <snapshot-id>
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
-  run --rm api npx prisma migrate deploy
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml start api web
+/usr/local/bin/backup.sh            # sob demanda
+/usr/local/bin/restore.sh listar    # o que existe no destino
 ```
 
+Restauração do banco. **Pare a API antes**: restaurar com escrita em curso
+produz estado que nenhum dos dois lados reconhece. No host, com os nomes reais
+que você anotou na §3.6:
+
 ```bash
-# 6.3 restauração do storage
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml stop api
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
-  run --rm -v veyra-staging-storage:/data/restore-target backup \
-  /usr/local/bin/restore.sh storage <snapshot-id> /data/restore-target
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml start api
+docker stop <container-api> <container-web>
+docker exec -it <container-backup> /usr/local/bin/restore.sh banco <snapshot-id>
+docker start <container-api>
+docker exec -it <container-api> npx prisma migrate deploy
+docker start <container-web>
+```
+
+Restauração do storage: o volume é montado somente-leitura no `backup`, então
+a cópia de volta vai por um container temporário com o volume real montado
+para escrita — os nomes saem da §3.6.
+
+```bash
+docker stop <container-api>
+docker run --rm -v <volume-storage>:/destino -v <volume-restic-cache>:/cache \
+  -e RESTIC_REPOSITORY -e RESTIC_PASSWORD <imagem-backup> \
+  /usr/local/bin/restore.sh storage <snapshot-id> /destino
+docker start <container-api>
 ```
 
 **Teste a restauração antes de precisar dela.** Um ensaio trimestral em banco
@@ -190,13 +240,8 @@ docker compose -p veyra-staging -f deploy/staging/docker-compose.yml exec api no
 
 ## 8. Desmontar só o Veyra
 
-```bash
-# para tudo, PRESERVANDO volumes
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml down
-
-# apaga TAMBÉM os dados do Veyra (e só os dele)
-docker compose -p veyra-staging -f deploy/staging/docker-compose.yml down -v
-```
+Pelo painel: **Stop** preserva os volumes; **Delete** do recurso remove os
+containers e pergunta sobre os volumes.
 
 Nunca `docker system prune -a` nesta máquina: ele alcança VerboPlus e Norteie.
 
@@ -212,10 +257,17 @@ snapshot, de volta com o catálogo íntegro.
 
 Repita quando mexer em Dockerfile ou no backup:
 
+> **`--project-directory .` é obrigatório.** Os contextos de build são relativos
+> à RAIZ do repositório, porque é assim que o Coolify roda o compose. Sem essa
+> opção, o Docker resolve a partir da pasta do arquivo e o build falha com
+> "Dockerfile not found".
+
 ```bash
-docker compose --env-file <seu-env-local> -p veyra-local -f deploy/staging/docker-compose.yml build
-docker compose --env-file <seu-env-local> -p veyra-local -f deploy/staging/docker-compose.yml up -d db
-docker compose --env-file <seu-env-local> -p veyra-local -f deploy/staging/docker-compose.yml run --rm --no-deps api npx prisma migrate deploy
+cd <raiz-do-repo>
+C="docker compose --project-directory . --env-file <seu-env-local> -p veyra-local -f deploy/staging/docker-compose.yml"
+$C build
+$C up -d db
+$C run --rm --no-deps api npx prisma migrate deploy
 # ... e o ciclo de restauração da §6, que é o único jeito de saber que o backup presta
 ```
 
@@ -227,3 +279,32 @@ docker compose --env-file <seu-env-local> -p veyra-local -f deploy/staging/docke
 - **Não recebe dado real de paciente.** É regra de operação, não técnica: quem
   colar um export de produção aqui quebra a premissa do ambiente.
 - **Não é referência de desempenho.** Divide CPU e disco com os outros projetos.
+
+## 11. Se um dia sair do Coolify
+
+O mesmo arquivo serve aos dois modos. Para rodar por compose puro são três
+acréscimos, e o runbook anterior a esta versão está no histórico do Git
+(commit `d7275f0`).
+
+### 11.1 O que acrescentar
+
+1. **Roteamento**: labels de Traefik no serviço `web` (`Host(...)`,
+   entrypoints `http`/`https`, `certresolver=letsencrypt`,
+   `loadbalancer.server.port=8080`) mais `traefik.docker.network=coolify`, e a
+   rede externa `coolify` no serviço e no bloco `networks`.
+2. **Nomes estáveis**: `name: veyra-staging` no topo e `name:` em cada volume,
+   já que não haverá o prefixo do Coolify.
+3. **Faixa de IP**: `ipam` com `172.28.7.0/24`, fora da sequência 10.0.x.
+
+### 11.2 Segredos em arquivo, mesmo dentro do Coolify
+
+Se você preferir manter a regra original — segredo só em
+`/opt/veyra-staging/.env`, `root`, `0600` — dá para fazer híbrido: acrescente
+`env_file: [/opt/veyra-staging/.env]` aos serviços `api` e `backup` e deixe no
+painel apenas o que não é segredo. O Coolify roda `docker compose` no host, e o
+caminho absoluto resolve.
+
+O preço: o painel deixa de mostrar a configuração completa, e quem for depurar
+precisa saber que metade dela está num arquivo. Escolha entre superfície de
+acesso (painel) e transparência de operação — não há resposta certa, e a
+decisão deve ficar registrada aqui quando você tomá-la.

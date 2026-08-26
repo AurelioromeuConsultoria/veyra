@@ -71,6 +71,17 @@ const envSchema = z.object({
   META_APP_SECRET: opcional(z.string().min(16)),
   META_WEBHOOK_VERIFY_TOKEN: opcional(z.string().min(16)),
   META_GRAPH_VERSION: z.string().min(2).default('v21.0'),
+  /**
+   * Ambiente lógico. Existe para uma única finalidade: autorizar o que NÃO
+   * pode existir em produção. Hoje, o transporte falso do WhatsApp.
+   */
+  VEYRA_ENV: z.enum(['development', 'staging', 'production']).default('development'),
+  /**
+   * Transporte do WhatsApp (ADR-046). `graph` é o padrão — a AUSÊNCIA da
+   * variável nunca produz o transporte falso, e é essa assimetria que impede
+   * que um esquecimento vire perda silenciosa de mensagem.
+   */
+  META_TRANSPORT_MODE: z.enum(['graph', 'fake']).default('graph'),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -83,5 +94,21 @@ export function validateEnv(config: Record<string, unknown>): Env {
       .join('\n');
     throw new Error(`Variáveis de ambiente inválidas — a aplicação não vai subir:\n${issues}`);
   }
+
+  /**
+   * TRAVA DO TRANSPORTE FALSO (ADR-046). Um ambiente que finge envio em
+   * silêncio é pior que um que falha: quem opera acredita ter falado com o
+   * paciente. A recusa é no BOOT, no mesmo espírito do harness de teste que
+   * recusa banco cujo nome não contenha "test" — erro de configuração vira
+   * container que não sobe, nunca mensagem que não sai.
+   */
+  if (parsed.data.META_TRANSPORT_MODE === 'fake' && parsed.data.VEYRA_ENV !== 'staging') {
+    throw new Error(
+      'META_TRANSPORT_MODE=fake exige VEYRA_ENV=staging — ' +
+        `recebido VEYRA_ENV=${parsed.data.VEYRA_ENV}. O transporte falso NÃO envia nada ` +
+        'para a Meta; fora de staging isso seria perda silenciosa de mensagem (ADR-046).',
+    );
+  }
+
   return parsed.data;
 }

@@ -1,23 +1,22 @@
-# Veyra — STAGING (host: veyra-staging.malachdigital.com.br)
+# Veyra — STAGING, como RECURSO DO COOLIFY (ADR-046)
 #
-# Escrito CONTRA O AMBIENTE REAL, medido pelo diagnóstico de 25/08/2026:
-# VPS Ubuntu 24.04 x86_64 gerenciada por Coolify, com ~40 containers e um
-# Traefik v3.6 (`coolify-proxy`) dono de 80/443. Por isso:
+# A VPS é gerenciada por Coolify 4.3.11 (~40 containers, Traefik v3.6 dono de
+# 80/443), e a decisão da operação é que o Veyra entre pelo mesmo caminho que o
+# resto da casa. Consequências desta escolha, todas visíveis abaixo:
 #
-#   · NENHUMA porta publicada — nem em loopback. O Traefik alcança o `web`
-#     pela rede `coolify`, e é ele quem termina TLS.
-#   · Roteamento por LABELS, que é como o Traefik se configura; não há arquivo
-#     de site como haveria num nginx.
-#   · Faixa de IP fixada fora de 10.0.0.0/24–10.0.6.0/24, que o Coolify já usa.
+#   · SEM `name:` — o Coolify define o nome do projeto e prefixa os recursos.
+#   · SEM labels de Traefik e SEM a rede do proxy: quem gera as labels e conecta
+#     o container à rede é o Coolify, a partir do domínio configurado no painel.
+#     Manter as minhas produziria DUAS regras para o mesmo host, e a que vence
+#     depende da ordem de leitura do Traefik.
+#   · SEM `env_file`: as variáveis vêm do painel (ver ADR-046 e §3 do runbook).
+#   · NENHUMA porta publicada — o Traefik alcança o `web` pela rede que o
+#     próprio Coolify cria.
 #
-# Projeto, rede, volumes e diretório próprios: `-p veyra-staging` isola tudo do
-# VerboPlus, do Norteie e do que mais existir na máquina.
+# Para rodar por compose puro (fora do Coolify), veja a §11 do runbook: são
+# três acréscimos, e o arquivo continua servindo aos dois modos.
 #
-# Uso: docker compose --env-file /opt/veyra-staging/.env -p veyra-staging \
-#        -f deploy/staging/docker-compose.yml up -d
 # Runbook completo: docs/DEPLOY_STAGING.md
-
-name: veyra-staging
 
 x-logging: &logging
   driver: json-file
@@ -32,51 +31,41 @@ services:
   web:
     image: ${VEYRA_IMAGE_WEB:-veyra/web:staging}
     build:
-      context: ../..
+      # RAIZ DO REPOSITÓRIO. O Coolify roda o compose com `--project-directory`
+      # na raiz do clone, então caminho relativo se resolve A PARTIR DELA — não
+      # da pasta deste arquivo. `../..` saía do repositório e o build falhava
+      # com "Dockerfile not found". Localmente, use `--project-directory .`
+      # (ver §9 do runbook).
+      context: .
       dockerfile: apps/web/Dockerfile
     restart: *restart
     logging: *logging
     depends_on:
       api:
         condition: service_healthy
-    networks: [veyra, proxy]
-    # Sem `ports`: quem publica 80/443 é o Traefik, e ele chega aqui pela rede
-    # `coolify`. Publicar também no host seria exposição sem propósito.
-    labels:
-      traefik.enable: 'true'
-      # o proxy está em VÁRIAS redes; sem isto o Traefik pode escolher o IP
-      # errado do container e rotear para lugar nenhum
-      traefik.docker.network: ${PROXY_NETWORK:-coolify}
-      # HTTP existe só para mandar para HTTPS
-      traefik.http.routers.veyra-staging-http.entrypoints: http
-      traefik.http.routers.veyra-staging-http.rule: Host(`${VEYRA_HOST}`)
-      traefik.http.routers.veyra-staging-http.middlewares: veyra-staging-https
-      traefik.http.middlewares.veyra-staging-https.redirectscheme.scheme: https
-      # HTTPS com certificado automático pelo mesmo resolver que a casa usa
-      traefik.http.routers.veyra-staging.entrypoints: https
-      traefik.http.routers.veyra-staging.rule: Host(`${VEYRA_HOST}`)
-      traefik.http.routers.veyra-staging.tls: 'true'
-      traefik.http.routers.veyra-staging.tls.certresolver: ${CERT_RESOLVER:-letsencrypt}
-      traefik.http.routers.veyra-staging.middlewares: veyra-staging-gzip
-      traefik.http.middlewares.veyra-staging-gzip.compress: 'true'
-      # middlewares PRÓPRIOS, com nome do projeto: reaproveitar os de outro
-      # container amarraria o Veyra ao ciclo de vida dele
-      traefik.http.services.veyra-staging.loadbalancer.server.port: '8080'
+    networks: [veyra]
+    environment:
+      # O COOLIFY LÊ ESTA VARIÁVEL: é dela que ele deriva o domínio, gera as
+      # labels do Traefik e emite o certificado. Configure-a no painel, no
+      # serviço `web`. Nenhuma label de Traefik aqui — ver o cabeçalho.
+      SERVICE_FQDN_WEB_8080: ${SERVICE_FQDN_WEB_8080:-}
+    # Sem `ports`: quem publica 80/443 é o Traefik do Coolify.
+    expose: ['8080']
     security_opt: ['no-new-privileges:true']
 
   # ── API + jobs no mesmo processo (pg-boss, ADR-007) ───────────────────────
   api:
     image: ${VEYRA_IMAGE_API:-veyra/api:staging}
     build:
-      context: ../..
+      context: .
       dockerfile: apps/api/Dockerfile
     restart: *restart
     logging: *logging
-    env_file:
-      # sequência em bloco, não em fluxo: `${VAR:-default}` dentro de `[ ]`
-      # quebra o parser de YAML por causa do `:-`
-      - ${VEYRA_ENV_FILE:-/opt/veyra-staging/.env}
     environment:
+      # No modo Coolify, TODAS as variáveis abaixo (e os segredos) vêm do painel
+      # — ele as injeta no container. Em compose puro, use `env_file` (§11 do
+      # runbook). O `${...}` sem default é deliberado: variável ausente vira
+      # erro visível no deploy, não string vazia silenciosa.
       NODE_ENV: production
       PORT: '3001'
       # dentro da rede do projeto: nomes de serviço, nunca IP
@@ -151,19 +140,20 @@ services:
   backup:
     image: ${VEYRA_IMAGE_BACKUP:-veyra/backup:staging}
     build:
-      context: ./backup
+      context: deploy/staging/backup
     restart: *restart
     logging: *logging
-    env_file:
-      # sequência em bloco, não em fluxo: `${VAR:-default}` dentro de `[ ]`
-      # quebra o parser de YAML por causa do `:-`
-      - ${VEYRA_ENV_FILE:-/opt/veyra-staging/.env}
     environment:
       PGHOST: db
       PGUSER: ${POSTGRES_USER}
       PGPASSWORD: ${POSTGRES_PASSWORD}
       PGDATABASE: ${POSTGRES_DB}
       BACKUP_AT: ${BACKUP_AT:-03:15}
+      # destino e cifra do backup vêm do painel, como o resto dos segredos
+      RESTIC_REPOSITORY: ${RESTIC_REPOSITORY:-}
+      RESTIC_PASSWORD: ${RESTIC_PASSWORD:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
     depends_on:
       db:
         condition: service_healthy
@@ -175,25 +165,18 @@ services:
     security_opt: ['no-new-privileges:true']
 
 networks:
+  # rede interna do projeto. SEM `name:` fixo e SEM faixa fixa: no modo Coolify
+  # quem nomeia e endereça é ele, e impor os dois criaria colisão com o que o
+  # painel já gerencia. Em compose puro, veja a §11 do runbook.
   veyra:
-    name: veyra-staging
     driver: bridge
-    ipam:
-      config:
-        # fora de 10.0.0.0/24–10.0.6.0/24, que o Coolify já ocupa; deixar o
-        # Docker escolher funcionaria hoje e colidiria no dia em que a casa
-        # crescer mais uma faixa
-        - subnet: 172.28.7.0/24
-  proxy:
-    name: ${PROXY_NETWORK:-coolify}
-    external: true
 
+# Volumes NOMEADOS (sem `name:` fixo): o Coolify os prefixa com o id do
+# recurso, o que é justamente o que garante que não colidam com os ~40
+# containers vizinhos. Os nomes reais aparecem no painel e em `docker volume ls`
+# depois do primeiro deploy — anote-os no runbook de restauração.
 volumes:
   pgdata:
-    name: veyra-staging-pgdata
   storage:
-    name: veyra-staging-storage
   clamav:
-    name: veyra-staging-clamav
   restic-cache:
-    name: veyra-staging-restic-cache

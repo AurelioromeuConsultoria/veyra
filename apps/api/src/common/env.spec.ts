@@ -41,6 +41,44 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ ...minimo, JWT_SECRET: 'curto' })).toThrow(/JWT_SECRET/);
   });
 
+  /**
+   * A trava do ADR-046. O modo falso não envia nada para a Meta: fora de
+   * staging isso é perda SILENCIOSA de mensagem, e o produto prefere não subir
+   * a fingir que enviou.
+   */
+  describe('transporte falso do WhatsApp', () => {
+    it('o padrão é o transporte REAL — ausência da variável nunca produz o falso', () => {
+      expect(validateEnv({ ...minimo }).META_TRANSPORT_MODE).toBe('graph');
+      expect(validateEnv({ ...minimo, VEYRA_ENV: 'staging' }).META_TRANSPORT_MODE).toBe('graph');
+    });
+
+    it('aceita o modo falso APENAS em staging', () => {
+      const env = validateEnv({ ...minimo, VEYRA_ENV: 'staging', META_TRANSPORT_MODE: 'fake' });
+      expect(env.META_TRANSPORT_MODE).toBe('fake');
+    });
+
+    it('RECUSA O BOOT com modo falso em produção ou desenvolvimento', () => {
+      for (const ambiente of ['production', 'development']) {
+        expect(() =>
+          validateEnv({ ...minimo, VEYRA_ENV: ambiente, META_TRANSPORT_MODE: 'fake' }),
+        ).toThrow(/META_TRANSPORT_MODE=fake exige VEYRA_ENV=staging/);
+      }
+    });
+
+    it('recusa o boot com modo falso quando VEYRA_ENV nem foi informado', () => {
+      // o default é `development`: esquecer a variável não vira staging
+      expect(() => validateEnv({ ...minimo, META_TRANSPORT_MODE: 'fake' })).toThrow(
+        /exige VEYRA_ENV=staging/,
+      );
+    });
+
+    it('recusa modo desconhecido em vez de cair no padrão', () => {
+      expect(() => validateEnv({ ...minimo, META_TRANSPORT_MODE: 'nenhum' })).toThrow(
+        /META_TRANSPORT_MODE/,
+      );
+    });
+  });
+
   it('recusa banco que não seja postgres', () => {
     expect(() => validateEnv({ ...minimo, DATABASE_URL: 'mysql://x/y' })).toThrow(/DATABASE_URL/);
   });
