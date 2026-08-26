@@ -7,6 +7,20 @@ import { z } from 'zod';
  * Segredos de auth (JWT_SECRET etc.) entram na Entrega 2 — sempre com
  * validação de formato.
  */
+/**
+ * Opcional que aceita STRING VAZIA como ausência.
+ *
+ * `FOO=` num arquivo de ambiente é a forma natural de escrever "não tenho
+ * este segredo", e é o que um `.env` de staging gerado a partir do modelo
+ * contém. Sem este tratamento, `z.string().min(1).optional()` recebe `''`
+ * (a variável EXISTE, vazia), falha a validação e derruba o boot em laço —
+ * exatamente no caso que o produto foi desenhado para tolerar, que é rodar
+ * sem chave de IA.
+ */
+function opcional(schema: z.ZodString) {
+  return z.preprocess((valor) => (valor === '' ? undefined : valor), schema.optional());
+}
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3001),
@@ -41,21 +55,21 @@ const envSchema = z.object({
    * para canal externo. A falta de scanner degrada para o seguro, não para o
    * liberado — por isso é opcional em vez de obrigatório.
    */
-  CLAMAV_HOST: z.string().min(1).optional(),
+  CLAMAV_HOST: opcional(z.string().min(1)),
   CLAMAV_PORT: z.coerce.number().int().min(1).max(65535).default(3310),
   // raiz do storage local (ADR-024); com S3 vira bucket + credencial cifrada
   STORAGE_ROOT: z.string().min(1).default('.storage'),
   // IA (Entrega 7): SEM chave o produto segue funcionando — cada capacidade
   // degrada com clareza (score continua, explicação some)
-  ANTHROPIC_API_KEY: z.string().min(1).optional(),
+  ANTHROPIC_API_KEY: opcional(z.string().min(1)),
   AI_MODEL: z.string().min(1).default('claude-sonnet-5'),
   /**
    * Canal WhatsApp (Entrega 9.1). O APP SECRET vive aqui, no ambiente, e não
    * por canal (ADR-037): hoje há um único Meta App. Ausentes, o canal
    * simplesmente não pode ser configurado — o resto do produto segue.
    */
-  META_APP_SECRET: z.string().min(16).optional(),
-  META_WEBHOOK_VERIFY_TOKEN: z.string().min(16).optional(),
+  META_APP_SECRET: opcional(z.string().min(16)),
+  META_WEBHOOK_VERIFY_TOKEN: opcional(z.string().min(16)),
   META_GRAPH_VERSION: z.string().min(2).default('v21.0'),
 });
 

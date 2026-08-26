@@ -1,0 +1,199 @@
+# Veyra — STAGING (host: veyra-staging.malachdigital.com.br)
+#
+# Escrito CONTRA O AMBIENTE REAL, medido pelo diagnóstico de 25/08/2026:
+# VPS Ubuntu 24.04 x86_64 gerenciada por Coolify, com ~40 containers e um
+# Traefik v3.6 (`coolify-proxy`) dono de 80/443. Por isso:
+#
+#   · NENHUMA porta publicada — nem em loopback. O Traefik alcança o `web`
+#     pela rede `coolify`, e é ele quem termina TLS.
+#   · Roteamento por LABELS, que é como o Traefik se configura; não há arquivo
+#     de site como haveria num nginx.
+#   · Faixa de IP fixada fora de 10.0.0.0/24–10.0.6.0/24, que o Coolify já usa.
+#
+# Projeto, rede, volumes e diretório próprios: `-p veyra-staging` isola tudo do
+# VerboPlus, do Norteie e do que mais existir na máquina.
+#
+# Uso: docker compose --env-file /opt/veyra-staging/.env -p veyra-staging \
+#        -f deploy/staging/docker-compose.yml up -d
+# Runbook completo: docs/DEPLOY_STAGING.md
+
+name: veyra-staging
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: '10m'
+    max-file: '5'
+
+x-restart: &restart unless-stopped
+
+services:
+  # ── entrada: SPA + /api pela rede interna ─────────────────────────────────
+  web:
+    image: ${VEYRA_IMAGE_WEB:-veyra/web:staging}
+    build:
+      context: ../..
+      dockerfile: apps/web/Dockerfile
+    restart: *restart
+    logging: *logging
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [veyra, proxy]
+    # Sem `ports`: quem publica 80/443 é o Traefik, e ele chega aqui pela rede
+    # `coolify`. Publicar também no host seria exposição sem propósito.
+    labels:
+      traefik.enable: 'true'
+      # o proxy está em VÁRIAS redes; sem isto o Traefik pode escolher o IP
+      # errado do container e rotear para lugar nenhum
+      traefik.docker.network: ${PROXY_NETWORK:-coolify}
+      # HTTP existe só para mandar para HTTPS
+      traefik.http.routers.veyra-staging-http.entrypoints: http
+      traefik.http.routers.veyra-staging-http.rule: Host(`${VEYRA_HOST}`)
+      traefik.http.routers.veyra-staging-http.middlewares: veyra-staging-https
+      traefik.http.middlewares.veyra-staging-https.redirectscheme.scheme: https
+      # HTTPS com certificado automático pelo mesmo resolver que a casa usa
+      traefik.http.routers.veyra-staging.entrypoints: https
+      traefik.http.routers.veyra-staging.rule: Host(`${VEYRA_HOST}`)
+      traefik.http.routers.veyra-staging.tls: 'true'
+      traefik.http.routers.veyra-staging.tls.certresolver: ${CERT_RESOLVER:-letsencrypt}
+      traefik.http.routers.veyra-staging.middlewares: veyra-staging-gzip
+      traefik.http.middlewares.veyra-staging-gzip.compress: 'true'
+      # middlewares PRÓPRIOS, com nome do projeto: reaproveitar os de outro
+      # container amarraria o Veyra ao ciclo de vida dele
+      traefik.http.services.veyra-staging.loadbalancer.server.port: '8080'
+    security_opt: ['no-new-privileges:true']
+
+  # ── API + jobs no mesmo processo (pg-boss, ADR-007) ───────────────────────
+  api:
+    image: ${VEYRA_IMAGE_API:-veyra/api:staging}
+    build:
+      context: ../..
+      dockerfile: apps/api/Dockerfile
+    restart: *restart
+    logging: *logging
+    env_file:
+      # sequência em bloco, não em fluxo: `${VAR:-default}` dentro de `[ ]`
+      # quebra o parser de YAML por causa do `:-`
+      - ${VEYRA_ENV_FILE:-/opt/veyra-staging/.env}
+    environment:
+      NODE_ENV: production
+      PORT: '3001'
+      # dentro da rede do projeto: nomes de serviço, nunca IP
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      # vazio quando o perfil `scanner` não está ligado: `env.ts` trata string
+      # vazia como ausência, e a aplicação sobe sem scanner
+      CLAMAV_HOST: ${CLAMAV_HOST-}
+      CLAMAV_PORT: '3310'
+      STORAGE_ROOT: /data/storage
+      WEB_ORIGIN: https://${VEYRA_HOST}
+    depends_on:
+      db:
+        condition: service_healthy
+      # ClamAV NÃO entra em `depends_on`: ele é opcional (perfil `scanner`), e
+      # depender de um serviço que pode não existir travaria a subida da API.
+      # Sem scanner o arquivo fica `pending` e não sai para canal externo
+      # (ADR-043) — a ausência degrada para o seguro.
+    volumes:
+      - storage:/data/storage
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    networks: [veyra]
+    security_opt: ['no-new-privileges:true']
+
+  db:
+    image: postgres:17-alpine
+    restart: *restart
+    logging: *logging
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # `initdb` com checksums: corrupção silenciosa de página vira erro
+      POSTGRES_INITDB_ARGS: '--data-checksums'
+    # SEM `ports`: o banco só existe dentro da rede do projeto. O VerboPlus
+    # tem Postgres com porta pública nesta mesma VPS; não repetimos isso.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks: [veyra]
+    security_opt: ['no-new-privileges:true']
+
+  # OPCIONAL por decisão de capacidade: a VPS tem 7,8 GB com ~4,0 GB
+  # disponíveis e 1,4 GB de swap já em uso; o ClamAV pede 1,5–2 GB residentes.
+  # Sem scanner, todo arquivo fica `pending` e NÃO sai para canal externo — a
+  # degradação segura do ADR-043, que em staging não custa nada.
+  # Para ligar:  docker compose --profile scanner up -d
+  clamav:
+    image: clamav/clamav:1.4
+    profiles: ['scanner']
+    restart: *restart
+    logging: *logging
+    volumes:
+      # sem isto, cada recriação rebaixa a base inteira de assinaturas
+      - clamav:/var/lib/clamav
+    healthcheck:
+      test: ['CMD', 'clamdcheck.sh']
+      interval: 60s
+      timeout: 10s
+      retries: 10
+      # o primeiro boot baixa a base e leva minutos
+      start_period: 600s
+    networks: [veyra]
+    security_opt: ['no-new-privileges:true']
+
+  # ── backup: banco + storage para destino externo ──────────────────────────
+  backup:
+    image: ${VEYRA_IMAGE_BACKUP:-veyra/backup:staging}
+    build:
+      context: ./backup
+    restart: *restart
+    logging: *logging
+    env_file:
+      # sequência em bloco, não em fluxo: `${VAR:-default}` dentro de `[ ]`
+      # quebra o parser de YAML por causa do `:-`
+      - ${VEYRA_ENV_FILE:-/opt/veyra-staging/.env}
+    environment:
+      PGHOST: db
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+      BACKUP_AT: ${BACKUP_AT:-03:15}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # somente leitura: o backup não tem por que escrever no storage
+      - storage:/data/storage:ro
+      - restic-cache:/home/veyra/.cache/restic
+    networks: [veyra]
+    security_opt: ['no-new-privileges:true']
+
+networks:
+  veyra:
+    name: veyra-staging
+    driver: bridge
+    ipam:
+      config:
+        # fora de 10.0.0.0/24–10.0.6.0/24, que o Coolify já ocupa; deixar o
+        # Docker escolher funcionaria hoje e colidiria no dia em que a casa
+        # crescer mais uma faixa
+        - subnet: 172.28.7.0/24
+  proxy:
+    name: ${PROXY_NETWORK:-coolify}
+    external: true
+
+volumes:
+  pgdata:
+    name: veyra-staging-pgdata
+  storage:
+    name: veyra-staging-storage
+  clamav:
+    name: veyra-staging-clamav
+  restic-cache:
+    name: veyra-staging-restic-cache
