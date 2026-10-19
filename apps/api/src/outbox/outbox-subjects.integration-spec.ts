@@ -177,6 +177,76 @@ describe('Outbox — contatos de quem é o evento, na emissão (integração)', 
     expect(viva.subjectContactIds).toHaveLength(1); // ainda pode ser entregue
   });
 
+  describe('estados terminais são definitivos (a fotografia não pode faltar num replay)', () => {
+    const terminal = async (status: 'delivered' | 'dead') => {
+      const contato = (await post('/api/contacts', { name: `T-${status}` }).expect(201)).body.id;
+      const evento = await prisma.raw.outboxEvent.findFirst({
+        where: { eventType: 'contact.created', payload: { path: ['id'], equals: contato } },
+      });
+      await prisma.raw.outboxEvent.updateMany({
+        where: { id: evento!.id },
+        data: { nextRetryAt: new Date(0) },
+      });
+      const outbox = app.get(OutboxService);
+      const [claimed] = await outbox.claimBatch(10);
+      expect(claimed.id).toBe(evento!.id);
+      if (status === 'delivered') await outbox.markDelivered(claimed.id, claimed.claimToken);
+      else await outbox.markFailed(claimed.id, claimed.claimToken, MAX_ATTEMPTS, 'fim');
+      return { id: evento!.id, contato };
+    };
+
+    it.each(['delivered', 'dead'] as const)(
+      '%s: o banco recusa reabrir (pending/processing) e devolver a fotografia — inclusive SQL manual',
+      async (status) => {
+        const { id, contato } = await terminal(status);
+        for (const novo of ['pending', 'processing']) {
+          await expect(
+            prisma.raw.$executeRawUnsafe(
+              `UPDATE "OutboxEvent" SET "status" = $2::"OutboxStatus" WHERE "id" = $1::uuid`,
+              id,
+              novo,
+            ),
+          ).rejects.toThrow(/não pode ser reaberto/);
+        }
+        await expect(
+          prisma.raw.$executeRawUnsafe(
+            `UPDATE "OutboxEvent" SET "subjectContactIds" = ARRAY[$2::uuid] WHERE "id" = $1::uuid`,
+            id,
+            contato,
+          ),
+        ).rejects.toThrow(/fotografia/);
+        const [linha] = await prisma.raw.$queryRawUnsafe<
+          { status: string; subjectContactIds: string[] | null }[]
+        >(`SELECT "status", "subjectContactIds" FROM "OutboxEvent" WHERE "id" = $1::uuid`, id);
+        expect(linha).toEqual({ status, subjectContactIds: null });
+      },
+    );
+
+    it('o claim nunca pega evento terminal, nem com prazos vencidos; conclusões não o tocam', async () => {
+      const entregue = await terminal('delivered');
+      const morto = await terminal('dead');
+      // prazos "vencidos" de propósito: só o status decide
+      await prisma.raw.outboxEvent.updateMany({
+        where: { id: { in: [entregue.id, morto.id] } },
+        data: { nextRetryAt: new Date(0), leaseExpiresAt: new Date(0) },
+      });
+      const outbox = app.get(OutboxService);
+      const lote = await outbox.claimBatch(50);
+      expect(lote.map((e) => e.id)).not.toContain(entregue.id);
+      expect(lote.map((e) => e.id)).not.toContain(morto.id);
+      const tokenQualquer = randomUUID();
+      expect(await outbox.markDelivered(morto.id, tokenQualquer)).toBe(false);
+      expect(await outbox.markFailed(entregue.id, tokenQualquer, 1, 'x')).toBe('lost');
+    });
+
+    it('mudança que não reabre (anular causalidade, como na exclusão de automação) continua permitida', async () => {
+      const { id } = await terminal('delivered');
+      await expect(
+        prisma.raw.outboxEvent.updateMany({ where: { id }, data: { originAutomationId: null } }),
+      ).resolves.toEqual({ count: 1 });
+    });
+  });
+
   /**
    * CONCORRÊNCIA DETERMINÍSTICA: uma conexão externa segura a trava da linha do
    * contato até as DUAS requisições estarem comprovadamente esperando por ela.

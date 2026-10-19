@@ -975,6 +975,64 @@ describe('Restrição de conteúdo por contato — ADR-047 E6 (integração, lad
       expect(hooks).toEqual([]);
     });
 
+    it('contato restrito NO MEIO do fan-out: os destinos restantes não recebem, e o evento conclui', async () => {
+      await subscribe(sessionA);
+      await post('/api/webhooks', sessionA, {
+        url: 'https://segundo-destino.veyra.test/hook',
+        events: WEBHOOK_EVENTS_FOR_TEST,
+      }).expect(201);
+      await deliverAll();
+      hooks.length = 0;
+      const evento = await emit(wsA.workspaceId, 'contact.updated', contactId);
+      // 1ª consulta (antes do fan-out) libera; a reconferência antes do 2º destino já restringe
+      probe.calls = [];
+      probe.restrictAfter = 1;
+      await deliverAll();
+      expect(hooks).toHaveLength(1);
+      expect(await prisma.raw.webhookDelivery.count({ where: { outboxEventId: evento.id } })).toBe(
+        1,
+      );
+      const linha = await prisma.raw.outboxEvent.findFirst({ where: { id: evento.id } });
+      expect(linha!.status).toBe('delivered');
+      expect(probe.calls.filter((c) => c.consumer === 'webhook')).toHaveLength(2);
+    });
+
+    it('porta INDISPONÍVEL no meio do fan-out: para, ninguém é penalizado e o retry não repete quem recebeu', async () => {
+      await subscribe(sessionA);
+      await post('/api/webhooks', sessionA, {
+        url: 'https://segundo-destino.veyra.test/hook',
+        events: WEBHOOK_EVENTS_FOR_TEST,
+      }).expect(201);
+      await deliverAll();
+      hooks.length = 0;
+      const evento = await emit(wsA.workspaceId, 'contact.updated', contactId);
+      const original = probe.restricted.bind(probe);
+      let consultas = 0;
+      probe.restricted = async (...args) => {
+        consultas += 1;
+        if (consultas === 2) throw new Error('porta indisponível (teste)');
+        return original(...args);
+      };
+      try {
+        await deliverAll();
+      } finally {
+        probe.restricted = original;
+      }
+      expect(hooks).toHaveLength(1);
+      const linha = await prisma.raw.outboxEvent.findFirst({ where: { id: evento.id } });
+      expect(linha!.status).toBe('pending');
+      expect(linha!.lastError).toMatch(/indisponível/);
+      expect(
+        (await prisma.raw.webhook.findMany({ where: { workspaceId: wsA.workspaceId } })).map(
+          (w) => w.failureCount,
+        ),
+      ).toEqual([0, 0]);
+
+      await drain(); // volta: só o destino que faltou recebe
+      expect(hooks).toHaveLength(2);
+      expect(new Set(hooks.map((h) => h.url)).size).toBe(2);
+    });
+
     it('a restrição do workspace A não suprime eventos do B', async () => {
       await subscribe(sessionA);
       await subscribe(sessionB);

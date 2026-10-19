@@ -259,6 +259,7 @@ export class WebhooksService {
      * entregas, que o cliente vê. Automações não passam por aqui e seguem
      * funcionando.
      */
+    let subjects: RestrictionSubject[] = [];
     if (this.restriction.active) {
       /**
        * De quem é o evento: a FOTOGRAFIA da emissão somada à resolução de agora
@@ -266,7 +267,7 @@ export class WebhooksService {
        * contato entre emitir e entregar; só a fotografia não veria um evento
        * antigo, sem ela. A união não deixa nenhum dos dois de fora.
        */
-      const subjects = [
+      subjects = [
         ...new Set([...(event.subjectContactIds ?? []), ...(await this.contactSubjects(event))]),
       ];
       if (subjects.length > 0) {
@@ -313,14 +314,33 @@ export class WebhooksService {
     const failures: string[] = [];
     const failedIds: string[] = [];
     const succeededIds: string[] = [];
+    let suppressed = false;
 
-    for (const webhook of pendingWebhooks) {
+    for (const [index, webhook] of pendingWebhooks.entries()) {
       // HEARTBEAT: fan-out longo pode ultrapassar o lease. Renovar antes de
       // cada destino mantém a posse; se já a perdemos, outro worker assumiu o
       // evento e continuar aqui duplicaria entregas — abandona sem concluir.
       if (!(await this.outbox.renewLease(event.id, event.claimToken))) {
         this.logger.warn(`Lease de ${event.id} perdido durante o fan-out — entrega abandonada`);
         return;
+      }
+      /**
+       * RECONFERE a restrição antes de cada destino além do primeiro: o fan-out
+       * pode levar até ~100 s (20 destinos × 5 s), e um contato que fica
+       * restrito no meio dele não sai para os destinos restantes (ADR-047 §4,
+       * "o que estava em voo não sai"). Indisponível vira falha do EVENTO —
+       * nenhum webhook é penalizado — e o retry parcial retoma de onde parou.
+       */
+      if (index > 0 && subjects.length > 0) {
+        const verdict = await this.restriction.check(event.workspaceId, 'webhook', subjects);
+        if (verdict.unavailable) {
+          failures.push('porta de restrição indisponível no meio da entrega');
+          break;
+        }
+        if (verdict.restricted.some(Boolean)) {
+          suppressed = true;
+          break;
+        }
       }
       const timestamp = Math.floor(Date.now() / 1000);
       let status: number | null = null;
@@ -367,6 +387,11 @@ export class WebhooksService {
         where: { workspaceId: event.workspaceId, id: { in: succeededIds } },
         data: { failureCount: 0 },
       });
+    }
+    if (suppressed) {
+      this.logger.log(`Evento ${event.id} (${event.eventType}) suprimido no meio do fan-out`);
+      await this.outbox.markDelivered(event.id, event.claimToken);
+      return;
     }
     if (failures.length === 0) {
       await this.outbox.markDelivered(event.id, event.claimToken);
