@@ -260,7 +260,27 @@ describe('Outbox — contatos de quem é o evento, na emissão (integração)', 
       await trava.query('BEGIN');
       await trava.query('SELECT 1 FROM "Contact" WHERE "id" = $1 FOR UPDATE', [id]);
       const emCurso = pedidos.map((pedido) => pedido().then((res) => res));
+      /**
+       * DIAGNÓSTICO (falha vista uma vez no CI, 2026-10-19, sem reprodução local
+       * em 15 rodadas): a mensagem antiga só dizia "não chegaram à trava". Uma
+       * requisição que VOLTA antes de chegar à trava (401, 500…) agora falha na
+       * hora, com status e corpo; e o estouro do prazo mostra onde cada sessão
+       * do banco estava esperando.
+       */
+      const respondidas: { i: number; status: number; body: unknown }[] = [];
+      emCurso.forEach((p, i) =>
+        p.then(
+          (res) => respondidas.push({ i, status: res.status, body: res.body }),
+          (error: unknown) => respondidas.push({ i, status: -1, body: String(error) }),
+        ),
+      );
       for (let tentativa = 0; ; tentativa += 1) {
+        if (respondidas.length > 0) {
+          await trava.query('ROLLBACK');
+          throw new Error(
+            `requisição respondeu ANTES de chegar à trava: ${JSON.stringify(respondidas)}`,
+          );
+        }
         const { rows } = await trava.query<{ n: string }>(
           `SELECT count(DISTINCT l.pid)::text AS n FROM pg_locks l
              JOIN pg_stat_activity a ON a.pid = l.pid
@@ -270,7 +290,24 @@ describe('Outbox — contatos de quem é o evento, na emissão (integração)', 
               AND a.query ILIKE '%"Contact"%'`,
         );
         if (Number(rows[0].n) >= pedidos.length) break;
-        if (tentativa > 400) throw new Error('as requisições não chegaram à trava da linha');
+        if (tentativa > 400) {
+          // quem espera o quê, por quem, e com qual texto de consulta — para
+          // saber por que o filtro acima não contou as esperas
+          const { rows: sessoes } = await trava.query(
+            `SELECT a.pid, a.state, a.wait_event_type, a.wait_event,
+                    pg_blocking_pids(a.pid) AS bloqueado_por,
+                    (SELECT json_agg(json_build_object('tipo', l.locktype, 'modo', l.mode,
+                                                       'concedida', l.granted))
+                       FROM pg_locks l WHERE l.pid = a.pid AND NOT l.granted) AS esperas,
+                    left(a.query, 160) AS query
+               FROM pg_stat_activity a
+              WHERE a.datname = current_database() AND a.pid <> pg_backend_pid()
+                AND a.state <> 'idle'`,
+          );
+          throw new Error(
+            `as requisições não chegaram à trava da linha; sessões: ${JSON.stringify(sessoes)}`,
+          );
+        }
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
       await trava.query('COMMIT'); // solta a linha SEM alterá-la
