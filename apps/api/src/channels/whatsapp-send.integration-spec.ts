@@ -18,6 +18,7 @@ import {
   type WorkspaceFixture,
 } from '../../test/integration/fixtures';
 import { resetDb } from '../../test/integration/harness';
+import { outboxSnapshot, resumoDoOutbox } from '../../test/integration/diagnostics';
 import { FilesService } from '../files/files.service';
 import { MAX_ATTEMPTS } from '../outbox/outbox.service';
 import { UsageService } from '../usage/usage.service';
@@ -97,7 +98,12 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
   };
   const sendMessage = (body: unknown, headers: Record<string, string> = {}) =>
     post(`/api/conversations/${conversationId}/messages`, body, headers);
-  const drain = () => app.get(JobsService).dispatchPending();
+  const drain = async () => {
+    const resultado = await app.get(JobsService).dispatchPending();
+    // evidência para a falha intermitente: o que ficou no outbox, pelo relógio do banco
+    await outboxSnapshot(prisma, 'depois-do-drain', wsA.workspaceId);
+    return resultado;
+  };
 
   /**
    * Assere o número de envios COM diagnóstico. Uma falha intermitente desta
@@ -107,6 +113,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
    */
   const expectEnvios = async (messageId: string, esperado: number) => {
     if (transport.sends.length !== esperado) {
+      const snapshot = await outboxSnapshot(prisma, 'expectEnvios-falhou', wsA.workspaceId);
       const d = await prisma.raw.messageDispatch.findFirst({ where: { messageId } });
       const c = await prisma.raw.usageCounter.findFirst({
         where: { workspaceId: wsA.workspaceId, metric: 'messages_sent' },
@@ -114,7 +121,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
       throw new Error(
         `esperava ${esperado} envio(s), houve ${transport.sends.length}. ` +
           `dispatch=${JSON.stringify({ state: d?.state, errorCode: d?.errorCode, attempts: d?.attempts })} ` +
-          `contador=${c ? String(c.value) : 'ausente'}`,
+          `contador=${c ? String(c.value) : 'ausente'} | ${resumoDoOutbox(snapshot)}`,
       );
     }
   };
@@ -217,6 +224,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     await drain();
 
     // enviou para o endereço EXATO que falou com a gente
+    await expectEnvios(criada.body.id, 1);
     expect(transport.sends).toEqual([{ to: '+5511999998888', body: 'Podemos amanhã às 10h?' }]);
     const depois = await prisma.raw.messageDispatch.findFirst({
       where: { messageId: criada.body.id },
@@ -306,8 +314,13 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     });
 
     // agora passa, e envia como template
-    await sendMessage({ direction: 'outbound', body: 'x', template: comTemplate }).expect(201);
+    const comConsentimento = await sendMessage({
+      direction: 'outbound',
+      body: 'x',
+      template: comTemplate,
+    }).expect(201);
     await drain();
+    await expectEnvios(comConsentimento.body.id, 1);
     expect(transport.sends).toEqual([{ to: '+5511999998888', template: 'lembrete_consulta' }]);
   });
 

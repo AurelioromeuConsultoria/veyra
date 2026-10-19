@@ -82,16 +82,19 @@ describe('Varredura de arquivos e quarentena (ADR-043)', () => {
   let membershipId: string;
   const scanner = new FakeScanner();
   const storage = new FakeStorage();
+  let base: INestApplication;
   let audit: FakeAudit;
   let usage: FakeUsage;
 
   beforeAll(async () => {
     // sobe uma vez só para obter o AuditService REAL, e reabre com o dublê que
     // o embrulha: a falha precisa ser da auditoria, não de uma reimplementação
-    const base = await createTestApp();
+    // o app-base fica ABERTO até o fim: os dublês usam os serviços REAIS dele, e
+    // fechá-lo aqui fazia o pool reabrir sozinho e vazar uma conexão para as
+    // suítes seguintes (visto no diagnóstico de outbox da F1.c, entrega 2)
+    base = await createTestApp();
     audit = new FakeAudit(base.get(AuditService));
     usage = new FakeUsage(base.get(UsageService));
-    await base.close();
 
     app = await createTestApp(
       [],
@@ -106,6 +109,7 @@ describe('Varredura de arquivos e quarentena (ADR-043)', () => {
   });
   afterAll(async () => {
     await app.close();
+    await base.close();
   });
 
   const authDe = (ws: WorkspaceFixture) =>

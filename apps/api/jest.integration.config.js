@@ -14,6 +14,8 @@ module.exports = {
   // pg-boss é ESM puro; o worker não roda em teste (ver test/pg-boss.stub.ts)
   moduleNameMapper: { '^pg-boss$': '<rootDir>/test/pg-boss.stub.ts' },
   setupFiles: ['reflect-metadata', '<rootDir>/test/integration/env.ts'],
+  // identifica as conexões de cada suíte no Postgres (diagnóstico de outbox)
+  setupFilesAfterEnv: ['<rootDir>/test/integration/app-name.ts'],
   globalSetup: '<rootDir>/test/integration/global-setup.ts',
   transform: {
     '^.+\\.ts$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.json' }],
