@@ -21,6 +21,7 @@ import { AuthContext, CurrentAuth, RequirePermissions } from '../common/decorato
 import { Idempotent } from '../common/idempotency.decorator';
 import { ZodPipe } from '../common/zod.pipe';
 import { IntelligenceService } from './intelligence.service';
+import { ContactContentReplayGuard, ConversationContentReplayGuard } from './replay-guards';
 
 @Controller('intelligence')
 export class IntelligenceController {
@@ -54,13 +55,14 @@ export class IntelligenceController {
   @RequirePermissions('intelligence:use', 'conversations:read')
   @Get('conversations/:id/summary')
   latestSummary(
+    @CurrentAuth() auth: AuthContext,
     @Param('id', new ParseUUIDPipe()) id: string,
   ): Promise<ConversationSummaryDto | null> {
-    return this.intelligence.latestSummary(id);
+    return this.intelligence.latestSummary(auth, id);
   }
 
   @RequirePermissions('intelligence:use', 'conversations:read')
-  @Idempotent()
+  @Idempotent({ replayGuard: ConversationContentReplayGuard })
   @Post('conversations/:id/summary')
   summarize(
     @CurrentAuth() auth: AuthContext,
@@ -80,7 +82,7 @@ export class IntelligenceController {
 
   /** Propõe uma tarefa; criar exige `tasks:write` de quem APROVAR, não daqui. */
   @RequirePermissions('intelligence:use', 'contacts:read')
-  @Idempotent()
+  @Idempotent({ replayGuard: ContactContentReplayGuard })
   @Post('contacts/:id/next-action')
   nextAction(
     @CurrentAuth() auth: AuthContext,
@@ -111,7 +113,7 @@ export class IntelligenceController {
      * curta a quem tem direito às propostas de tarefa que ficaram de fora.
      */
     const podeLerConversa = await this.permissions.has(auth, 'conversations:read');
-    const rows = await this.intelligence.listProposals(query.status, {
+    const rows = await this.intelligence.listProposals(auth, query.status, {
       includeReplyDrafts: podeLerConversa,
     });
     return rows.map((row) => ({
@@ -153,9 +155,10 @@ export class IntelligenceController {
   @RequirePermissions('intelligence:use', 'conversations:read')
   @Get('conversations/:id/reply-suggestion')
   async pendingReply(
+    @CurrentAuth() auth: AuthContext,
     @Param('id', new ParseUUIDPipe()) id: string,
   ): Promise<ReplySuggestionDto | null> {
-    return this.intelligence.pendingReply(id);
+    return this.intelligence.pendingReply(auth, id);
   }
 
   /**
@@ -166,7 +169,7 @@ export class IntelligenceController {
    * modelo que o adendo 2 acabou de estabelecer.
    */
   @RequirePermissions('intelligence:use', 'conversations:read', 'conversations:write')
-  @Idempotent()
+  @Idempotent({ replayGuard: ConversationContentReplayGuard })
   @Post('conversations/:id/reply-suggestion')
   suggestReply(
     @CurrentAuth() auth: AuthContext,

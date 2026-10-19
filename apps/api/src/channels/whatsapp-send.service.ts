@@ -2,6 +2,7 @@ import { BadRequestException, Inject, Injectable, Logger, NotFoundException } fr
 import { ClsService } from 'nestjs-cls';
 import { AuditService } from '../audit/audit.service';
 import { CryptoService } from '../common/crypto.service';
+import { ContentRestrictionService } from '../extensions/content-restriction';
 import type { ClaimedEvent } from '../outbox/outbox.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
@@ -82,6 +83,7 @@ export class WhatsappSendService {
     private readonly audit: AuditService,
     private readonly cls: ClsService,
     @Inject(META_TRANSPORT) private readonly transport: MetaTransport,
+    private readonly restriction: ContentRestrictionService,
   ) {}
 
   /** Chamado pelo caminho HTTP (atendente). Roda com CLS da request. */
@@ -271,8 +273,8 @@ export class WhatsappSendService {
 
     const message = (await this.prisma.db.message.findFirst({
       where: { id: messageId },
-      select: { body: true, conversationId: true },
-    })) as unknown as { body: string; conversationId: string } | null;
+      select: { body: true, conversationId: true, authorType: true },
+    })) as unknown as { body: string; conversationId: string; authorType: string } | null;
     if (!message) {
       // nada a enviar: não deixa a linha presa em `sending` para sempre
       if (dispatch.reservationId) await this.usage.release(dispatch.reservationId);
@@ -292,6 +294,32 @@ export class WhatsappSendService {
       });
       return 'done';
     }
+    /**
+     * Mensagem ESCRITA PELA IA (rascunho aprovado sem edição, ADR-044.8) para
+     * contato restrito não sai (ADR-048 §6.3, item 5): o contato pode ter
+     * ficado restrito entre a aprovação e este worker. Mensagem escrita por
+     * pessoa não passa por aqui — a clínica continua falando com o paciente.
+     */
+    if (message.authorType === 'ai') {
+      const verdict = await this.restriction.check(workspaceId, 'ai', [conversation.contactId]);
+      if (verdict.unavailable) {
+        // porta fora do ar: não envia AGORA, mas a mensagem já aprovada não é
+        // perdida — mesmo caminho de uma falha transitória do provedor
+        if (dispatch.reservationId) await this.usage.release(dispatch.reservationId);
+        await this.finish(messageId, dispatch.claimToken, 'failed_before_send', {
+          errorCode: 'restriction_unavailable',
+        });
+        return 'retry';
+      }
+      if (verdict.restricted.some(Boolean)) {
+        if (dispatch.reservationId) await this.usage.release(dispatch.reservationId);
+        await this.finish(messageId, dispatch.claimToken, 'failed_permanent', {
+          errorCode: 'content_restricted',
+        });
+        return 'done';
+      }
+    }
+
     const credential = (await this.prisma.db.channelCredential.findFirst({
       where: { channelId: conversation.channelId },
     })) as unknown as { phoneNumberId: string; tokenCipher: string } | null;

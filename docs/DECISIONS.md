@@ -682,6 +682,61 @@ Regras:
 - Nome e forma dos tokens de injeção; se o teste de drift lê os arquivos do schema por glob.
 - Se a suíte do Core sem o vertical cabe no CI atual.
 
+### Adendo 1 (2026-10-19) — implementação da F1.a e o que ela decidiu
+
+A F1.a implementou os pontos E1, E2 (checagem de boot), E4 e E6 no Core, **sem nenhum vertical composto** (`src/composition.ts` vazio). E3 e E5 ficam para a F1.b, junto do primeiro consumidor. Algumas decisões só apareceram ao escrever o código:
+
+1. **Forma da composição.** `src/extensions/` concentra o contrato (`CoreExtension`), o registro composto e validado (`composeRegistry`) e o `ExtensionsModule.forRoot(...)`, global, chamado só por `app.module.ts` a partir de `composition.ts`. O `PrismaService` e o `AuditService` recebem o registro por injeção. Sem ele, usam o registro do Core puro, de modo que um modelo de extensão não composto continua **proibido** no client protegido. A composição recusa no boot: modelo, chave ou allowlist que redefina algo do Core; nome de extensão que colida com namespace do Core; chave sem o prefixo da extensão; e relação acrescentada a modelo do Core apontando para fora da extensão.
+2. **Schema em pasta.** `prisma/schema/schema.prisma`, com `prisma.config.ts` apontando para a pasta. Validado assim: o client gerado é idêntico (só muda o texto embutido do schema), `migrate status` está em dia, e `migrate diff` entre um banco migrado do zero e a pasta não encontra diferença. O teste de drift lê todos os arquivos `.prisma` da pasta e compara com o registro **composto**.
+3. **E2 sem porta de disponibilidade.** Hoje nenhum fluxo do Core concede permissões a papéis, exceto o provisionamento, que usa só os templates do Core. A porta foi adiada, e o adiamento é seguro porque um teste protege a regra completa:
+   - só `provisioning.service.ts` escreve `RolePermission` no Core;
+   - os templates de papel só usam chaves do catálogo do Core;
+   - o catálogo do Core só tem namespaces do Core;
+   - provisionar com uma extensão composta não concede nem registra nenhuma chave dela.
+
+   Um caminho novo de concessão quebra esse teste e passa a exigir a porta. A checagem de boot (toda chave exigida por rota existe no catálogo composto) está implementada.
+
+4. **E6 na IA: um gateway, não o token do provedor.** Os testes substituem `LLM_CLIENT` por um provedor falso. Uma guarda colocada nesse token seria pulada justamente nos testes. Por isso a guarda é o `LlmGateway`, que envolve `LLM_CLIENT`; o serviço só fala com ele, e um teste garante que nenhum outro arquivo do módulo injeta o provedor.
+   - Todo pedido declara um **escopo** (workspace e contatos cujo conteúdo carrega). Pedido sem escopo, ou com escopo vazio, é recusado.
+   - A checagem acontece em três camadas: na capacidade, antes de ler qualquer corpo; antes de reservar quota; e no gateway, antes da rede. Uma restrição que surja entre a primeira e a última devolve a reserva inteira.
+   - Leitura de resultado e de proposta persistidos, aprovação de proposta e despacho de mensagem de autoria `ai` reconferem.
+   - O lead score continua determinístico e calculado no processo; só a redação pelo modelo é recusada.
+5. **Conteúdo sem contato.** O sujeito `null` representa conteúdo que não se atribui a contato nenhum (conversa sem contato, evento cuja entidade sumiu). Quem implementa a porta decide o `null`; a regra do Clinics (ADR-048 §6.4) o trata como restrito.
+6. **E6 nos webhooks.** Um mapa **exaustivo** sobre o tipo `WebhookEvent` diz de qual entidade é cada evento: evento novo no catálogo sem entrada no mapa não compila. Deal e tarefa são resolvidos para o contato no momento da entrega.
+   - Entidade sem contato não tem o que restringir e sai.
+   - Entidade que sumiu vira `null`.
+   - Evento suprimido é concluído **sem** registro de entrega, porque o histórico de entregas é visível ao cliente. As automações não passam pela supressão.
+7. **Operação de limpeza.** `IntelligenceService.expireContentFor(workspaceId, alvo)` anula resultados (pelo contato do run **ou** da conversa, já que o resumo só grava a conversa) e expira propostas pendentes, com trilha `system`. A F1.b a chama na ativação e ao criar perfil de paciente.
+8. **Contrato público.** `content_restricted` passa a ser status possível do resumo, da sugestão de resposta e da próxima ação.
+
+**Correções da revisão (`reviewer` + `security`, 2026-10-19), já implementadas e testadas:**
+
+9. **Replay de idempotência.** O cache de idempotência devolvia o corpo guardado (resumo, rascunho, próxima ação) sem passar pela restrição. Agora `@Idempotent({ replayGuard })` consulta uma guarda no momento da repetição. Nas três rotas de capacidade, a guarda refaz a checagem de restrição; se o contato estiver restrito, o corpo guardado é **descartado** e a rota executa de novo, devolvendo `content_restricted` sem chamar o provedor. `expireContentFor` também apaga essas respostas do cache. Um teste estático exige guarda em toda rota de capacidade marcada com `@Idempotent`.
+10. **Três estados na porta.** Além de liberado e restrito, existe **indisponível** (exceção, timeout de 3 s ou resposta malformada). Indisponível bloqueia como restrito, mas não descarta nada:
+    - o webhook lança, e o dispatcher devolve o evento ao outbox com backoff;
+    - o despacho vira `failed_before_send` (`restriction_unavailable`) e é retentado;
+    - a aprovação devolve 503 e mantém a proposta pendente;
+    - as capacidades devolvem 503 sem gravar run `content_restricted` (falha de infraestrutura não é recusa por restrição) e, por ser erro, nada fica no cache de idempotência;
+    - a guarda de replay também tem três estados: indisponível responde 503 **sem** apagar o corpo guardado, e só "restrito" descarta e reexecuta (sem isso, uma oscilação da porta faria uma chamada nova ao provedor e duplicaria a proposta).
+
+    A limpeza do cache de replay só apaga respostas **gravadas** (`completed`) das rotas de capacidade de IA. Apagar uma reserva em andamento liberaria uma execução concorrente duplicada.
+
+    Fail-closed é "não sai", não "perde para sempre". O log da falha registra só o nome do erro, nunca a mensagem, que pode conter ids e valores.
+
+11. **Tarefa pelo deal.** Uma tarefa responde pelo contato dela **e** pelo contato do deal a que pertence. Assim, uma tarefa criada a partir do deal de um paciente não sai por webhook.
+12. **Modelos globais.** `CORE_GLOBAL_MODELS` lista os modelos sem `workspaceId` do Core (`User`, `Workspace`, `Permission`…). A composição recusa extensão que reivindique qualquer modelo do Core, exige o prefixo da extensão nos modelos dela (`Clinics*`) e confere se eles existem no schema. O teste de drift garante que todo modelo do arquivo do Core está classificado.
+13. **Fila de propostas.** A restrição vale também pelo contato **atual** da conversa (que pode ter sido religada depois da geração), numa única consulta à porta para a página inteira.
+14. **Lead score.** Restrito não grava run: é uma leitura, feita a cada visualização do contato, e um run por visualização poluiria o histórico de custo. A coleta de sinais lê dados do contato, mas só dentro do processo; nada sai para o provedor.
+15. **Trilha da limpeza.** `expireContentFor` lê o workspace do contexto, e não de parâmetro, e audita a contagem de resultados anulados (`ai_run.results_expired`, sem ids nem conteúdo).
+16. **Catálogo no banco.** O texto original do E2 dizia que "o seed de permissões usa o catálogo composto". A implementação ficou mais restrita: nenhuma rotina do Core grava chave de extensão na tabela `Permission`. Registrar as chaves do vertical (exigidas pela FK `RolePermission → Permission`) é responsabilidade da CLI de ativação da F1.b.
+
+**Condições para compor a primeira porta (F1.b), além da pendência abaixo:**
+
+- **Contato da emissão.** Gravar no evento do outbox o contato da **emissão**, em coluna e fora do payload, e conferir emissão ∪ entrega. Hoje deal e tarefa são resolvidos pelo vínculo no momento da entrega: um deal desligado do paciente entre emitir e entregar sairia. Isso exige migration no Core e fica para a F1.b.
+- **Retenção de payloads expirados.** Payloads de propostas não pendentes continuam guardados, embora ocultos na leitura. Isso entra no plano de exclusão LGPD (ADR-048 §9).
+
+**Pendência para a F1.b, que precisa de decisão antes da primeira migration do vertical.** O Prisma exige o **lado oposto** de toda relação, e um modelo não pode ser dividido entre arquivos. Uma FK `ClinicsPatient → Contact` declarada no Prisma obriga o arquivo de schema do Core a ter, no `Contact`, uma linha de relação nomeando `ClinicsPatient`. A alternativa, FK composta só no SQL da migration e fora do schema, é exatamente o que o ADR-018 registrou como perdido: um `migrate dev` posterior a removeu. O código do Core continua sem conhecer o vertical, já que o registro composto já aceita esse acréscimo (`relationTargets` de modelo alheio, apontando só para dentro da extensão). Mas a linha no arquivo do Core é uma exceção visível ao §3.8 e precisa ser aceita, ou trocada por outra solução, antes da F1.b.
+
 ## ADR-048 — Veyra Clinics para estética: domínio próprio, classificação de dados e escopo do MVP
 
 **Status:** aceito · **Data:** 2026-10-19 · Aprovação da F0 (documental): aprova o desenho e as decisões marcadas como aprovadas, não código nem migrations. **Seguem pendentes:** validação operacional das hipóteses H1–H7, avaliação jurídica (§9.2) e bloqueios B1–B4 — sem eles, nenhum dado real de paciente e nenhum piloto clínico

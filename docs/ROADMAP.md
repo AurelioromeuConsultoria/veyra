@@ -88,7 +88,12 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
   - D1 (pago/em aberto), D2 (salas), D7 (um papel por membro) e D8 (profissional vê todos os atendimentos);
   - os bloqueios B1–B4. Sem eles, **nenhum dado real de paciente e nenhum piloto clínico**.
 
-- **F1 — Fundação do vertical 🔜** Os seis pontos de extensão do Core (ADR-047), incluindo a **restrição de conteúdo por contato (E6)** com a regra "restrito por padrão"; a barreira de dependência; a CLI de ativação e desativação com o ciclo de vida do ADR-047 §4, criando o papel `Profissional`; as sete permissões; a liberação de contato pela API; unidade, serviço, profissional e horários. Sala só se D2 for decidida a favor.
+- **F1 — Fundação do vertical 🚧** Dividida em três entregas, cada uma com revisão própria:
+  - **F1.a — pontos de extensão no Core 🚧 (implementada, em revisão):** E1, E2 (checagem de boot e teste de concessão), E4 e E6, com o schema em `prisma/schema/`, a barreira de lint e o teste de fronteira, sem vertical composto. Decisões de implementação no adendo 1 do ADR-047, incluindo a **pendência que precisa de decisão antes da F1.b**: o lado oposto da relação no schema do Core.
+  - **F1.b — esqueleto do vertical 🔜:** primeira migration, CLI de ativação e desativação, papel `Profissional`, porta real do E6, liberação de contato e E5.
+  - **F1.c — catálogo da clínica 🔜.**
+
+  Escopo e critérios da F1 como um todo: Os seis pontos de extensão do Core (ADR-047), incluindo a **restrição de conteúdo por contato (E6)** com a regra "restrito por padrão"; a barreira de dependência; a CLI de ativação e desativação com o ciclo de vida do ADR-047 §4, criando o papel `Profissional`; as sete permissões; a liberação de contato pela API; unidade, serviço, profissional e horários. Sala só se D2 for decidida a favor.
   **Pronto quando:**
   - workspace sem o vertical ativo recebe 404 nas rotas do Clinics e não pode receber nenhuma chave `clinics:*` por nenhum caminho;
   - `enable` e `disable` repetidos convergem para o mesmo estado, sem segundo papel `Profissional`; depois de `disable` não resta nenhuma `clinics:*` em papel algum, o papel continua existindo e as sessões antigas caem;
@@ -109,6 +114,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
   - o Core não importa `verticals/` (lint + teste de fronteira);
   - teste P0 de isolamento em cada modelo, e FK composta recusa profissional ou membership de outro workspace;
   - `reviewer` + `security` aprovaram as mudanças no Core.
+
 - **F2 — Paciente e agenda 🔜** `ClinicsPatient` sobre `Contact` e `ClinicsAppointment` com sobreposição impedida pelo banco.
   **Pronto quando:**
   - agendar exige profissional habilitado para o serviço;

@@ -2,7 +2,9 @@
 # Hook PreToolUse (Bash | Edit | Write): protege os arquivos que sustentam isolamento de tenant e RBAC.
 # - Edit/Write em arquivo sensível => additionalContext lembrando as invariantes + revisão obrigatória.
 # - git commit com arquivo sensível no stage => ask exigindo revisão de security + reviewer.
-# Arquivos sensíveis: prisma.service, guards, decorators de permissão, WORKSPACE_MODELS, auth.
+# Arquivos sensíveis: prisma.service, guards, decorators de permissão, WORKSPACE_MODELS, auth,
+# e desde o ADR-047 a composição de extensões (registro de modelos protegidos, catálogo
+# de permissões composto, restrição de conteúdo por contato) e o gateway da IA.
 set -uo pipefail
 
 input=$(cat)
@@ -10,7 +12,7 @@ tool=$(printf '%s' "$input" | jq -r '.tool_name // ""')
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""')
 file=$(printf '%s' "$input" | jq -r '.tool_input.file_path // ""')
 
-SENSITIVE_RE='(prisma\.service\.(ts|js)|workspace-models|jwt-auth\.guard|permissions\.guard|auth\.service|decorators\.(ts|js)|\.claude/hooks/)'
+SENSITIVE_RE='(prisma\.service\.(ts|js)|workspace-models|jwt-auth\.guard|permissions\.guard|auth\.service|decorators\.(ts|js)|\.claude/hooks/|src/extensions/|src/composition\.(ts|tsx)|llm\.gateway|idempotency\.(interceptor|decorator)|replay-guards)'
 
 context() {
   jq -n --arg msg "$1" '{systemMessage:$msg,hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$msg}}'

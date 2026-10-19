@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ClsService } from 'nestjs-cls';
 import { Prisma } from '../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
@@ -17,6 +18,7 @@ import type {
   AiRunSummary,
   ApprovalContext,
   ConsentActor,
+  ContentTarget,
   CreateTaskExecution,
   PromptVersionRepository,
   SendMessageExecution,
@@ -53,7 +55,11 @@ export function isPendingReplyConflict(error: unknown): boolean {
 
 @Injectable()
 export class PrismaAiRunRepository implements AiRunRepository {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+    private readonly cls: ClsService,
+  ) {}
 
   async create(workspaceId: string, run: AiRunRecord): Promise<string> {
     const created = await this.prisma.db.aiRun.create({
@@ -144,7 +150,50 @@ export class PrismaAiRunRepository implements AiRunRepository {
     });
     return count;
   }
+
+  /**
+   * Client protegido: só o workspace do contexto é alcançado. A limpeza deixa
+   * TRILHA com a contagem (nunca o conteúdo), como toda mutação relevante.
+   */
+  async expireResultsFor(target: ContentTarget): Promise<number> {
+    const workspaceId = this.cls.get<string>('workspaceId');
+    if (typeof workspaceId !== 'string') {
+      throw new Error('expireResultsFor sem workspace no contexto');
+    }
+    const db = this.prisma.db as unknown as TxRunner;
+    return db.$transaction(async (tx) => {
+      const { count } = await tx.aiRun.updateMany({
+        where: { ...contentWhere(target), result: { not: Prisma.DbNull } },
+        data: { result: Prisma.DbNull },
+      } as never);
+      if (count > 0) {
+        await this.audit.record(tx, workspaceId, 'ai_run.results_expired', {
+          entityType: 'aiContent',
+          entityId: workspaceId,
+          actor: { type: 'system', id: 'content-restriction' },
+          after: { results: count, scope: target === 'workspace' ? 'workspace' : 'contacts' },
+        });
+      }
+      return count;
+    });
+  }
 }
+
+/**
+ * Conteúdo "sobre" um contato: ligado a ele diretamente ou pela conversa. A
+ * conversa entra porque o resumo grava só o `conversationId` — filtrar só por
+ * `contactId` deixaria o resumo de fora.
+ */
+function contentWhere(target: ContentTarget): Record<string, unknown> {
+  if (target === 'workspace') return {};
+  const ids = [...target.contactIds];
+  return {
+    OR: [{ contactId: { in: ids } }, { conversation: { contactId: { in: ids } } }],
+  };
+}
+
+/** rotas de CAPACIDADE de IA cujo corpo de resposta é conteúdo derivado */
+const CAPABILITY_ROUTES = ['/summary', '/next-action', '/reply-suggestion'];
 
 @Injectable()
 export class PrismaAiProposalRepository implements AiProposalRepository {
@@ -161,6 +210,7 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
      * continua morando num lugar só.
      */
     private readonly send: WhatsappSendService,
+    private readonly cls: ClsService,
   ) {}
 
   async create(workspaceId: string, proposal: AiProposalInput): Promise<string> {
@@ -180,6 +230,57 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
     return (created as unknown as { id: string }).id;
   }
 
+  async expirePendingFor(target: ContentTarget): Promise<number> {
+    // o workspace da trilha é o MESMO do client filtrado: lido do contexto, nunca
+    // de parâmetro que pudesse divergir dele
+    const workspaceId = this.cls.get<string>('workspaceId');
+    if (typeof workspaceId !== 'string') {
+      throw new Error('expirePendingFor sem workspace no contexto');
+    }
+    const db = this.prisma.db as unknown as TxRunner;
+    return db.$transaction(async (tx) => {
+      const alvos = (await tx.aiProposal.findMany({
+        where: { ...contentWhere(target), status: 'pending' },
+        select: { id: true, type: true },
+      } as never)) as unknown as { id: string; type: string }[];
+      let expiradas = 0;
+      for (const alvo of alvos) {
+        const { count } = await tx.aiProposal.updateMany({
+          where: { id: alvo.id, status: 'pending' },
+          data: { status: 'expired', reviewedAt: new Date(), pendingReplyMark: null },
+        });
+        if (count === 0) continue;
+        expiradas += count;
+        // ninguém decidiu: o conteúdo deixou de poder ir à IA. Ator `system`,
+        // e o payload (texto de terceiro) fica fora da trilha, como sempre
+        await this.audit.record(tx, workspaceId, 'ai_proposal.expired', {
+          entityType: 'aiProposal',
+          entityId: alvo.id,
+          actor: { type: 'system', id: 'content-restriction' },
+          before: { type: alvo.type, status: 'pending' },
+          after: { type: alvo.type, status: 'expired' },
+        });
+      }
+      return expiradas;
+    });
+  }
+
+  async purgeCapabilityReplays(): Promise<number> {
+    // só respostas JÁ gravadas (`completed`): apagar uma reserva em curso
+    // liberaria execução concorrente duplicada com a mesma chave. O alcance é o
+    // workspace inteiro mesmo quando o alvo são contatos — a chave não guarda o
+    // contato, e apagar a mais aqui só custa um replay, nunca expõe nada
+    const { count } = await this.prisma.db.idempotencyKey.deleteMany({
+      where: {
+        state: 'completed',
+        OR: CAPABILITY_ROUTES.map((suffix) => ({
+          endpoint: { startsWith: 'POST ', contains: '/intelligence/', endsWith: suffix },
+        })),
+      },
+    } as never);
+    return count;
+  }
+
   async findById(id: string): Promise<AiProposalRecord | null> {
     const row = (await this.prisma.db.aiProposal.findFirst({
       where: { id },
@@ -192,14 +293,22 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
     limit: number,
     excludeTypes?: AiProposalType[],
   ): Promise<AiProposalRecord[]> {
-    return (await this.prisma.db.aiProposal.findMany({
+    const rows = (await this.prisma.db.aiProposal.findMany({
       where: {
         ...(status === 'all' ? {} : { status }),
         ...(excludeTypes && excludeTypes.length > 0 ? { type: { notIn: excludeTypes } } : {}),
       },
+      // contato ATUAL da conversa: a restrição de conteúdo vale por ele também
+      include: { conversation: { select: { contactId: true } } },
       orderBy: { createdAt: 'desc' },
       take: limit,
-    } as never)) as unknown as AiProposalRecord[];
+    } as never)) as unknown as (AiProposalRecord & {
+      conversation: { contactId: string | null } | null;
+    })[];
+    return rows.map(({ conversation, ...row }) => ({
+      ...row,
+      conversationContactId: conversation?.contactId ?? null,
+    }));
   }
 
   /**

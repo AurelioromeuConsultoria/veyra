@@ -8,9 +8,9 @@
  * - Workspace: a raiz do tenant; services acessam via raw com workspaceId do CLS.
  * - Permission: catálogo global do sistema (ADR-004), não é dado de tenant.
  *
- * REGRA: toda entidade de domínio nova entra aqui no MESMO commit do model.
- * O teste de drift (workspace-models.spec.ts) compara este set com o
- * schema.prisma — modelo com workspaceId fora do set = build vermelho.
+ * REGRA: toda entidade de domínio nova do CORE entra aqui no MESMO commit do
+ * model; entidade de vertical entra pela composição (ADR-047, E1). O teste de
+ * drift compara o registro COMPOSTO com todos os arquivos de `prisma/schema/`.
  */
 export const WORKSPACE_MODELS = new Set<string>([
   // Dados de acesso por workspace (ajuste aprovado: tenant-scoped, nunca via raw)
@@ -72,6 +72,23 @@ export const WORKSPACE_MODELS = new Set<string>([
 ]);
 
 /**
+ * Modelos GLOBAIS do Core (fora do perímetro, acesso só por `raw` justificado).
+ * Listados para que nenhuma extensão os reivindique como seus (ADR-047, E1):
+ * pôr `User` dentro do perímetro liberaria a travessia `membership → user →
+ * memberships` entre workspaces. O teste de drift garante que todo modelo do
+ * arquivo de schema do Core está aqui ou em `WORKSPACE_MODELS`.
+ */
+export const CORE_GLOBAL_MODELS = new Set<string>([
+  'User',
+  'RefreshToken',
+  'Workspace',
+  'Permission',
+  'PromptVersion',
+  'Plan',
+  'PlanLimit',
+]);
+
+/**
  * Modelos APPEND-ONLY: histórico que não se reescreve (ADR-011 e SECURITY.md §5).
  * O client protegido BLOQUEIA update/updateMany/delete/deleteMany/upsert neles —
  * "append-only" deixa de ser convenção e vira invariante técnica. A exclusão
@@ -86,7 +103,7 @@ export const APPEND_ONLY_MODELS = new Set<string>(['Activity', 'AuditLog', 'Mess
  * `data`) que saem do perímetro protegido — o hook do Prisma só intercepta a
  * operação de topo, então relações aninhadas precisam ser validadas aqui.
  *
- * Mantido à mão e verificado contra o schema.prisma pelo teste de drift:
+ * Mantido à mão e verificado contra o schema pelo teste de drift:
  * relação nova sem entrada aqui = build vermelho.
  */
 export const RELATION_TARGETS: Record<string, Record<string, string>> = {

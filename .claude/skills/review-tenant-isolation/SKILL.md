@@ -9,7 +9,7 @@ Referências: `docs/SECURITY.md §1/§2`, ADR-002/003/010. Executar com o agente
 
 ## Passos
 
-1. **Cobertura do WORKSPACE_MODELS**: todo modelo de domínio do `schema.prisma` com `workspaceId` está no set? Modelo fora do set = fora do isolamento automático = Bloqueante. Exceções legítimas (User, RefreshToken, Workspace, catálogos globais Permission/Plan/PromptVersion) estão comentadas.
+1. **Cobertura do registro de modelos protegidos**: todo modelo com `workspaceId` em `prisma/schema/` está no registro COMPOSTO (`WORKSPACE_MODELS` do Core ∪ `tenantModels` das extensões, ADR-047 E1) — o teste de drift compara os dois; nenhuma extensão reivindica modelo do Core (`CORE_GLOBAL_MODELS` incluído)? Modelo fora do set = fora do isolamento automático = Bloqueante. Exceções legítimas (User, RefreshToken, Workspace, catálogos globais Permission/Plan/PromptVersion) estão comentadas.
 2. **Usos de `raw`**: grep por `prisma.raw` / `.raw.`. Cada uso está nas exceções documentadas (identidade global, auth, provisionamento, jobs cross-workspace, rotina administrativa) **e** tem comentário justificando? Uso fora disso é Bloqueante.
 3. **Operações unsafe**: grep por `findUnique`, `upsert`, `\.update\(`, `\.delete\(` sobre modelos protegidos — devem ser `findFirst`/`updateMany`/`deleteMany` via `db`. Qualquer hit é Bloqueante.
 4. **FKs compostas**: relações novas entre entidades de workspace usam `(workspaceId, xId)`? Rode `check:fk` contra banco populado. FK simples cruzável é Bloqueante (vaza via include).

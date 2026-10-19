@@ -25,7 +25,15 @@ export async function createTestApp(
   // MESMA configuração do bootstrap de produção: o parser com `verify` (corpo
   // bruto para a assinatura do webhook) precisa existir aqui também
   configureHttp(app, process.env.WEB_ORIGIN as string);
-  await app.init();
+  try {
+    await app.init();
+  } catch (error) {
+    // boot que falha DEPOIS de conectar (ex.: checagem de catálogo no
+    // onApplicationBootstrap) deixaria o pool do Prisma aberto no processo
+    // `--runInBand` — e conexões órfãs são suspeitas em travas da suíte
+    await app.close().catch(() => undefined);
+    throw error;
+  }
   // ESCUTA UMA VEZ, aqui: sem isso o supertest chama server.listen(0) a cada
   // request e, com requests em Promise.all (testes de concorrência), dois
   // listen simultâneos corrompem a conexão — a suíte falhava de forma

@@ -1,8 +1,8 @@
-import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { ClsService } from 'nestjs-cls';
 import { PrismaClient } from '../generated/prisma/client';
-import { APPEND_ONLY_MODELS, RELATION_TARGETS, WORKSPACE_MODELS } from './workspace-models';
+import { CORE_REGISTRY, EXTENSION_REGISTRY, type ComposedRegistry } from '../extensions/registry';
 
 /**
  * Operações por chave única não aceitam filtro extra de workspace no where —
@@ -44,10 +44,14 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  * bloqueada aqui, fail-closed. Precisa do dado global? prisma.raw com
  * justificativa, em consulta separada.
  */
-function assertSafeTraversal(model: string, key: string): string | undefined {
-  const target = RELATION_TARGETS[model]?.[key];
+function assertSafeTraversal(
+  reg: ComposedRegistry,
+  model: string,
+  key: string,
+): string | undefined {
+  const target = reg.relationTargets[model]?.[key];
   if (target === undefined) return undefined; // campo escalar/operador
-  if (!WORKSPACE_MODELS.has(target)) {
+  if (!reg.workspaceModels.has(target)) {
     throw new Error(
       `Travessia ${model}.${key} → ${target} sai do perímetro protegido — ` +
         `proteção multitenant bloqueou a operação. Consulte ${target} separadamente via prisma.raw (justificado).`,
@@ -56,62 +60,62 @@ function assertSafeTraversal(model: string, key: string): string | undefined {
   return target;
 }
 
-function assertSafeSelection(model: string, selection: unknown): void {
+function assertSafeSelection(reg: ComposedRegistry, model: string, selection: unknown): void {
   if (!isPlainObject(selection)) return;
   for (const [key, value] of Object.entries(selection)) {
     if (key === '_count') {
       // _count.select conta relações do MESMO modelo — validar como relações
       if (isPlainObject(value) && isPlainObject(value.select)) {
         for (const countKey of Object.keys(value.select)) {
-          assertSafeTraversal(model, countKey);
+          assertSafeTraversal(reg, model, countKey);
         }
       }
       continue;
     }
-    const target = assertSafeTraversal(model, key);
+    const target = assertSafeTraversal(reg, model, key);
     if (target && isPlainObject(value)) {
-      assertSafeSelection(target, value.include);
-      assertSafeSelection(target, value.select);
-      assertSafeWhere(target, value.where);
-      assertSafeOrderBy(target, value.orderBy);
+      assertSafeSelection(reg, target, value.include);
+      assertSafeSelection(reg, target, value.select);
+      assertSafeWhere(reg, target, value.where);
+      assertSafeOrderBy(reg, target, value.orderBy);
     }
   }
 }
 
-function assertSafeWhere(model: string, where: unknown): void {
+function assertSafeWhere(reg: ComposedRegistry, model: string, where: unknown): void {
   if (Array.isArray(where)) {
-    for (const w of where) assertSafeWhere(model, w);
+    for (const w of where) assertSafeWhere(reg, model, w);
     return;
   }
   if (!isPlainObject(where)) return;
   for (const [key, value] of Object.entries(where)) {
     if (WHERE_LOGICAL_KEYS.has(key)) {
-      assertSafeWhere(model, value);
+      assertSafeWhere(reg, model, value);
       continue;
     }
-    const target = assertSafeTraversal(model, key);
+    const target = assertSafeTraversal(reg, model, key);
     if (!target) continue;
     // filtro de relação protegida: recursar (desembrulhando some/every/none/is/isNot)
     if (isPlainObject(value)) {
       for (const [wrapKey, wrapValue] of Object.entries(value)) {
         if (RELATION_FILTER_WRAPPERS.has(wrapKey)) {
-          assertSafeWhere(target, wrapValue);
+          assertSafeWhere(reg, target, wrapValue);
         }
       }
-      assertSafeWhere(target, value);
+      assertSafeWhere(reg, target, value);
     }
   }
 }
 
-function assertSafeOrderBy(model: string, orderBy: unknown): void {
+function assertSafeOrderBy(reg: ComposedRegistry, model: string, orderBy: unknown): void {
   if (Array.isArray(orderBy)) {
-    for (const o of orderBy) assertSafeOrderBy(model, o);
+    for (const o of orderBy) assertSafeOrderBy(reg, model, o);
     return;
   }
   if (!isPlainObject(orderBy)) return;
   for (const [key, value] of Object.entries(orderBy)) {
-    const target = assertSafeTraversal(model, key);
-    if (target) assertSafeOrderBy(target, value);
+    const target = assertSafeTraversal(reg, model, key);
+    if (target) assertSafeOrderBy(reg, target, value);
   }
 }
 
@@ -122,9 +126,14 @@ function assertSafeOrderBy(model: string, orderBy: unknown): void {
  * de relação no data (nested create/connect/update) não passam pelo hook e são
  * rejeitados — use as FKs escalares (userId, roleId).
  */
-function assertSafeData(model: string, data: unknown, workspaceId: string): void {
+function assertSafeData(
+  reg: ComposedRegistry,
+  model: string,
+  data: unknown,
+  workspaceId: string,
+): void {
   if (Array.isArray(data)) {
-    for (const d of data) assertSafeData(model, d, workspaceId);
+    for (const d of data) assertSafeData(reg, model, d, workspaceId);
     return;
   }
   if (!isPlainObject(data)) return;
@@ -134,7 +143,7 @@ function assertSafeData(model: string, data: unknown, workspaceId: string): void
     );
   }
   for (const key of Object.keys(data)) {
-    const target = RELATION_TARGETS[model]?.[key];
+    const target = reg.relationTargets[model]?.[key];
     if (target !== undefined) {
       throw new Error(
         `Escrita aninhada ${model}.${key} (relação → ${target}) não passa pela proteção multitenant — use a FK escalar.`,
@@ -149,7 +158,11 @@ function blockedRaw(method: string): never {
   );
 }
 
-function createWorkspaceClient(base: PrismaClient, getWorkspaceId: () => unknown): PrismaClient {
+function createWorkspaceClient(
+  base: PrismaClient,
+  getWorkspaceId: () => unknown,
+  reg: ComposedRegistry,
+): PrismaClient {
   // O cast de volta para PrismaClient evita a inferência de tipos gigante do
   // $extends (que estoura a memória do tsc); o runtime não muda.
   return base.$extends({
@@ -161,9 +174,9 @@ function createWorkspaceClient(base: PrismaClient, getWorkspaceId: () => unknown
       $executeRawUnsafe: () => blockedRaw('$executeRawUnsafe'),
       $allModels: {
         async $allOperations({ model, operation, args, query }) {
-          // Fail-closed nos DOIS sentidos: modelo fora de WORKSPACE_MODELS não é
+          // Fail-closed nos DOIS sentidos: modelo fora do registro composto não é
           // "livre", é PROIBIDO no db — identidade global e catálogos só via raw.
-          if (!model || !WORKSPACE_MODELS.has(model)) {
+          if (!model || !reg.workspaceModels.has(model)) {
             throw new Error(
               `${model ?? operation} não é modelo de workspace — proteção multitenant bloqueou; ` +
                 `use prisma.raw com justificativa (SECURITY.md §2).`,
@@ -185,7 +198,7 @@ function createWorkspaceClient(base: PrismaClient, getWorkspaceId: () => unknown
           }
 
           // append-only: histórico não se reescreve nem se apaga por aqui
-          if (APPEND_ONLY_MODELS.has(model) && MUTATING_OPERATIONS.has(operation)) {
+          if (reg.appendOnlyModels.has(model) && MUTATING_OPERATIONS.has(operation)) {
             throw new Error(
               `${model} é append-only: ${operation} é proibido. Exclusão só por cascade do dono ` +
                 `(LGPD) ou pelo job de retenção (prisma.raw justificado).`,
@@ -195,19 +208,19 @@ function createWorkspaceClient(base: PrismaClient, getWorkspaceId: () => unknown
           // clona: o hook nunca muta o objeto args do chamador
           const a = { ...((args ?? {}) as Record<string, unknown>) };
 
-          assertSafeSelection(model, a.include);
-          assertSafeSelection(model, a.select);
-          assertSafeWhere(model, a.where);
-          assertSafeOrderBy(model, a.orderBy);
+          assertSafeSelection(reg, model, a.include);
+          assertSafeSelection(reg, model, a.select);
+          assertSafeWhere(reg, model, a.where);
+          assertSafeOrderBy(reg, model, a.orderBy);
 
           switch (operation) {
             case 'create':
-              assertSafeData(model, a.data, workspaceId);
+              assertSafeData(reg, model, a.data, workspaceId);
               a.data = { ...(a.data as object), workspaceId };
               break;
             case 'createMany':
             case 'createManyAndReturn': {
-              assertSafeData(model, a.data, workspaceId);
+              assertSafeData(reg, model, a.data, workspaceId);
               const data = a.data;
               a.data = Array.isArray(data)
                 ? data.map((d) => ({ ...(d as object), workspaceId }))
@@ -216,7 +229,7 @@ function createWorkspaceClient(base: PrismaClient, getWorkspaceId: () => unknown
             }
             case 'updateMany':
             case 'updateManyAndReturn':
-              assertSafeData(model, a.data, workspaceId);
+              assertSafeData(reg, model, a.data, workspaceId);
               a.where = { AND: [{ workspaceId }, (a.where as object) ?? {}] };
               break;
             default:
@@ -243,7 +256,14 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
    */
   readonly raw: PrismaClient;
 
-  constructor(private readonly cls: ClsService) {
+  constructor(
+    private readonly cls: ClsService,
+    /**
+     * Registro COMPOSTO (Core ∪ extensões, ADR-047 E1). Ausente = Core puro: um
+     * modelo de extensão não composto continua PROIBIDO no db, nunca liberado.
+     */
+    @Optional() @Inject(EXTENSION_REGISTRY) registry: ComposedRegistry = CORE_REGISTRY,
+  ) {
     if (!process.env.DATABASE_URL) {
       throw new Error('DATABASE_URL ausente — o PrismaService não pode iniciar.');
     }
@@ -251,7 +271,7 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
       adapter: new PrismaPg(process.env.DATABASE_URL),
     });
     // db estende o MESMO client (um pool só; transações compartilham conexão)
-    this.db = createWorkspaceClient(this.raw, () => this.cls.get('workspaceId'));
+    this.db = createWorkspaceClient(this.raw, () => this.cls.get('workspaceId'), registry);
   }
 
   async onModuleInit() {

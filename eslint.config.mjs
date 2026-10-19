@@ -5,6 +5,22 @@ import eslint from '@eslint/js';
 import prettier from 'eslint-config-prettier';
 import tseslint from 'typescript-eslint';
 
+/**
+ * BARREIRA do ADR-047: o Core nunca importa um vertical. Só a RAIZ DE COMPOSIÇÃO
+ * (`composition.ts` de cada app e o `app.module.ts` da API) e o próprio código
+ * do vertical podem citar `verticals/`. O teste `extensions/boundary.spec.ts`
+ * repete a regra, caso esta seja afrouxada.
+ *
+ * Em constante porque o flat config SUBSTITUI (não soma) as opções de uma regra
+ * quando dois blocos a configuram para o mesmo arquivo: o bloco da IA abaixo
+ * precisa carregar este padrão junto com o seu.
+ */
+const VERTICALS_BOUNDARY = {
+  group: ['**/verticals', '**/verticals/**'],
+  message:
+    'ADR-047: o Core não importa vertical. Só a raiz de composição (composition.ts, app.module.ts) pode.',
+};
+
 export default tseslint.config(
   {
     ignores: ['**/dist/**', '**/coverage/**', '**/node_modules/**', '**/src/generated/**'],
@@ -27,6 +43,18 @@ export default tseslint.config(
     },
   },
   {
+    files: ['apps/api/src/**/*.ts', 'apps/web/src/**/*.{ts,tsx}', 'packages/contracts/src/**/*.ts'],
+    ignores: [
+      'apps/api/src/app.module.ts',
+      'apps/api/src/composition.ts',
+      'apps/web/src/composition.{ts,tsx}',
+      '**/src/verticals/**',
+    ],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [VERTICALS_BOUNDARY] }],
+    },
+  },
+  {
     // BARREIRA do ADR-027: o módulo `intelligence` não alcança o banco. As
     // portas são interfaces e os adaptadores Prisma vivem em
     // `src/intelligence-persistence/`. Sem exceção aqui dentro — o teste
@@ -46,6 +74,8 @@ export default tseslint.config(
               group: ['@prisma/client'],
               message: 'ADR-027: intelligence não importa Prisma.',
             },
+            // repetido aqui de propósito: ver o comentário de VERTICALS_BOUNDARY
+            VERTICALS_BOUNDARY,
           ],
         },
       ],

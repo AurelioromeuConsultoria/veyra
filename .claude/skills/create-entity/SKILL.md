@@ -16,7 +16,7 @@ Referências: `docs/DOMAIN_MODEL.md §1` (convenções), `docs/SECURITY.md §2`,
    - índices compostos liderados por `workspaceId`; uniques tenant-scoped;
    - dinheiro em `Int` centavos + `currency`.
 2. **FKs compostas**: toda relação com outra entidade de workspace usa `(workspaceId, xId) → X(workspaceId, id)`. FK simples só para catálogo global (Permission, Plan) com justificativa.
-3. **WORKSPACE_MODELS**: adicione o modelo ao set no `prisma.service.ts` — sem isso a entidade fica FORA do isolamento automático. Este passo dispara revisão de `security` (arquivo sensível).
+3. **Registro de modelos protegidos**: entidade do Core entra em `WORKSPACE_MODELS` (`src/prisma/workspace-models.ts`); entidade de vertical entra pela composição (`CoreExtension.tenantModels`, ADR-047 E1). O schema fica em `prisma/schema/` (um arquivo por dono) — sem isso a entidade fica FORA do isolamento automático. Este passo dispara revisão de `security` (arquivo sensível).
 4. **Migration**: via `create-migration` (nunca destrutiva sem plano).
 5. **Contratos** em `packages/contracts`: `create<X>Schema`/`update<X>Schema`/`list<X>Schema` (Zod) + `XDto` (interface). Nada de campo sensível no DTO.
 6. **Permissões**: keys `<area>:read`/`<area>:write` cobrindo a entidade; endpoints com `@RequirePermissions`.

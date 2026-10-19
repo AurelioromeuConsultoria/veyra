@@ -66,8 +66,12 @@ export interface AiConsentDto {
   conversationContent: boolean;
 }
 
+/**
+ * `content_restricted`: o contato está sob restrição de conteúdo para IA
+ * (ADR-047 E6, ADR-048 §6). Nada foi enviado ao provedor nem reservado da quota.
+ */
 export interface ConversationSummaryDto {
-  status: 'ok' | 'unavailable' | 'no_consent' | 'quota_exceeded';
+  status: 'ok' | 'unavailable' | 'no_consent' | 'quota_exceeded' | 'content_restricted';
   runId: string | null;
   subject?: string;
   summary?: string;
@@ -92,7 +96,7 @@ export interface LeadScoreDto {
 }
 
 export interface NextActionDto {
-  status: 'proposed' | 'unavailable' | 'quota_exceeded';
+  status: 'proposed' | 'unavailable' | 'quota_exceeded' | 'content_restricted';
   runId: string | null;
   proposalId?: string;
   title?: string;
@@ -165,7 +169,9 @@ export interface ReplySuggestionDto {
     /** teto de custo de IA do plano */
     | 'quota_exceeded'
     /** provedor ausente, erro ou saída inválida */
-    | 'unavailable';
+    | 'unavailable'
+    /** contato sob restrição de conteúdo para IA (ADR-048 §6): nada saiu */
+    | 'content_restricted';
   runId: string | null;
   /** motivo em pt-BR quando não há sugestão utilizável */
   reason?: string;

@@ -1,9 +1,18 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import type { CreateWebhookInput, UpdateWebhookInput, WebhookDto } from '@veyra/contracts';
+import type {
+  CreateWebhookInput,
+  UpdateWebhookInput,
+  WebhookDto,
+  WebhookEvent,
+} from '@veyra/contracts';
 import { AuditService } from '../audit/audit.service';
 import { AuthContext } from '../common/decorators';
 import { CryptoService } from '../common/crypto.service';
+import {
+  ContentRestrictionService,
+  type RestrictionSubject,
+} from '../extensions/content-restriction';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import {
   INTERNAL_EVENT_TYPES,
@@ -27,6 +36,24 @@ export type WebhookTransport = (
 ) => Promise<SafeFetchResult>;
 
 type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
+
+/**
+ * De QUAL entidade é cada evento do catálogo de webhooks, para a restrição de
+ * conteúdo por contato (ADR-047 E6, ADR-048 §6.5). EXAUSTIVO sobre o tipo
+ * `WebhookEvent`: evento novo no catálogo sem entrada aqui não compila — ninguém
+ * esquece de dizer de quem é o dado que sai.
+ */
+const EVENT_SUBJECT: Record<WebhookEvent, 'contact' | 'deal' | 'task'> = {
+  'contact.created': 'contact',
+  'contact.updated': 'contact',
+  'contact.deleted': 'contact',
+  'deal.created': 'deal',
+  'deal.stage_changed': 'deal',
+  'deal.won': 'deal',
+  'deal.lost': 'deal',
+  'task.created': 'task',
+  'task.completed': 'task',
+};
 
 /** 3 ENTREGAS MORTAS consecutivas pausam o webhook (ajuste #7). */
 const DEAD_DELIVERIES_TO_PAUSE = 3;
@@ -58,6 +85,7 @@ export class WebhooksService {
     private readonly outbox: OutboxService,
     private readonly audit: AuditService,
     @Inject(WEBHOOK_TRANSPORT) private readonly transport: WebhookTransport,
+    private readonly restriction: ContentRestrictionService,
   ) {}
 
   async list(): Promise<WebhookDto[]> {
@@ -186,6 +214,43 @@ export class WebhooksService {
   }
 
   /**
+   * Contatos de quem é o dado do evento. `[]` = a entidade existe e não tem
+   * contato nenhum: não há contato a restringir. `[null]` = não dá para saber
+   * (tipo fora do mapa, payload sem id, entidade apagada) — e a porta trata o
+   * desconhecido como restrito quando há dado sensível.
+   *
+   * Tarefa responde pelo contato DELA e pelo do deal a que pertence: uma tarefa
+   * criada a partir do deal de um paciente, sem contato direto, ainda é dele.
+   */
+  private async contactSubjects(event: ClaimedEvent): Promise<RestrictionSubject[]> {
+    const source = EVENT_SUBJECT[event.eventType as WebhookEvent] as
+      (typeof EVENT_SUBJECT)[WebhookEvent] | undefined;
+    const id = (event.payload as { id?: unknown } | null)?.id;
+    if (!source || typeof id !== 'string') return [null];
+    if (source === 'contact') return [id];
+    const workspaceId = event.workspaceId;
+    // `raw` justificado: a entrega roda fora do CLS (worker cross-workspace);
+    // workspaceId explícito no WHERE, só o vínculo com contato é lido
+    const dealContact = async (dealId: string): Promise<RestrictionSubject[] | null> => {
+      const deal = await this.prisma.raw.deal.findFirst({
+        where: { workspaceId, id: dealId },
+        select: { contactId: true },
+      });
+      if (!deal) return null;
+      return deal.contactId ? [deal.contactId] : [];
+    };
+    if (source === 'deal') return (await dealContact(id)) ?? [null];
+    const task = await this.prisma.raw.task.findFirst({
+      where: { workspaceId, id },
+      select: { contactId: true, dealId: true },
+    });
+    if (!task) return [null];
+    const subjects: RestrictionSubject[] = task.contactId ? [task.contactId] : [];
+    if (task.dealId) subjects.push(...((await dealContact(task.dealId)) ?? [null]));
+    return subjects;
+  }
+
+  /**
    * Entrega um evento do outbox aos webhooks ativos inscritos. Chamado pelo
    * worker; `raw` justificado (cross-workspace, com workspaceId explícito).
    */
@@ -209,6 +274,30 @@ export class WebhooksService {
     if (webhooks.length === 0) {
       await this.outbox.markDelivered(event.id, event.claimToken); // ninguém inscrito
       return;
+    }
+
+    /**
+     * RESTRIÇÃO DE CONTEÚDO, conferida NA ENTREGA e a cada tentativa (ADR-048
+     * §6.5): um evento emitido antes de o contato ficar restrito também não
+     * sai. Suprimido = concluído sem enviar; nada vai para o histórico de
+     * entregas, que o cliente vê. Automações não passam por aqui e seguem
+     * funcionando.
+     */
+    if (this.restriction.active) {
+      const subjects = await this.contactSubjects(event);
+      if (subjects.length > 0) {
+        const verdict = await this.restriction.check(event.workspaceId, 'webhook', subjects);
+        if (verdict.unavailable) {
+          // nada sai, mas também nada se perde: o dispatcher devolve o evento ao
+          // outbox com backoff (fail-closed é "não sai", não "descarta")
+          throw new Error('Porta de restrição indisponível — entrega reagendada');
+        }
+        if (verdict.restricted.some(Boolean)) {
+          this.logger.log(`Evento ${event.id} (${event.eventType}) suprimido: conteúdo restrito`);
+          await this.outbox.markDelivered(event.id, event.claimToken);
+          return;
+        }
+      }
     }
 
     // RETRY PARCIAL (correção do P1): quem já recebeu ESTE outboxEventId com

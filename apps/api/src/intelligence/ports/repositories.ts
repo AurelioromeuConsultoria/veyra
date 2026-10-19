@@ -60,7 +60,16 @@ export interface AiRunRepository {
    * e a evidência de que a IA agiu permanecem. Devolve quantos foram limpos.
    */
   purgeResultsOlderThan(days: number): Promise<number>;
+  /**
+   * ANULA o `result` dos runs sobre estes contatos — pelo `contactId` do run OU
+   * pelo contato da conversa do run —, ou de todo o workspace do contexto.
+   * Limpeza quando o conteúdo passa a ser restrito (ADR-048 §6.3, item 7).
+   */
+  expireResultsFor(target: ContentTarget): Promise<number>;
 }
+
+/** Alvo de uma limpeza de conteúdo derivado: contatos, ou o workspace inteiro. */
+export type ContentTarget = { contactIds: readonly string[] } | 'workspace';
 
 export interface AiProposalInput {
   runId: string;
@@ -75,6 +84,11 @@ export interface AiProposalInput {
 
 export interface AiProposalRecord extends AiProposalInput {
   id: string;
+  /**
+   * Contato ATUAL da conversa da proposta, preenchido pela listagem: a conversa
+   * pode ter sido religada depois de gerada, e a restrição vale pelos dois.
+   */
+  conversationContactId?: string | null;
   status: AiProposalStatus;
   reviewedByMembershipId: string | null;
   reviewedAt: Date | null;
@@ -168,6 +182,19 @@ export interface AiProposalRepository {
    * varrer os N primeiros esconderia o rascunho da conversa aberta.
    */
   findPendingReply(conversationId: string): Promise<AiProposalRecord | null>;
+  /**
+   * EXPIRA as propostas pendentes sobre estes contatos (pelo contato da
+   * proposta ou da conversa dela), ou de todo o workspace do contexto. Cada
+   * expiração é auditada com ator `system` (ADR-048 §6.3, itens 6 e 7).
+   */
+  expirePendingFor(target: ContentTarget): Promise<number>;
+  /**
+   * Remove do cache de idempotência as respostas das CAPACIDADES de IA do
+   * workspace do contexto (resumo, próxima ação, sugestão de resposta): são a
+   * segunda cópia do conteúdo derivado (SECURITY §7-C.8). A chave não guarda o
+   * contato, então a limpeza é do workspace inteiro.
+   */
+  purgeCapabilityReplays(): Promise<number>;
   /**
    * Cria o rascunho de resposta SUPERSEDINDO o pendente anterior da mesma
    * conversa, numa transação só (ADR-044, adendo 1): um rascunho novo torna o

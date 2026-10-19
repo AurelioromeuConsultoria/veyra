@@ -36,6 +36,8 @@ import { TagsModule } from './tags/tags.module';
 import { TasksModule } from './tasks/tasks.module';
 import { WebhooksModule } from './webhooks/webhooks.module';
 import { WorkspacesModule } from './workspaces/workspaces.module';
+import { COMPOSITION } from './composition';
+import { ExtensionsModule } from './extensions/extensions.module';
 
 @Module({
   imports: [
@@ -55,6 +57,8 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
       throttlers: [{ ttl: 60_000, limit: 120 }],
       skipIf: () => process.env.NODE_ENV === 'test',
     }),
+    // RAIZ DE COMPOSIÇÃO (ADR-047): extensões entram no Core só por aqui
+    ExtensionsModule.forRoot(COMPOSITION),
     PrismaModule,
     AuthModule,
     WorkspacesModule,

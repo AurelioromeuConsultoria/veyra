@@ -7,12 +7,18 @@ import {
   Injectable,
   Logger,
   NestInterceptor,
+  ServiceUnavailableException,
+  type Type,
 } from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
+import { ModuleRef, Reflector } from '@nestjs/core';
 import type { Request, Response } from 'express';
 import { Observable, catchError, from, mergeMap, of, switchMap, throwError } from 'rxjs';
 import { AuthContext } from './decorators';
-import { IDEMPOTENT_KEY } from './idempotency.decorator';
+import {
+  IDEMPOTENT_KEY,
+  IDEMPOTENT_REPLAY_GUARD_KEY,
+  type IdempotentReplayGuard,
+} from './idempotency.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 
 const HEADER = 'idempotency-key';
@@ -42,6 +48,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
   constructor(
     private readonly prisma: PrismaService,
     private readonly reflector: Reflector,
+    private readonly moduleRef: ModuleRef,
   ) {}
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
@@ -68,8 +75,15 @@ export class IdempotencyInterceptor implements NestInterceptor {
     const workspaceId = request.auth.workspaceId;
     const endpoint = `${request.method} ${this.canonicalRoute(request)}`;
     const requestHash = this.hash(request, endpoint);
+    const guardType = this.reflector.getAllAndOverride<Type<IdempotentReplayGuard> | undefined>(
+      IDEMPOTENT_REPLAY_GUARD_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+    const canReplay = guardType
+      ? () => this.moduleRef.get(guardType, { strict: false }).verdict(request)
+      : undefined;
 
-    return from(this.reserve(workspaceId, key, endpoint, requestHash)).pipe(
+    return from(this.reserve(workspaceId, key, endpoint, requestHash, canReplay)).pipe(
       switchMap((reserved) => {
         if (reserved.replay) {
           response.status(reserved.status);
@@ -142,6 +156,8 @@ export class IdempotencyInterceptor implements NestInterceptor {
     key: string,
     endpoint: string,
     requestHash: string,
+    canReplay?: () => Promise<'replay' | 'discard' | 'unavailable'>,
+    retried = false,
   ): Promise<{ replay: false } | { replay: true; status: number; body: unknown }> {
     const expiresAt = new Date(Date.now() + TTL_HOURS * 60 * 60 * 1000);
     try {
@@ -170,6 +186,26 @@ export class IdempotencyInterceptor implements NestInterceptor {
           throw new ConflictException('Tentativa anterior expirou, refaça a requisição');
         }
         throw new ConflictException('Requisição idêntica em processamento, tente novamente');
+      }
+      const verdict = canReplay ? await canReplay() : 'replay';
+      if (verdict === 'unavailable') {
+        // nem devolve nem descarta: a guarda não conseguiu decidir agora
+        throw new ServiceUnavailableException(
+          'Não foi possível conferir a resposta guardada agora',
+        );
+      }
+      if (verdict === 'discard') {
+        /**
+         * A resposta guardada deixou de ser entregável (ex.: conteúdo de IA de
+         * um contato que ficou restrito). Ela é DESCARTADA — não sai nem agora
+         * nem depois — e a rota executa de novo, com a regra de hoje. Uma
+         * segunda corrida com a mesma chave encontra a nova reserva (409).
+         */
+        await this.prisma.raw.idempotencyKey.deleteMany({
+          where: { id: existing.id, state: 'completed' },
+        });
+        if (retried) throw new ConflictException('Conflito de idempotência, tente novamente');
+        return this.reserve(workspaceId, key, endpoint, requestHash, canReplay, true);
       }
       return {
         replay: true,

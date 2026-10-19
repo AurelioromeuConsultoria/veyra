@@ -9,6 +9,8 @@ import { IntelligenceController } from './intelligence.controller';
 import { IntelligenceService } from './intelligence.service';
 import { AnthropicClient } from './llm/anthropic.client';
 import { LLM_CLIENT } from './llm/llm.client';
+import { LlmGateway } from './llm/llm.gateway';
+import { ContactContentReplayGuard, ConversationContentReplayGuard } from './replay-guards';
 
 /**
  * O módulo NÃO importa Prisma (ADR-027): as portas de persistência vêm do
@@ -29,7 +31,16 @@ import { LLM_CLIENT } from './llm/llm.client';
     TasksModule,
   ],
   controllers: [IntelligenceController],
-  providers: [IntelligenceService, { provide: LLM_CLIENT, useClass: AnthropicClient }],
+  // `LLM_CLIENT` é o PROVEDOR (os testes o trocam por um falso); o serviço só
+  // fala com o `LlmGateway`, que confere a restrição de conteúdo (ADR-047 E6)
+  providers: [
+    IntelligenceService,
+    LlmGateway,
+    { provide: LLM_CLIENT, useClass: AnthropicClient },
+    // guardas do replay de idempotência das capacidades (ADR-048 §6.3, item 3)
+    ConversationContentReplayGuard,
+    ContactContentReplayGuard,
+  ],
   exports: [IntelligenceService],
 })
 export class IntelligenceModule {}

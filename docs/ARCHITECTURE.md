@@ -101,7 +101,7 @@ Um vertical é um conjunto de módulos NestJS, contratos e telas que estende o C
 
 **Onde mora.** `apps/api/src/verticals/<v>/`, `packages/contracts/src/verticals/<v>/` e `apps/web/src/verticals/<v>/`. O schema fica em arquivo próprio, no **mesmo banco** e na mesma pasta de migrations (schema Prisma em vários arquivos), porque as FKs compostas para entidades do Core exigem o mesmo banco.
 
-**Barreira.** Só a raiz de composição importa `verticals/`: `app.module.ts` na API e a raiz de rotas e navegação no web. O restante do Core é proibido de importar o vertical por lint e por teste de fronteira, como no ADR-027. Quando o Core precisa de uma resposta do vertical, ele declara uma **porta** com nome neutro, e o vertical a implementa.
+**Barreira.** Só a raiz de composição importa `verticals/`: `src/composition.ts` e `app.module.ts` na API, e `src/composition.ts(x)` no web. As extensões entram no Core por `ExtensionsModule.forRoot(COMPOSITION)` (`src/extensions/`). O restante do Core é proibido de importar o vertical por lint e por teste de fronteira, como no ADR-027. Quando o Core precisa de uma resposta do vertical, ele declara uma **porta** com nome neutro, e o vertical a implementa.
 
 **Mecanismos de extensão**, em ordem de preferência:
 

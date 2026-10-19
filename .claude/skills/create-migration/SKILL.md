@@ -9,7 +9,7 @@ Referências: `docs/DOMAIN_MODEL.md §1`, `docs/SECURITY.md §2`, hook `block-de
 
 ## Passos
 
-1. **Altere o `schema.prisma`** seguindo as convenções (workspaceId, índices compostos, FKs compostas). Revise o diff do schema antes de gerar.
+1. **Altere o schema em `prisma/schema/`** (o arquivo do dono: `schema.prisma` para o Core, um arquivo por vertical) seguindo as convenções (workspaceId, índices compostos, FKs compostas). Revise o diff do schema antes de gerar.
 2. **Gere**: `prisma migrate dev --name <snake_case_descritivo>` contra o Postgres de dev local.
 3. **Leia o SQL gerado inteiro** antes de aceitar. Procure destrutividade:
    - `DROP TABLE` / `TRUNCATE` → não passa (hook nega); exige plano aprovado com backup e migração de dados.

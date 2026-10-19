@@ -110,6 +110,8 @@ const DISPATCH_ERROR_LABEL: Record<string, string> = {
   abandoned_in_flight: 'envio interrompido em andamento',
   no_retrier: 'envio interrompido sem nova tentativa',
   lease_expired_in_flight: 'resultado não confirmado pelo provedor',
+  content_restricted: 'mensagem da IA bloqueada: o conteúdo deste contato é restrito',
+  restriction_unavailable: 'conferência de restrição indisponível — nova tentativa agendada',
 };
 
 function DispatchBadge({ state, error }: { state: MessageDispatchState; error: string | null }) {
@@ -753,7 +755,9 @@ export function InboxPage() {
                 <p className="text-body-sm text-muted-fg">
                   {shownSummary.status === 'no_consent'
                     ? 'Resumo indisponível: o workspace não autorizou o uso de conteúdo de conversa (ajuste em Sinais).'
-                    : 'Resumo indisponível no momento.'}
+                    : shownSummary.status === 'content_restricted'
+                      ? 'Resumo indisponível: a IA não é usada com o conteúdo deste contato.'
+                      : 'Resumo indisponível no momento.'}
                 </p>
               </AiPanel>
             )

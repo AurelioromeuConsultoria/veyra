@@ -1,4 +1,11 @@
-import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { replyDraftSchema, sendMessagePayloadSchema } from '@veyra/contracts';
 import { z } from 'zod';
 import { ActivitiesService } from '../activities/activities.service';
@@ -9,7 +16,12 @@ import { ConversationsService } from '../conversations/conversations.service';
 import { DealsService } from '../deals/deals.service';
 import { estimateCostCents, estimateMaxCostCents } from './cost';
 import { computeLeadScore, type LeadScore, type ScoreSignals } from './lead-score';
-import { LLM_CLIENT, type LlmClient, type LlmOutcome, type LlmRequest } from './llm/llm.client';
+import {
+  LlmGateway,
+  type GatewayOutcome,
+  type LlmScope,
+  type ScopedLlmRequest,
+} from './llm/llm.gateway';
 import {
   AI_CONSENT_REPOSITORY,
   AI_PROPOSAL_REPOSITORY,
@@ -21,6 +33,7 @@ import {
   type AiRunRepository,
   type AiRunStatus,
   type ApprovalContext,
+  type ContentTarget,
   type PromptVersionRepository,
 } from './ports/repositories';
 import {
@@ -70,6 +83,7 @@ function describeParties(contactName: string | null, subject: string | null): st
 }
 
 const PROPOSAL_TTL_DAYS = 7;
+const RESTRICTION_UNAVAILABLE = 'Não foi possível conferir a restrição de conteúdo agora';
 /**
  * Rascunho de resposta vive no máximo 24h — e nunca além da janela de
  * atendimento, que é o que de fato permite enviar (ADR-044.1). Um rascunho que
@@ -83,7 +97,7 @@ const MAX_OUTPUT_TOKENS = 700;
 const SUMMARY_MESSAGE_LIMIT = 30;
 
 export interface ConversationSummaryResult {
-  status: 'ok' | 'unavailable' | 'no_consent' | 'quota_exceeded';
+  status: 'ok' | 'unavailable' | 'no_consent' | 'quota_exceeded' | 'content_restricted';
   runId: string | null;
   subject?: string;
   summary?: string;
@@ -99,7 +113,13 @@ export interface LeadScoreResult extends LeadScore {
 }
 
 export interface ReplySuggestionResult {
-  status: 'proposed' | 'no_consent' | 'send_blocked' | 'quota_exceeded' | 'unavailable';
+  status:
+    | 'proposed'
+    | 'no_consent'
+    | 'send_blocked'
+    | 'quota_exceeded'
+    | 'unavailable'
+    | 'content_restricted';
   runId: string | null;
   reason?: string;
   proposalId?: string;
@@ -110,7 +130,7 @@ export interface ReplySuggestionResult {
 }
 
 export interface NextActionResult {
-  status: 'proposed' | 'unavailable' | 'quota_exceeded';
+  status: 'proposed' | 'unavailable' | 'quota_exceeded' | 'content_restricted';
   runId: string | null;
   proposalId?: string;
   title?: string;
@@ -122,7 +142,8 @@ export class IntelligenceService {
   private readonly logger = new Logger(IntelligenceService.name);
 
   constructor(
-    @Inject(LLM_CLIENT) private readonly llm: LlmClient,
+    /** ÚNICO caminho até o provedor: confere a restrição de conteúdo (ADR-047 E6) */
+    private readonly llm: LlmGateway,
     @Inject(AI_RUN_REPOSITORY) private readonly runs: AiRunRepository,
     @Inject(AI_PROPOSAL_REPOSITORY) private readonly proposals: AiProposalRepository,
     @Inject(AI_CONSENT_REPOSITORY) private readonly consent: AiConsentRepository,
@@ -147,6 +168,16 @@ export class IntelligenceService {
     // workspace precisa dar 404, e não "sem consentimento". `get` traz só
     // metadados — nenhum corpo de mensagem é lido antes do consentimento.
     const conversation = await this.conversations.get(conversationId);
+
+    // ADR-048 §6.3: restrição ANTES de ler qualquer corpo — e antes do
+    // consentimento, que é do workspace e não libera contato restrito
+    const scope = this.scope(auth, [conversation.contactId]);
+    if ((await this.assertRestrictionAnswered(scope)) === 'restricted') {
+      const runId = await this.refusedAsRestricted(auth, CONVERSATION_SUMMARY_PROMPT.capability, {
+        conversationId,
+      });
+      return { status: 'content_restricted', runId };
+    }
 
     // ADR-028: sem consentimento não há NEM chamada ao provedor
     const { conversationContent } = await this.consent.get();
@@ -194,11 +225,21 @@ export class IntelligenceService {
       context: 'Resumo de uma conversa registrada no CRM.',
       untrusted,
       maxOutputTokens: MAX_OUTPUT_TOKENS,
-    } satisfies LlmRequest);
+      scope,
+    } satisfies ScopedLlmRequest);
 
     const promptVersionId = await this.ensurePrompt(CONVERSATION_SUMMARY_PROMPT);
     const contextSummary = `conversation:${conversationId}; ${page.items.length} mensagens (corpo); campos: direction, body`;
 
+    if (call.outcome === 'restricted') {
+      const runId = await this.refusedAsRestricted(
+        auth,
+        CONVERSATION_SUMMARY_PROMPT.capability,
+        { conversationId },
+        'at_provider',
+      );
+      return { status: 'content_restricted', runId };
+    }
     if (call.outcome === 'quota_exceeded') {
       const runId = await this.record(auth, {
         capability: CONVERSATION_SUMMARY_PROMPT.capability,
@@ -266,6 +307,15 @@ export class IntelligenceService {
    * service de domínio.
    */
   async suggestNextAction(auth: AuthContext, contactId: string): Promise<NextActionResult> {
+    // existência pelo domínio (404 para id alheio) antes da checagem de restrição
+    await this.contacts.get(contactId);
+    const scope = this.scope(auth, [contactId]);
+    if ((await this.assertRestrictionAnswered(scope)) === 'restricted') {
+      const runId = await this.refusedAsRestricted(auth, NEXT_ACTION_PROMPT.capability, {
+        contactId,
+      });
+      return { status: 'content_restricted', runId };
+    }
     const signals = await this.collectSignals(contactId);
     const score = computeLeadScore(signals);
 
@@ -274,10 +324,20 @@ export class IntelligenceService {
       system: NEXT_ACTION_PROMPT.system,
       context: this.describeSignals(signals, score),
       maxOutputTokens: MAX_OUTPUT_TOKENS,
+      scope,
     });
     const promptVersionId = await this.ensurePrompt(NEXT_ACTION_PROMPT);
     const contextSummary = `contact:${contactId}; sinais determinísticos (recência, pipeline, engajamento); sem conteúdo de mensagem`;
 
+    if (call.outcome === 'restricted') {
+      const runId = await this.refusedAsRestricted(
+        auth,
+        NEXT_ACTION_PROMPT.capability,
+        { contactId },
+        'at_provider',
+      );
+      return { status: 'content_restricted', runId };
+    }
     if (call.outcome === 'quota_exceeded') {
       const runId = await this.record(auth, {
         capability: NEXT_ACTION_PROMPT.capability,
@@ -361,11 +421,24 @@ export class IntelligenceService {
     const signals = await this.collectSignals(contactId);
     const score = computeLeadScore(signals);
 
+    /**
+     * Contato restrito (ADR-048 §6.3): o score determinístico é calculado AQUI,
+     * sem provedor, e continua valendo; o que não acontece é a redação pelo
+     * modelo. Nenhum sinal deste contato sai para fora.
+     */
+    const scope = this.scope(auth, [contactId]);
+    if (!(await this.llm.allows(scope))) {
+      // sem run: é uma LEITURA (GET), feita a cada visualização do contato — um
+      // run por page view poluiria o histórico de custo sem registrar decisão
+      return { ...score, explanation: null, runId: null };
+    }
+
     const started = Date.now();
     const call = await this.callWithQuota(auth.workspaceId as string, {
       system: LEAD_SCORE_EXPLANATION_PROMPT.system,
       context: this.describeSignals(signals, score),
       maxOutputTokens: 300,
+      scope,
     });
     // quota estourada NÃO derruba o score: ele é determinístico e continua
     // valendo — some apenas a redação (ajuste aprovado da Entrega 7)
@@ -399,9 +472,15 @@ export class IntelligenceService {
    * Último resumo GRAVADO da conversa. Sem isto o insight morre com a resposta
    * HTTP e a interface teria de pagar outro run para mostrar o mesmo texto.
    */
-  async latestSummary(conversationId: string): Promise<ConversationSummaryResult | null> {
+  async latestSummary(
+    auth: AuthContext,
+    conversationId: string,
+  ): Promise<ConversationSummaryResult | null> {
     // valida acesso pelo serviço de domínio antes de devolver qualquer coisa
-    await this.conversations.get(conversationId);
+    const conversation = await this.conversations.get(conversationId);
+    // conteúdo JÁ persistido também não sai para contato restrito — inclusive o
+    // gerado antes de a restrição existir (ADR-048 §6.3, item 3)
+    if (!(await this.llm.allows(this.scope(auth, [conversation.contactId])))) return null;
     const latest = await this.runs.latestResult(CONVERSATION_SUMMARY_PROMPT.capability, {
       conversationId,
     });
@@ -422,6 +501,23 @@ export class IntelligenceService {
    */
   async purgeExpiredResults(days: number): Promise<number> {
     return this.runs.purgeResultsOlderThan(days);
+  }
+
+  /**
+   * Operação do Core para quando um conteúdo PASSA a ser restrito (ADR-048
+   * §6.3, item 7): anula resultados e expira propostas pendentes dos contatos,
+   * ou do workspace inteiro. Roda no CLS do workspace de quem chama. É
+   * COMPLEMENTAR: quem protege é a checagem na leitura, que já esconde esse
+   * conteúdo — se esta limpeza falhar, nada fica exposto.
+   */
+  async expireContentFor(
+    target: ContentTarget,
+  ): Promise<{ results: number; proposals: number; replays: number }> {
+    const results = await this.runs.expireResultsFor(target);
+    const proposals = await this.proposals.expirePendingFor(target);
+    // a segunda cópia: corpo de resposta guardado para replay de idempotência
+    const replays = await this.proposals.purgeCapabilityReplays();
+    return { results, proposals, replays };
   }
 
   async totalCostCents(): Promise<number> {
@@ -445,15 +541,32 @@ export class IntelligenceService {
   // ── Propostas ─────────────────────────────────────────────────────────────
 
   async listProposals(
+    auth: AuthContext,
     status: 'pending' | 'executing' | 'approved' | 'rejected' | 'expired' | 'all',
     /** quem não lê conversas não recebe rascunho de resposta (SECURITY.md §4) */
     options: { includeReplyDrafts: boolean } = { includeReplyDrafts: true },
   ) {
-    return this.proposals.list(
+    const rows = await this.proposals.list(
       status,
       100,
       options.includeReplyDrafts ? undefined : ['send_message'],
     );
+    /**
+     * Proposta de contato restrito não aparece (ADR-048 §6.3, item 3): o
+     * payload é conteúdo derivado do contato. A restrição vem da porta da
+     * extensão, que o WHERE não alcança — então a página pode vir mais curta
+     * que o limite. Preço aceito: a fila é de revisão, não de paginação.
+     */
+    const restricted = await this.llm.restrictedEach(
+      auth.workspaceId as string,
+      rows.map((row) =>
+        // a conversa pode ter sido religada: vale o contato da proposta E o atual
+        row.conversationId
+          ? [row.contactId ?? null, row.conversationContactId ?? null]
+          : [row.contactId ?? null],
+      ),
+    );
+    return rows.filter((_row, index) => !restricted[index]);
   }
 
   /**
@@ -470,6 +583,19 @@ export class IntelligenceService {
     const workspaceId = auth.workspaceId as string;
     // existência primeiro: id de outro workspace é 404, não "indisponível"
     const conversation = await this.conversations.get(conversationId);
+
+    // restrição antes da política, do consentimento e de qualquer leitura de corpo
+    const scope = this.scope(auth, [conversation.contactId]);
+    if ((await this.assertRestrictionAnswered(scope)) === 'restricted') {
+      const runId = await this.refusedAsRestricted(auth, REPLY_SUGGESTION_PROMPT.capability, {
+        conversationId,
+      });
+      return {
+        status: 'content_restricted',
+        runId,
+        reason: 'A IA não está disponível para este contato',
+      };
+    }
 
     /**
      * A POLÍTICA DE ENVIO vem antes do consentimento e antes de qualquer
@@ -558,11 +684,25 @@ export class IntelligenceService {
       context: 'Canal: WhatsApp, dentro da janela livre de atendimento de 24h.',
       untrusted,
       maxOutputTokens: MAX_OUTPUT_TOKENS,
-    } satisfies LlmRequest);
+      scope,
+    } satisfies ScopedLlmRequest);
 
     const promptVersionId = await this.ensurePrompt(REPLY_SUGGESTION_PROMPT);
     const contextSummary = `conversation:${conversationId}; ${page.items.length} mensagens (corpo); campos: direction, body`;
 
+    if (call.outcome === 'restricted') {
+      const runId = await this.refusedAsRestricted(
+        auth,
+        REPLY_SUGGESTION_PROMPT.capability,
+        { conversationId },
+        'at_provider',
+      );
+      return {
+        status: 'content_restricted',
+        runId,
+        reason: 'A IA não está disponível para este contato',
+      };
+    }
     if (call.outcome === 'quota_exceeded') {
       const runId = await this.record(auth, {
         capability: REPLY_SUGGESTION_PROMPT.capability,
@@ -654,7 +794,7 @@ export class IntelligenceService {
        * pediu — existe um rascunho para revisar, só não é o desta chamada. O
        * custo do run já foi registrado, e o texto descartado nunca chega à tela.
        */
-      const vencedor = await this.pendingReply(conversationId);
+      const vencedor = await this.pendingReply(auth, conversationId);
       return vencedor ?? { status: 'unavailable', runId, reason: 'Rascunho não pôde ser criado' };
     }
 
@@ -673,9 +813,17 @@ export class IntelligenceService {
    * Rascunho pendente da conversa, para a tela reabrir onde parou. Não gera
    * nada e não custa token.
    */
-  async pendingReply(conversationId: string): Promise<ReplySuggestionResult | null> {
+  async pendingReply(
+    auth: AuthContext,
+    conversationId: string,
+  ): Promise<ReplySuggestionResult | null> {
+    const conversation = await this.conversations.get(conversationId);
     const proposal = await this.proposals.findPendingReply(conversationId);
     if (!proposal) return null;
+    // o rascunho é derivado da conversa: restrito pelo contato de HOJE e pelo
+    // contato de quando foi gerado — o vínculo pode ter mudado no meio
+    const subjects = [conversation.contactId, proposal.contactId ?? null];
+    if (!(await this.llm.allows(this.scope(auth, subjects)))) return null;
     if (proposal.expiresAt.getTime() < Date.now()) return null;
     const payload = sendMessagePayloadSchema.safeParse(proposal.payload);
     if (!payload.success) {
@@ -721,6 +869,11 @@ export class IntelligenceService {
     if (!proposal.conversationId) {
       throw new BadRequestException('Proposta sem conversa vinculada');
     }
+    const conversation = await this.conversations.get(proposal.conversationId);
+    await this.assertProposalNotRestricted(auth, id, [
+      proposal.contactId ?? null,
+      conversation.contactId,
+    ]);
     // revalida o payload NO ACEITE: entre propor e aprovar, nada garante que a
     // linha não foi adulterada por outro caminho
     const payload = sendMessagePayloadSchema.parse(proposal.payload);
@@ -750,6 +903,7 @@ export class IntelligenceService {
       await this.proposals.transition(id, 'expired', this.approver(auth), 'system');
       throw new BadRequestException('Proposta expirada');
     }
+    await this.assertProposalNotRestricted(auth, id, [proposal.contactId ?? null]);
     // revalida o payload NO ACEITE: entre propor e aprovar, nada garante que a
     // linha não foi adulterada por outro caminho
     const payload = z
@@ -813,6 +967,68 @@ export class IntelligenceService {
 
   // ── Internos ──────────────────────────────────────────────────────────────
 
+  /**
+   * Checagem de restrição com TRÊS estados (ADR-047 adendo 1, item 10). Porta
+   * indisponível lança 503 ANTES de qualquer registro: não é recusa por
+   * restrição, não grava run `content_restricted` e — por ser erro HTTP — não
+   * fica guardada no cache de idempotência.
+   */
+  private async assertRestrictionAnswered(scope: LlmScope): Promise<'allowed' | 'restricted'> {
+    const verdict = await this.llm.verdict(scope);
+    if (verdict === 'unavailable') throw new ServiceUnavailableException(RESTRICTION_UNAVAILABLE);
+    return verdict;
+  }
+
+  private scope(auth: AuthContext, contactIds: readonly (string | null)[]): LlmScope {
+    return { workspaceId: auth.workspaceId as string, contactIds };
+  }
+
+  /**
+   * Run recusado por restrição de conteúdo: registrado como toda outra recusa,
+   * sem chamada ao provedor, sem reserva de quota e sem corpo nenhum no contexto.
+   */
+  private async refusedAsRestricted(
+    auth: AuthContext,
+    capability: string,
+    target: { conversationId?: string; contactId?: string },
+    /** onde a recusa aconteceu: o registro não pode mentir sobre o contexto */
+    stage: 'before_context' | 'at_provider' = 'before_context',
+  ): Promise<string> {
+    return this.record(auth, {
+      capability,
+      promptVersionId: null,
+      contextSummary:
+        stage === 'before_context'
+          ? 'recusado antes de montar contexto: conteúdo do contato restrito'
+          : 'recusado na chamada ao provedor: contato ficou restrito após montar o contexto; nada foi enviado',
+      status: 'refused',
+      reasonCode: 'content_restricted',
+      conversationId: target.conversationId ?? null,
+      contactId: target.contactId ?? null,
+    });
+  }
+
+  /**
+   * Reconferência NO ACEITE (ADR-048 §6.3, item 4): o contato pode ter ficado
+   * restrito entre gerar e aprovar. A proposta caduca — ninguém a recusou, ela
+   * deixou de ser aprovável — e a aprovação falha antes de qualquer efeito.
+   */
+  private async assertProposalNotRestricted(
+    auth: AuthContext,
+    id: string,
+    contactIds: readonly (string | null)[],
+  ): Promise<void> {
+    const verdict = await this.llm.verdict(this.scope(auth, contactIds));
+    if (verdict === 'allowed') return;
+    if (verdict === 'unavailable') {
+      // a porta não respondeu: NÃO aprova e também NÃO expira — a proposta
+      // continua pendente para quando a checagem voltar (fail-closed sem perda)
+      throw new ServiceUnavailableException('Não foi possível conferir a restrição agora');
+    }
+    await this.proposals.transition(id, 'expired', this.approver(auth), 'system');
+    throw new BadRequestException('Proposta indisponível: o conteúdo deste contato é restrito');
+  }
+
   private async ensurePrompt(prompt: PromptDefinition): Promise<string> {
     return this.promptVersions.ensure(
       prompt.capability,
@@ -867,7 +1083,7 @@ export class IntelligenceService {
    */
   private async callWithQuota(
     workspaceId: string,
-    request: LlmRequest,
+    request: ScopedLlmRequest,
   ): Promise<
     | {
         outcome: 'ok';
@@ -875,8 +1091,14 @@ export class IntelligenceService {
         costCents: number;
       }
     | { outcome: 'quota_exceeded' }
+    | { outcome: 'restricted' }
     | { outcome: 'unavailable'; reason: 'provider_unavailable' | 'provider_unknown_cost' }
   > {
+    // restrição ANTES de reservar: contato restrito não consome orçamento
+    if ((await this.assertRestrictionAnswered(request.scope)) === 'restricted') {
+      return { outcome: 'restricted' };
+    }
+
     const promptChars =
       request.system.length + request.context.length + (request.untrusted?.length ?? 0);
     const maxCost = estimateMaxCostCents(this.llm.model, promptChars, request.maxOutputTokens);
@@ -889,13 +1111,28 @@ export class IntelligenceService {
       return { outcome: 'quota_exceeded' };
     }
 
-    let result: LlmOutcome;
+    let result: GatewayOutcome;
     try {
       result = await this.llm.complete(request);
     } catch {
       // exceção que escapou do cliente: a requisição pode já ter sido
       // despachada, então isto é INCERTO, não "não aconteceu"
       result = { kind: 'unknown_after_dispatch' };
+    }
+
+    if (result.kind === 'restriction_unavailable') {
+      // a porta caiu entre a checagem e a chamada: nada saiu, reserva devolvida,
+      // e o motivo é infraestrutura — 503, nunca "contato restrito"
+      await this.usage.release(runsReservation.reservationId);
+      await this.usage.release(costReservation.reservationId);
+      throw new ServiceUnavailableException(RESTRICTION_UNAVAILABLE);
+    }
+    if (result.kind === 'restricted') {
+      // o gateway recusou ANTES da rede (o contato ficou restrito entre a
+      // checagem acima e a chamada): nada foi gasto, a reserva volta inteira
+      await this.usage.release(runsReservation.reservationId);
+      await this.usage.release(costReservation.reservationId);
+      return { outcome: 'restricted' };
     }
 
     if (result.kind === 'no_provider') {
