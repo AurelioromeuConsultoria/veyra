@@ -562,3 +562,407 @@ Implementado com duas decisões que só apareceram ao escrever: a seleção é p
    O caminho híbrido (arquivo em `/opt/veyra-staging/.env`) fica registrado no runbook §11.2 como reversão possível, não como pendência.
 
 **Residual aceito:** com transporte falso, nenhum recibo de status volta da Meta — o `MessageDispatch` fica em `sent` para sempre e a quota é cobrada. Na tela, "enviada" fica indistinguível do envio real para quem não olha o banco; o `externalId` marcado (`wamid.FAKE-…`) é o que distingue.
+
+## ADR-047 — Contrato de extensão do Core: seis pontos de composição, nenhum registro de plugins
+
+**Status:** aceito · **Data:** 2026-10-19 · Aprovação da F0 (documental): aprova o desenho, não código nem migrations; nada implementado até a F1
+
+### Contexto
+
+O ADR-015 decidiu **como** um vertical estende o Core (extension tables, custom fields, entidades próprias, composição no bootstrap), mas o código de hoje não tem onde o vertical se encaixar. Os registros que um vertical precisa alimentar são constantes fechadas dentro do Core:
+
+- `WORKSPACE_MODELS`, `APPEND_ONLY_MODELS` e `RELATION_TARGETS` (`apps/api/src/prisma/workspace-models.ts`), conferidos por um teste de drift que lê **um** arquivo, `prisma/schema.prisma`;
+- `PERMISSION_CATALOG` e `PermissionKey` (`packages/contracts/src/permissions.ts`): `@RequirePermissions(...keys: PermissionKey[])` só aceita chaves do Core em tempo de compilação;
+- `SYSTEM_ROLE_TEMPLATES`: `Owner` recebe `[...PERMISSION_KEYS]` e `Admin` recebe todas menos `billing:manage`. **Qualquer chave adicionada ao catálogo do Core vai automaticamente para o Owner e o Admin de todo workspace provisionado**, use ele o vertical ou não;
+- `AUDIT_FIELDS` (`apps/api/src/audit/audit.service.ts`): allowlist por entidade. Entidade não registrada tem todos os campos gravados como `"[changed]"`, ou seja, o comportamento já é fail-closed;
+- `src/lib/nav.ts` no web, o mapa único de seções (ADR-045);
+- a montagem de contexto da IA (`src/intelligence`), a aprovação de propostas, o despacho de mensagens e a entrega de eventos a webhooks (`OUTBOX_EVENTS`) não sabem que um contato pode estar no contexto de um vertical com dado de saúde. O ADR-048 exige que saibam, sem que o Core conheça o vertical.
+
+Sem pontos de extensão, a única forma de o Clinics existir seria editar esses arquivos com nomes do vertical. Isso viola o CLAUDE.md §3.8 (o Core não conhece verticais) já no primeiro commit.
+
+### Alternativas consideradas
+
+1. **Editar os registros do Core listando modelos e chaves do Clinics.** É o caminho mais curto, mas faz o Core nomear o vertical, e o efeito colateral do `Owner = [...PERMISSION_KEYS]` daria permissões clínicas a todo workspace. Descartada.
+2. **Registro genérico de plugins** (manifesto, descoberta dinâmica, ganchos de ciclo de vida). Já foi descartado no ADR-015. Construiria um framework para um único vertical, e cada gancho genérico seria uma superfície de isolamento a mais para revisar. Descartada.
+3. **Vertical em pacote ou banco separado, com Prisma client próprio.** Sem o mesmo banco não existe FK composta `ClinicsPatient(workspaceId, contactId) → Contact(workspaceId, id)`, e o isolamento passaria a depender de disciplina entre dois clients. Descartada.
+4. **Composição explícita na raiz do produto, por pontos neutros e fechados.** Escolhida. Cada ponto existe porque o Clinics precisa dele agora, e nenhum descobre nada sozinho: a raiz de composição declara o que entra.
+
+### Decisão
+
+**1. Onde o vertical mora.** O código fica em `apps/api/src/verticals/clinics/`, `packages/contracts/src/verticals/clinics/` e `apps/web/src/verticals/clinics/`. O schema fica em arquivo próprio, no **mesmo** banco e na mesma pasta de migrations, usando o schema Prisma em vários arquivos (o `prisma.config.ts` passa a apontar para uma pasta). O mesmo banco é requisito: as FKs compostas para `Contact` dependem dele.
+
+**2. Barreira de dependência.** Só a **raiz de composição** importa `verticals/`: `app.module.ts` na API e a raiz de rotas e navegação no web. O restante do Core é proibido de importar o vertical por `no-restricted-imports`, com um teste de fronteira que repete a regra, no mesmo padrão do ADR-027. Um vertical importa services e contratos do Core; o caminho contrário é bloqueado. Quando o Core precisa de uma resposta do vertical (E2 e E6), ele declara uma **porta** com nome neutro, e o vertical fornece a implementação na raiz de composição.
+
+**3. Os seis pontos de extensão, e somente eles:**
+
+| #   | Ponto                                                 | Como funciona                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | O que continua garantido                                                                                                                                                                                                                          |
+| --- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| E1  | Modelos protegidos                                    | O `PrismaService` passa a receber, por injeção, o conjunto **composto na raiz** (Core ∪ vertical) de modelos protegidos, append-only e alvos de relação. O teste de drift passa a ler **todos** os arquivos do schema.                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Modelo com `workspaceId` fora do conjunto composto continua deixando o build vermelho. Sem contexto de workspace, a query continua sendo recusada.                                                                                                |
+| E2  | Catálogo de permissões e disponibilidade              | O vertical declara catálogo próprio com prefixo obrigatório (`clinics:`), mais uma porta de **disponibilidade**: dado um workspace, quais chaves do vertical podem ser concedidas ali (no Clinics, só onde ele está **ativo**). O seed de permissões usa o catálogo composto. Qualquer caminho do Core que atribua permissões a papéis consulta essa porta e **recusa** chave indisponível. Cada lado tem seu decorator tipado; **no boot**, toda chave exigida por alguma rota precisa existir no catálogo composto. **`SYSTEM_ROLE_TEMPLATES` do Core não muda.**                                                                                                                      | Default-deny inalterado. Workspace sem o vertical ativo não recebe chave dele por nenhum caminho.                                                                                                                                                 |
+| E3  | Ativação por workspace e papel do vertical            | O Core **não ganha** flag de vertical. Ativação e desativação são do vertical, com ciclo de vida no item 4. O vertical pode criar **papéis de sistema próprios**, identificados por `systemKey` com prefixo do vertical (`clinics:professional`). Isso refina o ADR-017: o Core continua ramificando **só** por `owner` e ignora valores que não conhece.                                                                                                                                                                                                                                                                                                                                | Revogação imediata (ADR-009). Nenhuma escrita em workspace que não pediu o vertical. Papel nunca identificado por nome.                                                                                                                           |
+| E4  | Allowlist de auditoria                                | O `AuditService` recebe as allowlists compostas.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | Entidade sem allowlist continua com todos os campos gravados como `"[changed]"`.                                                                                                                                                                  |
+| E5  | Navegação e rotas (web)                               | O vertical contribui rotas e entradas para o mapa único de seções na raiz do web. As entradas só aparecem quando `GET /api/clinics/status` responde que está ativo **e** a pessoa tem a permissão da seção.                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `nav.ts` continua sendo o mapa único (ADR-045).                                                                                                                                                                                                   |
+| E6  | Restrição de conteúdo por contato, **por consumidor** | O Core declara uma porta neutra: dado um workspace, um **consumidor** (`ai` ou `webhook`) e um conjunto de contatos, quais estão **restritos para aquele consumidor**. O vertical implementa a porta, com as regras do ADR-048 §6.4. Uma liberação para um consumidor **nunca** vale para outro. Os pontos de checagem no Core estão listados no ADR-048 §6.3: toda chamada ao provedor de IA, a leitura de resultados e propostas persistidos, a aprovação, o despacho de mensagem de autoria da IA e a entrega a webhooks (conferida **na entrega**, não só na emissão). Quando a porta responde com erro, o contato é tratado como restrito. O resultado **não é guardado em cache**. | O Core não sabe **por que** um contato é restrito, só **que** é, e para qual consumidor. Workspace sem o vertical segue o comportamento normal do Core. Mensagem escrita por pessoa não é afetada: a clínica continua conversando com o paciente. |
+
+**4. Ciclo de vida da ativação (E3).**
+
+Estados: _ausente_ → `active` ⇄ `disabled`. O estado fica em `ClinicsSettings` (1:1 com o workspace), com `activatedAt` e `disabledAt`. A ativação e a desativação acontecem **só pela CLI administrativa do vertical**, com `raw` justificado como em `provision`. Não existe ativação pela interface (ADR-014).
+
+| Comando                  | Estado atual          | Efeito                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------ | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `clinics:enable --slug`  | ausente               | Cria `ClinicsSettings(active)` e a unidade inicial; cria o papel `Profissional` (`systemKey: 'clinics:professional'`) **se não existir**; concede a matriz do ADR-048 §5 aos papéis **por `systemKey`**; incrementa o `tokenVersion` das memberships afetadas; grava `AuditLog` `clinics.enabled` com `actorType: 'system'`. A partir do commit, **todo contato do workspace, existente ou futuro, está restrito** (ADR-048 §6.4). A CLI dispara a expiração de resultados e propostas de IA anteriores e **imprime quantos webhooks ativos o workspace tem**, avisando que eles deixam de receber eventos de contatos (ADR-048 §6.5). |
+| `clinics:enable --slug`  | `active`              | **Nada muda.** Sai com código 0 e a mensagem "já ativo". Não recria o papel nem concede a matriz de novo.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `clinics:enable --slug`  | `disabled`            | Reativa: volta a `active` e concede a matriz **aos papéis de sistema e ao `Profissional`**, que nunca são removidos. Papéis customizados não existem hoje (não há API para criá-los), então não há o que restaurar. Incrementa o `tokenVersion`, grava `clinics.reenabled` e repete o aviso de webhooks. Os dados estão intactos; as liberações de IA não desfeitas voltam a valer.                                                                                                                                                                                                                                                    |
+| `clinics:disable --slug` | `active`              | Passa a `disabled`; **remove todas as chaves `clinics:*` de todos os papéis do workspace**; incrementa o `tokenVersion` das memberships afetadas; grava `clinics.disabled`. O papel `Profissional` **permanece**, só com as chaves do Core que tiver, porque apagá-lo deixaria memberships sem papel. As rotas passam a responder 404, a navegação some e os jobs do vertical pulam o workspace. **Nenhum dado é apagado nem anonimizado**, e **a restrição de conteúdo continua valendo**; as liberações de IA ficam suspensas.                                                                                                       |
+| `clinics:disable --slug` | ausente ou `disabled` | Nada muda; sai com código 0.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+
+Cada comando roda numa transação única, sob lock consultivo por workspace, e reexecutar é sempre seguro: o efeito depende do estado, não do número de execuções. O papel `Profissional` é localizado pelo `systemKey`, protegido pelo unique `(workspaceId, systemKey)`, e nunca pelo nome: um papel chamado "Profissional" criado de outra forma não é confundido com ele.
+
+**O que a desativação NÃO faz:**
+
+- **Não apaga dados.** Os registros de classe S continuam sob a política pendente do ADR-048 §9. Desativar não é um atalho para excluir.
+- **Não levanta a restrição de conteúdo (E6).** Desativar muda o **status**, e a restrição **não lê o status** (ver "Ciclo de vida da restrição" abaixo).
+- **Não remove o vertical do workspace.** Apagar os dados do Clinics só acontece por exclusão do workspace inteiro (cascade do Core, que leva junto os próprios contatos) ou pela política que vier do ADR-048 §9. Não existe comando "purgar Clinics" no MVP.
+
+**Ciclo de vida da restrição (E6) — independente do status da ativação.** A ativação e a restrição são coisas **distintas**:
+
+- a **ativação** (`active`/`disabled`) controla **acesso ao vertical**: rotas, navegação, permissões e jobs;
+- a **restrição** depende da **presença do vertical no workspace**, que não acaba ao desativar.
+
+Regras:
+
+1. **Gatilho da restrição.** A porta do E6 considera o workspace **com Clinics presente** quando existe a linha `ClinicsSettings`, **em qualquer status**, **ou** quando existe qualquer linha de dados do vertical no workspace (paciente, agendamento, atendimento, pacote, liberação). A implementação da porta **não filtra por `status`**. O segundo critério é redundância deliberada: mesmo que a linha `ClinicsSettings` desaparecesse por uma rotina fora do produto, a presença de dados mantém a restrição.
+2. **A linha `ClinicsSettings` nunca é apagada pelo vertical.** Desativar só muda o status. Nenhum comando, rota ou job do vertical a remove.
+3. **Com o Clinics `disabled`**:
+   - a IA continua recusando todos os contatos restritos, em todos os pontos do ADR-048 §6.3;
+   - os webhooks continuam sem receber eventos ligados a contato;
+   - resultados e propostas persistidos continuam ocultos;
+   - **as liberações de IA ficam suspensas**: todo contato volta a ser restrito para IA até a reativação. Com o vertical desativado as rotas respondem 404, então ninguém conseguiria gerenciar ou desfazer uma liberação. Mantê-las valendo sem ninguém poder revogá-las seria abrir em vez de fechar.
+4. **Reativar** devolve o acesso ao vertical e a validade das liberações de IA ainda não desfeitas. A restrição em si nunca foi interrompida.
+5. **Levantar a restrição num workspace não é possível no MVP.** Só deixa de haver restrição se o workspace inteiro for excluído. Qualquer outro caminho (por exemplo, purgar o Clinics depois da decisão do ADR-048 §9) exige ADR próprio.
+6. **Falha ao avaliar a presença** do vertical é tratada como "presente", ou seja, restrito.
+
+**Como a ativação alcança contatos já existentes.** A restrição **não é uma marca gravada em cada contato**: ela é **derivada**, a cada checagem, da presença do vertical (regra 1). Por isso não há backfill nem janela: no instante em que a transação de ativação faz commit, todo contato do workspace, os que já existiam e os que vierem depois, passa a ser restrito em todos os pontos de checagem, sem depender de nenhum processo ter percorrido os contatos. Dois casos ficam cobertos à parte:
+
+- **Conteúdo derivado antes da ativação** (resultados de IA e propostas pendentes): a leitura confere a restrição e **não devolve** esse conteúdo. A expiração disparada pela CLI só limpa o que a leitura já esconde, e se falhar não abre nada.
+- **Operação em andamento no momento da ativação** (uma chamada à IA já em curso, um evento já no outbox): o resultado é bloqueado na **leitura**, e o evento na **entrega**. O que estava em voo não sai por causa disso.
+
+**5. O que deliberadamente NÃO vira ponto de extensão agora.** Cada item abaixo, se um dia for necessário, entra com ADR próprio e gatilho:
+
+- **Timeline do Core** (`Activity`, ADR-011): adicionar um tipo de referência é coluna nova numa tabela do Core, então abrir esse ponto faria o Core conhecer o vertical. O Clinics mantém histórico próprio.
+- **Catálogo de automações** (ADR-035) e **catálogo de eventos de webhook**: o vertical não publica evento nenhum. A única relação com webhooks é a supressão do E6.
+- **Ferramentas de IA** sobre dados do vertical.
+- **Restrição de LEITURA por contato nas telas do Core** (notas, tarefas e conversas de contato restrito exigirem permissão adicional). É o caminho para levantar o bloqueio B1 do ADR-048 e entra, se aprovado, como ADR próprio.
+- **Criação e edição de papéis pelo admin.** É uma lacuna do Core, não do vertical (ADR-048 §5).
+- **Quotas e billing por vertical**, e **`CustomFieldEntity`** para entidades do vertical.
+
+**6. "O Core não depende do vertical" é verificado, não prometido.** A regra de lint e o teste de fronteira são obrigatórios desde o primeiro commit do vertical. Rodar a suíte do Core com uma composição sem o vertical é desejável; se o custo couber, isso entra no critério de aceite da F1.
+
+### Consequências
+
+- O Core muda em pontos universais (`PrismaService` e teste de drift, decorator, seed e atribuição de permissões, `AuditService`, cliente de LLM e montagem de contexto da IA, leitura de resultados e propostas, aprovação, despacho de mensagem, entrega de webhooks, raiz do web) **sem nenhum nome de vertical**. As mudanças tocam tenancy, RBAC e IA, então a F1 exige `reviewer` + `security` antes do commit (CLAUDE.md §5.4).
+- A garantia "toda chave existe" é dividida em duas checagens de compilação (uma em cada lado) mais uma no boot.
+- O `systemKey` passa a aceitar valores com prefixo de vertical. Toda lógica do Core que hoje pressuponha exatamente quatro papéis de sistema precisa ser conferida na F1.
+- O E6 tem efeito visível no Core: num workspace com o Clinics, capacidades de IA recusam contatos restritos com motivo explícito, e **integrações por webhook já existentes deixam de receber eventos sobre eles** (ADR-048 §6.5).
+- Desativar o vertical é reversível e não destrutivo. O preço é que um workspace desativado continua guardando dado sensível, e continua restrito, até existir a política do ADR-048 §9.
+
+### Testes exigidos na F1
+
+- `enable` e `disable` repetidos convergem para o mesmo estado: sem linhas duplicadas, sem segundo papel `Profissional`, sem concessão repetida.
+- Um papel customizado chamado "Profissional" não é confundido com o papel do vertical.
+- Depois de `disable`, não resta nenhuma `RolePermission` com prefixo `clinics:` no workspace, o papel `Profissional` continua existindo e as sessões antigas caem na request seguinte. A restrição de conteúdo continua valendo depois do `disable` (bateria "Desativação e reativação" do ADR-048 §6.6).
+- Num workspace não ativado, nenhum caminho do Core concede `clinics:*`.
+- Rota do vertical em workspace `disabled` ou ausente responde 404, mesmo para quem guardou um token antigo.
+- Contatos criados **antes** da ativação ficam restritos assim que a ativação faz commit, sem backfill. Um resultado de IA gerado antes da ativação deixa de ser devolvido.
+- A bateria de restrição de conteúdo e de webhooks do ADR-048 §6.6.
+- Teste de fronteira: nada fora da raiz de composição importa `verticals/`.
+
+### Pontos a confirmar na F1 (não bloqueiam a aprovação)
+
+- Nome e forma dos tokens de injeção; se o teste de drift lê os arquivos do schema por glob.
+- Se a suíte do Core sem o vertical cabe no CI atual.
+
+## ADR-048 — Veyra Clinics para estética: domínio próprio, classificação de dados e escopo do MVP
+
+**Status:** aceito · **Data:** 2026-10-19 · Aprovação da F0 (documental): aprova o desenho e as decisões marcadas como aprovadas, não código nem migrations. **Seguem pendentes:** validação operacional das hipóteses H1–H7, avaliação jurídica (§9.2) e bloqueios B1–B4 — sem eles, nenhum dado real de paciente e nenhum piloto clínico
+
+### Contexto
+
+O ADR-036 definiu o Clinics como o primeiro vertical, sem prontuário, com tese comercial (`lead → WhatsApp → agendamento → confirmação → consulta → retorno/reativação`) e três métricas: faltas, conversão e pacientes recuperados. O primeiro público passa a ser **clínicas de estética no Brasil, começando com uma unidade**.
+
+**Nenhuma validação com a operação real de uma clínica foi feita até a data deste ADR.** O product owner revisa o fluxo do produto, mas essa revisão **não conta como validação operacional**: sem alguém de uma clínica revisando, as hipóteses abaixo continuam **explicitamente não validadas**.
+
+Duas linhas do `PRODUCT_BRIEF §5` original são revistas aqui: "agenda clínica = especialização da agenda do Core" e "profissional = extensão de `Membership`/`User`".
+
+### Hipóteses
+
+| #   | Hipótese                                                                                              | Revisão de produto (PO) | Validação com operação | O que muda se for falsa                                             |
+| --- | ----------------------------------------------------------------------------------------------------- | ----------------------- | ---------------------- | ------------------------------------------------------------------- |
+| H1  | O fluxo é: agendamento → confirmação → chegada → procedimento → retorno, além de cancelamento e falta | pendente                | **não validada**       | Estados do agendamento e da tela da recepção                        |
+| H2  | Pacotes de sessões são parte central da venda                                                         | pendente                | **não validada**       | `ClinicsPackage` sai do MVP ou muda de forma                        |
+| H3  | Retorno tem intervalo previsível por serviço                                                          | pendente                | **não validada**       | Retorno vira tarefa manual, sem cálculo                             |
+| H4  | Serviço tem duração fixa e exige um profissional habilitado                                           | pendente                | **não validada**       | Agenda por slot livre ou duração variável                           |
+| H5  | Conflito de **sala** é uma dor real                                                                   | pendente                | **não validada**       | Decide se `ClinicsRoom` entra (D2)                                  |
+| H6  | Faltas, conversão e pacientes recuperados são as métricas que a clínica acompanha e compraria         | pendente                | **não validada**       | Critério de sucesso do piloto (ADR-036) precisa ser revisto         |
+| H7  | O MVP não precisa de prontuário, prescrição, pagamento online, fotos nem texto clínico livre          | pendente                | **não validada**       | Se falsa, aciona as condições do §7 antes de qualquer implementação |
+
+A coluna "Revisão de produto (PO)" passa a "feita" quando o PO revisar. A coluna "Validação com operação" só muda com a revisão de alguém de uma clínica, registrada com data e papel de quem revisou.
+
+### Alternativas consideradas
+
+- **Agendamento como especialização de `CalendarEvent`** (extension table 1:1 sobre o evento). Descartada: impedir sobreposição exige uma regra de exclusão sobre o intervalo **na mesma tabela** que guarda o horário, e o Postgres não aplica `EXCLUDE` entre tabelas. Os horários ficariam duplicados (com risco de divergência) ou a regra iria para o service (com risco de corrida). Além disso, `CalendarEvent` tem título e descrição livres, um convite a texto clínico.
+- **Profissional como extensão de `User`.** Descartada: `User` é global (ADR-003), e prender dado de uma clínica à identidade global quebra o modelo de tenant. Também não serve para profissional sem login.
+- **Tudo em custom fields do Core.** Descartada: agenda, pacote e consumo de sessão têm invariantes (sobreposição, saldo, consumo único) que o banco precisa garantir, e custom fields herdam as permissões do contato, não permissões próprias.
+- **Agenda e atendimento numa tabela só, sob a mesma permissão.** Descartada: quem agenda (recepção) não precisa ver o que aconteceu no atendimento.
+- **Restrição só para pacientes.** Descartada (D4): um lead que ainda não é paciente pode falar do procedimento pelo WhatsApp, e essa conversa iria para a IA.
+- **Restrição por marcação positiva** (só é restrito quem foi marcado como "do Clinics"). Descartada: um caminho de entrada esquecido (por exemplo, contato criado na tela do Core que depois conversa pelo número da clínica) deixaria conteúdo de saúde passar. A regra adotada é a inversa: **restrito por padrão, liberado por exceção** (§6.4).
+
+### Decisão
+
+**1. Tese e métricas.** A tese comercial do ADR-036 se mantém, com as métricas tratadas como H6. O critério de sucesso do MVP é: a equipe cadastra um paciente e um serviço, agenda com o profissional certo, registra o atendimento e acompanha sessões e retorno, com permissões adequadas e sem planilha. Com dados reais do piloto, que dependem dos bloqueios do §10, as três métricas precisam ser **apuráveis**.
+
+**2. Agenda própria.** `ClinicsAppointment` é dono do próprio intervalo de tempo e **não depende de `CalendarEvent`**. A sobreposição é impedida pelo banco: `EXCLUDE USING gist` por profissional e, se `ClinicsRoom` entrar, por sala, valendo só para estados ativos (`btree_gist`, disponível no Postgres 17 do projeto). A interface pode reaproveitar componentes visuais da agenda do Core. A página "Agenda" do Core não mostra atendimentos da clínica, e isso é consequência aceita.
+
+**3. Profissional sem login.** `ClinicsProfessional` é entidade do vertical, com `membershipId` **opcional** ligado por FK composta `(workspaceId, membershipId) → Membership(workspaceId, id)` e no máximo um profissional por membership. Registro em conselho não entra no MVP: em estética nem todo profissional tem conselho, e isso fica condicionado à validação. O cadastro `ClinicsProfessional` (quem atende na agenda) e o papel `Profissional` (o que uma conta pode fazer, §5) são coisas diferentes: um profissional sem login não tem papel.
+
+**4. Modelos.** Todos com `workspaceId`, `@@unique([workspaceId, id])`, FKs compostas e índices liderados por `workspaceId`. A coluna "Classe" segue o §6.
+
+| Modelo                                                                     | Conteúdo                                                                                                                                                                                                                                       | Classe |
+| -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| `ClinicsSettings`                                                          | 1:1 com o workspace: estado da ativação (ADR-047 §4)                                                                                                                                                                                           | C      |
+| `ClinicsUnit`                                                              | Nasce com uma linha. As demais tabelas já referenciam `unitId`; multiunidade não tem interface no MVP                                                                                                                                          | C      |
+| `ClinicsService`                                                           | Nome, `durationMin`, `priceCents` + `currency` (possibilidade preservada, §8), intervalo de retorno opcional (H3), se exige sala (H5)                                                                                                          | C      |
+| `ClinicsRoom`                                                              | **Em aberto (D2)**                                                                                                                                                                                                                             | C      |
+| `ClinicsProfessional`, `ClinicsProfessionalService`, `ClinicsWorkingHours` | Quem atende, quais serviços pode fazer e quando atende                                                                                                                                                                                         | P      |
+| `ClinicsContactRelease`                                                    | Liberação explícita de um contato **sem relação com o Clinics**, **por consumidor** (§6.4): `(workspaceId, contactId, consumer)` único, com quem liberou, quando e o motivo, por **lista fechada**. No MVP o único consumidor liberável é `ai` | P      |
+| `ClinicsPatient`                                                           | 1:1 sobre `Contact` com FK composta. Só campos operacionais mínimos; nada clínico                                                                                                                                                              | **S**  |
+| `ClinicsAppointment`                                                       | Paciente, profissional, serviço, unidade, sala?, intervalo, status de **agenda** (`scheduled/confirmed/arrived/canceled/no_show/attended`), motivo de cancelamento por **lista fechada**                                                       | **S**  |
+| `ClinicsAttendance`                                                        | 1:1 com o agendamento `attended`: quem executou, quando foi concluído e qual sessão de pacote foi consumida. É o **registro de atendimento**, separado da agenda                                                                               | **S**  |
+| `ClinicsPackage`                                                           | Paciente, serviço, total de sessões, preço **congelado** em centavos (possibilidade, §8), `dealId` opcional (FK composta). Consumo de no máximo uma sessão por atendimento (unique); saldo derivado                                            | **S**  |
+
+Equipamentos ficam fora. Retornos e follow-ups usam `Task` do Core, com título **neutro** (sem nome de serviço ou procedimento), ligada ao contato.
+
+**5. Permissões e papéis.**
+
+**5.1 Sete chaves.** A sétima, `clinics:restriction:manage`, entra por causa da liberação de contatos decidida na D4. A agenda e o atendimento são separados de propósito: **ter permissão de agenda não dá acesso a dados de atendimento.**
+
+| Chave                        | Protege                                                                                                                                                                 | Dados           |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
+| `clinics:catalog:read`       | Ver unidades, serviços (com duração e preço), profissionais, serviços habilitados e horários                                                                            | C, P            |
+| `clinics:catalog:manage`     | Criar, editar e arquivar unidades, serviços, preços, profissionais, serviços habilitados e horários                                                                     | C, P            |
+| `clinics:schedule:read`      | Ver a agenda (paciente, profissional, serviço, horário, status de agenda) e o perfil operacional do paciente. **Não** inclui registro de atendimento, pacote nem saldo  | S — agenda      |
+| `clinics:schedule:write`     | Criar o perfil de paciente sobre um contato; agendar, remarcar, confirmar, cancelar; registrar chegada e falta                                                          | S — agenda      |
+| `clinics:care:read`          | Ver registros de atendimento, pacotes (sessões, saldo, preço) e o histórico de continuidade e retornos do paciente                                                      | S — atendimento |
+| `clinics:care:write`         | Registrar o atendimento realizado (`attended` + `ClinicsAttendance`), consumir sessão, criar e encerrar pacote, gerar retorno                                           | S — atendimento |
+| `clinics:restriction:manage` | Liberar um contato **para uso de IA** como sem relação com o Clinics, ou desfazer a liberação (§6.4). **Não** libera webhooks: esse consumidor não tem liberação no MVP | P               |
+
+As rotas que precisam de mais de uma família declaram todas, como faz o ADR-044: registrar atendimento exige `clinics:care:write` **e** `clinics:schedule:read`. A resposta da agenda **omite no servidor** o vínculo com atendimento e pacote para quem não tem `clinics:care:read` (autorização de campo, SECURITY §4).
+
+**5.2 Matriz de concessão**, aplicada **somente** por `clinics:enable` e **somente** em workspace com o Clinics ativado (ADR-047, E2 e §4):
+
+| Papel                                                          | Chaves do Clinics                                                                                                                                                                                 | Chaves do Core                                                                                                                                                                                                                                                                 |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Owner                                                          | as sete                                                                                                                                                                                           | inalteradas                                                                                                                                                                                                                                                                    |
+| Admin                                                          | as sete                                                                                                                                                                                           | inalteradas                                                                                                                                                                                                                                                                    |
+| Member (**recepção**)                                          | `catalog:read`, `schedule:read`, `schedule:write`. **Sem atendimento e sem liberação de contatos**                                                                                                | inalteradas                                                                                                                                                                                                                                                                    |
+| Guest                                                          | nenhuma                                                                                                                                                                                           | inalteradas                                                                                                                                                                                                                                                                    |
+| **`Profissional`** (novo, `systemKey: 'clinics:professional'`) | `catalog:read`, `schedule:read`, `care:read`, `care:write`: **consulta a agenda e registra atendimento**. **Sem** escrita de agenda (marcar e remarcar é da recepção) e sem liberação de contatos | **somente `workspace:read`**. Sem `contacts:read`, `tasks:read` nem `conversations:read`: o profissional vê o paciente pela agenda do Clinics e não pelo CRM, e notas e conversas do Core (onde pode haver texto clínico digitado por pessoas, §6.6) ficam fora do seu alcance |
+
+**5.3 O papel `Profissional`, com as ferramentas de hoje.**
+
+- É **criado na ativação** (`clinics:enable`), de forma idempotente: localizado por `systemKey` e nunca recriado.
+- **Alcance: todos os atendimentos e pacotes do workspace, não só os próprios.** `clinics:care:read` não distingue profissional. O Core não tem restrição por dono do registro, e restringir cada profissional aos próprios atendimentos é uma **decisão operacional pendente (D8)** que, se for necessária, exige um mecanismo novo com ADR próprio. Até lá, quem recebe o papel vê o atendimento de todos os pacientes da clínica.
+- **Sem escrita de agenda (decidido para o MVP).** O profissional consulta a agenda e registra atendimentos; marcar e remarcar é da recepção. `clinics:schedule:write` não distingue o dono do horário, então dá-la ao profissional permitiria alterar a agenda **da clínica inteira**. A decisão é reaberta se a operação validar a necessidade, e nesse caso vem junto com o mecanismo de dono do registro da D8.
+- É **papel de sistema** (`isSystem: true`). **Não é editável nem removível pelo produto**, porque o Core **não tem hoje API nem tela para editar papéis ou suas permissões**. Mudar a matriz no futuro é mudança do vertical, com ADR e atualização aplicada pela CLI.
+- **Atribuir** o papel a uma pessoa usa o que a API já tem: convite com `roleId` (`POST /invites`) e troca de papel (`PATCH /members/:id/role`), sujeitos à regra do Core de que ninguém concede o que não tem. **Nenhum desses fluxos tem tela no web hoje.**
+
+**5.4 Limites que a criação do papel NÃO resolve (D7 e B4).**
+
+- **Um papel por membro (D7).** `Membership.roleId` é único: quem é recepção e também atende não tem um papel que cubra as duas funções. Sem edição de papéis no Core, esse papel não pode ser criado.
+- **Sem gestão de equipe no web (B4).** Convites e troca de papel só existem pela API.
+- **Premissa para F1–F3:** Member cobre a **recepção** (agenda, sem atendimento) e `Profissional` cobre **consulta à agenda e atendimento**. As duas limitações acima seguem como **dependências explícitas para um piloto com equipe**.
+- **D7 é reaberta antes da F4** se qualquer função precisar combinar o Clinics com permissões do CRM ou do Inbox do Core. O caso mais provável é o profissional que conversa com o paciente pelo WhatsApp: `Profissional` não tem `conversations:*`.
+
+**6. Classificação de dados.**
+
+**6.1 As três classes:**
+
+| Classe               | Significado                                                                                                                                               | Exemplos no Clinics                                                                                                                                     | Controles esperados                                                                                                                                                                                                     |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **C** — Configuração | Estrutura e catálogo da clínica. **Não identifica pessoa**                                                                                                | Unidade, serviço (nome, duração, preço, intervalo de retorno), sala, estado de ativação                                                                 | Isolamento por workspace e FK composta; leitura por `clinics:catalog:read` e escrita por `clinics:catalog:manage`; auditoria com allowlist ampla (o valor do campo pode constar). Sem restrição adicional de exportação |
+| **P** — Pessoal      | Identifica uma pessoa, mas **não a liga a saúde**                                                                                                         | Profissional (nome, vínculo com membership, serviços habilitados, horários); liberação de contato. No Core, o contato em si (nome, telefone) também é P | Tudo de C, mais: minimização (só o necessário para operar); auditoria registra o fato e os ids, com valores pessoais como `"[changed]"`; exclusão e exportação pelas regras do Core (ADR-022, SECURITY §9)              |
+| **S** — Sensível     | Liga uma pessoa identificável a **serviço, procedimento, atendimento ou continuidade de tratamento**. É dado de saúde (LGPD art. 11) mesmo sem prontuário | Perfil de paciente, agendamento (quem + qual serviço + quando), registro de atendimento, pacote e saldo, vínculo de retorno                             | Ver §6.2                                                                                                                                                                                                                |
+
+Na dúvida entre duas classes, vale a mais restrita.
+
+**6.2 Controles da classe S:**
+
+1. **Modelos e permissões próprios.** Dado S só existe em tabelas do vertical, sob as chaves do §5. Nunca em entidade do Core.
+2. **O vertical nunca escreve conteúdo S em entidade do Core.** Título de tarefa de retorno, título de deal, nota, mensagem, payload de notificação e `Activity` não carregam nome de serviço, procedimento nem estado de atendimento. Isso é verificado por teste.
+3. **Auditoria** com allowlist de ids, status, horários e motivo de cancelamento (lista fechada). Nunca texto livre.
+4. **Sem texto livre e sem arquivo** nas entidades S do MVP (§7).
+5. **Fora de webhooks, timeline do Core e IA**, pela fronteira do §6.3.
+6. **Visibilidade:** quem tem a permissão vê a clínica inteira, inclusive o papel `Profissional` (§5.3). Restringir o profissional aos próprios atendimentos exige um mecanismo de dono do registro que o Core não tem (D8).
+7. **Exclusão e retenção:** pendentes (§9). **Nada de exclusão ou anonimização de S é implementado antes da decisão jurídica.**
+
+**6.3 Fronteira técnica entre o Clinics e o Core.** Implementada pelo E6 do ADR-047 e pelos controles acima. Cada ponto de checagem consulta a restrição **para o seu consumidor** (§6.4):
+
+**Consumidor `ai`: toda a superfície de IA, e não só aprovação e envio.**
+
+1. **Antes de qualquer envio ao provedor.** A checagem fica no **ponto único por onde toda chamada ao provedor passa** (o cliente de LLM), e não em cada capacidade. Toda chamada declara os contatos cujo conteúdo carrega, e a chamada sem essa declaração é recusada. Assim, resumo, sugestão de resposta, próxima ação, explicação de lead score e qualquer capacidade futura são cobertos sem depender de quem a escreveu lembrar da regra. Contato restrito resulta em run recusado com motivo `content_restricted`, sem chamada ao provedor e sem reserva de quota.
+2. **Ao montar o contexto.** As capacidades conferem a restrição também antes de ler conversas, mensagens, notas, tarefas, deals ou dados do contato. É a segunda camada; a primeira é o item 1.
+3. **Ao ler conteúdo persistido.** Resultado de IA (`AiRun.result`: resumo no inbox, lead score, sinais) e proposta pendente (incluindo o rascunho de `send_message`) sobre contato restrito **não são devolvidos** por nenhum endpoint: a fila de propostas os omite, e o endpoint do alvo responde como se não houvesse resultado. Isso vale também para conteúdo gerado **antes** de a restrição existir.
+4. **Ao aprovar uma proposta.** A aprovação reconfere e recusa, porque o contato pode ter ficado restrito entre gerar e aprovar.
+5. **Ao despachar mensagem de autoria da IA.** O worker reconfere antes de chamar o provedor de mensagens. Mensagens escritas por pessoas não passam por essa checagem: a clínica continua conversando com os pacientes.
+6. **Ao associar o contato a um paciente.** Na mesma transação que cria o `ClinicsPatient`, a liberação de IA daquele contato **deixa de valer** e as propostas pendentes dele são expiradas. A partir do commit, os itens 1 a 5 voltam a recusá-lo.
+7. **Limpeza.** Resultados e propostas de contato restrito são expirados por uma operação do Core (útil também para LGPD), chamada pelo vertical. A limpeza é complementar: quem protege é a leitura do item 3, e a limpeza falhar não expõe nada.
+
+**Consumidor `webhook`:** nenhum evento sobre contato do workspace com o Clinics chega a webhooks externos (§6.5).
+
+**Dado clínico** tem modelos e permissões próprios (§6.2, itens 1 e 2).
+
+**6.4 Quem é restrito — restrito por padrão, com controles separados por consumidor (D4, aprovada).** Num workspace **com o Clinics presente**, **todo contato é restrito para todos os consumidores**: leads, contatos vindos pelo WhatsApp, contatos criados nas telas do Core, os **existentes** no momento da ativação e os **futuros**. "Presente" significa existir `ClinicsSettings` em **qualquer status** ou qualquer dado do vertical no workspace, de modo que **desativar o Clinics não levanta a restrição** (ADR-047 §4, "Ciclo de vida da restrição"). A restrição é derivada a cada checagem, não gravada por contato, e por isso alcança os existentes sem backfill.
+
+| Consumidor | Liberação no MVP                                                                                                                                                                                                |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ai`       | Possível, contato a contato, como "sem relação com o Clinics": `ClinicsContactRelease(consumer: 'ai')`, por quem tem `clinics:restriction:manage` (Owner e Admin), com motivo de **lista fechada** e `AuditLog` |
+| `webhook`  | **Nenhuma.** Contatos de um workspace com o Clinics não são enviados por webhooks. Uma exceção futura exige autorização própria, com ADR, chave e liberação separadas do consumidor `ai`                        |
+
+Regras comuns:
+
+- **Uma liberação para IA não libera webhooks**, nem o contrário. Cada consumidor consulta só a sua liberação.
+- **A liberação perde efeito** quando o contato ganha perfil de paciente (§6.3, item 6). O vínculo clínico sempre vence.
+- Liberar não apaga nada e pode ser desfeito; desfazer volta a restringir imediatamente.
+- **Com o Clinics desativado, as liberações de IA ficam suspensas** e todo contato volta a ser restrito para IA. A restrição continua valendo para os dois consumidores.
+- Só um workspace em que o Clinics **nunca esteve presente** não tem restrição: a IA e os webhooks funcionam como hoje.
+- Erro ao avaliar a restrição equivale a "restrito".
+
+**O que isso garante:** nenhum conteúdo de contato de um workspace com o Clinics chega à IA sem um ato humano **explícito, autorizado e auditado para esse consumidor**, e nenhum chega a webhooks. O que não se garante tecnicamente é que uma liberação de IA esteja certa: liberar por engano alguém que fala de saúde é erro humano, mitigado pela permissão restrita, pela trilha e pela reversão automática quando surge o perfil de paciente. Até um teste provar a regra (B2), ela não vale como garantia.
+
+Consequência aceita: no MVP, a IA fica **indisponível para as conversas da clínica** (só contatos liberados para IA a usam), e **nenhum** contato do workspace sai por webhook.
+
+**6.5 Webhooks e integrações existentes (aprovado).**
+
+- Num workspace com o Clinics, eventos do Core sobre **qualquer contato** não são entregues a webhooks externos. Isso inclui `contact.created`, `contact.updated` e `contact.deleted`, além de eventos de deal e tarefa **ligados** a um contato. **A liberação de IA não altera isso.**
+- A restrição é conferida **na entrega**, não só na emissão. Um evento emitido antes da ativação e ainda pendente no outbox também não sai.
+- **Integrações já configuradas no workspace são afetadas.** Elas continuam ativas, mas deixam de receber todo evento ligado a contato. A CLI de ativação informa quantos webhooks ativos existem e avisa sobre esse efeito (ADR-047 §4).
+- **O que continua saindo:** eventos de deal ou tarefa **sem contato**. Workspaces sem o Clinics não são afetados. Os consumidores internos (automações) não mudam.
+- Resíduo, coberto pelo B1: deal ou tarefa **sem contato** cujo título livre tenha texto clínico digitado por alguém ainda sai por webhook.
+
+**6.6 Testes exigidos da fronteira** (F1, com a porta do E6; repetidos na F2 com dados do vertical):
+
+_Ativação_
+
+- Contato criado **antes** da ativação fica restrito para `ai` e `webhook` assim que a ativação faz commit, sem backfill; o mesmo vale para contato criado depois.
+- A consulta de presença falhando equivale a "restrito".
+
+_Desativação e reativação_
+
+- Depois de `clinics:disable`:
+  - **cada** ponto de checagem de IA do §6.3 continua recusando, para contatos existentes e para contatos **criados depois da desativação**;
+  - resultados e propostas persistidos continuam ocultos;
+  - nenhum evento ligado a contato é entregue a webhook.
+- Depois de `clinics:disable`, um contato que **estava liberado para IA** passa a ser recusado (liberação suspensa). Depois de `clinics:enable`, volta a ser aceito se a liberação não foi desfeita.
+- A porta do E6 devolve "restrito" com `ClinicsSettings` em `disabled`. **Teste de regressão:** a implementação não pode filtrar por `status`.
+- Com dados do vertical presentes e **sem** a linha `ClinicsSettings` (simulando remoção fora do produto), a porta continua devolvendo "restrito".
+- Nenhum comando, rota ou job do vertical apaga `ClinicsSettings`.
+- `enable` → `disable` → `enable` → `disable` repetidos nunca produzem uma janela em que um contato restrito chegue à IA ou a webhook.
+
+_IA, em toda a superfície_
+
+- **Cada** capacidade existente (resumo, sugestão de resposta, próxima ação, explicação de lead score) recusa contato restrito **sem chamar o provedor e sem reservar quota**.
+- Chamada ao cliente de LLM **sem** a declaração de contatos é recusada. Isso garante que uma capacidade futura não escape da regra.
+- Resultado persistido e proposta pendente de contato restrito **não são devolvidos** por nenhum endpoint de leitura, inclusive o que foi gerado antes da ativação.
+- Aprovar proposta de contato que ficou restrito depois da geração é recusado.
+- Mensagem de autoria da IA para contato restrito não é despachada; mensagem escrita por pessoa é despachada normalmente.
+- Contato liberado para IA que ganha perfil de paciente volta a ser recusado em todos os pontos acima, e suas propostas pendentes ficam expiradas.
+
+_Webhooks_
+
+- Para **cada tipo** do catálogo de webhooks, nenhum evento ligado a contato de workspace com o Clinics é entregue, **inclusive de contato liberado para IA**.
+- Evento pendente no outbox, emitido antes da ativação, não é entregue.
+- Evento de deal ou tarefa sem contato continua sendo entregue.
+- Num workspace sem o Clinics, todos os eventos são entregues como antes.
+
+_Liberação e falha_
+
+- A porta do E6 falhando produz o mesmo resultado que "restrito", para os dois consumidores.
+- Liberação só com `clinics:restriction:manage`; motivo fora da lista é recusado; consumidor diferente de `ai` é recusado no MVP.
+- Workspace sem o Clinics: IA e webhooks se comportam exatamente como antes (teste de não regressão).
+
+**6.7 O que a fronteira técnica NÃO garante, e por isso bloqueia dados reais.** As superfícies genéricas do Core aceitam texto livre escrito por pessoas: notas, tarefas, conversas, tags e custom fields. Se a equipe escrever ali "alergia a…", o texto fica visível **com as permissões do Core** (por exemplo `tasks:read`), e não com as do Clinics. A fronteira tira esse texto da IA (salvo contato liberado para IA) e dos webhooks, mas **não da leitura interna**. O papel `Profissional` não tem essas permissões do Core, mas Member, Admin e Owner têm. Orientação na interface não é tratada como garantia. Isso é o **bloqueio B1 para uso de dados reais**, não um risco aceito. Caminhos para levantar o bloqueio, a decidir em ADR próprio:
+
+- restrição de **leitura** por contato nas telas do Core, em que notas, tarefas e conversas de contato restrito exigem uma permissão adicional contribuída pelo vertical (extensão do E6, hoje fora do ADR-047);
+- ou um modelo de anotação própria do vertical, com permissões próprias, que hoje cai na exclusão de texto clínico livre (§7).
+
+**7. Fotos e texto clínico livre: fora do MVP, com condições para voltar.** Se a validação mostrar que são essenciais, nada é implementado antes de um ADR que responda:
+
+- **Acesso:** quem vê o quê, se por papel ou por profissional responsável, e se exige o mecanismo de dono do registro (§6.2, item 6).
+- **Proteção:** cifra na borda dos bytes (SECURITY §7.6, **hoje não implementada**: arquivos ficam em claro no disco); scanner ativo (ADR-043; desligado no staging pelo ADR-046); proibição de envio a canal externo.
+- **Retenção e exclusão:** prazo legal mínimo, se houver, e como isso convive com a exclusão do titular (§9).
+- **IA:** consentimento específico, separado do consentimento de conversa (ADR-028).
+- **Consentimento do paciente** para fotos: forma, prova e revogação.
+
+**8. Preço e pagamento.** O preço do serviço e o preço congelado do pacote, em centavos, ficam **preservados como possibilidade** do modelo. Isso não constitui módulo financeiro: não há razão contábil, recebível, valor parcial nem meio de pagamento. **Marcar "pago/em aberto" continua em aberto (D1)** até a revisão do fluxo. Se for aprovado, entra como um estado simples no pacote, com ADR curto.
+
+**9. Exclusão e retenção de registros de atendimento.**
+
+**9.1 Decidido para agora: recusa provisória (aprovada).** As FKs do vertical para `Contact` e `ClinicsPatient` usam `NO ACTION`. **Excluir um contato que tem perfil de paciente é recusado com 409.** É um desvio consciente do ADR-022, limitado a workspaces com o Clinics e aceitável **apenas com dados fictícios**. A recusa nunca pode virar silenciosamente uma exclusão. A resposta 409 diz que o contato tem registros clínicos sob política pendente, sem expor o conteúdo desses registros.
+
+**9.2 Pendente de avaliação jurídica: a política definitiva.** **Nenhuma exclusão ou anonimização definitiva de atendimentos e pacotes é implementada antes da decisão.** As alternativas estão abaixo; a (b) é **apenas a proposta técnica**:
+
+| Opção                                                                                                                                                                   | Efeito                                                                             | Problema                                                                                                                                      |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| a) `CASCADE` em tudo                                                                                                                                                    | Exclusão total, simples                                                            | Apaga faltas e sessões da estatística; se houver obrigação legal de guarda, a viola                                                           |
+| b) `ClinicsPatient` com `CASCADE`; `ClinicsAppointment`, `ClinicsAttendance` e `ClinicsPackage` com `ON DELETE SET NULL ("patientId")` (lista de colunas, Postgres 15+) | O histórico operacional fica, desvinculado da pessoa, como o ADR-022 faz com deals | Profissional, serviço e horário podem permitir reidentificação em clínica pequena; e se a guarda for obrigatória, desvincular pode não bastar |
+| c) Manter a recusa (o provisório do §9.1)                                                                                                                               | Preserva tudo                                                                      | Contraria o ADR-022 de forma permanente e não atende ao pedido de exclusão do titular                                                         |
+| d) Retenção restrita com base legal (LGPD art. 16, I)                                                                                                                   | Guarda o mínimo exigido, com acesso restrito, e exclui o resto                     | Exige mecanismo novo de retenção e um fluxo de exclusão que o Core hoje não tem                                                               |
+
+**Perguntas para o jurídico:**
+
+1. O registro de que um procedimento estético foi realizado (quem, quando, qual serviço) constitui prontuário ou documento de guarda obrigatória? Isso depende de quem executa (profissional de saúde regulamentado ou não) e do conselho aplicável.
+2. Se sim, qual o prazo e qual o conteúdo mínimo?
+3. Um pedido de exclusão do titular pode ser parcialmente recusado com base nessa obrigação?
+4. A exclusão de um **workspace inteiro**, que no Core é cascade, pode apagar registros sob guarda obrigatória?
+5. Como atender ao direito de acesso e exportação do titular sobre dados de classe S?
+
+**Nota de implementação**, para quando houver decisão: o Prisma não expressa `SET NULL` com lista de colunas. A constraint precisaria de SQL manual na migration e de teste que a confirme. Um `SET NULL` sem lista sobre FK composta tentaria anular também o `workspaceId` (NOT NULL), e a exclusão falharia.
+
+**10. Bloqueios para uso de dados reais.** Até que **todos** sejam levantados, staging, testes e qualquer outro ambiente usam **somente dados fictícios**.
+
+| #   | Bloqueio                                                                                                                   | Como se levanta                                                                                                                                     |
+| --- | -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| B1  | Texto clínico escrito por pessoas nas superfícies do Core fica legível com permissões do Core (§6.7)                       | ADR aprovado e implementado para restrição de leitura ou para anotação própria                                                                      |
+| B2  | A regra "restrito por padrão" (§6.4) ainda não está implementada nem provada                                               | E6 e liberação implementados, com a bateria do §6.6 verde                                                                                           |
+| B3  | Política definitiva de exclusão e retenção de registros S sem decisão (§9.2)                                               | Avaliação jurídica respondida e política implementada                                                                                               |
+| B4  | Equipe não consegue ser montada pela interface (convite e troca de papel só por API), e cada membro tem um só papel (§5.4) | Telas de gestão de equipe no Core, e D7 decidida para os papéis que o piloto precisar. Não é condição de segurança, mas de operação real com equipe |
+
+**11. Dependência da WABA.** A validação contra WABA real (`docs/WABA_VALIDATION.md`) **não bloqueia** a F0 nem as fases operacionais (F1–F3). Ela é dependência apenas da parte do fluxo comercial que **envia confirmações pelo WhatsApp** (F4).
+
+### Consequências
+
+- O vertical tem domínio próprio de verdade: agenda, atendimento e pacote não são registros genéricos do CRM, e as invariantes ficam no banco.
+- Agenda e atendimento separados custam uma tabela e uma família de permissões a mais. Em troca, a recepção opera sem ver o que aconteceu no procedimento.
+- Num workspace de clínica, a IA do Core fica indisponível para as conversas da clínica, e as integrações por webhook deixam de ver qualquer evento ligado a contato. É o preço da fronteira técnica, aceito na D4.
+- O papel `Profissional` é rígido e amplo: não se edita, vê todos os atendimentos da clínica (D8), e quem acumula funções não tem papel adequado (D7). A rigidez vem do Core, que não tem edição de papéis nem restrição por dono do registro, e não do vertical.
+- O MVP é deliberadamente pobre em texto. Se a clínica precisar anotar, a pressão vai aparecer, e a resposta é o §7 e o B1, não um campo livre improvisado.
+- O caminho crítico para um piloto com dados reais são os bloqueios B1–B4, e não as fases de engenharia F1–F3.
+
+### Decisões
+
+**Aprovadas em 2026-10-19:**
+
+- **D3:** matriz de permissões e papel padrão `Profissional`, criado na ativação (§5).
+- **D4:** todo contato do workspace com o Clinics é restrito por padrão, com controles separados por consumidor: liberação só para IA, e nenhuma para webhooks no MVP (§6.4).
+- Supressão de webhooks de contatos do workspace com o Clinics, inclusive para integrações existentes (§6.5).
+- Recusa provisória de exclusão com 409. A anonimização segue só como proposta (§9).
+- Sem dados reais enquanto B1–B4 estiverem abertos (§10).
+
+**Em aberto:**
+
+- **D1:** marcar "pago/em aberto" no pacote. Em aberto até a revisão do fluxo.
+- **D2:** `ClinicsRoom`. Em aberto até a revisão do fluxo (H5).
+- **D5:** política definitiva de exclusão e retenção (§9.2). Depende do jurídico.
+- **D6:** validação operacional de H1–H7 com alguém de uma clínica. A revisão do PO não a substitui.
+- **D7:** um papel por membro. Para F1–F3, Member é a recepção e `Profissional` cuida da consulta à agenda e do atendimento. É reaberta **antes da F4** se alguma função precisar combinar o Clinics com o CRM ou o Inbox (§5.4).
+- **D8:** restringir o profissional aos próprios atendimentos. Hoje o papel vê todos (§5.3). É decisão operacional; se for necessária, exige mecanismo novo no Core com ADR.

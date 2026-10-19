@@ -69,16 +69,85 @@ Primeiro canal externo REAL, com as restrições da plataforma tratadas como req
 
 **Pronto quando:** conversa real de WhatsApp entra e sai do Veyra com opt-in verificado; arquivo sem scan não sai para canal externo; `AiRun.result` expira por idade.
 
-## Entrega 10 — Veyra Clinics (piloto vertical) 🔜
+## Entrega 10 — Veyra Clinics para estética (piloto vertical) 🚧
 
-Vertical como **extensão** do Core (ADR-036 e §3.8 do CLAUDE.md): o Core continua sem conhecer o vocabulário clínico.
+Vertical como **extensão** do Core (ADR-036, ADR-015 e §3.8 do CLAUDE.md): o Core continua sem conhecer o vocabulário clínico. Público inicial: **clínicas de estética no Brasil, com uma unidade**. Escopo nos **ADR-047** (contrato de extensão) e **ADR-048** (domínio e classificação de dados), **aceitos em 2026-10-19** (aprovação documental da F0).
 
-- Paciente (extension table 1:1 sobre `Contact`), profissional, agenda de consulta, procedimento, retorno e funil clínico.
-- **Sem prontuário médico completo** no piloto — dado clínico sensível exige decisão própria de retenção, cifra e acesso.
-- Fluxo comercial ponta a ponta: `lead → WhatsApp → agendamento → confirmação → consulta → retorno/reativação`.
-- Métricas do piloto: **faltas, conversão e pacientes recuperados**.
+A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → confirmação → atendimento → retorno/reativação`). As métricas **faltas, conversão e pacientes recuperados** são **hipóteses não validadas** (ADR-048, H6). O product owner revisa o fluxo do produto, mas isso **não conta** como validação operacional: sem alguém de uma clínica revisando, H1–H7 seguem explicitamente não validadas.
 
-**Pronto quando:** uma clínica opera o ciclo completo no Veyra e as três métricas são apuráveis.
+- **F0 — Hipóteses e decisões ✅** ADR-047 e ADR-048 **aceitos em 2026-10-19**. A aprovação é **documental**: aprova o desenho e as decisões, não código nem migrations. Ficaram decididos:
+  - o contrato de extensão com seis pontos;
+  - o ciclo de vida da ativação e da restrição (desativar não levanta a restrição, e as liberações de IA ficam suspensas);
+  - a matriz de permissões com o papel `Profissional`, que consulta a agenda e registra atendimento, sem marcar horários;
+  - a restrição de todos os contatos por consumidor, sem liberação para webhooks;
+  - a recusa provisória de exclusão.
+
+  **Continuam pendentes, fora da engenharia:**
+  - validação operacional de H1–H7 com alguém de uma clínica (a revisão do PO não conta);
+  - avaliação jurídica do ADR-048 §9.2;
+  - D1 (pago/em aberto), D2 (salas), D7 (um papel por membro) e D8 (profissional vê todos os atendimentos);
+  - os bloqueios B1–B4. Sem eles, **nenhum dado real de paciente e nenhum piloto clínico**.
+
+- **F1 — Fundação do vertical 🔜** Os seis pontos de extensão do Core (ADR-047), incluindo a **restrição de conteúdo por contato (E6)** com a regra "restrito por padrão"; a barreira de dependência; a CLI de ativação e desativação com o ciclo de vida do ADR-047 §4, criando o papel `Profissional`; as sete permissões; a liberação de contato pela API; unidade, serviço, profissional e horários. Sala só se D2 for decidida a favor.
+  **Pronto quando:**
+  - workspace sem o vertical ativo recebe 404 nas rotas do Clinics e não pode receber nenhuma chave `clinics:*` por nenhum caminho;
+  - `enable` e `disable` repetidos convergem para o mesmo estado, sem segundo papel `Profissional`; depois de `disable` não resta nenhuma `clinics:*` em papel algum, o papel continua existindo e as sessões antigas caem;
+  - contatos criados **antes** da ativação ficam restritos no commit da ativação, sem backfill, e falha ao consultar a presença do vertical equivale a "restrito";
+  - **desativar não levanta a restrição:**
+    - com o Clinics `disabled`, a IA continua recusando em todos os pontos, inclusive contatos criados depois da desativação, e webhooks continuam sem eventos de contato;
+    - liberações de IA ficam suspensas até a reativação;
+    - a porta do E6 não filtra por status (teste de regressão) e continua restringindo mesmo sem `ClinicsSettings` enquanto houver dados do vertical;
+    - nada no vertical apaga `ClinicsSettings`;
+  - **IA, em toda a superfície:**
+    - cada capacidade (resumo, sugestão de resposta, próxima ação, explicação de lead score) recusa contato restrito sem chamar o provedor nem reservar quota;
+    - chamada ao cliente de LLM sem declarar os contatos é recusada;
+    - resultados e propostas persistidos de contato restrito não são devolvidos por nenhum endpoint, inclusive os gerados antes da ativação;
+    - aprovação e despacho de mensagem da IA reconferem e recusam;
+    - contato liberado para IA que vira paciente volta a ser recusado em todos esses pontos;
+  - **webhooks:** para cada tipo de evento, nada ligado a contato de workspace com o Clinics é entregue, **inclusive de contato liberado para IA** e inclusive evento pendente de antes da ativação; deal ou tarefa sem contato, e workspaces sem o Clinics, seguem entregues;
+  - a porta do E6 falhando equivale a "restrito" para os dois consumidores;
+  - o Core não importa `verticals/` (lint + teste de fronteira);
+  - teste P0 de isolamento em cada modelo, e FK composta recusa profissional ou membership de outro workspace;
+  - `reviewer` + `security` aprovaram as mudanças no Core.
+- **F2 — Paciente e agenda 🔜** `ClinicsPatient` sobre `Contact` e `ClinicsAppointment` com sobreposição impedida pelo banco.
+  **Pronto quando:**
+  - agendar exige profissional habilitado para o serviço;
+  - **dois agendamentos concorrentes no mesmo horário resultam em exatamente um**;
+  - paciente de outro workspace é recusado pelo banco, e o workspace A não lista a agenda do B;
+  - excluir um contato com perfil de paciente é **recusado com 409** (provisório aprovado, ADR-048 §9.1). Exclusão e anonimização definitivas só depois da decisão jurídica;
+  - contato liberado para IA que ganha perfil de paciente volta a ser restrito na mesma transação; tela mínima de liberação para IA no Clinics.
+- **F3 — Atendimento e continuidade 🔜** `ClinicsAttendance` separado da agenda; chegada, conclusão e falta; pacote com consumo de sessão; retorno como `Task` do Core com título neutro.
+  **Pronto quando:**
+  - quem tem só permissão de agenda (Member/recepção) não vê atendimento, pacote nem saldo, nem pela API; o papel `Profissional` registra atendimento mas não agenda, e não lê o CRM do Core;
+  - conclusão repetida ou concorrente não consome duas sessões, e consumo além do total é recusado;
+  - sessões restantes e retornos pendentes estão corretos;
+  - nenhum conteúdo S aparece em entidade do Core nem na auditoria;
+  - a taxa de faltas é apurável.
+- **F4 — Fluxo comercial 🔜** Confirmação e reativação pelo WhatsApp com aprovação humana, e conversão a partir do pipeline.
+  **Pronto quando:** as três métricas são apuráveis com dados do piloto.
+
+**Dependências externas:**
+
+- A **validação contra WABA real** é dependência **só da F4**, na parte que envia confirmações pelo WhatsApp. Ela **não bloqueia** a F0 nem as fases operacionais F1–F3.
+- **Dado real de paciente** em qualquer ambiente depende de levantar os bloqueios **B1–B4** do ADR-048 §10:
+  - texto clínico digitado por pessoas nas superfícies do Core;
+  - a regra "restrito por padrão" implementada e provada;
+  - a decisão jurídica sobre exclusão e retenção;
+  - a gestão de equipe pela interface.
+
+  Até lá, staging e testes usam somente dados fictícios.
+
+- **Equipe (B4 e D7), dependências explícitas para um piloto com equipe.** A criação do papel `Profissional` não as resolve:
+  - não há convite nem troca de papel pela interface (só pela API), e não existe edição de papéis;
+  - cada membro tem um só papel.
+
+  Para F1–F3, a premissa é que Member cobre a recepção e `Profissional` cobre a consulta à agenda e o atendimento. **D7 é reaberta antes da F4** se alguma função precisar combinar o Clinics com o CRM ou o Inbox do Core. A gestão de equipe é lacuna do Core e precisa de entrega própria antes do piloto.
+
+- **Integrações existentes:** ativar o Clinics num workspace faz os webhooks já configurados deixarem de receber qualquer evento ligado a contato (ADR-048 §6.5). Isso precisa ser comunicado a quem opera o workspace antes da ativação.
+
+**Fora desta entrega:** prontuário, prescrição, pagamento online, financeiro e administração como módulos, equipamentos, fotos e texto clínico livre (condições para voltarem: ADR-048 §7), multiunidade na interface, e visibilidade restrita aos próprios atendimentos do profissional.
+
+**Pronto quando (entrega):** a equipe de uma clínica cadastra um paciente e um serviço, agenda com o profissional certo, registra o atendimento e acompanha sessões e retorno, com permissões adequadas e sem planilha; com dados reais do piloto, as três métricas são apuráveis.
 
 ## IA além disso — por demanda, não por pacote
 
@@ -86,4 +155,4 @@ Vertical como **extensão** do Core (ADR-036 e §3.8 do CLAUDE.md): o Core conti
 
 ## Fora do MVP (backlog consciente)
 
-Registro público/self-service (gatilho: ADR-014), RLS (ADR-013), **canal de e-mail** (o WhatsApp vem primeiro — Entrega 9), prontuário médico completo no Clinics, relatórios avançados, mobile, i18n além de pt-BR, exportação LGPD self-service (endpoint administrativo primeiro).
+Registro público/self-service (gatilho: ADR-014), RLS (ADR-013), **canal de e-mail** (o WhatsApp vem primeiro — Entrega 9), prontuário médico completo no Clinics, financeiro e administração do Clinics, relatórios avançados, mobile, i18n além de pt-BR, exportação LGPD self-service (endpoint administrativo primeiro).

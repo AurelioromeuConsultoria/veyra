@@ -97,13 +97,32 @@ graph LR
 
 ## 6. Estratégia de verticais
 
-Um vertical (ex.: `@veyra/clinics`) é um conjunto de módulos NestJS + telas que:
+Um vertical é um conjunto de módulos NestJS, contratos e telas que estende o Core sem que o Core o conheça (ADR-015). O contrato de extensão está no **ADR-047**; o primeiro vertical, Veyra Clinics para estética, no **ADR-048**.
 
-1. **Estende entidades por extension table 1:1**: `ClinicsPatient(workspaceId, contactId → Contact, ...)` com `@@unique([workspaceId, contactId])` e FK composta. Ler "paciente" = join da extensão com o contato.
-2. **Usa custom fields do Core** para atributos simples sem estrutura própria.
-3. **Adiciona entidades próprias** (unidade, serviço clínico) — tenant-scoped, mesmas convenções do Core, registradas no `WORKSPACE_MODELS` do vertical.
-4. **Compõe no bootstrap**: o app final importa `CoreModule` + `ClinicsModule`. O Core não tem plugin registry consciente de domínios; a composição é do produto final.
-5. **Parametriza capacidades do Core**: automações (confirmação/no-show), agenda (slots clínicos), IA (reativação de pacientes) — via APIs públicas dos services do Core.
+**Onde mora.** `apps/api/src/verticals/<v>/`, `packages/contracts/src/verticals/<v>/` e `apps/web/src/verticals/<v>/`. O schema fica em arquivo próprio, no **mesmo banco** e na mesma pasta de migrations (schema Prisma em vários arquivos), porque as FKs compostas para entidades do Core exigem o mesmo banco.
+
+**Barreira.** Só a raiz de composição importa `verticals/`: `app.module.ts` na API e a raiz de rotas e navegação no web. O restante do Core é proibido de importar o vertical por lint e por teste de fronteira, como no ADR-027. Quando o Core precisa de uma resposta do vertical, ele declara uma **porta** com nome neutro, e o vertical a implementa.
+
+**Mecanismos de extensão**, em ordem de preferência:
+
+1. **Custom fields** do Core, para atributo simples sem estrutura e **sem dado sensível**: custom fields herdam as permissões do contato.
+2. **Extension table 1:1** sobre entidade do Core, com `@@unique([workspaceId, <x>Id])` e FK composta. Exemplo: `ClinicsPatient(workspaceId, contactId)`. Ler "paciente" é o join da extensão com o contato, via service do vertical.
+3. **Entidade própria** do vertical, com as mesmas convenções do Core. Exemplos: `ClinicsUnit`, `ClinicsService`, `ClinicsAppointment`. Quando a entidade tem invariante que o banco precisa garantir (por exemplo, agenda sem sobreposição), ela é dona do próprio dado e **não especializa uma entidade genérica do Core**: o agendamento do Clinics não depende de `CalendarEvent` (ADR-048 §2).
+
+**Os seis pontos de composição (ADR-047)**, e somente eles:
+
+| #   | Ponto                                          | Resumo                                                                                                                                                                                                           |
+| --- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| E1  | Modelos protegidos                             | Conjunto composto na raiz (Core ∪ vertical) injetado no `PrismaService`; o teste de drift lê todos os arquivos do schema                                                                                         |
+| E2  | Permissões e disponibilidade                   | Catálogo próprio com prefixo do vertical; porta de disponibilidade por workspace; checagem de chaves no boot; `SYSTEM_ROLE_TEMPLATES` intocado                                                                   |
+| E3  | Ativação e papéis do vertical                  | CLI do vertical, idempotente; papéis próprios por `systemKey` com prefixo; desativar revoga acesso e não apaga dados                                                                                             |
+| E4  | Allowlist de auditoria                         | Allowlists compostas; entidade sem allowlist continua como `"[changed]"`                                                                                                                                         |
+| E5  | Navegação e rotas no web                       | Entradas contribuídas ao mapa único (`nav.ts`), visíveis só com o vertical ativo e com permissão                                                                                                                 |
+| E6  | Restrição de conteúdo por contato e consumidor | Porta neutra consultada por IA (todo envio ao provedor, leitura de persistidos, aprovação, despacho) e por webhooks (na entrega); falha fechada; derivada da **presença** do vertical, não do status de ativação |
+
+**O que não é ponto de extensão** (cada um exige ADR próprio): timeline do Core, catálogo de automações e de eventos de webhook, ferramentas de IA sobre dados do vertical, restrição de leitura por contato nas telas do Core, edição de papéis, quotas e billing por vertical.
+
+**Parametrizar o Core** continua valendo quando o efeito é universal. Exemplos: retorno como `Task` do Core, com título neutro; envio de mensagem pelo serviço de conversas, com aprovação humana. Vale só onde a fronteira de dados do vertical permite: o Clinics, por exemplo, não usa a IA do Core sobre seus contatos (ADR-048 §6).
 
 Direção de dependência: vertical → Core. Nunca o contrário. A skill `create-vertical` operacionaliza este checklist.
 
