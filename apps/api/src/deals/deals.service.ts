@@ -171,6 +171,7 @@ export class DealsService {
           currency: input.currency,
         },
         `deal.created:${deal.id}`,
+        { subjectContactIds: input.contactId ? [input.contactId] : [] },
       );
       return deal.id;
     });
@@ -340,6 +341,7 @@ export class DealsService {
           'deal.stage_changed',
           { id: dealId, fromStage: fromStage?.name ?? '—', toStage: stage.name },
           `deal.stage_changed:${dealId}:${stage.id}:${transicaoEm.toISOString()}`,
+          { subjectContactIds: deal.contactId ? [deal.contactId] : [] },
         );
         if (stage.type === 'won' || stage.type === 'lost') {
           await this.activities.record(
@@ -358,6 +360,7 @@ export class DealsService {
             stage.type === 'won' ? 'deal.won' : 'deal.lost',
             { id: dealId, amountCents: deal.amountCents },
             `deal.${stage.type}:${dealId}:${transicaoEm.toISOString()}`,
+            { subjectContactIds: deal.contactId ? [deal.contactId] : [] },
           );
         }
       }

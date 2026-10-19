@@ -10,8 +10,11 @@
  *     workspaceId→workspaceId (FK composta, ADR-010). FK sem o par = achado.
  *  2) DADOS: para FKs não-compostas, JOIN filho↔pai pelos pares reais da FK e
  *     lista linhas cujo workspaceId difere (só ids, nunca conteúdo).
- *  3) HEURÍSTICA: coluna `*Id` (exceto workspaceId) SEM nenhuma FK declarada =
- *     achado — relação "solta" é invisível ao banco e ao check de dados.
+ *  3) HEURÍSTICA: coluna `*Id` ou `*Ids` (exceto workspaceId) SEM nenhuma FK
+ *     declarada = achado — relação "solta" é invisível ao banco e ao check de
+ *     dados.
+ *  4) FOTOGRAFIAS em lista (`SNAPSHOT_COLUMNS`): nenhum elemento pode apontar
+ *     para linha de OUTRO workspace.
  *
  * FKs para tabelas globais (User, Permission) e para a raiz Workspace ficam
  * fora por definição.
@@ -69,7 +72,20 @@ const DOCUMENTED_LOOSE_COLUMNS = new Set([
   // liquidação, por desenho. Uma FK aqui impediria justamente o que queremos —
   // que a reserva desapareça quando deixa de existir. ADR-039.
   'MessageDispatch.reservationId',
+  // FOTOGRAFIA dos contatos de um evento NA EMISSÃO (ADR-047 adendo 2): registro
+  // histórico — contato excluído depois não pode apagar nem bloquear o evento.
+  // Sem FK de propósito; o isolamento é conferido no `enqueue` (mesma transação,
+  // mesmo workspace) e, aqui, pela checagem de DADOS de `SNAPSHOT_COLUMNS`.
+  'OutboxEvent.subjectContactIds',
 ]);
+
+/**
+ * Colunas de LISTA de ids sem FK (fotografias). O Postgres não declara FK
+ * para elementos de array, então a checagem de dados é explícita: nenhum id
+ * pode apontar para linha de OUTRO workspace. Id que não existe mais é
+ * permitido (o contato foi excluído depois da emissão).
+ */
+const SNAPSHOT_COLUMNS = [{ table: 'OutboxEvent', column: 'subjectContactIds', target: 'Contact' }];
 
 interface FkRow {
   constraint_name: string;
@@ -164,7 +180,8 @@ async function main(): Promise<void> {
     for (const table of workspaceTables) {
       const { rows: cols } = await client.query<{ column_name: string }>(
         `SELECT column_name FROM information_schema.columns
-          WHERE table_schema = 'public' AND table_name = $1 AND column_name LIKE '%Id'`,
+          WHERE table_schema = 'public' AND table_name = $1
+            AND (column_name LIKE '%Id' OR column_name LIKE '%Ids')`,
         [table],
       );
       for (const { column_name } of cols) {
@@ -180,6 +197,22 @@ async function main(): Promise<void> {
               `sem integridade (declare a FK, composta se o alvo for tabela de workspace).`,
           );
         }
+      }
+    }
+
+    // (4) — fotografias em lista: elemento apontando para OUTRO workspace
+    for (const snap of SNAPSHOT_COLUMNS) {
+      const { rows } = await client.query<{ child_id: string }>(
+        `SELECT DISTINCT e."id" AS child_id
+           FROM ${q(snap.table)} e
+           CROSS JOIN LATERAL unnest(e.${q(snap.column)}) AS s(ref_id)
+           JOIN ${q(snap.target)} t ON t."id" = s.ref_id
+          WHERE t."workspaceId" <> e."workspaceId"
+          LIMIT 20`,
+      );
+      for (const row of rows) {
+        dirty = true;
+        console.error(`  DADO cross-workspace: ${snap.table}.${snap.column} em id=${row.child_id}`);
       }
     }
   } finally {

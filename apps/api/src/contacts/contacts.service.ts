@@ -134,6 +134,7 @@ export class ContactsService {
         'contact.created',
         { id: contact.id, name: input.name },
         `contact.created:${contact.id}`,
+        { subjectContactIds: [contact.id] },
       );
       return contact.id;
     });
@@ -179,8 +180,26 @@ export class ContactsService {
       'contact.created',
       { id: contactId, name: input.name },
       `contact.created:${contactId}`,
+      { subjectContactIds: [contactId] },
     );
     return contactId;
+  }
+
+  /**
+   * Trava a linha do contato na transação e devolve o estado ATUAL dela. Dois
+   * pedidos sobre o mesmo contato passam a ser seriais: o segundo espera o
+   * primeiro e lê o que ele deixou. Linha que sumiu enquanto se esperava (uma
+   * exclusão venceu) vira 404, antes de qualquer efeito — inclusive na cota.
+   */
+  private async lockAndRead(tx: Db, id: string): Promise<{ name: string; status: string }> {
+    const travado = await tx.contact.updateMany({ where: { id }, data: { updatedAt: new Date() } });
+    if (travado.count === 0) throw new NotFoundException('Contato não encontrado');
+    const atual = (await tx.contact.findFirst({
+      where: { id },
+      select: { name: true, status: true },
+    })) as unknown as { name: string; status: string } | null;
+    if (!atual) throw new NotFoundException('Contato não encontrado');
+    return atual;
   }
 
   async update(auth: AuthContext, id: string, input: UpdateContactInput): Promise<ContactDto> {
@@ -194,6 +213,13 @@ export class ContactsService {
         })
       : null;
     await (this.prisma.db as unknown as TxRunner).$transaction(async (tx) => {
+      /**
+       * TRAVA e RELÊ antes de decidir a cota: o `existing` acima foi lido fora
+       * da transação, e um arquivamento ou exclusão concorrente o deixa velho —
+       * descontar por ele fazia a cota de contatos cair duas vezes (e, repetido,
+       * deixava passar contatos acima do teto do plano).
+       */
+      const atual = await this.lockAndRead(tx, id);
       await tx.contact.updateMany({
         where: { id },
         data: {
@@ -218,7 +244,7 @@ export class ContactsService {
 
       // gauge segue o ciclo de vida (ADR-032): arquivar libera vaga, reativar
       // consome de novo — e reativar PODE esbarrar no teto, como criar
-      if (input.status && input.status !== existing.status) {
+      if (input.status && input.status !== atual.status) {
         await this.usage.consume(
           tx,
           auth.workspaceId as string,
@@ -247,11 +273,20 @@ export class ContactsService {
     if (!existing) throw new NotFoundException('Contato não encontrado');
     const contactsLimit = await this.usage.prepareConsume(auth.workspaceId as string, 'contacts');
     await (this.prisma.db as unknown as TxRunner).$transaction(async (tx) => {
+      /**
+       * TRAVA a linha antes de qualquer efeito: duas exclusões do mesmo contato
+       * passam a ser SERIAIS. A segunda espera a primeira; quando ela conclui,
+       * o UPDATE reavalia a linha (já apagada), não toca nada e vira 404 —
+       * em vez de seguir até o outbox e quebrar no unique de deduplicação (500),
+       * ou de descontar a cota de contatos duas vezes.
+       */
+      const atual = await this.lockAndRead(tx, id);
       await this.audit.record(tx, auth.workspaceId as string, 'contact.deleted', {
         entityType: 'contact',
         entityId: id,
         actor: this.audit.actorFrom(auth),
-        before: { name: existing.name, status: existing.status },
+        // o estado de AGORA, relido sob a trava — não o de antes da transação
+        before: { name: atual.name, status: atual.status },
         after: null,
       });
       // preserva o registro comercial, desvinculando o titular
@@ -267,10 +302,12 @@ export class ContactsService {
         'contact.deleted',
         { id },
         `contact.deleted:${id}`,
+        // emitido ANTES do delete: a validação de isolamento ainda vê o contato
+        { subjectContactIds: [id] },
       );
       await tx.contact.deleteMany({ where: { id } }); // junções/activities: cascade
       // só quem contava é descontado: arquivado já tinha liberado a vaga
-      if (existing.status === 'active') {
+      if (atual.status === 'active') {
         await this.usage.consume(tx, auth.workspaceId as string, 'contacts', -1, contactsLimit);
       }
     });

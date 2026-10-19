@@ -14,6 +14,10 @@ export type RestrictionConsumer = 'ai' | 'webhook';
  * para conteúdo que não se atribui a contato nenhum (conversa sem contato,
  * evento cuja entidade sumiu). Quem implementa a porta decide o `null` — e a
  * única resposta segura num workspace com dado sensível é "restrito".
+ *
+ * Também chegam ids de contatos JÁ EXCLUÍDOS (a fotografia do outbox guarda os
+ * contatos da emissão). Contrato: id sem linha de contato no workspace vale
+ * como `null` — restrito onde houver dado sensível.
  */
 export type RestrictionSubject = string | null;
 

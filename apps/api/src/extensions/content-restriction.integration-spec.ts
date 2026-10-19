@@ -799,6 +799,89 @@ describe('Restrição de conteúdo por contato — ADR-047 E6 (integração, lad
       },
     );
 
+    it('deal DESLIGADO do contato entre emissão e entrega não sai (fotografia da emissão)', async () => {
+      await subscribe(sessionA);
+      await deliverAll();
+      hooks.length = 0;
+      restrictA('webhook', [contactId]);
+
+      // emitido pelo domínio, ligado ao contato: a fotografia registra o vínculo
+      const deal = (await post('/api/deals', sessionA, { title: 'Pacote', contactId }).expect(201))
+        .body.id;
+      const evento = await prisma.raw.outboxEvent.findFirst({
+        where: { eventType: 'deal.created' },
+      });
+      expect(evento!.subjectContactIds).toEqual([contactId]);
+      // desligado ANTES da entrega: a resolução de agora já não vê o contato
+      await prisma.raw.deal.updateMany({ where: { id: deal }, data: { contactId: null } });
+      await deliverAll();
+      expect(hooks).toEqual([]);
+
+      // prova de que é a FOTOGRAFIA que segura: o mesmo cenário sem ela sairia
+      const semFotografia = await prisma.raw.outboxEvent.create({
+        data: {
+          workspaceId: wsA.workspaceId,
+          eventType: 'deal.created',
+          payload: { id: deal, title: 'Pacote', amountCents: 0, currency: 'BRL' },
+          dedupeKey: `sem-fotografia:${deal}`,
+        },
+      });
+      await deliverAll();
+      expect(hooks).toHaveLength(1);
+      expect(JSON.parse(hooks[0].body).id).toBe(semFotografia.id);
+    });
+
+    it('contato que entra pelo WhatsApp: o contact.created já nasce com a fotografia', async () => {
+      const evento = await prisma.raw.outboxEvent.findFirst({
+        where: { workspaceId: wsA.workspaceId, eventType: 'contact.created' },
+      });
+      expect(evento!.subjectContactIds).toEqual([contactId]);
+    });
+
+    it('tarefa de AUTOMAÇÃO com o título do deal de um contato restrito não sai', async () => {
+      await subscribe(sessionA);
+      await deliverAll();
+      hooks.length = 0;
+      await post('/api/automations', sessionA, {
+        name: 'Ligar sobre o negócio',
+        trigger: 'deal.created',
+        action: 'create_task',
+        actionConfig: { title: 'Ligar sobre {{title}}', dueInDays: 1 },
+      }).expect(201);
+      restrictA('webhook', [contactId]);
+
+      await post('/api/deals', sessionA, { title: 'Botox', contactId }).expect(201);
+      for (let i = 0; i < 4; i += 1) await drain(); // automação, depois as entregas
+      expect(await prisma.raw.task.count({ where: { title: 'Ligar sobre Botox' } })).toBe(1);
+      expect(hooks.map((h) => JSON.parse(h.body).type)).toEqual([]);
+    });
+
+    it('cadeia: deal ligado a contato restrito DEPOIS da automação — a tarefa derivada não sai', async () => {
+      await subscribe(sessionA);
+      await deliverAll();
+      hooks.length = 0;
+      await post('/api/automations', sessionA, {
+        name: 'Ligar sobre o negócio',
+        trigger: 'deal.created',
+        action: 'create_task',
+        actionConfig: { title: 'Ligar sobre {{title}}', dueInDays: 1 },
+      }).expect(201);
+
+      // nasce SEM contato: deal.created sai (não era de ninguém) e a automação
+      // cria a tarefa, cujo task.created herda a fotografia vazia
+      const deal = (await post('/api/deals', sessionA, { title: 'Peeling' }).expect(201)).body.id;
+      await drain();
+      expect(hooks.map((h) => JSON.parse(h.body).type)).toEqual(['deal.created']);
+      hooks.length = 0;
+
+      // agora o deal é ligado a um contato restrito, ANTES da entrega da tarefa
+      await prisma.raw.deal.updateMany({ where: { id: deal }, data: { contactId } });
+      restrictA('webhook', [contactId]);
+      await drain();
+      expect(await prisma.raw.task.count({ where: { title: 'Ligar sobre Peeling' } })).toBe(1);
+      expect(hooks).toEqual([]); // a raiz da cadeia agora é do contato restrito
+    });
+
     it('tarefa ligada ao paciente SÓ pelo deal também não sai', async () => {
       await subscribe(sessionA);
       await deliverAll();

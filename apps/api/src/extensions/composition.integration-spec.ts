@@ -1,5 +1,5 @@
 import { Controller, Get, type INestApplication } from '@nestjs/common';
-import { PERMISSION_CATALOG, type PermissionKey } from '@veyra/contracts';
+import { PERMISSION_CATALOG, SYSTEM_ROLE_TEMPLATES, type PermissionKey } from '@veyra/contracts';
 import { RequirePermissions } from '../common/decorators';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProvisioningService } from '../workspaces/provisioning.service';
@@ -56,6 +56,36 @@ describe('composição de extensões (ADR-047 E2, integração)', () => {
     });
     beforeEach(async () => {
       await resetDb(prisma);
+    });
+
+    it('depois que a extensão REGISTRA suas chaves no catálogo global, provisionar ainda concede zero delas', async () => {
+      // o que a CLI de ativação de um vertical fará: gravar as chaves dele no
+      // catálogo global `Permission` (a FK de RolePermission exige)
+      for (const key of ['demo:read', 'demo:manage']) {
+        await prisma.raw.permission.create({ data: { key, description: 'chave de extensão' } });
+      }
+
+      await app
+        .get(ProvisioningService)
+        .provision({ name: 'Nova', slug: 'nova', ownerEmail: 'dono@nova.test' });
+
+      const workspace = await prisma.raw.workspace.findFirst({ where: { slug: 'nova' } });
+      const owner = await prisma.raw.role.findFirst({
+        where: { workspaceId: workspace!.id, systemKey: 'owner' },
+      });
+      const doOwner = await prisma.raw.rolePermission.findMany({
+        where: { roleId: owner!.id },
+        select: { permissionKey: true },
+      });
+      // o Owner recebe EXATAMENTE o template do Core — nada do catálogo global a mais
+      expect(doOwner.map((row) => row.permissionKey).sort()).toEqual(
+        [...SYSTEM_ROLE_TEMPLATES.Owner].sort(),
+      );
+      // e nenhum papel do workspace novo recebe chave da extensão
+      const daExtensao = await prisma.raw.rolePermission.count({
+        where: { workspaceId: workspace!.id, permissionKey: { startsWith: 'demo:' } },
+      });
+      expect(daExtensao).toBe(0);
     });
 
     it('NÃO concede, nem registra no catálogo, nenhuma chave da extensão', async () => {

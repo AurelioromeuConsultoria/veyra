@@ -298,6 +298,9 @@ export class AutomationsService {
           depth: event.depth + 1,
           originAutomationId: automationId,
         },
+        // a tarefa herda os contatos do evento que a disparou: `{{title}}` de
+        // um `deal.created` é conteúdo do contato do deal (ADR-047 adendo 2)
+        event.id,
       );
 
       // a trilha diz QUAL automação agiu (actorId) e sobre o que

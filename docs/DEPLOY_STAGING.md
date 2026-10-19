@@ -163,6 +163,18 @@ Migration destrutiva quebra essa ordem: nesse caso, deploy em duas etapas
 (código que tolera as duas formas → migration → limpeza), como manda o hook de
 migration destrutiva.
 
+**Migration que estoura `lock_timeout`.** Migrations em tabela muito escrita
+(por exemplo `20261019200000_outbox_subject_contacts`, sobre `OutboxEvent`)
+fixam `lock_timeout = 5s`. Se uma transação longa estiver segurando a tabela, a
+migration falha em vez de travar todas as escritas da aplicação. Nesse caso o
+Prisma a registra como falha, e o próximo `migrate deploy` para com **P3009**.
+O `ALTER` não chegou a ser aplicado, então marque como desfeita e repita:
+
+```bash
+npx prisma migrate resolve --rolled-back 20261019200000_outbox_subject_contacts
+npx prisma migrate deploy
+```
+
 ## 5. Rollback
 
 No painel, o Coolify guarda os deploys anteriores: **Redeploy** do commit

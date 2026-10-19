@@ -2,13 +2,16 @@ import { Injectable, Logger } from '@nestjs/common';
 import { z } from 'zod';
 import type { Prisma } from '../generated/prisma/client';
 import { PrismaService, type Db } from '../prisma/prisma.service';
+import { resolveEventSubjects, type EventSubject } from './event-subjects';
 
 type AnyClient = Db | Prisma.TransactionClient;
 
 /**
  * ALLOWLIST de payload por evento (ajuste #5): o que sai do Veyra para fora é
  * declarado aqui, com .strict() — nunca uma entidade Prisma inteira. Evento
- * novo = entrada nova + revisão de security.
+ * novo = entrada nova + revisão de security + declarar de quais contatos ele é
+ * (`subjectContactIds`, exigido pelo tipo do `enqueue`) e a entrada no mapa
+ * evento → entidade da entrega de webhook.
  */
 export const OUTBOX_EVENTS = {
   'contact.created': z.object({ id: z.string().uuid(), name: z.string().max(160) }).strict(),
@@ -49,7 +52,9 @@ export const OUTBOX_EVENTS = {
 } as const;
 
 /** Eventos que NUNCA saem para webhook: são trabalho interno da plataforma. */
-export const INTERNAL_EVENT_TYPES = new Set<string>(['file.purge', 'whatsapp.send_pending']);
+const INTERNAL_EVENT_LIST = ['file.purge', 'whatsapp.send_pending'] as const;
+export const INTERNAL_EVENT_TYPES = new Set<string>(INTERNAL_EVENT_LIST);
+export type InternalEventType = (typeof INTERNAL_EVENT_LIST)[number];
 
 export type OutboxEventType = keyof typeof OUTBOX_EVENTS;
 export const OUTBOX_EVENT_TYPES = Object.keys(OUTBOX_EVENTS) as OutboxEventType[];
@@ -81,7 +86,49 @@ export type ClaimedEvent = {
   chainId: string | null;
   depth: number;
   originAutomationId: string | null;
+  /**
+   * Contatos de quem era o evento NO MOMENTO DA EMISSÃO (ADR-047 adendo 2).
+   * `null` = evento anterior a esta coluna: só a resolução na entrega vale.
+   */
+  subjectContactIds: string[] | null;
 };
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export interface EnqueueOptions {
+  /**
+   * CAUSALIDADE (ADR-035): quando o evento nasce de uma automação, a cadeia
+   * viaja em COLUNAS — nunca no payload, que é o que sai para webhook.
+   */
+  causality?: { chainId: string | null; depth: number; originAutomationId: string };
+  /**
+   * Contatos de quem é o evento AGORA, na transação que o emite — fotografia
+   * que a entrega soma à resolução do momento da entrega (ADR-047 adendo 2).
+   * OBRIGATÓRIO em todo evento do catálogo de webhooks (`[]` = sem contato).
+   */
+  subjectContactIds?: readonly string[];
+  /**
+   * Evento DERIVADO herda os sujeitos do evento que o causou (ADR-047 adendo 2):
+   * a tarefa que uma automação cria a partir de `deal.created` pode carregar o
+   * título do deal, e é conteúdo do contato dele. Id do evento de origem, lido
+   * no MESMO workspace; seus contatos já foram validados na emissão de origem.
+   */
+  inheritSubjectsFrom?: string;
+}
+
+/** Evento público EXIGE os sujeitos em tempo de compilação; interno não os tem. */
+type PublicEnqueueOptions = Omit<EnqueueOptions, 'subjectContactIds'> & {
+  subjectContactIds: readonly string[];
+};
+type InternalEnqueueOptions = Pick<EnqueueOptions, 'causality'>;
+/**
+ * `[T] extends [...]` SEM distribuir: com `T` sendo a união inteira (um emissor
+ * genérico), a forma distributiva aceitava a chamada sem opções. Assim, só
+ * quando `T` é COMPROVADAMENTE interno as opções ficam dispensáveis.
+ */
+export type EnqueueOptionsFor<T extends OutboxEventType> = [T] extends [InternalEventType]
+  ? [options?: InternalEnqueueOptions]
+  : [options: PublicEnqueueOptions];
 
 @Injectable()
 export class OutboxService {
@@ -93,23 +140,32 @@ export class OutboxService {
    * Enfileira DENTRO da transação de domínio: se ela abortar, o evento some
    * junto — efeito externo nunca escapa de uma operação revertida.
    */
-  async enqueue(
+  async enqueue<T extends OutboxEventType>(
     db: AnyClient,
     workspaceId: string,
-    eventType: OutboxEventType,
+    eventType: T,
     payload: Record<string, unknown>,
     dedupeKey: string,
-    /**
-     * CAUSALIDADE (ADR-035): quando o evento nasce de uma automação, a cadeia
-     * viaja em COLUNAS — nunca no payload, que é o que sai para webhook.
-     */
-    causality?: { chainId: string | null; depth: number; originAutomationId: string },
+    ...rest: EnqueueOptionsFor<T>
   ): Promise<void> {
+    const options: EnqueueOptions = rest[0] ?? {};
+    const { causality } = options;
     const parsed = OUTBOX_EVENTS[eventType].safeParse(payload);
     if (!parsed.success) {
       // bug de programação: payload fora da allowlist do evento
       throw new Error(`Payload inválido para ${eventType}: ${parsed.error.message}`);
     }
+    const own = await this.validatedSubjects(db, workspaceId, eventType, options);
+    const inherited =
+      own === null
+        ? []
+        : await this.inheritedSubjects(db, workspaceId, options.inheritSubjectsFrom);
+    // um `null` herdado (origem antiga sem entidade resolvível) não cabe numa
+    // coluna de UUIDs: a resolução do evento raiz na entrega cobre esse caso
+    const subjectContactIds =
+      own === null
+        ? null
+        : [...new Set([...own, ...inherited.filter((id): id is string => id !== null)])];
     /**
      * PRÉ-CHECAGEM, e não `catch` de P2002. No Postgres, violação de unique
      * ABORTA o bloco inteiro: capturar o erro dentro da transação de domínio
@@ -139,8 +195,91 @@ export class OutboxService {
         chainId: causality?.chainId ?? null,
         depth: causality?.depth ?? 0,
         originAutomationId: causality?.originAutomationId ?? null,
+        // evento interno não tem contato a declarar; fica NULL como os antigos
+        ...(subjectContactIds ? { subjectContactIds } : {}),
       },
     } as never);
+  }
+
+  /**
+   * A fotografia NÃO tem FK (contato excluído depois não pode apagar nem
+   * bloquear o evento). Por isso o isolamento é conferido AQUI, na emissão:
+   * todo id precisa ser um contato do MESMO workspace do evento, lido na mesma
+   * transação. Id de outro workspace, inexistente ou malformado derruba a
+   * transação de domínio — nunca vira dado silencioso no outbox.
+   */
+  private async validatedSubjects(
+    db: AnyClient,
+    workspaceId: string,
+    eventType: OutboxEventType,
+    options: EnqueueOptions,
+  ): Promise<string[] | null> {
+    if (INTERNAL_EVENT_TYPES.has(eventType)) return null;
+    if (!options.subjectContactIds) {
+      throw new Error(
+        `Evento público ${eventType} sem subjectContactIds — declare de quais contatos ele é ([] se de nenhum).`,
+      );
+    }
+    const ids = [...new Set(options.subjectContactIds)];
+    if (ids.some((id) => typeof id !== 'string' || !UUID_RE.test(id))) {
+      throw new Error(`subjectContactIds inválido em ${eventType}`);
+    }
+    if (ids.length === 0) return [];
+    // workspaceId EXPLÍCITO no WHERE: vale tanto no client protegido (onde
+    // diverge do contexto = nenhuma linha) quanto numa transação `raw`
+    const found = (await db.contact.findMany({
+      where: { workspaceId, id: { in: ids } },
+      select: { id: true },
+    } as never)) as unknown as { id: string }[];
+    if (found.length !== ids.length) {
+      throw new Error(
+        `subjectContactIds de ${eventType}: contato inexistente ou de outro workspace do evento`,
+      );
+    }
+    return ids;
+  }
+
+  /**
+   * Sujeitos herdados do evento de origem, lido com `workspaceId` explícito.
+   * Sem revalidar a existência: os ids já foram conferidos na emissão de
+   * origem, e o contato ter sido excluído depois não pode impedir a automação
+   * nem apagar o vínculo (procedência).
+   *
+   * FALHA FECHADA no que não se sabe:
+   * - origem inexistente no workspace (id errado, ou de outro workspace) LANÇA —
+   *   herdar "nada" em silêncio liberaria justamente o conteúdo derivado;
+   * - origem já terminal LANÇA: a fotografia dela foi zerada, e herdar de
+   *   evento concluído é um caminho que ainda não existe e precisa ser pensado;
+   * - a fotografia é SOMADA à resolução atual da entidade de origem. Isso
+   *   cobre a origem anterior à coluna (o Prisma lê o NULL como `[]`, então
+   *   "antigo" e "sem contato" não se distinguem por aqui) e um vínculo criado
+   *   entre a emissão da origem e a automação.
+   */
+  private async inheritedSubjects(
+    db: AnyClient,
+    workspaceId: string,
+    sourceEventId: string | undefined,
+  ): Promise<EventSubject[]> {
+    if (!sourceEventId) return [];
+    const source = (await db.outboxEvent.findFirst({
+      where: { workspaceId, id: sourceEventId },
+      select: { subjectContactIds: true, status: true, eventType: true, payload: true },
+    } as never)) as unknown as {
+      subjectContactIds: string[] | null;
+      status: string;
+      eventType: string;
+      payload: unknown;
+    } | null;
+    if (!source) {
+      throw new Error('inheritSubjectsFrom: evento de origem inexistente neste workspace');
+    }
+    if (source.status === 'delivered' || source.status === 'dead') {
+      throw new Error('inheritSubjectsFrom: evento de origem já concluído (fotografia zerada)');
+    }
+    return [
+      ...(source.subjectContactIds ?? []),
+      ...(await resolveEventSubjects(db, workspaceId, source.eventType, source.payload)),
+    ];
   }
 
   /**
@@ -179,7 +318,7 @@ export class OutboxService {
             FOR UPDATE SKIP LOCKED
          )
        RETURNING "id", "workspaceId", "eventType", "payload", "attempts", "claimToken",
-                 "chainId", "depth", "originAutomationId"`,
+                 "chainId", "depth", "originAutomationId", "subjectContactIds"`,
       limit,
       LEASE_MS,
     );
@@ -211,17 +350,28 @@ export class OutboxService {
    * depois recebe `false` e não sobrescreve o trabalho de quem o assumiu.
    */
   async markDelivered(id: string, claimToken: string): Promise<boolean> {
-    const { count } = await this.prisma.raw.outboxEvent.updateMany({
-      where: { id, claimToken, status: 'processing' },
-      data: {
-        status: 'delivered',
-        deliveredAt: new Date(),
-        lastError: null,
-        claimedAt: null,
-        leaseExpiresAt: null,
-        claimToken: null,
-      },
-    });
+    /**
+     * A FOTOGRAFIA dos contatos é zerada ao concluir (ADR-047 adendo 2, LGPD):
+     * ela só serve enquanto o evento ainda pode ser entregue. Mantê-la num
+     * evento terminal religaria, para sempre, deals e tarefas ao id de um
+     * contato que o titular mandou excluir (ADR-022 os desvincula).
+     *
+     * `raw` justificado: o dispatcher é cross-workspace, e só em SQL a coluna
+     * volta a NULL (o tipo do Prisma para lista não admite nulo).
+     */
+    const count = await this.prisma.raw.$executeRawUnsafe(
+      `UPDATE "OutboxEvent"
+          SET "status" = 'delivered',
+              "deliveredAt" = now(),
+              "lastError" = NULL,
+              "claimedAt" = NULL,
+              "leaseExpiresAt" = NULL,
+              "claimToken" = NULL,
+              "subjectContactIds" = NULL
+        WHERE "id" = $1::uuid AND "claimToken" = $2::uuid AND "status" = 'processing'`,
+      id,
+      claimToken,
+    );
     if (count === 0) this.logger.warn(`Lease perdido ao concluir ${id} — conclusão ignorada`);
     return count > 0;
   }
@@ -263,7 +413,13 @@ export class OutboxService {
               END,
               "claimedAt" = NULL,
               "leaseExpiresAt" = NULL,
-              "claimToken" = NULL
+              "claimToken" = NULL,
+              -- evento MORTO não será mais entregue: a fotografia sai junto
+              -- (mesma razão de LGPD do markDelivered)
+              "subjectContactIds" = CASE
+                WHEN $6::boolean THEN NULL
+                ELSE "subjectContactIds"
+              END
         WHERE "id" = $1::uuid AND "claimToken" = $2::uuid AND "status" = $3::"OutboxStatus"`,
       id,
       claimToken,

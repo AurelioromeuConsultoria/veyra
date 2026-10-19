@@ -90,6 +90,11 @@ export class TasksService {
     actor: { type: 'user' | 'ai' | 'system'; membershipId: string | null },
     /** cadeia de causalidade quando a tarefa nasce de automação (ADR-035) */
     causality?: { chainId: string | null; depth: number; originAutomationId: string },
+    /**
+     * Evento que CAUSOU esta tarefa: ela herda os contatos dele (ADR-047
+     * adendo 2) — o título pode carregar conteúdo do contato de origem.
+     */
+    inheritSubjectsFrom?: string,
   ): Promise<string> {
     const task = await tx.task.create({
       data: {
@@ -112,6 +117,16 @@ export class TasksService {
       targets: { taskId: task.id, contactId: input.contactId, dealId: input.dealId },
     });
     const taskId = (task as unknown as { id: string }).id;
+    // de quem é a tarefa: o contato dela E o do deal a que pertence — uma tarefa
+    // criada a partir do deal de um contato é dele (ADR-047 adendo 2)
+    const subjectContactIds = input.contactId ? [input.contactId] : [];
+    if (input.dealId) {
+      const deal = (await tx.deal.findFirst({
+        where: { workspaceId, id: input.dealId },
+        select: { contactId: true },
+      } as never)) as unknown as { contactId: string | null } | null;
+      if (deal?.contactId) subjectContactIds.push(deal.contactId);
+    }
     // evento público (webhooks) e gatilho de automação, na MESMA transação
     await this.outbox.enqueue(
       tx,
@@ -119,7 +134,7 @@ export class TasksService {
       'task.created',
       { id: taskId, title: input.title },
       `task.created:${taskId}`,
-      causality,
+      { causality, subjectContactIds, inheritSubjectsFrom },
     );
     return taskId;
   }

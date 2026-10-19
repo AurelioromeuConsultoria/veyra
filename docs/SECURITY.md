@@ -106,7 +106,7 @@ Política obrigatória para `FileObject`:
 3. Assinatura `x-veyra-signature: t=<ts>,v1=HMAC_SHA256(secret, "<ts>.<body>")`; o timestamp na assinatura impede replay.
 4. Segredo cifrado (AES-256-GCM, chave independente do JWT) e exibido **uma única vez** na criação — nunca em DTO, log ou auditoria.
 5. Payload por allowlist do evento; 3 entregas mortas consecutivas pausam **apenas** o webhook que falhou.
-6. **Restrição de conteúdo (ADR-047 E6, ADR-048 §6.5).** Antes de cada entrega, e a cada tentativa, o entregador resolve de qual contato é o evento: contato direto, contato do deal, ou, numa tarefa, o contato dela **e** o do deal a que pertence, lidos no momento da entrega. Depois consulta a porta de restrição para o consumidor `webhook`.
+6. **Restrição de conteúdo (ADR-047 E6, ADR-048 §6.5).** Antes de cada entrega, e a cada tentativa, o entregador resolve de qual contato é o evento: contato direto, contato do deal, ou, numa tarefa, o contato dela **e** o do deal a que pertence, lidos no momento da entrega, **somados à fotografia gravada na emissão** (`OutboxEvent.subjectContactIds`, ADR-047 adendo 2). Assim, um deal desligado do contato entre emitir e entregar não escapa. Como a fotografia não tem FK, o `enqueue` confere que todo id é contato do mesmo workspace do evento, na mesma transação, e recusa o resto. Evento derivado de automação herda os contatos do evento que o causou e, na entrega, responde também pela entidade do evento **raiz** da cadeia. Depois disso, o entregador consulta a porta de restrição para o consumidor `webhook`.
    - Evento de contato restrito é **concluído sem envio** e sem registro no histórico de entregas, que o cliente vê.
    - Entidade apagada vira sujeito desconhecido.
    - Porta **indisponível** (erro, timeout ou resposta malformada) não envia **nem descarta**: a entrega lança e o dispatcher devolve o evento ao outbox com backoff.
@@ -159,6 +159,7 @@ O webhook do WhatsApp é o **único caminho de escrita público e não autentica
 - **Exportação**: endpoint de export completo por workspace (e por titular, quando aplicável), decifrando o que for do titular, **excluindo** hashes, tokens e segredos.
 - **Exclusão**: exclusão de workspace via cascade a partir de `Workspace`; exclusão de titular (contato) com propagação definida por entidade; prazos documentados.
 - Verticais com dado sensível (ex.: Clinics/saúde) herdarão esta base e adicionarão requisitos próprios — o Core já minimiza e audita.
+- **Outbox (ADR-047 adendo 2).** A fotografia de contatos do evento (`subjectContactIds`) é zerada quando o evento é entregue ou morre, e não sobrevive à finalidade dela. O **payload** do outbox, que inclui por exemplo o nome em `contact.created`, ainda não tem retenção: é dívida registrada, com gatilho, em `docs/MEMORY/technical-debt.md`.
 
 ## 10. Checklist de segurança por PR
 
@@ -168,5 +169,5 @@ O webhook do WhatsApp é o **único caminho de escrita público e não autentica
 - [ ] Endpoint novo tem `@RequirePermissions` (ou `@AuthenticatedOnly()`/`@Public()` explícitos e justificados)? Sem decorator = negado pelo guard e achado P1/P0.
 - [ ] DTO de saída não expõe segredo/hash/token?
 - [ ] Mutação relevante grava `AuditLog` com allowlist?
-- [ ] Efeito externo passa por outbox?
+- [ ] Efeito externo passa por outbox? Evento público novo declara `subjectContactIds` e tem entrada no mapa evento → entidade da entrega de webhook?
 - [ ] Mudança em auth/tenancy/RBAC passou por `security` + `reviewer`?

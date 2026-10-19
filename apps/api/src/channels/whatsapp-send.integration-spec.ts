@@ -539,6 +539,8 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
       chainId: null,
       depth: 0,
       originAutomationId: null,
+      // evento interno: sem fotografia de contatos
+      subjectContactIds: null,
     };
     await Promise.all([service.dispatch(claimado), service.dispatch(claimado)]);
 

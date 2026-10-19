@@ -1,11 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import type {
-  CreateWebhookInput,
-  UpdateWebhookInput,
-  WebhookDto,
-  WebhookEvent,
-} from '@veyra/contracts';
+import type { CreateWebhookInput, UpdateWebhookInput, WebhookDto } from '@veyra/contracts';
 import { AuditService } from '../audit/audit.service';
 import { AuthContext } from '../common/decorators';
 import { CryptoService } from '../common/crypto.service';
@@ -20,6 +15,7 @@ import {
   OutboxService,
   type ClaimedEvent,
 } from '../outbox/outbox.service';
+import { resolveEventSubjects } from '../outbox/event-subjects';
 import { UnsafeUrlError, assertSafeWebhookUrl, type SafeFetchResult } from './safe-http';
 
 /**
@@ -36,24 +32,6 @@ export type WebhookTransport = (
 ) => Promise<SafeFetchResult>;
 
 type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
-
-/**
- * De QUAL entidade é cada evento do catálogo de webhooks, para a restrição de
- * conteúdo por contato (ADR-047 E6, ADR-048 §6.5). EXAUSTIVO sobre o tipo
- * `WebhookEvent`: evento novo no catálogo sem entrada aqui não compila — ninguém
- * esquece de dizer de quem é o dado que sai.
- */
-const EVENT_SUBJECT: Record<WebhookEvent, 'contact' | 'deal' | 'task'> = {
-  'contact.created': 'contact',
-  'contact.updated': 'contact',
-  'contact.deleted': 'contact',
-  'deal.created': 'deal',
-  'deal.stage_changed': 'deal',
-  'deal.won': 'deal',
-  'deal.lost': 'deal',
-  'task.created': 'task',
-  'task.completed': 'task',
-};
 
 /** 3 ENTREGAS MORTAS consecutivas pausam o webhook (ajuste #7). */
 const DEAD_DELIVERIES_TO_PAUSE = 3;
@@ -214,40 +192,38 @@ export class WebhooksService {
   }
 
   /**
-   * Contatos de quem é o dado do evento. `[]` = a entidade existe e não tem
-   * contato nenhum: não há contato a restringir. `[null]` = não dá para saber
-   * (tipo fora do mapa, payload sem id, entidade apagada) — e a porta trata o
-   * desconhecido como restrito quando há dado sensível.
+   * Contatos de quem é o evento NA ENTREGA: a entidade dele e, quando o evento
+   * nasceu de uma cadeia de automação, também a entidade do evento RAIZ
+   * (ADR-047 adendo 2). O conteúdo derivado — `{{title}}` de uma tarefa criada
+   * a partir de `deal.created` — é do contato do deal raiz, e esse vínculo pode
+   * ter surgido DEPOIS da emissão: só a fotografia herdada não o veria.
    *
-   * Tarefa responde pelo contato DELA e pelo do deal a que pertence: uma tarefa
-   * criada a partir do deal de um paciente, sem contato direto, ainda é dele.
+   * `raw` justificado: a entrega roda fora do CLS (worker cross-workspace);
+   * `workspaceId` explícito em toda leitura, e só vínculos com contato são lidos.
    */
   private async contactSubjects(event: ClaimedEvent): Promise<RestrictionSubject[]> {
-    const source = EVENT_SUBJECT[event.eventType as WebhookEvent] as
-      (typeof EVENT_SUBJECT)[WebhookEvent] | undefined;
-    const id = (event.payload as { id?: unknown } | null)?.id;
-    if (!source || typeof id !== 'string') return [null];
-    if (source === 'contact') return [id];
-    const workspaceId = event.workspaceId;
-    // `raw` justificado: a entrega roda fora do CLS (worker cross-workspace);
-    // workspaceId explícito no WHERE, só o vínculo com contato é lido
-    const dealContact = async (dealId: string): Promise<RestrictionSubject[] | null> => {
-      const deal = await this.prisma.raw.deal.findFirst({
-        where: { workspaceId, id: dealId },
-        select: { contactId: true },
-      });
-      if (!deal) return null;
-      return deal.contactId ? [deal.contactId] : [];
-    };
-    if (source === 'deal') return (await dealContact(id)) ?? [null];
-    const task = await this.prisma.raw.task.findFirst({
-      where: { workspaceId, id },
-      select: { contactId: true, dealId: true },
+    const own = await resolveEventSubjects(
+      this.prisma.raw,
+      event.workspaceId,
+      event.eventType,
+      event.payload,
+    );
+    if (!event.chainId) return own;
+    const root = await this.prisma.raw.outboxEvent.findFirst({
+      where: { workspaceId: event.workspaceId, id: event.chainId },
+      select: { eventType: true, payload: true },
     });
-    if (!task) return [null];
-    const subjects: RestrictionSubject[] = task.contactId ? [task.contactId] : [];
-    if (task.dealId) subjects.push(...((await dealContact(task.dealId)) ?? [null]));
-    return subjects;
+    // raiz sumida: não dá para saber de quem era o conteúdo derivado
+    if (!root) return [...own, null];
+    return [
+      ...own,
+      ...(await resolveEventSubjects(
+        this.prisma.raw,
+        event.workspaceId,
+        root.eventType,
+        root.payload,
+      )),
+    ];
   }
 
   /**
@@ -284,7 +260,15 @@ export class WebhooksService {
      * funcionando.
      */
     if (this.restriction.active) {
-      const subjects = await this.contactSubjects(event);
+      /**
+       * De quem é o evento: a FOTOGRAFIA da emissão somada à resolução de agora
+       * (ADR-047 adendo 2). Só a resolução deixaria escapar um deal desligado do
+       * contato entre emitir e entregar; só a fotografia não veria um evento
+       * antigo, sem ela. A união não deixa nenhum dos dois de fora.
+       */
+      const subjects = [
+        ...new Set([...(event.subjectContactIds ?? []), ...(await this.contactSubjects(event))]),
+      ];
       if (subjects.length > 0) {
         const verdict = await this.restriction.check(event.workspaceId, 'webhook', subjects);
         if (verdict.unavailable) {

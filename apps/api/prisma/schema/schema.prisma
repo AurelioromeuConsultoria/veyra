@@ -728,6 +728,13 @@ model OutboxEvent {
   chainId            String?      @db.Uuid
   depth              Int          @default(0)
   originAutomationId String?      @db.Uuid
+  /// FOTOGRAFIA dos contatos de quem era o evento NA EMISSÃO (ADR-047 adendo 2):
+  /// a entrega a soma à resolução do momento, então um deal desligado do contato
+  /// entre emitir e entregar não escapa da restrição de conteúdo. SEM FK de
+  /// propósito — contato excluído depois não apaga nem bloqueia o evento — e por
+  /// isso o isolamento é conferido no `enqueue` (mesmo workspace, mesma
+  /// transação). NULL = evento interno ou anterior a esta coluna.
+  subjectContactIds  String[]     @db.Uuid
   createdAt          DateTime     @default(now())
 
   workspace        Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
