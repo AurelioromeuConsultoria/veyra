@@ -1,6 +1,7 @@
 import type { ClsService } from 'nestjs-cls';
 import type { PrismaService } from '../../prisma/prisma.service';
 import { ClinicsContentRestriction } from './clinics-content-restriction';
+import { CLINICS_MODELS } from './clinics.extension';
 
 type Rows = Record<string, unknown>;
 const ok = (row: unknown) => jest.fn().mockResolvedValue(row);
@@ -11,11 +12,20 @@ const portWith = (db: Rows) => {
   const cls = { run: (fn: () => unknown) => fn(), set: jest.fn() } as unknown as ClsService;
   return new ClinicsContentRestriction({ db } as unknown as PrismaService, cls);
 };
-const vazio = () => ({
-  clinicsSettings: { findFirst: ok(null) },
-  clinicsUnit: { findFirst: ok(null) },
-  clinicsContactRelease: { findFirst: ok(null), findMany: ok([]) },
-});
+/** Um delegate vazio para CADA modelo do vertical — modelo novo entra sozinho. */
+const vazio = () => {
+  const db = Object.fromEntries(
+    CLINICS_MODELS.map((model) => [
+      model.charAt(0).toLowerCase() + model.slice(1),
+      { findFirst: ok(null) } as { findFirst: jest.Mock; findMany?: jest.Mock },
+    ]),
+  ) as Record<string, { findFirst: jest.Mock; findMany?: jest.Mock }>;
+  db.clinicsContactRelease.findMany = ok([]);
+  return db as Record<string, { findFirst: jest.Mock; findMany: jest.Mock }> & {
+    clinicsSettings: { findFirst: jest.Mock };
+    clinicsContactRelease: { findFirst: jest.Mock; findMany: jest.Mock };
+  };
+};
 
 /**
  * ADR-048 §6.6, "a consulta de presença falhando equivale a restrito": a porta
@@ -23,7 +33,7 @@ const vazio = () => ({
  * a porta de teste) trata a rejeição como indisponível, que falha fechado.
  */
 describe('ClinicsContentRestriction — falha nunca vira "liberado"', () => {
-  it.each(['clinicsSettings', 'clinicsUnit', 'clinicsContactRelease'])(
+  it.each(CLINICS_MODELS.map((model) => model.charAt(0).toLowerCase() + model.slice(1)))(
     'falha ao ler %s na checagem de presença: rejeita',
     async (model) => {
       const db = vazio();

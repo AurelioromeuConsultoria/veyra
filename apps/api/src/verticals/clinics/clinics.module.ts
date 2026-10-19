@@ -1,6 +1,10 @@
 import { Module } from '@nestjs/common';
 import { ContactsModule } from '../../contacts/contacts.module';
 import { IntelligenceModule } from '../../intelligence/intelligence.module';
+import { ClinicsCatalogController } from './catalog/clinics-catalog.controller';
+import { ClinicsProfessionalsService } from './catalog/clinics-professionals.service';
+import { ClinicsServiceCatalog } from './catalog/clinics-service-catalog.service';
+import { ClinicsUnitsService } from './catalog/clinics-units.service';
 import { ClinicsActivationService } from './clinics-activation.service';
 import { ClinicsActiveGuard } from './clinics-active.guard';
 import { ClinicsController } from './clinics.controller';
@@ -12,8 +16,15 @@ import { ClinicsReleasesService } from './clinics-releases.service';
  */
 @Module({
   imports: [ContactsModule, IntelligenceModule],
-  controllers: [ClinicsController],
-  providers: [ClinicsActivationService, ClinicsReleasesService, ClinicsActiveGuard],
+  controllers: [ClinicsController, ClinicsCatalogController],
+  providers: [
+    ClinicsActivationService,
+    ClinicsReleasesService,
+    ClinicsActiveGuard,
+    ClinicsUnitsService,
+    ClinicsServiceCatalog,
+    ClinicsProfessionalsService,
+  ],
   exports: [ClinicsActivationService],
 })
 export class ClinicsModule {}

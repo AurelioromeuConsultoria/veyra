@@ -167,7 +167,8 @@ migration destrutiva.
 (`20261019200000_outbox_subject_contacts` e
 `20261019210000_outbox_terminal_is_final`, sobre `OutboxEvent`) e as que criam
 FK para tabela muito escrita (`20261019220000_clinics_foundation`, que trava
-`Contact`, `Membership` e `Workspace` durante o `ADD FOREIGN KEY`) fixam
+`Contact`, `Membership` e `Workspace`, e `20261019230000_clinics_catalog`, que
+trava `Membership` e `Workspace`, durante o `ADD FOREIGN KEY`) fixam
 `lock_timeout = 5s`. Se uma transação longa estiver segurando a tabela, a
 migration falha em vez de travar todas as escritas da aplicação. Nesse caso o
 Prisma a registra como falha, e o próximo `migrate deploy` para com **P3009**.
@@ -179,6 +180,13 @@ npx prisma migrate deploy
 ```
 
 Troque o nome pela migration que falhou: o `migrate deploy` mostra qual foi.
+
+**Extensão `btree_gist`.** A `20261019230000_clinics_catalog` cria a extensão
+(`CREATE EXTENSION IF NOT EXISTS`), usada pela regra de horários sem
+sobreposição. É uma extensão confiável: basta o usuário da migration ter
+`CREATE` no banco. No compose de staging, ele é o `POSTGRES_USER` da imagem
+oficial, dono do banco, e funciona sem ajuste. Num Postgres gerenciado, confira
+esse privilégio antes do deploy.
 
 ## 5. Rollback
 

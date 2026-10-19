@@ -117,9 +117,13 @@ model Workspace {
   // o Prisma exige os dois lados e um modelo não se divide entre arquivos. Só
   // tipo de campo reverso — a FK mora no arquivo do vertical; o código do Core
   // não importa nada dele (lint + teste de fronteira + teste deste arquivo).
-  clinicsSettings        ClinicsSettings?
-  clinicsUnits           ClinicsUnit[]
-  clinicsContactReleases ClinicsContactRelease[]
+  clinicsSettings             ClinicsSettings?
+  clinicsUnits                ClinicsUnit[]
+  clinicsContactReleases      ClinicsContactRelease[]
+  clinicsServices             ClinicsService[]
+  clinicsProfessionals        ClinicsProfessional[]
+  clinicsProfessionalServices ClinicsProfessionalService[]
+  clinicsWorkingHours         ClinicsWorkingHours[]
 }
 
 /// Catálogo GLOBAL de permissões (ADR-004): chaves estáveis do sistema —
@@ -212,6 +216,7 @@ model Membership {
   grantedConsents        ContactChannelConsent[] @relation("ConsentGranter")
   // lado reverso do vertical Clinics (ADR-047 adendo 2, item 1)
   clinicsReleasesGranted ClinicsContactRelease[] @relation("ClinicsReleaseGrantedBy")
+  clinicsProfessional    ClinicsProfessional?    @relation("ClinicsProfessionalAccount")
 
   // Alvo de FK composta para Team/ownership futuros
   @@unique([workspaceId, id])

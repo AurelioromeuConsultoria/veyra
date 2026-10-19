@@ -536,10 +536,50 @@ describe('Clinics — restrição de conteúdo com a porta real e API de libera�
           },
         });
       },
+      ClinicsService: () =>
+        prisma.raw.clinicsService.create({
+          data: { workspaceId: wsA.workspaceId, name: 'Limpeza de pele', durationMin: 60 },
+        }),
+      ClinicsProfessional: () =>
+        prisma.raw.clinicsProfessional.create({
+          data: { workspaceId: wsA.workspaceId, name: 'Profissional' },
+        }),
+      // junção e horários não existem sem os pais: as linhas deles vêm junto, e
+      // a cobertura POR MODELO da presença é a do teste estático (CLINICS_MODELS
+      // igual ao schema, percorrida pela porta)
+      ClinicsProfessionalService: async () => {
+        const workspaceId = wsA.workspaceId;
+        const prof = await prisma.raw.clinicsProfessional.create({
+          data: { workspaceId, name: 'P' },
+        });
+        const serv = await prisma.raw.clinicsService.create({
+          data: { workspaceId, name: 'S', durationMin: 30 },
+        });
+        return prisma.raw.clinicsProfessionalService.create({
+          data: { workspaceId, professionalId: prof.id, serviceId: serv.id },
+        });
+      },
+      ClinicsWorkingHours: async () => {
+        const workspaceId = wsA.workspaceId;
+        const prof = await prisma.raw.clinicsProfessional.create({
+          data: { workspaceId, name: 'P' },
+        });
+        const unit = await prisma.raw.clinicsUnit.create({ data: { workspaceId, name: 'U' } });
+        return prisma.raw.clinicsWorkingHours.create({
+          data: {
+            workspaceId,
+            professionalId: prof.id,
+            unitId: unit.id,
+            weekday: 1,
+            startMinute: 480,
+            endMinute: 720,
+          },
+        });
+      },
     };
 
     it.each([...CLINICS_MODELS])(
-      'presença por %s sozinho (sem ClinicsSettings ativo): restrito para os dois consumidores',
+      'presença com %s (sem ClinicsSettings ativo; junção e horários vêm com os pais): restrito para os dois consumidores',
       async (model) => {
         await SOMENTE[model]();
         for (const consumer of ['ai', 'webhook'] as const) {

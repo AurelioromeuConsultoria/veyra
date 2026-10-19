@@ -43,19 +43,105 @@ model ClinicsSettings {
 }
 
 /// Unidade da clínica. Classe C. Nasce uma ("Unidade principal") na ativação;
-/// API e tela entram na F1.c.
+/// no MVP é UMA por workspace (ADR-048 adendo 1, item 2). O fuso existe porque
+/// horário de atendimento é hora LOCAL da unidade, e o Core não tem fuso.
 model ClinicsUnit {
   id          String    @id @default(uuid()) @db.Uuid
   workspaceId String    @db.Uuid
   name        String
+  /// IANA (ex.: America/Sao_Paulo), validado contra a lista do runtime
+  timezone    String    @default("America/Sao_Paulo")
   archivedAt  DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace    Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workingHours ClinicsWorkingHours[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, archivedAt])
+}
+
+/// Serviço do catálogo. Classe C (ADR-048 adendo 1, item 1). Arquivado, nunca
+/// apagado: a agenda da F2 vai referenciá-lo. Dinheiro em centavos (`Int`).
+model ClinicsService {
+  id          String    @id @default(uuid()) @db.Uuid
+  workspaceId String    @db.Uuid
+  name        String
+  durationMin Int
+  /// opcional: possibilidade preservada (ADR-048 §8), sem nada financeiro
+  priceCents  Int?
+  currency    String    @default("BRL")
+  archivedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  workspace     Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  professionals ClinicsProfessionalService[]
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, archivedAt])
+}
+
+/// Quem atende (ADR-048 §3). Classe P: só o nome, por minimização. O vínculo
+/// com uma conta é OPCIONAL e único por conta; não muda papel nenhum.
+model ClinicsProfessional {
+  id           String    @id @default(uuid()) @db.Uuid
+  workspaceId  String    @db.Uuid
+  name         String
+  membershipId String?   @db.Uuid
+  archivedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  workspace    Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  membership   Membership?                  @relation("ClinicsProfessionalAccount", fields: [workspaceId, membershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  services     ClinicsProfessionalService[]
+  workingHours ClinicsWorkingHours[]
+
+  @@unique([workspaceId, membershipId])
+  @@unique([workspaceId, id])
+  @@index([workspaceId, archivedAt])
+}
+
+/// Serviços que um profissional faz. Substituído como CONJUNTO (adendo 1, item 4).
+model ClinicsProfessionalService {
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String   @db.Uuid
+  professionalId String   @db.Uuid
+  serviceId      String   @db.Uuid
+  createdAt      DateTime @default(now())
+
+  workspace    Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  professional ClinicsProfessional @relation(fields: [workspaceId, professionalId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  service      ClinicsService      @relation(fields: [workspaceId, serviceId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([workspaceId, professionalId, serviceId])
+  @@unique([workspaceId, id])
+  @@index([workspaceId, serviceId])
+}
+
+/// Intervalo semanal de atendimento (adendo 1, item 5). Dia ISO (1 = segunda),
+/// minutos do dia na hora LOCAL da unidade. Sobreposição do mesmo profissional
+/// no mesmo dia é barrada pelo banco: EXCLUDE USING gist, em SQL manual na
+/// migration (o Prisma não declara exclusão), com CHECKs de faixa.
+model ClinicsWorkingHours {
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String   @db.Uuid
+  professionalId String   @db.Uuid
+  unitId         String   @db.Uuid
+  weekday        Int
+  startMinute    Int
+  endMinute      Int
+  createdAt      DateTime @default(now())
+
+  workspace    Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  professional ClinicsProfessional @relation(fields: [workspaceId, professionalId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  unit         ClinicsUnit         @relation(fields: [workspaceId, unitId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, professionalId])
+  @@index([workspaceId, unitId])
 }
 
 /// Liberação explícita de um contato SEM relação com o Clinics, por consumidor

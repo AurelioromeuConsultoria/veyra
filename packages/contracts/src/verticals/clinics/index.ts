@@ -62,3 +62,192 @@ export interface ClinicsAiReleaseDto {
   releasedByMembershipId: string;
   createdAt: string;
 }
+
+// ── Catálogo da clínica (F1.c, ADR-048 adendo 1) ───────────────────────────
+
+/**
+ * Fuso IANA CANÔNICO, ou `null`. O construtor do `Intl` aceita mais do que a
+ * lista IANA (caixa diferente, aliases, `EST`, offsets como `+03:00`, que o
+ * Postgres lê com o sinal invertido). Por isso: canonizar pelo próprio runtime
+ * e exigir que o resultado esteja em `Intl.supportedValuesOf('timeZone')` do
+ * SERVIDOR, que é quem decide. A lista do navegador pode divergir (ex.: `UTC`,
+ * `Etc/*`): a tela trata o 400 (ADR-048 adendo 1, itens 2 e 15).
+ */
+export function canonicalTimezone(value: string): string | null {
+  try {
+    const canonical = new Intl.DateTimeFormat('en-US', { timeZone: value }).resolvedOptions()
+      .timeZone;
+    return Intl.supportedValuesOf('timeZone').includes(canonical) ? canonical : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `?includeArchived=true`. Explícito: `z.coerce.boolean()` faria de "false" um `true`. */
+export const clinicsCatalogListQuerySchema = z
+  .object({
+    includeArchived: z
+      .enum(['true', 'false'])
+      .optional()
+      .transform((value) => value === 'true'),
+  })
+  .strict();
+export type ClinicsCatalogListQuery = z.infer<typeof clinicsCatalogListQuerySchema>;
+
+const catalogName = z.string().trim().min(1).max(80);
+/** de 5 a 480 minutos, em passos de 5 (o banco garante o mesmo por CHECK) */
+const durationMin = z.number().int().min(5).max(480).multipleOf(5);
+/** centavos, nunca float; teto de R$ 1.000.000,00 por sanidade */
+const priceCents = z.number().int().min(0).max(100_000_000);
+
+export const createClinicsServiceSchema = z
+  .object({
+    name: catalogName,
+    durationMin,
+    priceCents: priceCents.nullable().default(null),
+    currency: z.literal('BRL').default('BRL'),
+  })
+  .strict();
+export type CreateClinicsServiceInput = z.infer<typeof createClinicsServiceSchema>;
+
+/** Sem defaults: um PATCH que não cita o preço não pode zerá-lo. */
+export const updateClinicsServiceSchema = z
+  .object({
+    name: catalogName.optional(),
+    durationMin: durationMin.optional(),
+    priceCents: priceCents.nullable().optional(),
+  })
+  .strict()
+  .refine((value) => Object.keys(value).length > 0, { message: 'Nada a alterar' });
+export type UpdateClinicsServiceInput = z.infer<typeof updateClinicsServiceSchema>;
+
+export const updateClinicsUnitSchema = z
+  .object({
+    name: catalogName.optional(),
+    timezone: z
+      .string()
+      .max(64)
+      .transform((value, ctx) => {
+        const canonical = canonicalTimezone(value);
+        if (!canonical) {
+          ctx.addIssue({ code: 'custom', message: 'Fuso horário inválido (use o formato IANA)' });
+          return z.NEVER;
+        }
+        return canonical;
+      })
+      .optional(),
+  })
+  .strict()
+  .refine((value) => Object.keys(value).length > 0, { message: 'Nada a alterar' });
+export type UpdateClinicsUnitInput = z.infer<typeof updateClinicsUnitSchema>;
+
+/** Criar e renomear só tratam do nome; o vínculo com conta tem rota própria. */
+export const clinicsProfessionalNameSchema = z.object({ name: catalogName }).strict();
+export type ClinicsProfessionalNameInput = z.infer<typeof clinicsProfessionalNameSchema>;
+
+/**
+ * Vínculo com uma conta (opcional, no máximo um profissional por conta).
+ * Rota PRÓPRIA porque exige também `members:read`: a autorização fica
+ * declarativa, e cadastrar um nome não pede acesso à lista de membros.
+ * `null` desfaz o vínculo. Vincular não muda papel nenhum.
+ */
+export const setClinicsProfessionalAccountSchema = z
+  .object({ membershipId: z.uuid().nullable() })
+  .strict();
+export type SetClinicsProfessionalAccountInput = z.infer<
+  typeof setClinicsProfessionalAccountSchema
+>;
+
+/** Serviços que o profissional faz: o CONJUNTO inteiro, substituído de uma vez. */
+export const setClinicsProfessionalServicesSchema = z
+  .object({ serviceIds: z.array(z.uuid()).max(200) })
+  .strict()
+  .refine((value) => new Set(value.serviceIds).size === value.serviceIds.length, {
+    message: 'Serviço repetido',
+  });
+export type SetClinicsProfessionalServicesInput = z.infer<
+  typeof setClinicsProfessionalServicesSchema
+>;
+
+/** Intervalo semanal `[início, fim)`, em minutos do dia, na hora local da unidade. */
+export const clinicsWorkingIntervalSchema = z
+  .object({
+    unitId: z.uuid(),
+    /** ISO: 1 = segunda … 7 = domingo */
+    weekday: z.number().int().min(1).max(7),
+    startMinute: z.number().int().min(0).max(1439),
+    endMinute: z.number().int().min(1).max(1440),
+  })
+  .strict()
+  .refine((value) => value.startMinute < value.endMinute, {
+    message: 'O início precisa ser antes do fim',
+  });
+export type ClinicsWorkingInterval = z.infer<typeof clinicsWorkingIntervalSchema>;
+
+/**
+ * A SEMANA inteira, substituída de uma vez. Sobreposição no mesmo dia é
+ * recusada aqui (400, com mensagem clara) e, por último, pelo banco (409).
+ * Vale entre unidades: ninguém atende em dois lugares ao mesmo tempo.
+ */
+export const setClinicsWorkingHoursSchema = z
+  .object({ intervals: z.array(clinicsWorkingIntervalSchema).max(100) })
+  .strict()
+  .superRefine((value, ctx) => {
+    const byDay = new Map<number, { startMinute: number; endMinute: number }[]>();
+    for (const interval of value.intervals) {
+      const day = byDay.get(interval.weekday) ?? [];
+      day.push(interval);
+      byDay.set(interval.weekday, day);
+    }
+    for (const [weekday, day] of byDay) {
+      day.sort((a, b) => a.startMinute - b.startMinute);
+      for (let i = 1; i < day.length; i += 1) {
+        if (day[i].startMinute < day[i - 1].endMinute) {
+          ctx.addIssue({
+            code: 'custom',
+            message: `Intervalos sobrepostos no dia ${weekday}`,
+            path: ['intervals'],
+          });
+          return;
+        }
+      }
+    }
+  });
+export type SetClinicsWorkingHoursInput = z.infer<typeof setClinicsWorkingHoursSchema>;
+
+export interface ClinicsUnitDto {
+  id: string;
+  name: string;
+  timezone: string;
+}
+
+export interface ClinicsServiceDto {
+  id: string;
+  name: string;
+  durationMin: number;
+  priceCents: number | null;
+  currency: string;
+  archivedAt: string | null;
+}
+
+export interface ClinicsProfessionalDto {
+  id: string;
+  name: string;
+  /**
+   * Conta vinculada: só o id e se ela continua ativa. Nome e e-mail da pessoa
+   * vêm da API de membros, para quem tem `members:read` — o catálogo não os
+   * entrega a quem só lê o catálogo.
+   */
+  account: { membershipId: string; active: boolean } | null;
+  serviceIds: string[];
+  workingHours: ClinicsWorkingIntervalDto[];
+  archivedAt: string | null;
+}
+
+/** Saída: interface própria, não o tipo inferido do schema de entrada (CLAUDE.md §3.9). */
+export interface ClinicsWorkingIntervalDto {
+  unitId: string;
+  weekday: number;
+  startMinute: number;
+  endMinute: number;
+}
