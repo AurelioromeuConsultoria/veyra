@@ -94,7 +94,11 @@ export const clinicsCatalogListQuerySchema = z
   .strict();
 export type ClinicsCatalogListQuery = z.infer<typeof clinicsCatalogListQuerySchema>;
 
-const catalogName = z.string().trim().min(1).max(80);
+const catalogName = z
+  .string()
+  .trim()
+  .min(1, 'Informe o nome')
+  .max(80, 'Use no máximo 80 caracteres');
 /** de 5 a 480 minutos, em passos de 5 (o banco garante o mesmo por CHECK) */
 const durationMin = z.number().int().min(5).max(480).multipleOf(5);
 /** centavos, nunca float; teto de R$ 1.000.000,00 por sanidade */
@@ -141,7 +145,7 @@ export const updateClinicsUnitSchema = z
   .refine((value) => Object.keys(value).length > 0, { message: 'Nada a alterar' });
 export type UpdateClinicsUnitInput = z.infer<typeof updateClinicsUnitSchema>;
 
-/** Criar e renomear só tratam do nome; o vínculo com conta tem rota própria. */
+/** Renomear (PATCH) só trata do nome; criar e salvar levam o perfil inteiro. */
 export const clinicsProfessionalNameSchema = z.object({ name: catalogName }).strict();
 export type ClinicsProfessionalNameInput = z.infer<typeof clinicsProfessionalNameSchema>;
 
@@ -156,17 +160,6 @@ export const setClinicsProfessionalAccountSchema = z
   .strict();
 export type SetClinicsProfessionalAccountInput = z.infer<
   typeof setClinicsProfessionalAccountSchema
->;
-
-/** Serviços que o profissional faz: o CONJUNTO inteiro, substituído de uma vez. */
-export const setClinicsProfessionalServicesSchema = z
-  .object({ serviceIds: z.array(z.uuid()).max(200) })
-  .strict()
-  .refine((value) => new Set(value.serviceIds).size === value.serviceIds.length, {
-    message: 'Serviço repetido',
-  });
-export type SetClinicsProfessionalServicesInput = z.infer<
-  typeof setClinicsProfessionalServicesSchema
 >;
 
 /** Intervalo semanal `[início, fim)`, em minutos do dia, na hora local da unidade. */
@@ -184,17 +177,34 @@ export const clinicsWorkingIntervalSchema = z
   });
 export type ClinicsWorkingInterval = z.infer<typeof clinicsWorkingIntervalSchema>;
 
+const NOMES_DOS_DIAS = [
+  '',
+  'na segunda',
+  'na terça',
+  'na quarta',
+  'na quinta',
+  'na sexta',
+  'no sábado',
+  'no domingo',
+];
+
+/** Serviços que o profissional faz: o CONJUNTO inteiro, sem repetição. */
+const serviceIdsField = z
+  .array(z.uuid())
+  .max(200)
+  .refine((ids) => new Set(ids).size === ids.length, { message: 'Serviço repetido' });
+
 /**
- * A SEMANA inteira, substituída de uma vez. Sobreposição no mesmo dia é
- * recusada aqui (400, com mensagem clara) e, por último, pelo banco (409).
- * Vale entre unidades: ninguém atende em dois lugares ao mesmo tempo.
+ * A SEMANA inteira. Sobreposição no mesmo dia é recusada aqui (400, com
+ * mensagem clara) e, por último, pelo banco (409). Vale entre unidades:
+ * ninguém atende em dois lugares ao mesmo tempo.
  */
-export const setClinicsWorkingHoursSchema = z
-  .object({ intervals: z.array(clinicsWorkingIntervalSchema).max(100) })
-  .strict()
-  .superRefine((value, ctx) => {
+const intervalsField = z
+  .array(clinicsWorkingIntervalSchema)
+  .max(100)
+  .superRefine((intervals, ctx) => {
     const byDay = new Map<number, { startMinute: number; endMinute: number }[]>();
-    for (const interval of value.intervals) {
+    for (const interval of intervals) {
       const day = byDay.get(interval.weekday) ?? [];
       day.push(interval);
       byDay.set(interval.weekday, day);
@@ -205,15 +215,45 @@ export const setClinicsWorkingHoursSchema = z
         if (day[i].startMinute < day[i - 1].endMinute) {
           ctx.addIssue({
             code: 'custom',
-            message: `Intervalos sobrepostos no dia ${weekday}`,
-            path: ['intervals'],
+            message: `Intervalos sobrepostos ${NOMES_DOS_DIAS[weekday]}`,
           });
           return;
         }
       }
     }
   });
+
+export const setClinicsProfessionalServicesSchema = z
+  .object({ serviceIds: serviceIdsField })
+  .strict();
+export type SetClinicsProfessionalServicesInput = z.infer<
+  typeof setClinicsProfessionalServicesSchema
+>;
+
+export const setClinicsWorkingHoursSchema = z.object({ intervals: intervalsField }).strict();
 export type SetClinicsWorkingHoursInput = z.infer<typeof setClinicsWorkingHoursSchema>;
+
+/**
+ * PERFIL do profissional: nome, serviços habilitados e semana, gravados JUNTOS
+ * numa transação (ADR-048 adendo 1, item 23) — é o que o drawer SALVA. Todos
+ * os campos são obrigatórios: o PUT SUBSTITUI os conjuntos, e um default faria
+ * um corpo só com o nome apagar serviços e horários sem erro. O vínculo com
+ * conta fica de fora: exige outra permissão e tem rota própria.
+ */
+export const clinicsProfessionalProfileSchema = z
+  .object({ name: catalogName, serviceIds: serviceIdsField, intervals: intervalsField })
+  .strict();
+export type ClinicsProfessionalProfileInput = z.infer<typeof clinicsProfessionalProfileSchema>;
+
+/** CRIAR: o mesmo perfil, com serviços e semana opcionais (vazios por padrão). */
+export const createClinicsProfessionalSchema = z
+  .object({
+    name: catalogName,
+    serviceIds: serviceIdsField.default([]),
+    intervals: intervalsField.default([]),
+  })
+  .strict();
+export type CreateClinicsProfessionalInput = z.infer<typeof createClinicsProfessionalSchema>;
 
 export interface ClinicsUnitDto {
   id: string;

@@ -169,6 +169,15 @@ describe('Clinics — catálogo da clínica (integração, F1.c entrega 1)', () 
             () => put(`/api/clinics/professionals/${prof}/services`, s, { serviceIds: [] }),
           ],
           [
+            'PUT profile',
+            () =>
+              put(`/api/clinics/professionals/${prof}/profile`, s, {
+                name: 'X',
+                serviceIds: [],
+                intervals: [],
+              }),
+          ],
+          [
             'PUT hours',
             () => put(`/api/clinics/professionals/${prof}/working-hours`, s, { intervals: [] }),
           ],
@@ -186,7 +195,7 @@ describe('Clinics — catálogo da clínica (integração, F1.c entrega 1)', () 
           expect([rota, (await chamar()).status]).toEqual([rota, 403]);
         }
       }
-      expect(escritas).toHaveLength(12);
+      expect(escritas).toHaveLength(13);
       const guest = await loginAs('guest-a@veyra.test');
       await get('/api/clinics/services', guest).expect(403);
     });
@@ -262,6 +271,28 @@ describe('Clinics — catálogo da clínica (integração, F1.c entrega 1)', () 
         donoB,
         semana(unitA, [1, 480, 720]),
       ).expect(400);
+
+      // as rotas de PERFIL (criar e salvar juntos) seguem a mesma barreira
+      await put(`/api/clinics/professionals/${profA}/profile`, donoB, {
+        name: 'X',
+        serviceIds: [],
+        intervals: [],
+      }).expect(404);
+      const profissionaisDeB = () =>
+        prisma.raw.clinicsProfessional.count({ where: { workspaceId: wsB.workspaceId } });
+      const antesB = await profissionaisDeB();
+      await post('/api/clinics/professionals', donoB, {
+        name: 'Com serviço de A',
+        serviceIds: [servicoA],
+      }).expect(400);
+      await post('/api/clinics/professionals', donoB, {
+        name: 'Com unidade de A',
+        ...semana(unitA, [2, 480, 720]),
+      }).expect(400);
+      expect(await profissionaisDeB()).toBe(antesB); // nada nasceu
+      expect((await prisma.raw.clinicsProfessional.findFirst({ where: { id: profA } }))!.name).toBe(
+        'Ana Souza',
+      );
 
       const servicoIntacto = await prisma.raw.clinicsService.findFirst({ where: { id: servicoA } });
       expect(servicoIntacto).toMatchObject({ name: 'Limpeza de pele', archivedAt: null });
@@ -574,6 +605,178 @@ describe('Clinics — catálogo da clínica (integração, F1.c entrega 1)', () 
       ]);
     });
 
+    it('PERFIL atômico ao criar: com serviços e semana juntos; uma parte recusada e o profissional nem nasce', async () => {
+      const serv = (await novoServico(owner).expect(201)).body.id as string;
+      const criado = await post('/api/clinics/professionals', owner, {
+        name: 'Carla',
+        serviceIds: [serv],
+        ...semana(unitA, [1, 480, 720]),
+      }).expect(201);
+      expect(criado.body).toMatchObject({
+        name: 'Carla',
+        serviceIds: [serv],
+        workingHours: [{ unitId: unitA, weekday: 1, startMinute: 480, endMinute: 720 }],
+      });
+
+      const arquivado = (await novoServico(owner, { name: 'Antigo' }).expect(201)).body
+        .id as string;
+      await post(`/api/clinics/services/${arquivado}/archive`, owner).expect(201);
+      const antes = await prisma.raw.clinicsProfessional.count();
+      await post('/api/clinics/professionals', owner, {
+        name: 'Dora',
+        serviceIds: [arquivado],
+        ...semana(unitA, [2, 480, 720]),
+      }).expect(400);
+      expect(await prisma.raw.clinicsProfessional.count()).toBe(antes);
+      expect(await prisma.raw.clinicsWorkingHours.count({ where: { weekday: 2 } })).toBe(0);
+      expect(
+        await prisma.raw.auditLog.count({ where: { action: 'clinics.professional.created' } }),
+      ).toBe(1);
+    });
+
+    it('PERFIL atômico ao salvar: nome, serviços e semana juntos — uma parte recusada desfaz as outras', async () => {
+      const a = (await novoServico(owner, { name: 'A' }).expect(201)).body.id as string;
+      const b = (await novoServico(owner, { name: 'B' }).expect(201)).body.id as string;
+      const prof = (
+        await post('/api/clinics/professionals', owner, {
+          name: 'Elisa',
+          serviceIds: [a],
+          ...semana(unitA, [1, 480, 720]),
+        }).expect(201)
+      ).body.id as string;
+      const rota = `/api/clinics/professionals/${prof}/profile`;
+
+      const salvo = await put(rota, owner, {
+        name: 'Elisa Prado',
+        serviceIds: [a, b],
+        ...semana(unitA, [1, 480, 720], [3, 780, 1080]),
+      }).expect(200);
+      expect(salvo.body.name).toBe('Elisa Prado');
+      expect(salvo.body.serviceIds).toEqual([a, b].sort());
+      expect(salvo.body.workingHours).toHaveLength(2);
+
+      // nome e serviços VÁLIDOS, semana numa unidade arquivada: recusado no meio
+      // da transação, depois de nome e serviços já aplicados — tudo é desfeito
+      const filial = await prisma.raw.clinicsUnit.create({
+        data: { workspaceId: wsA.workspaceId, name: 'Filial', archivedAt: new Date() },
+      });
+      await put(rota, owner, {
+        name: 'Outro nome',
+        serviceIds: [b],
+        ...semana(filial.id, [5, 480, 720]),
+      }).expect(400);
+      const depois = (await get('/api/clinics/professionals', owner).expect(200)).body[0];
+      expect(depois).toMatchObject({ name: 'Elisa Prado', serviceIds: [a, b].sort() });
+      expect(depois.workingHours).toHaveLength(2);
+      expect(
+        await prisma.raw.auditLog.count({
+          where: { action: 'clinics.professional.profile_saved' },
+        }),
+      ).toBe(1);
+
+      // sobreposição no pedido: o contrato recusa antes (400), nada muda
+      await put(rota, owner, {
+        name: 'Elisa Prado',
+        serviceIds: [a, b],
+        ...semana(unitA, [1, 480, 720], [1, 700, 800]),
+      }).expect(400);
+      // corpo PARCIAL é recusado: o PUT substitui conjuntos, e um default
+      // apagaria serviços e semana sem erro
+      await put(rota, owner, { name: 'Só o nome' }).expect(400);
+      const intacto = (await get('/api/clinics/professionals', owner).expect(200)).body[0];
+      expect(intacto).toMatchObject({ name: 'Elisa Prado', serviceIds: [a, b].sort() });
+      expect(intacto.workingHours).toHaveLength(2);
+
+      // salvar IGUAL (outra ordem) não grava nem audita
+      await put(rota, owner, {
+        name: 'Elisa Prado',
+        serviceIds: [b, a],
+        ...semana(unitA, [3, 780, 1080], [1, 480, 720]),
+      }).expect(200);
+
+      const trilhas = await prisma.raw.auditLog.findMany({
+        where: { action: 'clinics.professional.profile_saved' },
+      });
+      expect(trilhas).toHaveLength(1);
+      // exato: o nome vira [changed]; serviços ordenados nos dois lados; dos
+      // horários, só a quantidade
+      expect(trilhas[0].before).toEqual({
+        name: '[changed]',
+        serviceIds: [a],
+        intervalCount: 1,
+      });
+      expect(trilhas[0].after).toEqual({
+        name: '[changed]',
+        serviceIds: [a, b].sort(),
+        intervalCount: 2,
+      });
+    });
+
+    it('salvar o perfil substitui SÓ o que mudou: trocar o nome não revalida serviços intactos (mesmo com um arquivado depois)', async () => {
+      const a = (await novoServico(owner, { name: 'A' }).expect(201)).body.id as string;
+      const b = (await novoServico(owner, { name: 'B' }).expect(201)).body.id as string;
+      const prof = (
+        await post('/api/clinics/professionals', owner, {
+          name: 'Flávia',
+          serviceIds: [a, b],
+          ...semana(unitA, [2, 480, 720]),
+        }).expect(201)
+      ).body.id as string;
+      await post(`/api/clinics/services/${b}/archive`, owner).expect(201);
+      // pela API, com o conjunto antigo (que inclui o arquivado): só o nome muda
+      const salvo = await put(`/api/clinics/professionals/${prof}/profile`, owner, {
+        name: 'Flávia Reis',
+        serviceIds: [a, b],
+        ...semana(unitA, [2, 480, 720]),
+      }).expect(200);
+      expect(salvo.body).toMatchObject({ name: 'Flávia Reis', serviceIds: [a, b].sort() });
+      const trilha = await prisma.raw.auditLog.findFirst({
+        where: { action: 'clinics.professional.profile_saved' },
+      });
+      expect(trilha!.after).toEqual({ name: '[changed]' });
+      // mudar o conjunto, aí sim, exige só serviços ativos
+      await put(`/api/clinics/professionals/${prof}/profile`, owner, {
+        name: 'Flávia Reis',
+        serviceIds: [b],
+        ...semana(unitA, [2, 480, 720]),
+      }).expect(400);
+    });
+
+    it('vincular conta NÃO muda o papel nem concede permissão: a sessão da pessoa segue igual', async () => {
+      const prof = (await novoProfissional(owner).expect(201)).body.id as string;
+      const membro = await prisma.raw.membership.findFirst({
+        where: { workspaceId: wsA.workspaceId, role: { systemKey: 'member' } },
+      });
+      const sessaoDoMembro = await loginAs('member-a@veyra.test');
+      const antes = (await get('/api/auth/me', sessaoDoMembro).expect(200)).body;
+      const permissoesDoPapel = async () =>
+        (
+          await prisma.raw.rolePermission.findMany({
+            where: { workspaceId: wsA.workspaceId, roleId: wsA.roles.member },
+            select: { permissionKey: true },
+          })
+        )
+          .map((p) => p.permissionKey)
+          .sort();
+      const papelAntes = await permissoesDoPapel();
+
+      await put(`/api/clinics/professionals/${prof}/account`, owner, {
+        membershipId: membro!.id,
+      }).expect(200);
+
+      const depoisDoVinculo = await prisma.raw.membership.findFirst({ where: { id: membro!.id } });
+      expect(depoisDoVinculo).toMatchObject({
+        roleId: membro!.roleId,
+        tokenVersion: membro!.tokenVersion,
+        status: 'active',
+      });
+      expect(await permissoesDoPapel()).toEqual(papelAntes);
+      // a MESMA sessão continua válida, com as mesmas permissões
+      const depois = (await get('/api/auth/me', sessaoDoMembro).expect(200)).body;
+      expect([...depois.permissions].sort()).toEqual([...antes.permissions].sort());
+      expect(depois.activeMembership.roleName).toBe(antes.activeMembership.roleName);
+    });
+
     it('serviços habilitados: conjunto substituído; arquivado, de outro workspace ou repetido é recusado', async () => {
       const prof = (await novoProfissional(owner).expect(201)).body.id as string;
       const a = (await novoServico(owner, { name: 'A' }).expect(201)).body.id as string;
@@ -672,6 +875,10 @@ describe('Clinics — catálogo da clínica (integração, F1.c entrega 1)', () 
         [`/api/clinics/professionals/${prof}/account`, { membershipId: null }],
         [`/api/clinics/professionals/${prof}/services`, { serviceIds: [] }],
         [`/api/clinics/professionals/${prof}/working-hours`, { intervals: [] }],
+        [
+          `/api/clinics/professionals/${prof}/profile`,
+          { name: 'Ana Lima', serviceIds: [], intervals: [] },
+        ],
       ];
       for (const [rota, corpo] of rotas) {
         const trava = new Client({ connectionString: TEST_DATABASE_URL });

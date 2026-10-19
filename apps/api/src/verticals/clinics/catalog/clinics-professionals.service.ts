@@ -6,8 +6,10 @@ import {
 } from '@nestjs/common';
 import type {
   ClinicsProfessionalDto,
+  ClinicsProfessionalProfileInput,
+  CreateClinicsProfessionalInput,
+  ClinicsWorkingInterval,
   ClinicsWorkingIntervalDto,
-  SetClinicsWorkingHoursInput,
 } from '@veyra/contracts/verticals/clinics';
 import { AuditService } from '../../../audit/audit.service';
 import type { AuthContext } from '../../../common/decorators';
@@ -35,10 +37,10 @@ const INCLUDE = {
 } as const;
 
 /**
- * Profissionais (ADR-048 §3 e adendo 1, itens 3 a 5). Classe P: só o nome. O
- * vínculo com conta, os serviços habilitados e os horários são substituídos
- * por inteiro, numa transação, sob trava da linha do profissional — duas
- * edições simultâneas viram seriais, e a última vale por inteiro.
+ * Profissionais (ADR-048 §3 e adendo 1, itens 3 a 5 e 23). Classe P: só o
+ * nome. O perfil (nome, serviços, semana), o vínculo com conta e cada parte
+ * granular são gravados numa transação, sob trava da linha do profissional —
+ * duas edições simultâneas viram seriais, e a última vale por inteiro.
  */
 @Injectable()
 export class ClinicsProfessionalsService {
@@ -58,18 +60,82 @@ export class ClinicsProfessionalsService {
     return rows.map(toDto);
   }
 
-  async create(auth: AuthContext, name: string): Promise<ClinicsProfessionalDto> {
+  /**
+   * Cria com o PERFIL inteiro (nome, serviços, semana) numa transação: se
+   * qualquer parte for recusada, o profissional nem nasce (adendo 1, item 23).
+   */
+  async create(
+    auth: AuthContext,
+    profile: CreateClinicsProfessionalInput,
+  ): Promise<ClinicsProfessionalDto> {
     return this.inTx(auth, async (tx, workspaceId) => {
-      const row = (await tx.clinicsProfessional.create({ data: { name } } as never)) as unknown as {
-        id: string;
-      };
+      const row = (await tx.clinicsProfessional.create({
+        data: { name: profile.name },
+      } as never)) as unknown as { id: string };
+      await this.replaceServices(tx, row.id, profile.serviceIds);
+      await this.replaceHours(tx, row.id, profile.intervals);
       await this.audit.record(tx, workspaceId, 'clinics.professional.created', {
         entityType: 'clinicsProfessional',
         entityId: row.id,
         actor: this.audit.actorFrom(auth),
-        after: { name }, // classe P: vira [changed] na trilha
+        // classe P: o nome vira [changed]; dos horários, só a quantidade
+        after: {
+          name: profile.name,
+          serviceIds: profile.serviceIds,
+          intervalCount: profile.intervals.length,
+        },
       });
       return this.find(tx, row.id);
+    });
+  }
+
+  /**
+   * Salva o PERFIL inteiro de uma vez, sob a trava da linha: nome, serviços e
+   * semana são gravados JUNTOS ou nenhum (adendo 1, item 23). É o que o drawer
+   * usa; as rotas granulares continuam para quem integra pela API.
+   */
+  async saveProfile(
+    auth: AuthContext,
+    id: string,
+    profile: ClinicsProfessionalProfileInput,
+  ): Promise<ClinicsProfessionalDto> {
+    return this.inTx(auth, async (tx, workspaceId) => {
+      const before = await this.lock(tx, id);
+      const anterior = await this.find(tx, id);
+      const servicos = [...profile.serviceIds].sort();
+      const mudou = {
+        nome: before.name !== profile.name,
+        servicos: anterior.serviceIds.join() !== servicos.join(),
+        semana: assinaturaDaSemana(anterior.workingHours) !== assinaturaDaSemana(profile.intervals),
+      };
+      // nada mudou: nenhum dado é alterado nem auditado (a trava só tocou o
+      // `updatedAt`); a trilha não registra "salvou igual"
+      if (!mudou.nome && !mudou.servicos && !mudou.semana) return anterior;
+      // substitui SÓ o que mudou: trocar o nome não revalida um conjunto de
+      // serviços intacto (que pode conter um serviço arquivado depois)
+      if (mudou.nome) {
+        await tx.clinicsProfessional.updateMany({ where: { id }, data: { name: profile.name } });
+      }
+      if (mudou.servicos) await this.replaceServices(tx, id, profile.serviceIds);
+      if (mudou.semana) await this.replaceHours(tx, id, profile.intervals);
+      await this.audit.record(tx, workspaceId, 'clinics.professional.profile_saved', {
+        entityType: 'clinicsProfessional',
+        entityId: id,
+        actor: this.audit.actorFrom(auth),
+        // só o que MUDOU; serviços ordenados dos dois lados (conjunto); dos
+        // horários, só a quantidade (classe P)
+        before: {
+          name: mudou.nome ? before.name : undefined,
+          serviceIds: mudou.servicos ? anterior.serviceIds : undefined,
+          intervalCount: mudou.semana ? anterior.workingHours.length : undefined,
+        },
+        after: {
+          name: mudou.nome ? profile.name : undefined,
+          serviceIds: mudou.servicos ? servicos : undefined,
+          intervalCount: mudou.semana ? profile.intervals.length : undefined,
+        },
+      });
+      return this.find(tx, id);
     });
   }
 
@@ -176,20 +242,7 @@ export class ClinicsProfessionalsService {
   ): Promise<ClinicsProfessionalDto> {
     return this.inTx(auth, async (tx, workspaceId) => {
       await this.lock(tx, id);
-      if (serviceIds.length > 0) {
-        const ativos = await tx.clinicsService.count({
-          where: { id: { in: serviceIds }, archivedAt: null },
-        });
-        if (ativos !== serviceIds.length) {
-          throw new BadRequestException('Serviço inexistente ou arquivado');
-        }
-      }
-      await tx.clinicsProfessionalService.deleteMany({ where: { professionalId: id } });
-      if (serviceIds.length > 0) {
-        await tx.clinicsProfessionalService.createMany({
-          data: serviceIds.map((serviceId) => ({ professionalId: id, serviceId })),
-        } as never);
-      }
+      await this.replaceServices(tx, id, serviceIds);
       await this.audit.record(tx, workspaceId, 'clinics.professional.services_replaced', {
         entityType: 'clinicsProfessional',
         entityId: id,
@@ -209,37 +262,68 @@ export class ClinicsProfessionalsService {
   async setWorkingHours(
     auth: AuthContext,
     id: string,
-    input: SetClinicsWorkingHoursInput,
+    intervals: ClinicsWorkingInterval[],
   ): Promise<ClinicsProfessionalDto> {
     return this.inTx(auth, async (tx, workspaceId) => {
       await this.lock(tx, id);
-      const unitIds = [...new Set(input.intervals.map((interval) => interval.unitId))];
-      if (unitIds.length > 0) {
-        const ativas = await tx.clinicsUnit.count({
-          where: { id: { in: unitIds }, archivedAt: null },
-        });
-        if (ativas !== unitIds.length) {
-          throw new BadRequestException('Unidade inexistente ou arquivada');
-        }
-      }
-      await tx.clinicsWorkingHours.deleteMany({ where: { professionalId: id } });
-      if (input.intervals.length > 0) {
-        await tx.clinicsWorkingHours.createMany({
-          data: input.intervals.map((interval) => ({ ...interval, professionalId: id })),
-        } as never);
-      }
+      await this.replaceHours(tx, id, intervals);
       await this.audit.record(tx, workspaceId, 'clinics.professional.hours_replaced', {
         entityType: 'clinicsProfessional',
         entityId: id,
         actor: this.audit.actorFrom(auth),
         // a QUANTIDADE, com nome que não admite os horários em si (classe P)
-        after: { intervalCount: input.intervals.length },
+        after: { intervalCount: intervals.length },
       });
       return this.find(tx, id);
     });
   }
 
   // ── Internos ──────────────────────────────────────────────────────────────
+
+  /** Só serviços ATIVOS deste workspace; substitui o conjunto (dentro da tx do chamador). */
+  private async replaceServices(tx: Db, id: string, serviceIds: string[]): Promise<void> {
+    if (serviceIds.length > 0) {
+      const ativos = await tx.clinicsService.count({
+        where: { id: { in: serviceIds }, archivedAt: null },
+      });
+      if (ativos !== serviceIds.length) {
+        throw new BadRequestException('Serviço inexistente ou arquivado');
+      }
+    }
+    await tx.clinicsProfessionalService.deleteMany({ where: { professionalId: id } });
+    if (serviceIds.length > 0) {
+      await tx.clinicsProfessionalService.createMany({
+        data: serviceIds.map((serviceId) => ({ professionalId: id, serviceId })),
+      } as never);
+    }
+  }
+
+  /**
+   * Só unidades ATIVAS deste workspace; substitui a semana (dentro da tx do
+   * chamador). O contrato já recusou sobreposição no pedido; o EXCLUDE do banco
+   * é a última linha (23P01 → 409, filtro global).
+   */
+  private async replaceHours(
+    tx: Db,
+    id: string,
+    intervals: ClinicsWorkingInterval[],
+  ): Promise<void> {
+    const unitIds = [...new Set(intervals.map((interval) => interval.unitId))];
+    if (unitIds.length > 0) {
+      const ativas = await tx.clinicsUnit.count({
+        where: { id: { in: unitIds }, archivedAt: null },
+      });
+      if (ativas !== unitIds.length) {
+        throw new BadRequestException('Unidade inexistente ou arquivada');
+      }
+    }
+    await tx.clinicsWorkingHours.deleteMany({ where: { professionalId: id } });
+    if (intervals.length > 0) {
+      await tx.clinicsWorkingHours.createMany({
+        data: intervals.map((interval) => ({ ...interval, professionalId: id })),
+      } as never);
+    }
+  }
 
   private inTx<T>(auth: AuthContext, fn: (tx: Db, workspaceId: string) => Promise<T>): Promise<T> {
     const workspaceId = auth.workspaceId as string;
@@ -288,4 +372,12 @@ function toDto(row: ProfessionalRow): ClinicsProfessionalDto {
     })),
     archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
   };
+}
+
+/** A semana como texto comparável (ordem de chegada não importa). */
+function assinaturaDaSemana(intervals: readonly ClinicsWorkingIntervalDto[]): string {
+  return intervals
+    .map((i) => `${i.weekday}:${i.startMinute}:${i.endMinute}:${i.unitId}`)
+    .sort()
+    .join('|');
 }

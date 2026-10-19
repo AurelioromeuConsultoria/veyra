@@ -13,6 +13,8 @@ import {
 import {
   clinicsCatalogListQuerySchema,
   clinicsProfessionalNameSchema,
+  clinicsProfessionalProfileSchema,
+  createClinicsProfessionalSchema,
   createClinicsServiceSchema,
   setClinicsProfessionalAccountSchema,
   setClinicsProfessionalServicesSchema,
@@ -22,8 +24,10 @@ import {
   type ClinicsCatalogListQuery,
   type ClinicsProfessionalDto,
   type ClinicsProfessionalNameInput,
+  type ClinicsProfessionalProfileInput,
   type ClinicsServiceDto,
   type ClinicsUnitDto,
+  type CreateClinicsProfessionalInput,
   type CreateClinicsServiceInput,
   type SetClinicsProfessionalAccountInput,
   type SetClinicsProfessionalServicesInput,
@@ -131,13 +135,25 @@ export class ClinicsCatalogController {
     return this.professionals.list(query.includeArchived);
   }
 
+  /** Cria com o perfil inteiro, numa transação (adendo 1, item 23). */
   @RequireClinicsPermissions('clinics:catalog:manage')
   @Post('professionals')
   createProfessional(
     @CurrentAuth() auth: AuthContext,
-    @Body(new ZodPipe(clinicsProfessionalNameSchema)) body: ClinicsProfessionalNameInput,
+    @Body(new ZodPipe(createClinicsProfessionalSchema)) body: CreateClinicsProfessionalInput,
   ): Promise<ClinicsProfessionalDto> {
-    return this.professionals.create(auth, body.name);
+    return this.professionals.create(auth, body);
+  }
+
+  /** Salva nome, serviços e semana JUNTOS, ou nada (o drawer usa esta). */
+  @RequireClinicsPermissions('clinics:catalog:manage')
+  @Put('professionals/:id/profile')
+  saveProfessionalProfile(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', uuid) id: string,
+    @Body(new ZodPipe(clinicsProfessionalProfileSchema)) body: ClinicsProfessionalProfileInput,
+  ): Promise<ClinicsProfessionalDto> {
+    return this.professionals.saveProfile(auth, id, body);
   }
 
   @RequireClinicsPermissions('clinics:catalog:manage')
@@ -198,6 +214,6 @@ export class ClinicsCatalogController {
     @Param('id', uuid) id: string,
     @Body(new ZodPipe(setClinicsWorkingHoursSchema)) body: SetClinicsWorkingHoursInput,
   ): Promise<ClinicsProfessionalDto> {
-    return this.professionals.setWorkingHours(auth, id, body);
+    return this.professionals.setWorkingHours(auth, id, body.intervals);
   }
 }
