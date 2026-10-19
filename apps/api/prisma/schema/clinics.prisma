@@ -1,0 +1,82 @@
+// Veyra Clinics — vertical para clínicas de estética (ADR-047, ADR-048).
+//
+// Arquivo DO VERTICAL: o Core não o conhece. As FKs para entidades do Core
+// moram aqui, sempre COMPOSTAS por (workspaceId, id) (ADR-010); o arquivo do
+// Core só tem o lado reverso que o Prisma exige (ADR-047 adendo 2, item 1).
+// Todo modelo daqui entra no registro composto pela extensão (`clinicsExtension`)
+// e é coberto pela checagem de PRESENÇA da porta de restrição de conteúdo.
+
+enum ClinicsActivationStatus {
+  active
+  disabled
+}
+
+/// Consumidores liberáveis por contato (ADR-048 §6.4). No MVP, só IA:
+/// webhooks não têm liberação.
+enum ClinicsReleaseConsumer {
+  ai
+}
+
+/// Motivo da liberação, por LISTA FECHADA (ADR-047 adendo 2, item 5).
+enum ClinicsReleaseReason {
+  supplier
+  partner
+  staff
+  non_clinical_business
+}
+
+/// Ativação do vertical no workspace (ADR-047 §4), 1:1. Classe C (ADR-048 §6):
+/// não identifica pessoa. NUNCA é apagada pelo vertical — desativar muda o
+/// status, e a restrição de conteúdo depende da PRESENÇA, não do status.
+model ClinicsSettings {
+  id          String                  @id @default(uuid()) @db.Uuid
+  workspaceId String                  @unique @db.Uuid
+  status      ClinicsActivationStatus @default(active)
+  activatedAt DateTime                @default(now())
+  disabledAt  DateTime?
+  createdAt   DateTime                @default(now())
+  updatedAt   DateTime                @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, id])
+}
+
+/// Unidade da clínica. Classe C. Nasce uma ("Unidade principal") na ativação;
+/// API e tela entram na F1.c.
+model ClinicsUnit {
+  id          String    @id @default(uuid()) @db.Uuid
+  workspaceId String    @db.Uuid
+  name        String
+  archivedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, archivedAt])
+}
+
+/// Liberação explícita de um contato SEM relação com o Clinics, por consumidor
+/// (ADR-048 §6.4). Classe P. Revogar APAGA a linha; a prova fica na auditoria.
+/// CASCADE a partir do contato: é dado sobre ele e não pode bloquear a
+/// exclusão de contato do Core (ADR-022).
+model ClinicsContactRelease {
+  id                     String                 @id @default(uuid()) @db.Uuid
+  workspaceId            String                 @db.Uuid
+  contactId              String                 @db.Uuid
+  consumer               ClinicsReleaseConsumer
+  reason                 ClinicsReleaseReason
+  releasedByMembershipId String                 @db.Uuid
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+
+  workspace  Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contact    Contact    @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  releasedBy Membership @relation("ClinicsReleaseGrantedBy", fields: [workspaceId, releasedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([workspaceId, contactId, consumer])
+  @@unique([workspaceId, id])
+  @@index([workspaceId, releasedByMembershipId])
+}

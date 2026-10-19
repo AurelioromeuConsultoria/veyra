@@ -38,6 +38,7 @@ import { WebhooksModule } from './webhooks/webhooks.module';
 import { WorkspacesModule } from './workspaces/workspaces.module';
 import { COMPOSITION } from './composition';
 import { ExtensionsModule } from './extensions/extensions.module';
+import { ClinicsModule } from './verticals/clinics/clinics.module';
 
 @Module({
   imports: [
@@ -83,6 +84,8 @@ import { ExtensionsModule } from './extensions/extensions.module';
     AutomationsModule,
     ChannelsModule,
     IntelligenceModule,
+    // vertical composto na raiz (ADR-047): o Core não o importa
+    ClinicsModule,
   ],
   controllers: [HealthController],
   providers: [

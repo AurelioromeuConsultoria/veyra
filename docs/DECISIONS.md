@@ -753,7 +753,7 @@ O plano da F1.b foi aprovado com as decisões abaixo. A entrega 1 (fotografia no
    - `OutboxEvent.subjectContactIds UUID[]`, anulável e **sem FK**: é registro histórico, e contato excluído depois não apaga nem bloqueia o evento.
    - Todo evento do catálogo de webhooks **declara** os contatos na emissão, na mesma transação; esquecer lança erro. Tarefa declara o contato dela e o do deal; deal declara o dele; contato declara a si mesmo. `contact.deleted` é emitido antes do delete.
    - Como não há FK, o **isolamento é conferido na emissão**: todo id precisa ser contato do mesmo workspace do evento, lido na mesma transação, com `workspaceId` explícito (vale no client protegido e em transação `raw`). Id de outro workspace, inexistente ou malformado derruba a transação de domínio inteira.
-   - A entrega soma a fotografia à resolução do momento. NULL significa evento interno, anterior à coluna ou **terminal** (fotografia zerada), e nesses casos vale só a resolução. Reprocessar um evento terminal, caminho que ainda não existe, exigirá reconstruir a fotografia.
+   - A entrega soma a fotografia à resolução do momento. NULL significa evento interno, anterior à coluna ou **terminal** (fotografia zerada), e nesses casos vale só a resolução. Reprocessar um evento terminal ficou proibido no banco (adendo 3, item 1).
    - Migration aditiva, gerada por `migrate diff` contra banco migrado do zero e aplicada com `migrate deploy`.
    - **Evento derivado herda os sujeitos do evento que o causou, por procedência.** A tarefa criada por automação herda a fotografia do evento disparador **somada** à resolução atual da entidade dele, lidas no mesmo workspace (`inheritSubjectsFrom`), sem revalidar a existência dos contatos. Eles já foram conferidos na emissão de origem, e revalidar faria a automação falhar sempre que o contato tivesse sido excluído no meio do caminho. Origem inexistente no workspace ou já concluída **lança**: herdar "nada" em silêncio liberaria justamente o conteúdo derivado. Sem a herança, uma automação em `deal.created` com `{{title}}` produziria um `task.created` sem contato, carregando o título do deal de um contato restrito.
    - **Raiz da cadeia na entrega.** Evento que nasceu de cadeia de automação (`chainId`) responde também pela entidade do evento **raiz**, resolvida no momento da entrega. Os títulos derivados vêm da raiz, e o vínculo dela com um contato pode surgir depois da emissão (deal criado sem contato e ligado a um contato restrito antes de a tarefa derivada ser entregue). A resolução por entidade é uma regra só, em `outbox/event-subjects.ts`, usada pela entrega e pela herança. Limite conhecido: a procedência fica no **evento**, não na tarefa. Um evento futuro sobre uma tarefa derivada, emitido fora da cadeia (por exemplo `task.completed`), precisará que a tarefa guarde a própria origem antes de ser emitido; isso está registrado como dívida com gatilho.
@@ -766,6 +766,73 @@ O plano da F1.b foi aprovado com as decisões abaixo. A entrega 1 (fotografia no
 7. **Permissões depois do registro global.** Quando a CLI de um vertical grava as chaves dele no catálogo `Permission`, provisionar um workspace novo ainda concede **zero** delas: o Owner recebe exatamente o template do Core. Na entrega 1 isso é provado com uma extensão de teste; na entrega 2, com a CLI real e as chaves `clinics:*`.
 
 A aprovação não libera ativar o Clinics em staging nem usar dados reais: as hipóteses H1–H7 e os bloqueios B1–B4 continuam.
+
+### Adendo 3 (2026-10-19) — entrega 2 da F1.b: o vertical composto, desativado por padrão
+
+A entrega 2 compõe o Veyra Clinics no produto (`composition.ts` e `app.module.ts`). Ele fica **desativado em todo workspace** até alguém rodar a CLI, e nenhum workspace foi ativado em staging. Decisões tomadas ao implementar:
+
+1. **Estados terminais do outbox são definitivos, no banco.** A fotografia é zerada em `delivered` e `dead` (adendo 2, item 6). Isso só é seguro se nada reabrir esses estados para uma nova entrega, porque um replay sem a fotografia entregaria sem a restrição de conteúdo. O código foi conferido:
+   - o claim só pega `pending`, ou `processing` com lease vencido;
+   - renovar, concluir e falhar exigem `processing` e o token dono;
+   - a automação só anula `originAutomationId`;
+   - não existe rota, script nem job de reenvio.
+
+   O trigger `OutboxEvent_terminal_is_final` (migration `20261019210000`) transforma isso em garantia, que vale também para UPDATE manual: o banco recusa mudar o status de um evento terminal e recusa devolver fotografia a ele. Apagar continua permitido, para retenção. O trigger não alcança um INSERT manual que copie um evento (a cópia nasceria sem fotografia); o runbook proíbe isso (DEPLOY_STAGING §7.2). A migration usa `lock_timeout` de 5 s com `RESET` no fim, como a da fotografia (runbook P3009 em DEPLOY_STAGING §4). **Um reenvio manual futuro exige ADR** e precisa manter a fotografia até que reenviar não seja mais possível. Na prática, a fotografia passaria a ser zerada no fim desse prazo, e não em `delivered`. Os testes estão em `outbox/outbox-subjects.integration-spec.ts`.
+
+2. **Schema do vertical**, em `prisma/schema/clinics.prisma`:
+   - `ClinicsSettings`: uma linha por workspace, com status `active` ou `disabled`;
+   - `ClinicsUnit`: só o schema; API e tela ficam na F1.c;
+   - `ClinicsContactRelease`: `consumer` tem um único valor, `ai`, e o motivo é de lista fechada.
+
+   As FKs são compostas. A FK para `Contact` usa CASCADE, de modo que a liberação de um contato excluído desaparece com ele. É uma exceção deliberada ao NO ACTION do ADR-048 §9.1: aquela regra protege o **perfil de paciente**, e a liberação diz o contrário (contato sem relação com o Clinics). Recusar a exclusão por causa dela só atrapalharia a LGPD, e a prova fica na auditoria, que registra o id do contato (item 5). A FK para `Membership` (quem liberou) usa NO ACTION. A migration só cria tabelas, mas o `ADD FOREIGN KEY` trava `Contact`, `Membership` e `Workspace`, e por isso ela também fixa `lock_timeout` de 5 s. O teste `prisma/core-schema-boundary.spec.ts` impõe o limite do item 1 do adendo 2.
+
+3. **Ativação (E3).** `ClinicsActivationService` é chamado só pela CLI `clinics enable|disable --slug`. O corpo da CLI fica em `cli/clinics-command.ts`, coberto por teste de integração; o ponto de entrada só sobe o contexto e imprime. Tudo roda numa transação com prazo explícito de 15 s, com `raw` justificado e trava consultiva por workspace (namespace `clinics_activation`). A trava é **tentada** (`pg_try_advisory_xact_lock`), não esperada: duas execuções simultâneas no mesmo workspace são acidente de operação, e a segunda recusa sem efeito, com mensagem em português. Esperar a trava contaria no prazo da transação, e a CLI morreria com um erro interno do Prisma, em inglês.
+   - **`enable`:**
+     1. registra as sete chaves no catálogo global;
+     2. cria o papel `Profissional` pelo `systemKey`. Se o nome já pertence a um papel que não é de sistema, a ativação aborta e nada muda, nem o catálogo;
+     3. concede a matriz por `systemKey` e incrementa o `tokenVersion` das memberships dos papéis afetados. O token de acesso emitido antes recebe 401, e o refresh emite outro com as permissões atuais;
+     4. cria `ClinicsSettings` e a unidade inicial, ou reativa a linha existente, e audita. `activatedAt` registra a ativação **vigente**, e o histórico completo fica na auditoria. A data é sempre gravada pelo relógio da aplicação, o mesmo de `disabledAt`;
+     5. depois do commit, expira o conteúdo de IA do workspace. Se essa limpeza falhar, a falha é relatada, e a leitura já oculta esse conteúdo.
+
+     Com o vertical já ativo, nada muda, inclusive um ajuste manual de permissão feito pelo admin.
+
+   - **`disable`:** remove **toda** chave `clinics:*` de **todo** papel, de sistema ou customizado, invalida da mesma forma os tokens de quem as tinha e marca `disabled`. Não apaga dado nem `ClinicsSettings`, e o `Profissional` fica só com `workspace:read`.
+   - Testes estáticos garantem que só esse serviço escreve `RolePermission` no vertical e que nada no vertical apaga `ClinicsSettings`.
+4. **Porta real do E6.** `ClinicsContentRestriction` roda no client protegido, no CLS do workspace consultado.
+   - **Presença:** `ClinicsSettings` em qualquer status, **ou** qualquer linha de qualquer modelo de `CLINICS_MODELS`. É a mesma lista do registro, e um teste a confere contra o schema.
+   - **Sem presença:** nada é restrito.
+   - **Com presença:**
+     - todo consumidor que não seja `ai` é sempre restrito. É uma allowlist: um consumidor novo do Core nasce restrito, sem herdar a liberação de IA;
+     - `ai` é restrito, salvo liberação vigente **com** o Clinics ativo;
+     - `null` e id sem contato no workspace são restritos.
+   - **Erro de leitura:** a porta rejeita em vez de responder "liberado", e o Core trata a rejeição como indisponível.
+
+   Duas mutações da porta foram feitas de propósito e pegas pelos testes de regressão: filtrar a presença por status (5 falhas) e deixar a liberação de IA valer para webhook (9 falhas).
+
+   **Limite aceito: duas leituras sem snapshot.** A porta lê a ativação e depois as liberações, em comandos separados. Um `disable` entre as duas não cria "liberado" indevido, porque o resultado equivale a ler tudo no instante da primeira leitura: o `disable` não apaga liberação, e uma revogação nesse meio só torna o resultado mais restrito. O único caso anômalo exige uma **concessão** gravada no exato intervalo entre o guard de ativação e um `disable` concorrente. É um ato humano explícito sobre aquele contato, e o efeito máximo é uma checagem, porque as seguintes já leem `disabled`. Fechar isso exigiria trava compartilhada entre concessão e ativação, ou snapshot em toda checagem do sistema; nenhuma das duas compensa agora.
+
+5. **API.**
+   - `GET /api/clinics/status` usa `@AuthenticatedOnly` e devolve só um booleano sobre o workspace da sessão.
+   - `GET /api/clinics/ai-releases` e `POST|DELETE /api/clinics/contacts/:id/ai-release` exigem `clinics:restriction:manage`; conceder e revogar exigem também `contacts:read`. As três rotas passam pelo `ClinicsActiveGuard`, que dá o 404 residual.
+   - Conceder de novo devolve a liberação existente, com o motivo original.
+   - O corpo é estrito: um `consumer` no corpo dá 400.
+   - Revogar apaga a linha, audita e expira o conteúdo de IA daquele contato. Se a expiração falhar depois do commit, a falha é relatada e a resposta continua 200; repetir daria 404 para uma revogação já feita.
+   - A auditoria registra o **fato e os ids**: `contactId`, consumidor e motivo, na concessão e na revogação. Sem o id, a revogação ou a exclusão do contato (que apagam a linha) deixariam a trilha sem titular. Nada do contato entra.
+   - Duas concessões simultâneas para o mesmo contato, ou o contato excluído entre a leitura e a gravação, dão 409 pelo filtro global de P2002/P2003.
+   - A listagem tem teto de 500 sem paginação. Está registrada como dívida, com gatilho na tela de liberação (F2).
+6. **Critério do item 7 do adendo 2, provado com a CLI.** O teste roda o corpo da CLI num contexto montado como a CLI o monta e registra as chaves. Depois provisiona um workspace novo pelo `ProvisioningService` e verifica:
+   - nenhuma chave `clinics:*` concedida;
+   - Owner com exatamente o template do Core;
+   - `/api/auth/me` sem chave do vertical;
+   - 403 nas rotas do vertical.
+
+   Só depois do `enable` naquele workspace as chaves aparecem. Na validação manual, a mesma cadeia rodou com os binários compilados (`dist/cli/provision.js` e `dist/verticals/clinics/cli/clinics.js`) contra o banco de teste.
+
+7. **Reconferência no fan-out de webhook (mudança no Core, sem nome de vertical).** A porta era consultada uma vez antes de um fan-out que pode levar cerca de 100 s. Agora é consultada de novo antes de cada destino além do primeiro: um contato que fica restrito no meio não sai para os destinos restantes, cumprindo o §4 ("o que estava em voo não sai"). Porta indisponível no meio devolve o evento ao outbox sem penalizar nenhum webhook. Os testes estão em `extensions/content-restriction.integration-spec.ts`. Limite conhecido: a lista de contatos do evento é calculada uma vez, no início. Um deal **sem** contato que ganha contato no meio do fan-out continua saindo para os destinos restantes, porque sem contato não há o que reconferir. O payload foi fotografado na emissão e não traz dado de contato, e deal sem contato já sai pelo §6.5 do ADR-048. O teste de fronteira também ganhou uma regra: arquivo do Core não usa delegate do Prisma de modelo de vertical (`.clinicsSettings.`). Acesso por colchete não é pego; a barreira principal continua sendo o lint de import.
+8. **Consequência de disponibilidade.** Com uma extensão composta, a porta é consultada em toda entrega de webhook, inclusive de workspace sem o Clinics. Uma indisponibilidade longa da porta (na prática, do banco) consome tentativas e pode levar eventos a `dead`, o que agora é definitivo. É disponibilidade, não sigilo: nada sai indevidamente.
+9. **Fica para a F2**, porque depende de `ClinicsPatient`: a liberação perder efeito quando o contato vira paciente (§6.3, item 6, do ADR-048), com o teste correspondente do §6.6.
+
+O Clinics continua desativado em staging. Ativá-lo lá, ou usar dados reais, segue bloqueado pelas hipóteses H1–H7 e pelos bloqueios B1–B4.
 
 ## ADR-048 — Veyra Clinics para estética: domínio próprio, classificação de dados e escopo do MVP
 

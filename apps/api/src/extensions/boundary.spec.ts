@@ -49,6 +49,23 @@ describe('fronteira Core → vertical (ADR-047)', () => {
     expect(culpados).toEqual([]);
   });
 
+  it('nenhum arquivo do Core usa delegate do Prisma de modelo de vertical', () => {
+    // modelos declarados FORA do schema do Core (um arquivo por vertical)
+    const schemaDir = join(REPO, 'apps/api/prisma/schema');
+    const delegates = readdirSync(schemaDir)
+      .filter((f) => f.endsWith('.prisma') && f !== 'schema.prisma')
+      .flatMap((f) => [
+        ...readFileSync(join(schemaDir, f), 'utf8').matchAll(/^model\s+(\w+)\s+\{/gm),
+      ])
+      .map((m) => m[1].charAt(0).toLowerCase() + m[1].slice(1));
+    expect(delegates.length).toBeGreaterThan(0);
+    const uso = new RegExp(`\\.\\s*(${delegates.join('|')})\\s*\\.`);
+    const culpados = files
+      .filter((file) => file.startsWith('apps/api/src/') && !ALLOWED.has(file))
+      .filter((file) => uso.test(readFileSync(join(REPO, file), 'utf8')));
+    expect(culpados).toEqual([]);
+  });
+
   it('o padrão pega as formas de import que importam', () => {
     for (const sample of [
       "import { x } from '../verticals/clinics/x';",

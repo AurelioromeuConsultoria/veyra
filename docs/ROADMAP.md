@@ -89,13 +89,13 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
   - os bloqueios B1–B4. Sem eles, **nenhum dado real de paciente e nenhum piloto clínico**.
 
 - **F1 — Fundação do vertical 🚧** Dividida em três entregas, cada uma com revisão própria:
-  - **F1.a — pontos de extensão no Core 🚧 (implementada, em revisão):** E1, E2 (checagem de boot e teste de concessão), E4 e E6, com o schema em `prisma/schema/`, a barreira de lint e o teste de fronteira, sem vertical composto. Decisões de implementação no adendo 1 do ADR-047, incluindo a **pendência que precisa de decisão antes da F1.b**: o lado oposto da relação no schema do Core.
-  - **F1.b — esqueleto do vertical 🚧** (plano aprovado; decisões no adendo 2 do ADR-047). **Entrega 1, fotografia dos contatos no outbox: implementada, em revisão.** Entrega 2: schema do vertical (`ClinicsSettings`, `ClinicsUnit`, `ClinicsContactRelease`), CLI de ativação e desativação, papel `Profissional`, porta real do E6, API de status e de liberação para IA. O E5 foi movido para a F1.c.
+  - **F1.a — pontos de extensão no Core ✅ (publicada):** E1, E2 (checagem de boot e teste de concessão), E4 e E6, com o schema em `prisma/schema/`, a barreira de lint e o teste de fronteira, sem vertical composto. Decisões de implementação no adendo 1 do ADR-047; a pendência sobre o lado oposto da relação no schema do Core foi decidida no adendo 2, item 1.
+  - **F1.b — esqueleto do vertical 🚧** (plano aprovado; decisões nos adendos 2 e 3 do ADR-047). **Entrega 1, fotografia dos contatos no outbox: publicada.** **Entrega 2: implementada, em revisão.** Inclui o schema do vertical (`ClinicsSettings`, `ClinicsUnit`, `ClinicsContactRelease`), a CLI de ativação e desativação, o papel `Profissional`, a porta real do E6, a API de status e de liberação para IA e a garantia, no banco, de que evento terminal do outbox não é reaberto. O vertical está composto e **desativado em todo workspace, inclusive em staging**. O E5 foi movido para a F1.c.
   - **F1.c — catálogo da clínica 🔜.**
 
   Escopo e critérios da F1 como um todo: Os seis pontos de extensão do Core (ADR-047), incluindo a **restrição de conteúdo por contato (E6)** com a regra "restrito por padrão"; a barreira de dependência; a CLI de ativação e desativação com o ciclo de vida do ADR-047 §4, criando o papel `Profissional`; as sete permissões; a liberação de contato pela API; unidade, serviço, profissional e horários. Sala só se D2 for decidida a favor.
   **Pronto quando:**
-  - workspace sem o vertical ativo recebe 404 nas rotas do Clinics e não pode receber nenhuma chave `clinics:*` por nenhum caminho;
+  - workspace sem o vertical ativo recebe 403 nas rotas do Clinics (404 no caso residual de chave presente com o vertical desativado; adendo 2 do ADR-047, item 4) e não pode receber nenhuma chave `clinics:*` por nenhum caminho;
   - `enable` e `disable` repetidos convergem para o mesmo estado, sem segundo papel `Profissional`; depois de `disable` não resta nenhuma `clinics:*` em papel algum, o papel continua existindo e as sessões antigas caem;
   - contatos criados **antes** da ativação ficam restritos no commit da ativação, sem backfill, e falha ao consultar a presença do vertical equivale a "restrito";
   - **desativar não levanta a restrição:**
@@ -108,7 +108,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
     - chamada ao cliente de LLM sem declarar os contatos é recusada;
     - resultados e propostas persistidos de contato restrito não são devolvidos por nenhum endpoint, inclusive os gerados antes da ativação;
     - aprovação e despacho de mensagem da IA reconferem e recusam;
-    - contato liberado para IA que vira paciente volta a ser recusado em todos esses pontos;
+    - contato liberado para IA que vira paciente volta a ser recusado em todos esses pontos (depende de `ClinicsPatient`: entra na F2);
   - **webhooks:** para cada tipo de evento, nada ligado a contato de workspace com o Clinics é entregue, **inclusive de contato liberado para IA** e inclusive evento pendente de antes da ativação; deal ou tarefa sem contato, e workspaces sem o Clinics, seguem entregues;
   - a porta do E6 falhando equivale a "restrito" para os dois consumidores;
   - o Core não importa `verticals/` (lint + teste de fronteira);

@@ -112,6 +112,14 @@ model Workspace {
   messageDispatches      MessageDispatch[]
   messageStatusEvents    MessageStatusEvent[]
   inboundMedia           InboundMedia[]
+
+  // Lado REVERSO de relações do vertical Clinics (ADR-047 adendo 2, item 1):
+  // o Prisma exige os dois lados e um modelo não se divide entre arquivos. Só
+  // tipo de campo reverso — a FK mora no arquivo do vertical; o código do Core
+  // não importa nada dele (lint + teste de fronteira + teste deste arquivo).
+  clinicsSettings        ClinicsSettings?
+  clinicsUnits           ClinicsUnit[]
+  clinicsContactReleases ClinicsContactRelease[]
 }
 
 /// Catálogo GLOBAL de permissões (ADR-004): chaves estáveis do sistema —
@@ -135,7 +143,9 @@ model Role {
   isSystem    Boolean  @default(false)
   /// Papel de SISTEMA identificado por chave estável ('owner'|'admin'|'member'|
   /// 'guest'), não por nome (ADR-004/017): invariantes de ciclo de vida (último
-  /// Owner) ramificam por systemKey; null para papéis customizados.
+  /// Owner) ramificam por systemKey; null para papéis customizados. Extensões
+  /// criam os seus com prefixo próprio ('<extensão>:<papel>'), só pela CLI de
+  /// ativação (ADR-047).
   systemKey   String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -183,23 +193,25 @@ model Membership {
   // FK composta (ADR-010): Membership não pode apontar para Role de outro workspace
   role      Role      @relation(fields: [workspaceId, roleId], references: [workspaceId, id])
 
-  ownedCompanies        Company[]               @relation("CompanyOwner")
-  ownedContacts         Contact[]               @relation("ContactOwner")
-  activeSessions        RefreshToken[]          @relation("SessionActiveMembership")
-  ownedDeals            Deal[]                  @relation("DealOwner")
-  assignedTasks         Task[]                  @relation("TaskAssignee")
-  authoredNotes         Note[]                  @relation("NoteAuthor")
-  activities            Activity[]              @relation("ActivityActor")
-  auditLogs             AuditLog[]              @relation("AuditActor")
-  assignedConversations Conversation[]          @relation("ConversationAssignee")
-  authoredMessages      Message[]               @relation("MessageAuthorMembership")
-  organizedEvents       CalendarEvent[]         @relation("EventOrganizer")
-  notifications         Notification[]          @relation("NotificationRecipient")
-  uploadedFiles         FileObject[]            @relation("FileUploader")
-  aiRuns                AiRun[]                 @relation("AiRunTrigger")
-  reviewedProposals     AiProposal[]            @relation("ProposalReviewer")
-  consentChanges        AiConsent[]             @relation("ConsentAuthor")
-  grantedConsents       ContactChannelConsent[] @relation("ConsentGranter")
+  ownedCompanies         Company[]               @relation("CompanyOwner")
+  ownedContacts          Contact[]               @relation("ContactOwner")
+  activeSessions         RefreshToken[]          @relation("SessionActiveMembership")
+  ownedDeals             Deal[]                  @relation("DealOwner")
+  assignedTasks          Task[]                  @relation("TaskAssignee")
+  authoredNotes          Note[]                  @relation("NoteAuthor")
+  activities             Activity[]              @relation("ActivityActor")
+  auditLogs              AuditLog[]              @relation("AuditActor")
+  assignedConversations  Conversation[]          @relation("ConversationAssignee")
+  authoredMessages       Message[]               @relation("MessageAuthorMembership")
+  organizedEvents        CalendarEvent[]         @relation("EventOrganizer")
+  notifications          Notification[]          @relation("NotificationRecipient")
+  uploadedFiles          FileObject[]            @relation("FileUploader")
+  aiRuns                 AiRun[]                 @relation("AiRunTrigger")
+  reviewedProposals      AiProposal[]            @relation("ProposalReviewer")
+  consentChanges         AiConsent[]             @relation("ConsentAuthor")
+  grantedConsents        ContactChannelConsent[] @relation("ConsentGranter")
+  // lado reverso do vertical Clinics (ADR-047 adendo 2, item 1)
+  clinicsReleasesGranted ClinicsContactRelease[] @relation("ClinicsReleaseGrantedBy")
 
   // Alvo de FK composta para Team/ownership futuros
   @@unique([workspaceId, id])
@@ -325,6 +337,8 @@ model Contact {
   aiProposals            AiProposal[]
   aiRuns                 AiRun[]
   contactChannelConsents ContactChannelConsent[]
+  // lado reverso do vertical Clinics (ADR-047 adendo 2, item 1)
+  clinicsContactReleases ClinicsContactRelease[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, status, createdAt])

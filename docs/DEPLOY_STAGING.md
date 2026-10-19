@@ -164,8 +164,11 @@ Migration destrutiva quebra essa ordem: nesse caso, deploy em duas etapas
 migration destrutiva.
 
 **Migration que estoura `lock_timeout`.** Migrations em tabela muito escrita
-(por exemplo `20261019200000_outbox_subject_contacts`, sobre `OutboxEvent`)
-fixam `lock_timeout = 5s`. Se uma transação longa estiver segurando a tabela, a
+(`20261019200000_outbox_subject_contacts` e
+`20261019210000_outbox_terminal_is_final`, sobre `OutboxEvent`) e as que criam
+FK para tabela muito escrita (`20261019220000_clinics_foundation`, que trava
+`Contact`, `Membership` e `Workspace` durante o `ADD FOREIGN KEY`) fixam
+`lock_timeout = 5s`. Se uma transação longa estiver segurando a tabela, a
 migration falha em vez de travar todas as escritas da aplicação. Nesse caso o
 Prisma a registra como falha, e o próximo `migrate deploy` para com **P3009**.
 O `ALTER` não chegou a ser aplicado, então marque como desfeita e repita:
@@ -174,6 +177,8 @@ O `ALTER` não chegou a ser aplicado, então marque como desfeita e repita:
 npx prisma migrate resolve --rolled-back 20261019200000_outbox_subject_contacts
 npx prisma migrate deploy
 ```
+
+Troque o nome pela migration que falhou: o `migrate deploy` mostra qual foi.
 
 ## 5. Rollback
 
@@ -250,6 +255,49 @@ docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
 docker compose -p veyra-staging -f deploy/staging/docker-compose.yml exec api node dist/cli/provision.js --help
 ```
 
+### 7.1 Veyra Clinics: fica DESATIVADO em staging
+
+A imagem já traz o vertical composto (ADR-047 adendo 3), mas ele só existe num
+workspace depois da CLI de ativação. **Não rode `enable` em staging.** Ativar
+lá, ou usar dados reais, segue bloqueado pelas hipóteses H1–H7 e pelos
+bloqueios B1–B4 do ADR-048. Os comandos ficam aqui para quando houver
+autorização explícita:
+
+```bash
+# NÃO EXECUTAR em staging sem autorização registrada
+docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
+  exec api node dist/verticals/clinics/cli/clinics.js enable  --slug <slug>
+docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
+  exec api node dist/verticals/clinics/cli/clinics.js disable --slug <slug>
+```
+
+O que `enable` faz, e não se desfaz sozinho:
+
+- todo contato do workspace passa a ser restrito para IA;
+- **webhooks ativos deixam de receber qualquer evento de contato**, inclusive
+  exclusões (a CLI diz quantos são);
+- **desativar não levanta a restrição, nunca.** A própria linha de ativação
+  (`ClinicsSettings`) conta como presença do vertical e não é apagada por
+  nenhum comando. A restrição só deixa de existir com a exclusão do workspace
+  (ADR-047 §4). Ativar "só para testar" é irreversível neste sentido.
+
+Para conferir que nenhum workspace foi ativado:
+
+```bash
+docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
+  exec db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c 'SELECT count(*) FROM "ClinicsSettings"'
+```
+
+O resultado esperado é `0`.
+
+### 7.2 Outbox: nunca editar, reabrir nem copiar evento por SQL
+
+O banco recusa tirar um evento de `delivered` ou `dead` (trigger
+`OutboxEvent_terminal_is_final`). **Não contorne isso com INSERT.** Uma cópia
+manual de evento nasceria sem a fotografia de contatos e fora da validação do
+`enqueue`, e poderia entregar a um webhook conteúdo de contato restrito
+(SECURITY §7-B). Reenvio manual não existe; criar um exige ADR.
+
 ## 8. Desmontar só o Veyra
 
 Pelo painel: **Stop** preserva os volumes; **Delete** do recurso remove os
@@ -288,6 +336,7 @@ $C run --rm --no-deps api npx prisma migrate deploy
 - **Não envia WhatsApp de verdade.** `META_TRANSPORT_MODE=fake` (depende do ADR
   proposto — enquanto ele não existir, staging fica sem credencial de canal e o
   envio falha com `no_credential`, que também não vaza nada para fora).
+- **Não tem o Veyra Clinics ativado** (§7.1).
 - **Não recebe dado real de paciente.** É regra de operação, não técnica: quem
   colar um export de produção aqui quebra a premissa do ambiente.
 - **Não é referência de desempenho.** Divide CPU e disco com os outros projetos.

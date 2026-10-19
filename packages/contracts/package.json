@@ -5,6 +5,23 @@
   "description": "Contratos internos do Veyra — schemas Zod (entrada) e interfaces DTO (saída)",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./verticals/clinics": {
+      "types": "./dist/verticals/clinics/index.d.ts",
+      "default": "./dist/verticals/clinics/index.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "verticals/clinics": [
+        "./dist/verticals/clinics/index.d.ts"
+      ]
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsc -p tsconfig.json --watch"

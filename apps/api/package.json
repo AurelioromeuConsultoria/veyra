@@ -16,6 +16,8 @@
     "prisma:seed": "tsx prisma/seed.ts",
     "check:fk": "tsx scripts/check-cross-tenant-fk.ts",
     "provision": "nest build && node dist/cli/provision.js",
+    "clinics:enable": "nest build && node dist/verticals/clinics/cli/clinics.js enable",
+    "clinics:disable": "nest build && node dist/verticals/clinics/cli/clinics.js disable",
     "plan": "tsx scripts/set-plan.ts",
     "channel:whatsapp": "tsx scripts/register-whatsapp-channel.ts",
     "redact:meta": "tsx scripts/redact-meta-error.ts"

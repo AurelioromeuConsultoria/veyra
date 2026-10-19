@@ -3,6 +3,7 @@ import { PERMISSION_CATALOG, SYSTEM_ROLE_TEMPLATES, type PermissionKey } from '@
 import { RequirePermissions } from '../common/decorators';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProvisioningService } from '../workspaces/provisioning.service';
+import { COMPOSITION } from '../composition';
 import { createTestApp } from '../../test/integration/app';
 import { resetDb } from '../../test/integration/harness';
 import { PermissionCatalogCheck } from './permission-catalog.check';
@@ -18,9 +19,13 @@ class UnknownPermissionController {
   }
 }
 
-/** Extensão de teste com catálogo próprio — o que um vertical comporia. */
+/**
+ * Extensão de teste com catálogo próprio, composta JUNTO com o que o produto
+ * já compõe (as rotas dos verticais reais exigem as chaves deles no boot).
+ */
 const demoRegistry = () =>
   composeRegistry([
+    ...COMPOSITION.extensions,
     {
       name: 'demo',
       permissionCatalog: { 'demo:read': 'Ver demo', 'demo:manage': 'Gerir demo' },
