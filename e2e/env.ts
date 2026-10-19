@@ -14,6 +14,9 @@ export const E2E_PASSWORD = 'e2e-senha-123';
 export const E2E_PASSWORD_HASH = '$2b$04$WSaFY7j1mTkj1Q19767CYuuesIpFF5oZn1UPoIiXL8xMxLPkqfOVe';
 export const OWNER_A = 'owner-a@e2e.veyra';
 export const OWNER_B = 'owner-b@e2e.veyra';
+/** Workspace `clinica`: o único com o Veyra Clinics ATIVO no e2e (dados fictícios). */
+export const OWNER_C = 'owner-c@e2e.veyra';
+export const MEMBER_C = 'recepcao-c@e2e.veyra';
 
 export function assertIsE2eDb(url = E2E_DATABASE_URL): string {
   const dbName = new URL(url).pathname.replace(/^\//, '');

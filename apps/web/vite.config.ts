@@ -29,7 +29,7 @@ export default defineConfig({
   // @veyra/contracts é workspace CJS linkado: forçar o pré-bundle garante a
   // resolução confiável dos named exports do barrel no dev server.
   optimizeDeps: {
-    include: ['@veyra/contracts'],
+    include: ['@veyra/contracts', '@veyra/contracts/verticals/clinics'],
   },
   test: {
     environment: 'jsdom',

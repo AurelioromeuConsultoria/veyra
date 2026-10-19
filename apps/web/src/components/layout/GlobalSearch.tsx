@@ -6,7 +6,7 @@ import { CornerDownLeft, Search, User, ArrowRight } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, toQuery } from '../../lib/api';
-import { fold, NAV_GROUPS, type NavItem } from '../../lib/nav';
+import { fold, useNavGroups, type NavItem } from '../../lib/nav';
 import { hasPermission, useSession } from '../../lib/session';
 
 /**
@@ -73,9 +73,11 @@ export function GlobalSearch({
   });
 
   const needle = fold(debounced);
+  const groups = useNavGroups();
   const sections = useMemo<Result[]>(
     () =>
-      NAV_GROUPS.flatMap((group) => group.items.map((item) => ({ group, item })))
+      groups
+        .flatMap((group) => group.items.map((item) => ({ group, item })))
         .filter(({ item }) => !item.permission || hasPermission(user, item.permission))
         .filter(({ item }) => matchesSection(item, needle))
         .map(({ group, item }) => ({
@@ -89,7 +91,7 @@ export function GlobalSearch({
           hint: group.label,
           icon: item.icon,
         })),
-    [needle, user],
+    [groups, needle, user],
   );
 
   const contactResults = useMemo<Result[]>(

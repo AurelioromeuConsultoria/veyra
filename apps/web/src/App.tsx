@@ -1,6 +1,8 @@
 import { Suspense, lazy } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './components/layout/AppShell';
+import { useVerticalNavGroups, VERTICAL_ROUTES } from './composition';
+import { NavContributionsProvider } from './lib/nav';
 import { useSession } from './lib/session';
 import { LoginPage } from './pages/Login';
 import { TodayPage } from './pages/Today';
@@ -55,39 +57,45 @@ function Protected({ children }: { children: React.ReactNode }) {
 
 export function App() {
   return (
-    <Suspense fallback={<Loading />}>
-      <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route
-          element={
-            <Protected>
-              <AppShell />
-            </Protected>
-          }
-        >
-          {/*
+    // verticais entram só pela raiz de composição (ADR-047 E5, adendo 4)
+    <NavContributionsProvider value={useVerticalNavGroups}>
+      <Suspense fallback={<Loading />}>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route
+            element={
+              <Protected>
+                <AppShell />
+              </Protected>
+            }
+          >
+            {/*
             `/` era um redirect para o board: entrar no produto caía direto numa
             tabela, e a visão executiva do §1 do DESIGN_DIRECTION não existia em
             lugar nenhum. Hoje é a raiz e NÃO é lazy — é a primeira tela depois
             do login, e um chunk a mais ali seria um branco desnecessário.
           */}
-          <Route path="/" element={<TodayPage />} />
-          <Route path="/pipeline" element={<PipelinePage />} />
-          <Route path="/contacts" element={<ContactsPage />} />
-          <Route path="/companies" element={<CompaniesPage />} />
-          <Route path="/inbox" element={<InboxPage />} />
-          <Route path="/calendar" element={<CalendarPage />} />
-          <Route path="/signals" element={<SignalsPage />} />
-          <Route path="/settings/usage" element={<UsagePage />} />
-          <Route path="/settings/automations" element={<AutomationsPage />} />
-          <Route path="/tasks" element={<TasksPage />} />
-          <Route path="/tags" element={<TagsPage />} />
-          <Route path="/settings/fields" element={<CustomFieldsPage />} />
-          <Route path="/settings/webhooks" element={<WebhooksPage />} />
-          <Route path="/audit" element={<AuditPage />} />
-        </Route>
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </Suspense>
+            <Route path="/" element={<TodayPage />} />
+            <Route path="/pipeline" element={<PipelinePage />} />
+            <Route path="/contacts" element={<ContactsPage />} />
+            <Route path="/companies" element={<CompaniesPage />} />
+            <Route path="/inbox" element={<InboxPage />} />
+            <Route path="/calendar" element={<CalendarPage />} />
+            <Route path="/signals" element={<SignalsPage />} />
+            <Route path="/settings/usage" element={<UsagePage />} />
+            <Route path="/settings/automations" element={<AutomationsPage />} />
+            <Route path="/tasks" element={<TasksPage />} />
+            <Route path="/tags" element={<TagsPage />} />
+            <Route path="/settings/fields" element={<CustomFieldsPage />} />
+            <Route path="/settings/webhooks" element={<WebhooksPage />} />
+            <Route path="/audit" element={<AuditPage />} />
+            {VERTICAL_ROUTES.map((route) => (
+              <Route key={route.path} path={route.path} element={route.element} />
+            ))}
+          </Route>
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
+    </NavContributionsProvider>
   );
 }

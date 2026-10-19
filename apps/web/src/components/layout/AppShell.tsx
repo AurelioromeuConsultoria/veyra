@@ -1,6 +1,6 @@
 import { clsx } from 'clsx';
 import { NavLink, Outlet } from 'react-router-dom';
-import { NAV_GROUPS } from '../../lib/nav';
+import { useNavGroups } from '../../lib/nav';
 import { hasPermission, useSession } from '../../lib/session';
 import { AppHeader } from './AppHeader';
 
@@ -15,6 +15,7 @@ import { AppHeader } from './AppHeader';
  */
 export function AppShell() {
   const { data: user } = useSession();
+  const groups = useNavGroups();
 
   return (
     <div className="flex h-screen">
@@ -25,7 +26,7 @@ export function AppShell() {
         </div>
 
         <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-3" aria-label="Principal">
-          {NAV_GROUPS.map((group) => {
+          {groups.map((group) => {
             const items = group.items.filter(
               (item) => !item.permission || hasPermission(user, item.permission),
             );

@@ -1,7 +1,7 @@
 import { LogOut, Moon, Search, Sun } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { currentSection } from '../../lib/nav';
+import { currentSection, useNavGroups } from '../../lib/nav';
 import { hasPermission, useLogout, useSession } from '../../lib/session';
 import { useTheme } from '../../lib/theme';
 import { GlobalSearch } from './GlobalSearch';
@@ -59,7 +59,8 @@ export function AppHeader() {
   const isMac = useIsMac();
   const [searchOpen, setSearchOpen] = useState(false);
 
-  const section = currentSection(location.pathname);
+  const groups = useNavGroups();
+  const section = currentSection(location.pathname, groups);
   const workspace = user?.activeMembership?.workspaceName;
 
   /**

@@ -14,7 +14,7 @@ import {
   Webhook,
   Workflow,
 } from 'lucide-react';
-import type { ComponentType } from 'react';
+import { createContext, useContext, useMemo, type ComponentType, type ReactNode } from 'react';
 
 /**
  * MAPA ÚNICO das seções do produto. Três consumidores leem daqui — a barra
@@ -37,6 +37,9 @@ export type NavItem = {
 };
 
 export type NavGroup = { label: string; items: NavItem[] };
+
+/** Rota contribuída por um vertical, montada dentro do shell protegido. */
+export type VerticalRoute = { path: string; element: ReactNode };
 
 export const NAV_GROUPS: NavGroup[] = [
   {
@@ -143,12 +146,41 @@ export const NAV_GROUPS: NavGroup[] = [
 ];
 
 /**
+ * PORTA DE NAVEGAÇÃO (ADR-047 E5, adendo 4). Verticais CONTRIBUEM grupos ao
+ * mapa, sem que o Core os conheça: a raiz de composição (`composition.tsx`)
+ * entrega um HOOK que devolve os grupos contribuídos, e este contexto o leva
+ * aos três consumidores. Sem raiz, nada é contribuído — o Core puro.
+ *
+ * O hook é chamado sempre, uma vez por render, na mesma posição: a lista de
+ * verticais é fixa por build. Cada vertical decide a própria visibilidade (só
+ * contribui com o próprio status confirmado como ativo e a permissão).
+ */
+export type UseNavContributions = () => readonly NavGroup[];
+const NONE: readonly NavGroup[] = [];
+const noContributions: UseNavContributions = () => NONE;
+const NavContributionsContext = createContext<UseNavContributions>(noContributions);
+export const NavContributionsProvider = NavContributionsContext.Provider;
+
+/** O mapa COMPOSTO: o do Core seguido do que os verticais contribuírem agora. */
+export function useNavGroups(): readonly NavGroup[] {
+  const useContributions = useContext(NavContributionsContext);
+  const contributed = useContributions();
+  return useMemo(
+    () => (contributed.length === 0 ? NAV_GROUPS : [...NAV_GROUPS, ...contributed]),
+    [contributed],
+  );
+}
+
+/**
  * Onde a pessoa está, para o rastro do cabeçalho. Casamento pelo prefixo mais
  * LONGO: `/settings/usage` não pode cair em `/` só porque veio antes na lista.
  */
-export function currentSection(pathname: string): { group: string; item: NavItem } | null {
+export function currentSection(
+  pathname: string,
+  groups: readonly NavGroup[] = NAV_GROUPS,
+): { group: string; item: NavItem } | null {
   let best: { group: string; item: NavItem } | null = null;
-  for (const group of NAV_GROUPS) {
+  for (const group of groups) {
     for (const item of group.items) {
       const matches = item.to === '/' ? pathname === '/' : pathname.startsWith(item.to);
       if (matches && (!best || item.to.length > best.item.to.length)) {

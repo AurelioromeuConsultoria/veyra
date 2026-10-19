@@ -1,0 +1,379 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import type { ReactNode } from 'react';
+import { MemoryRouter } from 'react-router-dom';
+import { vi } from 'vitest';
+import { AppShell } from '../../components/layout/AppShell';
+import { GlobalSearch } from '../../components/layout/GlobalSearch';
+import { NavContributionsProvider } from '../../lib/nav';
+import { ACCOUNT_LINK_NOTICE, ProfessionalsTab } from './catalog/ProfessionalsTab';
+import { ClinicsCatalogPage } from './CatalogPage';
+import { useClinicsNavGroups } from './nav';
+
+// o cabeçalho tem seus próprios dados (notificações, busca); aqui só a lateral
+vi.mock('../../components/layout/AppHeader', () => ({ AppHeader: () => null }));
+
+type Resposta = { status?: number; body?: unknown; pendente?: boolean };
+type Rota = Resposta | ((corpo: unknown) => Resposta | Promise<Resposta>);
+
+/** fetch falso por rota ("GET /api/…"); registra toda chamada, em ordem. */
+function mockApi(rotas: Record<string, Rota>) {
+  const chamadas: string[] = [];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      const chave = `${init?.method ?? 'GET'} ${url}`;
+      chamadas.push(chave);
+      const rota = Object.keys(rotas)
+        .sort((a, b) => b.length - a.length)
+        .find((prefixo) => chave.startsWith(prefixo));
+      const definida: Rota = rota
+        ? rotas[rota]
+        : { status: 404, body: { message: `sem mock: ${chave}` } };
+      const resposta =
+        typeof definida === 'function'
+          ? await definida(init?.body ? JSON.parse(String(init.body)) : undefined)
+          : definida;
+      if (resposta.pendente) return new Promise<Response>(() => undefined);
+      return new Response(JSON.stringify(resposta.body ?? {}), {
+        status: resposta.status ?? 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }),
+  );
+  return chamadas;
+}
+
+/** Promessa controlada pelo teste: segura uma resposta até `soltar`. */
+function adiada<T>() {
+  let soltar!: (valor: T) => void;
+  const promessa = new Promise<T>((resolve) => (soltar = resolve));
+  return { promessa, soltar };
+}
+
+const usuario = (permissions: string[]) => ({
+  id: 'u1',
+  name: 'Dona da Clínica',
+  email: 'dona@clinica.test',
+  activeMembership: {
+    membershipId: 'm1',
+    workspaceId: 'w1',
+    workspaceName: 'Clínica',
+    workspaceSlug: 'clinica',
+    roleName: 'Owner',
+    status: 'active',
+  },
+  permissions,
+  memberships: [],
+});
+const LEITURA = ['clinics:catalog:read'];
+const GESTAO = ['clinics:catalog:read', 'clinics:catalog:manage', 'members:read'];
+const doCatalogo = (chamadas: string[]) =>
+  chamadas.filter((c) => /\/api\/(clinics\/(services|professionals|units)|members)/.test(c));
+
+function renderizar(ui: ReactNode, caminho = '/', queryClient = novoCliente()) {
+  render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[caminho]}>
+        <NavContributionsProvider value={useClinicsNavGroups}>{ui}</NavContributionsProvider>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  return queryClient;
+}
+/** só a barra lateral — a página também tem o eyebrow "Clínica" */
+const lateral = () => within(screen.getByRole('navigation', { name: 'Principal' }));
+const novoCliente = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+afterEach(() => vi.unstubAllGlobals());
+
+describe('Clinics no web — só aparece e só consulta com status ATIVO confirmado e permissão', () => {
+  const casos: [string, Resposta, string[], RegExp][] = [
+    ['status CARREGANDO', { pendente: true }, GESTAO, /Carregando/],
+    [
+      'status com ERRO',
+      { status: 500, body: { message: 'x' } },
+      GESTAO,
+      /Não foi possível verificar/,
+    ],
+    ['vertical INATIVO', { body: { active: false } }, GESTAO, /não está ativo neste workspace/],
+    [
+      'ativo SEM permissão',
+      { body: { active: true } },
+      ['contacts:read'],
+      /não tem acesso ao catálogo/,
+    ],
+  ];
+
+  it.each(casos)(
+    '%s: a lateral não mostra a Clínica, a página só explica, e nada do catálogo é consultado',
+    async (_caso, status, permissoes, mensagem) => {
+      const chamadas = mockApi({
+        'GET /api/auth/me': { body: usuario(permissoes) },
+        'GET /api/clinics/status': status,
+      });
+      // lateral e página na MESMA árvore: a mensagem da página prova que o
+      // status já tem resposta (ou segue pendente) quando a lateral é conferida
+      renderizar(
+        <>
+          <AppShell />
+          <ClinicsCatalogPage />
+        </>,
+        '/clinics/catalog',
+      );
+      expect(await screen.findByText(mensagem)).toBeInTheDocument();
+      await waitFor(() => expect(chamadas).toContain('GET /api/clinics/status'));
+      expect(lateral().queryByRole('link', { name: 'Catálogo' })).toBeNull();
+      expect(lateral().queryByText('Clínica')).toBeNull();
+      expect(screen.queryByRole('tablist')).toBeNull();
+      expect(doCatalogo(chamadas)).toEqual([]);
+    },
+  );
+
+  it('ATIVO e com permissão: NADA do catálogo sai antes da resposta do status; depois, a Clínica aparece na lateral, na busca, e o catálogo é consultado', async () => {
+    const status = adiada<Resposta>();
+    const chamadas = mockApi({
+      'GET /api/auth/me': { body: usuario(GESTAO) },
+      'GET /api/clinics/status': () => status.promessa,
+      'GET /api/clinics/services': { body: [] },
+    });
+    renderizar(
+      <>
+        <AppShell />
+        <ClinicsCatalogPage />
+      </>,
+      '/clinics/catalog',
+    );
+    await waitFor(() => expect(chamadas).toContain('GET /api/clinics/status'));
+    expect(screen.getByText('Carregando…')).toBeInTheDocument();
+    expect(lateral().queryByRole('link', { name: 'Catálogo' })).toBeNull();
+    expect(doCatalogo(chamadas)).toEqual([]);
+
+    status.soltar({ body: { active: true } });
+    expect(await lateral().findByRole('link', { name: 'Catálogo' })).toHaveAttribute(
+      'href',
+      '/clinics/catalog',
+    );
+    expect(lateral().getByText('Clínica')).toBeInTheDocument();
+    expect(await screen.findByRole('tablist', { name: 'Partes do catálogo' })).toBeInTheDocument();
+    await waitFor(() => expect(doCatalogo(chamadas)).toContain('GET /api/clinics/services'));
+
+    renderizar(<GlobalSearch open onOpenChange={() => undefined} />);
+    fireEvent.change(screen.getByLabelText('Buscar no workspace'), {
+      target: { value: 'profissionais' },
+    });
+    expect(await screen.findByRole('option', { name: /Catálogo/ })).toBeInTheDocument();
+  });
+
+  it('só LEITURA (recepção, Profissional): nenhum botão de ação', async () => {
+    mockApi({
+      'GET /api/auth/me': { body: usuario(LEITURA) },
+      'GET /api/clinics/status': { body: { active: true } },
+      'GET /api/clinics/services': {
+        body: [
+          {
+            id: 's1',
+            name: 'Limpeza',
+            durationMin: 60,
+            priceCents: 15000,
+            currency: 'BRL',
+            archivedAt: null,
+          },
+        ],
+      },
+    });
+    renderizar(<ClinicsCatalogPage />, '/clinics/catalog');
+    expect(await screen.findByText('Limpeza')).toBeInTheDocument();
+    expect(screen.getByText(/150,00/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Novo serviço/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Editar/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Arquivar/ })).toBeNull();
+  });
+});
+
+const S1 = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e01';
+const S2 = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e05';
+const U1 = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e02';
+const P1 = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e03';
+const M9 = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e04';
+
+describe('drawer do profissional — limites de salvamento e o aviso do vínculo', () => {
+  const ana = {
+    id: P1,
+    name: 'Ana',
+    account: { membershipId: M9, active: true },
+    serviceIds: [S1],
+    workingHours: [{ unitId: U1, weekday: 1, startMinute: 480, endMinute: 720 }],
+    archivedAt: null,
+  };
+  const limpeza = {
+    id: S1,
+    name: 'Limpeza',
+    durationMin: 60,
+    priceCents: null,
+    currency: 'BRL',
+    archivedAt: null,
+  };
+  const comum: Record<string, Rota> = {
+    'GET /api/auth/me': { body: usuario(GESTAO) },
+    'GET /api/clinics/professionals': { body: [ana] },
+    'GET /api/clinics/services': { body: [limpeza] },
+    'GET /api/clinics/units': {
+      body: [{ id: U1, name: 'Unidade principal', timezone: 'America/Sao_Paulo' }],
+    },
+    'GET /api/members': {
+      body: [
+        {
+          membershipId: M9,
+          userId: 'u9',
+          name: 'Bia',
+          email: 'bia@x.test',
+          roleId: 'r',
+          roleName: 'Member',
+          status: 'active',
+          createdAt: '',
+        },
+      ],
+    },
+  };
+
+  it('diz que vincular conta não muda papel nem permissões, e que o vínculo é salvo à parte', async () => {
+    mockApi(comum);
+    renderizar(<ProfessionalsTab />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar Ana' }));
+    expect(await screen.findByText(ACCOUNT_LINK_NOTICE)).toBeInTheDocument();
+    expect(ACCOUNT_LINK_NOTICE).toMatch(/não muda o papel nem concede permissões/);
+    expect(screen.getByText(/nome, serviços e horários são salvos juntos/)).toBeInTheDocument();
+    expect(screen.getByText(/Conta vinculada — salva à parte/)).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: /Bia/ })).toBeInTheDocument();
+  });
+
+  it('o perfil vai num pedido só; se o servidor recusa, a tela diz que NADA foi salvo', async () => {
+    const pedidos: unknown[] = [];
+    const chamadas = mockApi({
+      ...comum,
+      [`PUT /api/clinics/professionals/${P1}/profile`]: (corpo: unknown) => {
+        pedidos.push(corpo);
+        return { status: 400, body: { message: 'Unidade inexistente ou arquivada' } };
+      },
+    });
+    renderizar(<ProfessionalsTab />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar Ana' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Salvar perfil' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Nada foi salvo. Unidade inexistente ou arquivada',
+    );
+    expect(pedidos).toEqual([
+      {
+        name: 'Ana',
+        serviceIds: [S1],
+        intervals: [{ unitId: U1, weekday: 1, startMinute: 480, endMinute: 720 }],
+      },
+    ]);
+    // nome, serviços e horários NUNCA em pedidos separados
+    expect(
+      chamadas.filter((c) => c.startsWith('PUT') && /\/(services|working-hours)$/.test(c)),
+    ).toEqual([]);
+  });
+
+  it('sobreposição é recusada na tela pela MESMA regra do contrato, sem chamar o servidor', async () => {
+    const chamadas = mockApi(comum);
+    renderizar(<ProfessionalsTab />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar Ana' }));
+    // Ana já atende 08:00–12:00 na segunda; outro intervalo padrão é 08:00–12:00
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Acrescentar intervalo na segunda' }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar perfil' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Nada foi salvo. Intervalos sobrepostos na segunda',
+    );
+    expect(chamadas.some((c) => c.startsWith('PUT'))).toBe(false);
+  });
+
+  it('o editor NÃO monta enquanto os serviços carregam (salvar antes apagaria os serviços); depois, eles vêm marcados', async () => {
+    const servicos = adiada<Resposta>();
+    mockApi({ ...comum, 'GET /api/clinics/services': () => servicos.promessa });
+    renderizar(<ProfessionalsTab />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar Ana' }));
+    expect(await screen.findByText('Carregando…')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Salvar perfil' })).toBeNull();
+
+    servicos.soltar({ body: [limpeza] });
+    expect(await screen.findByRole('checkbox', { name: 'Limpeza' })).toBeChecked();
+  });
+
+  it('serviços que FALHAM ao carregar: o editor não monta, e nada pode ser salvo', async () => {
+    const chamadas = mockApi({
+      ...comum,
+      'GET /api/clinics/services': { status: 500, body: { message: 'fora do ar' } },
+    });
+    renderizar(<ProfessionalsTab />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar Ana' }));
+    expect(
+      await screen.findByText(/Não foi possível carregar serviços e unidades/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Salvar perfil' })).toBeNull();
+    expect(chamadas.some((c) => c.startsWith('PUT') || c.startsWith('POST'))).toBe(false);
+  });
+
+  it('recarga que FALHA depois de salvar não troca a confirmação por erro (os dados carregados valem)', async () => {
+    let chamadasDeServicos = 0;
+    mockApi({
+      ...comum,
+      'GET /api/clinics/services': () =>
+        ++chamadasDeServicos === 1
+          ? { body: [limpeza] }
+          : { status: 500, body: { message: 'fora do ar' } },
+      [`PUT /api/clinics/professionals/${P1}/profile`]: { body: ana },
+    });
+    renderizar(<ProfessionalsTab />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar Ana' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Salvar perfil' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('Perfil salvo');
+    await waitFor(() => expect(chamadasDeServicos).toBeGreaterThan(1));
+    expect(screen.getByRole('status')).toHaveTextContent('Perfil salvo');
+    expect(screen.queryByText(/Não foi possível carregar serviços/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Salvar perfil' })).toBeInTheDocument();
+  });
+
+  it('vínculo com serviço ARQUIVADO: a tela avisa, e o envio leva só os ativos', async () => {
+    const pedidos: unknown[] = [];
+    mockApi({
+      ...comum,
+      'GET /api/clinics/professionals': { body: [{ ...ana, serviceIds: [S1, S2] }] },
+      [`PUT /api/clinics/professionals/${P1}/profile`]: (corpo: unknown) => {
+        pedidos.push(corpo);
+        return { body: { ...ana, serviceIds: [S1] } };
+      },
+    });
+    renderizar(<ProfessionalsTab />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar Ana' }));
+    expect(
+      await screen.findByText('1 serviço arquivado deixa de estar habilitado ao salvar.'),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar perfil' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('Perfil salvo');
+    expect(pedidos).toEqual([expect.objectContaining({ serviceIds: [S1] })]);
+  });
+
+  it('quem gerencia o catálogo SEM `members:read` não vê nome de membro — nem do cache de outra tela', async () => {
+    const chamadas = mockApi({
+      ...comum,
+      'GET /api/auth/me': { body: usuario(['clinics:catalog:read', 'clinics:catalog:manage']) },
+    });
+    const queryClient = novoCliente();
+    // cache deixado por outra tela (ex.: Contatos), de quando havia permissão
+    queryClient.setQueryData(['members'], (comum['GET /api/members'] as Resposta).body);
+    renderizar(<ProfessionalsTab />, '/', queryClient);
+    expect(await screen.findByText('Conta vinculada')).toBeInTheDocument();
+    expect(screen.queryByText('Bia')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Editar Ana' }));
+    expect(
+      await screen.findByText(/exige também permissão para ver os membros/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /Bia/ })).toBeNull();
+    expect(chamadas).not.toContain('GET /api/members');
+  });
+});

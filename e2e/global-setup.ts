@@ -10,7 +10,15 @@ import path from 'node:path';
 import { Client } from 'pg';
 import { PERMISSION_CATALOG, SYSTEM_ROLE_TEMPLATES } from '../packages/contracts/src/permissions';
 import { DEFAULT_STAGES } from '../apps/api/src/pipelines/pipelines.service';
-import { E2E_DATABASE_URL, E2E_PASSWORD_HASH, OWNER_A, OWNER_B, assertIsE2eDb } from './env';
+import {
+  E2E_DATABASE_URL,
+  E2E_PASSWORD_HASH,
+  MEMBER_C,
+  OWNER_A,
+  OWNER_B,
+  OWNER_C,
+  assertIsE2eDb,
+} from './env';
 
 async function recreateDatabase(dbName: string): Promise<void> {
   const adminUrl = new URL(E2E_DATABASE_URL);
@@ -45,6 +53,7 @@ async function seed(): Promise<void> {
     for (const [slug, ownerEmail] of [
       ['acme', OWNER_A],
       ['beta', OWNER_B],
+      ['clinica', OWNER_C],
     ] as const) {
       const workspaceId = randomUUID();
       await db.query(
@@ -117,13 +126,54 @@ async function seed(): Promise<void> {
         [randomUUID(), workspaceId, userId, ownerRoleId],
       );
     }
+
+    // recepção (Member) da clínica — para provar o catálogo só de leitura
+    const recepcao = randomUUID();
+    await db.query(
+      `INSERT INTO "User" ("id", "email", "name", "passwordHash", "updatedAt")
+       VALUES ($1, $2, 'Recepção Clínica', $3, now())`,
+      [recepcao, MEMBER_C, E2E_PASSWORD_HASH],
+    );
+    await db.query(
+      `INSERT INTO "Membership" ("id", "workspaceId", "userId", "roleId", "updatedAt")
+       SELECT $1, w."id", $2, r."id", now()
+         FROM "Workspace" w JOIN "Role" r ON r."workspaceId" = w."id" AND r."systemKey" = 'member'
+        WHERE w."slug" = 'clinica'`,
+      [randomUUID(), recepcao],
+    );
   } finally {
     await db.end();
   }
 }
 
+/**
+ * Ativa o Clinics SÓ no workspace `clinica`, com a CLI COMPILADA — o mesmo
+ * caminho da operação (ADR-047 §4). Dados fictícios; staging nunca é tocado.
+ * `pnpm test:e2e` builda antes, então o `dist/` existe.
+ */
+function activateClinics(): void {
+  execSync('node apps/api/dist/verticals/clinics/cli/clinics.js enable --slug clinica', {
+    cwd: path.resolve(__dirname, '..'),
+    // SÓ o necessário: nada do ambiente do shell (chaves reais exportadas) vaza
+    env: {
+      PATH: process.env.PATH,
+      NODE_ENV: 'test',
+      DATABASE_URL: E2E_DATABASE_URL,
+      JWT_SECRET: 'jwt-secret-de-e2e-nunca-em-producao-32ch',
+      TOKEN_ENCRYPTION_KEY: 'chave-de-cifra-de-e2e-nunca-em-producao-32',
+      DISABLE_JOBS: 'true',
+    },
+    stdio: 'inherit',
+  });
+}
+
 export default async function globalSetup(): Promise<void> {
   const dbName = assertIsE2eDb();
+  // fora do CI, só banco LOCAL — checado ANTES do DROP e da ativação do Clinics
+  const host = new URL(E2E_DATABASE_URL).hostname;
+  if (!process.env.CI && !['localhost', '127.0.0.1'].includes(host)) {
+    throw new Error(`E2E recusado: banco em "${host}", não local (fora do CI).`);
+  }
   if (!/^[a-z0-9_]+$/i.test(dbName)) throw new Error(`Nome de database inválido: "${dbName}"`);
   await recreateDatabase(dbName);
   execSync('pnpm exec prisma migrate deploy', {
@@ -132,4 +182,5 @@ export default async function globalSetup(): Promise<void> {
     stdio: 'inherit',
   });
   await seed();
+  activateClinics();
 }
