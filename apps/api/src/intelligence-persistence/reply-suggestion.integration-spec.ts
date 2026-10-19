@@ -16,6 +16,7 @@ import {
   type WorkspaceFixture,
 } from '../../test/integration/fixtures';
 import { resetDb } from '../../test/integration/harness';
+import { esperarBloqueadosPor } from '../../test/integration/locks';
 import {
   LLM_CLIENT,
   type LlmClient,
@@ -177,43 +178,6 @@ describe('Sugestão de resposta por IA — Entrega 9.3 (integração)', () => {
   };
 
   const propostas = () => prisma.raw.aiProposal.findMany({ orderBy: { createdAt: 'asc' } });
-
-  /**
-   * Espera N requisições ficarem BLOQUEADAS no lock de linha. É o que torna a
-   * corrida determinística: sem isto, o teste dependeria de quem chegasse
-   * primeiro ao Postgres — exatamente a intermitência que já custou caro aqui.
-   */
-  const esperarBloqueados = async (cliente: Client, quantos: number) => {
-    for (let tentativa = 0; tentativa < 200; tentativa += 1) {
-      /**
-       * `pg_locks` é a fonte certa: mostra o lock REALMENTE não concedido, no
-       * instante. `pg_stat_activity.wait_event_type` fica obsoleto em sessão
-       * ociosa — a primeira versão deste helper contava esse lixo e "esperava"
-       * por acidente.
-       *
-       * `DISTINCT pid` porque um bloqueado gera mais de uma linha (lock de
-       * tupla e de transação). E SEM filtrar pelo texto da consulta: o segundo
-       * bloqueado aparece com `query` obsoleto (a conexão consta `idle` embora
-       * a transação esteja esperando), então filtrar por `AiProposal` o perdia.
-       * Em `--runInBand`, com pg-boss em stub, as únicas sessões deste banco são
-       * as do app e esta — e a falha é RUIDOSA (a asserção quebra), nunca um
-       * verde falso.
-       */
-      const { rows } = await cliente.query<{ n: string }>(
-        `SELECT count(DISTINCT l.pid)::text AS n
-           FROM pg_locks l
-           JOIN pg_stat_activity a ON a.pid = l.pid
-          WHERE NOT l.granted
-            AND l.pid <> pg_backend_pid()
-            AND a.datname = current_database()`,
-      );
-      if (Number(rows[0].n) >= quantos) return;
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    throw new Error(
-      `esperava ${quantos} escrita(s) em AiProposal bloqueada(s) no lock e não houve`,
-    );
-  };
 
   /** Proposta de TAREFA, para separar o que a restrição de tipo atinge. */
   const seedTaskProposal = async (): Promise<string> => {
@@ -461,11 +425,11 @@ describe('Sugestão de resposta por IA — Entrega 9.3 (integração)', () => {
          * lock e a espera falhava — a corrida nunca acontecia.
          */
         const aprovacao = aprovar(proposalId).then((r) => r);
-        await esperarBloqueados(trava, 1);
+        await esperarBloqueadosPor(trava, 1, { descricao: 'escrita(s) em AiProposal' });
 
         // 2) geração LÊ o rascunho ainda pendente e para na escrita, atrás dela
         const geracao = sugerir().then((r) => r);
-        await esperarBloqueados(trava, 2);
+        await esperarBloqueadosPor(trava, 2, { descricao: 'escrita(s) em AiProposal' });
 
         // 3) libera: a aprovação commita primeiro, a geração retoma depois
         await trava.query('COMMIT');
