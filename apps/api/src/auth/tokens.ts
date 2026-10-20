@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { SESSION_ISSUED_HEADER } from '@veyra/contracts';
 import type { CookieOptions, Response } from 'express';
 
 export const ACCESS_COOKIE = 'veyra_access';
@@ -41,6 +42,9 @@ export interface SessionCookies {
 }
 
 export function setSessionCookies(res: Response, cookies: SessionCookies): void {
+  // toda emissão de sessão passa por aqui: o web troca de sessão ao ver a marca
+  // (ADR-050), sem depender de conhecer cada rota que emite sessão
+  res.setHeader(SESSION_ISSUED_HEADER, '1');
   res.cookie(ACCESS_COOKIE, cookies.access, {
     ...baseCookie(),
     maxAge: cookies.accessTtlSeconds * 1000,

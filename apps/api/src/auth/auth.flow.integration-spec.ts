@@ -1,6 +1,12 @@
 import { Controller, Get, INestApplication, Post } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import request from 'supertest';
+import {
+  SESSION_EXPECTED_SCOPE_HEADER,
+  SESSION_ISSUED_HEADER,
+  SESSION_SCOPE_HEADER,
+  sessionScopeKey,
+} from '@veyra/contracts';
 import { AuthenticatedOnly, RequirePermissions } from '../common/decorators';
 import { PrismaService } from '../prisma/prisma.service';
 import { createTestApp } from '../../test/integration/app';
@@ -264,6 +270,90 @@ describe('Auth — fluxo completo (integração HTTP)', () => {
       .set('Origin', ORIGIN)
       .set('Cookie', session.cookieHeader)
       .expect(401);
+  });
+
+  it('escopo da sessão (ADR-050): a resposta autenticada diz de quem é, pela identidade revalidada; pública e 401 não dizem', async () => {
+    const fixture2 = await createWorkspaceFixture(prisma, 'beta');
+    const owner = await prisma.raw.user.findUnique({ where: { email: OWNER_EMAIL } });
+    const membership2 = await createMembershipFixture(
+      prisma,
+      fixture2.workspaceId,
+      owner!.id,
+      fixture2.roles.member,
+    );
+    // o login é público: a sessão nova vem no corpo, não no cabeçalho
+    const entrada = await login().expect(201);
+    expect(entrada.headers[SESSION_SCOPE_HEADER]).toBeUndefined();
+    // e marca que EMITE sessão — o web troca de sessão por essa marca
+    expect(entrada.headers[SESSION_ISSUED_HEADER]).toBe('1');
+    const session = extractSession(entrada);
+
+    const me = await request(http)
+      .get('/api/auth/me')
+      .set('Cookie', session.cookieHeader)
+      .expect(200);
+    expect(me.headers[SESSION_SCOPE_HEADER]).toBe(`${owner!.id}:${ownerMembershipId}`);
+    expect(me.headers[SESSION_ISSUED_HEADER]).toBeUndefined();
+    // a MESMA chave que o web calcula a partir do corpo de /auth/me
+    expect(me.headers[SESSION_SCOPE_HEADER]).toBe(
+      sessionScopeKey(me.body.id, me.body.activeMembership.membershipId),
+    );
+
+    // a troca responde no escopo de quem pediu; as respostas seguintes, no novo
+    const trocou = await request(http)
+      .post('/api/auth/switch-workspace')
+      .set('Origin', ORIGIN)
+      .set('Cookie', session.cookieHeader)
+      .set('x-csrf-token', session.csrf)
+      .send({ membershipId: membership2 })
+      .expect(201);
+    expect(trocou.headers[SESSION_SCOPE_HEADER]).toBe(`${owner!.id}:${ownerMembershipId}`);
+    expect(trocou.headers[SESSION_ISSUED_HEADER]).toBe('1');
+    const depois = await request(http)
+      .get('/api/auth/me')
+      .set('Cookie', extractSession(trocou).cookieHeader)
+      .expect(200);
+    expect(depois.headers[SESSION_SCOPE_HEADER]).toBe(`${owner!.id}:${membership2}`);
+
+    const negado = await request(http).get('/api/auth/me').expect(401);
+    expect(negado.headers[SESSION_SCOPE_HEADER]).toBeUndefined();
+    const saude = await request(http).get('/api/health').expect(200);
+    expect(saude.headers[SESSION_SCOPE_HEADER]).toBeUndefined();
+  });
+
+  it('aba desatualizada (ADR-050): escopo esperado de OUTRA sessão é recusado com 409 ANTES de executar, já com o escopo verdadeiro', async () => {
+    const session = extractSession(await login().expect(201));
+    const owner = await prisma.raw.user.findUnique({ where: { email: OWNER_EMAIL } });
+    const verdadeiro = `${owner!.id}:${ownerMembershipId}`;
+    const criar = (nome: string, esperado?: string) => {
+      const req = request(http)
+        .post('/api/contacts')
+        .set('Origin', ORIGIN)
+        .set('Cookie', session.cookieHeader)
+        .set('x-csrf-token', session.csrf);
+      if (esperado) req.set(SESSION_EXPECTED_SCOPE_HEADER, esperado);
+      return req.send({ name: nome });
+    };
+    const contatos = (nome: string) => prisma.raw.contact.count({ where: { name: nome } });
+
+    // a aba acha que é de outra pessoa (o cookie mudou em outra aba)
+    const recusada = await criar('Contato da Aba Velha', 'outra-pessoa:outro-workspace').expect(
+      409,
+    );
+    expect(recusada.headers[SESSION_SCOPE_HEADER]).toBe(verdadeiro);
+    expect(await contatos('Contato da Aba Velha')).toBe(0);
+    // leitura também: nada de dado de uma sessão que a aba não espera
+    await request(http)
+      .get('/api/contacts')
+      .set('Cookie', session.cookieHeader)
+      .set(SESSION_EXPECTED_SCOPE_HEADER, 'outra-pessoa:outro-workspace')
+      .expect(409);
+
+    // o escopo certo passa; sem o cabeçalho (clientes de API), nada muda
+    await criar('Contato Escopo Certo', verdadeiro).expect(201);
+    await criar('Contato Sem Cabecalho').expect(201);
+    expect(await contatos('Contato Escopo Certo')).toBe(1);
+    expect(await contatos('Contato Sem Cabecalho')).toBe(1);
   });
 
   it('sem sessão: rotas privadas retornam 401', async () => {

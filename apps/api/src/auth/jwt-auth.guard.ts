@@ -1,8 +1,19 @@
-import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  CanActivate,
+  ConflictException,
+  ExecutionContext,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Reflector } from '@nestjs/core';
 import { ClsService } from 'nestjs-cls';
-import type { Request } from 'express';
+import {
+  SESSION_EXPECTED_SCOPE_HEADER,
+  SESSION_SCOPE_HEADER,
+  sessionScopeKey,
+} from '@veyra/contracts';
+import type { Request, Response } from 'express';
 import { AuthContext, IS_PUBLIC_KEY } from '../common/decorators';
 import { PrismaService } from '../prisma/prisma.service';
 import { AccessTokenPayload } from './auth.service';
@@ -122,6 +133,18 @@ export class JwtAuthGuard implements CanActivate {
       workspaceId: membership?.workspaceId ?? null,
       sessionId: payload.sessionId,
     };
+    // de qual sessão é esta resposta (ADR-050): o web descarta a que não for da
+    // aba — p. ex. depois de um login ou troca de workspace em OUTRA aba, que
+    // muda o cookie de todas. Ids que a própria sessão já recebe em /auth/me.
+    const escopo = sessionScopeKey(payload.sub, payload.membershipId);
+    context.switchToHttp().getResponse<Response>().setHeader(SESSION_SCOPE_HEADER, escopo);
+    // a aba diz de qual sessão acha que é; se o cookie é de OUTRA (login ou troca
+    // em outra aba), nada é executado: a mutação da aba desatualizada sairia com
+    // a identidade nova. A resposta já leva o escopo verdadeiro, e a aba recomeça
+    const esperado = request.headers[SESSION_EXPECTED_SCOPE_HEADER];
+    if (typeof esperado === 'string' && esperado !== escopo) {
+      throw new ConflictException('A sessão deste navegador mudou em outra aba.');
+    }
     return true;
   }
 }

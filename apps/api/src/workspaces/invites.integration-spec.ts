@@ -1,4 +1,5 @@
 import { INestApplication } from '@nestjs/common';
+import { SESSION_ISSUED_HEADER } from '@veyra/contracts';
 import request from 'supertest';
 import { PrismaService } from '../prisma/prisma.service';
 import { createTestApp } from '../../test/integration/app';
@@ -104,6 +105,8 @@ describe('Invites — emissão, revogação e aceite transacional (integração)
     expect(res.body.email).toBe('nova@veyra.test');
     expect(res.body.activeMembership.workspaceId).toBe(workspaceId);
     expect(res.body.activeMembership.roleName).toBe('Member');
+    // a resposta marca que emitiu sessão: o web troca de sessão por ela (ADR-050)
+    expect(res.headers[SESSION_ISSUED_HEADER]).toBe('1');
     // sessão emitida no aceite funciona
     const setCookies = (res.headers['set-cookie'] as unknown as string[]) ?? [];
     const cookieHeader = setCookies.map((c) => c.split(';')[0]).join('; ');

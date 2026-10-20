@@ -1,5 +1,6 @@
 import type { INestApplication } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
+import { SESSION_ISSUED_HEADER, SESSION_SCOPE_HEADER } from '@veyra/contracts';
 import { json } from 'express';
 
 /**
@@ -25,6 +26,11 @@ export function configureHttp(app: INestApplication, webOrigin: string): void {
       },
     }),
   );
-  // CORS estrito: só o front conhecido, com credenciais (cookies)
-  app.enableCors({ origin: webOrigin, credentials: true });
+  // CORS estrito: só o front conhecido, com credenciais (cookies). O escopo da
+  // sessão (ADR-050) precisa ser legível pelo web se as origens forem diferentes
+  app.enableCors({
+    origin: webOrigin,
+    credentials: true,
+    exposedHeaders: [SESSION_SCOPE_HEADER, SESSION_ISSUED_HEADER],
+  });
 }

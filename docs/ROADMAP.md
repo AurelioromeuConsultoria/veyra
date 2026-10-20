@@ -151,7 +151,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
   - a decisão jurídica sobre exclusão e retenção;
   - a gestão de equipe pela interface.
 
-  Além dos quatro, **a limpeza do cache da tela no login e na perda de sessão** (Core; `docs/MEMORY/technical-debt.md`, achado do `security` na F2.3). Sem ela, na mesma aba, a sessão seguinte pode ver dados de paciente da anterior.
+  O vazamento do cache da tela entre sessões na mesma aba, achado do `security` na F2.3, foi corrigido antes de qualquer publicação da F2.3 (ADR-050).
 
   Até lá, staging e testes usam somente dados fictícios.
 

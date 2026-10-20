@@ -55,6 +55,38 @@ export default tseslint.config(
     },
   },
   {
+    // ADR-050 / ARCHITECTURE §10: só `lib/api.ts` faz fetch. É lá que mora o
+    // descarte de resposta de outra sessão (época, abort, escopo); um fetch fora
+    // dele escaparia de tudo isso.
+    files: ['apps/web/src/**/*.{ts,tsx}'],
+    ignores: ['apps/web/src/lib/api.ts', 'apps/web/src/**/*.test.{ts,tsx}', 'apps/web/src/test/**'],
+    rules: {
+      'no-restricted-globals': [
+        'error',
+        { name: 'fetch', message: 'ADR-050: só apps/web/src/lib/api.ts faz fetch.' },
+        { name: 'XMLHttpRequest', message: 'ADR-050: rede só por lib/api.ts.' },
+        { name: 'EventSource', message: 'ADR-050: rede só por lib/api.ts.' },
+        { name: 'WebSocket', message: 'ADR-050: rede só por lib/api.ts.' },
+      ],
+      'no-restricted-properties': [
+        'error',
+        { object: 'window', property: 'fetch', message: 'ADR-050: só lib/api.ts faz fetch.' },
+        { object: 'globalThis', property: 'fetch', message: 'ADR-050: só lib/api.ts faz fetch.' },
+        { object: 'self', property: 'fetch', message: 'ADR-050: só lib/api.ts faz fetch.' },
+        {
+          object: 'navigator',
+          property: 'sendBeacon',
+          message: 'ADR-050: rede só por lib/api.ts.',
+        },
+        ...['XMLHttpRequest', 'WebSocket', 'EventSource'].map((property) => ({
+          object: 'window',
+          property,
+          message: 'ADR-050: rede só por lib/api.ts.',
+        })),
+      ],
+    },
+  },
+  {
     // BARREIRA do ADR-027: o módulo `intelligence` não alcança o banco. As
     // portas são interfaces e os adaptadores Prisma vivem em
     // `src/intelligence-persistence/`. Sem exceção aqui dentro — o teste

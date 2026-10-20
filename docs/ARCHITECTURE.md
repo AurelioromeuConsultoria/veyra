@@ -155,6 +155,10 @@ Direção de dependência: vertical → Core. Nunca o contrário. A skill `creat
 - SPA React + Vite; estado de servidor em TanStack Query, estado de UI em store leve — nunca duplicar estado de servidor.
 - Tabelas densas com TanStack Table; formulários com React Hook Form + resolvers Zod dos contratos.
 - `lib/api.ts` é o único lugar com fetch; auth por cookies httpOnly (refresh automático em 401 com deduplicação de refresh concorrente).
+- **Um cache por sessão (ADR-050).** O `QueryClient` não é global: `SessionQueryProvider` cria um a cada troca de sessão (login, logout, sessão perdida, outra identidade ou outro workspace) e remonta a árvore; quando a aba volta a ficar visível, relê `/auth/me`. `lib/session-scope.ts` guarda o escopo e a época da sessão. `lib/api.ts` é o único lugar com fetch (o lint recusa `fetch` em qualquer outro arquivo do web) e faz o protocolo de sessão:
+  - declara o escopo esperado (`X-Veyra-Expected-Scope`), e o guard recusa com 409, antes de executar, a requisição de uma aba desatualizada;
+  - aborta e descarta a resposta de outra época ou de outro escopo (`X-Veyra-Scope`);
+  - troca a sessão ao ver a marca de sessão emitida (`X-Veyra-New-Session`, posta por `setSessionCookies`). Uma tela nova que faça login, troca de workspace ou aceite de convite **não** chama nada além da API.
 - Componentes: primitivos acessíveis Radix/shadcn à la carte em `components/ui/`; componentes de domínio por pasta. Direção visual em `docs/DESIGN_DIRECTION.md`.
 
 ## 11. Padrões utilizados (e onde)

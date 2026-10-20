@@ -1948,7 +1948,7 @@ Implementa o item 9 do adendo 2, a parte de telas da F2. A revisão de 2026-10-2
 
    Ficaram como dívida, com gatilho, em `docs/MEMORY/technical-debt.md`:
    - a paginação por cursor dos pacientes;
-   - a limpeza do cache do TanStack Query no login e na perda de sessão. É do Core e vale para todas as telas. Na mesma aba, uma busca com `staleTime` de 30 s pode servir o resultado da sessão anterior **sem recarregar**, e isso é vazamento entre sessões e entre workspaces. Por isso a dívida entrou nas dependências de dado real do ROADMAP e em `docs/SECURITY.md`, e precisa vir **antes de qualquer dado real**.
+   - a limpeza do cache do TanStack Query no login e na perda de sessão. É do Core e vale para todas as telas. Na mesma aba, uma busca com `staleTime` de 30 s pode servir o resultado da sessão anterior **sem recarregar**, e isso é vazamento entre sessões e entre workspaces. Por isso a dívida entrou nas dependências de dado real do ROADMAP e em `docs/SECURITY.md`, e precisa vir **antes de qualquer dado real**. **Atualização (2026-10-20):** a revisão transformou a dívida em bloqueio da publicação da F2.3, e ela foi corrigida no Core pelo ADR-050.
 
    Ficaram como sugestão, sem gatilho próprio:
    - a coluna "Desde" dos pacientes mostra a hora do navegador (`fullStamp`), como o resto do Core, e não a da unidade;
@@ -2011,3 +2011,174 @@ O inventário de todas as colunas de data e hora (2026-10-19) mostrou o seguinte
 - **Varredura do despacho com corte calculado no Node.** Rejeitada: poria uma fila no relógio do Node e a exporia ao desvio entre instâncias.
 - **Trigger também no outbox.** Desnecessário: `nextRetryAt` só é agendado pelo Node na criação, e o DEFAULT resolve.
 - **Tolerância (folga de N segundos) nos claims.** Rejeitada: esconde o desvio sem eliminar o par misto.
+
+## ADR-050 — Cache da tela por sessão: um cache por identidade e workspace, e resposta de outra sessão descartada
+
+**Status:** aceito (pedido pela revisão de 2026-10-20, que bloqueou a publicação da F2.3 até esta correção) · **Data:** 2026-10-20
+
+**Contexto.** O passe de `security` da F2.3 registrou como dívida, e a revisão de 2026-10-20 confirmou no código e transformou em bloqueio, um vazamento do cache do TanStack Query entre sessões na mesma aba:
+
+- **O cache só era limpo no logout explícito.** O login só trocava o usuário da sessão (`setQueryData` de `/auth/me`).
+- **Quase nenhuma chave identifica a sessão.** `['contacts', params]`, `['clinics', 'patients', 'search', busca]` e as demais não levam identidade nem workspace. A exceção é o status do Clinics, que leva a membership.
+- **A expiração sem logout não limpava nada.** Com o refresh recusado, cada requisição falha com 401, mas a tela continua montada e `/auth/me` fica no cache (60 s). O recomeço vai para `/login` sem recarregar a página.
+- **Consequência:** quem entra em seguida na mesma aba, inclusive em outro workspace, recebe do cache os dados da sessão anterior:
+  - na hora, enquanto a consulta recarrega;
+  - e, nas consultas com `staleTime` (a busca de paciente e a de contato do Clinics, 30 s), sem nem recarregar, podendo escolher o resultado.
+
+  Vale para o CRM, mesmo com o Clinics desativado.
+
+- **Requisição em voo:** a resposta de uma requisição da sessão anterior pode chegar depois do novo login e gravar no cache novo.
+- **Outra aba:** os cookies são da origem, não da aba. Um login ou uma troca de workspace em outra aba muda a identidade das próximas respostas desta, sem que ela saiba.
+
+**Decisão.**
+
+1. **Escopo da sessão** é `userId:membershipId` (`-` sem workspace). `apps/web/src/lib/session-scope.ts` guarda três coisas:
+   - o escopo atual: desconhecido, sem sessão ou um escopo;
+   - uma **época**, que sobe a cada troca de sessão;
+   - as requisições em voo.
+2. **Um cache por sessão.** O `QueryClient` deixa de ser global. O `SessionQueryProvider` cria um novo a cada troca de sessão, semeado com o usuário quando ele já é conhecido, e remonta a árvore abaixo dele. O anterior é limpo (`clear()`, que também cancela retentativas) e descartado.
+   - **Nada atravessa a troca:** nem consultas, nem mutações, nem estado local de componentes.
+   - **É o mecanismo equivalente a pôr identidade e workspace em todas as chaves.** A separação é física, e não depende de cada uma das mais de 80 chaves do web nem de quem escrever a próxima.
+3. **Quando a sessão troca:**
+   - **resposta que emite sessão:** login, troca de workspace e aceite de convite. Todas passam por `setSessionCookies`, que marca a resposta com `X-Veyra-New-Session`, e o `lib/api.ts` troca a sessão ao ver a marca. O login troca sempre, mesmo que a identidade seja a mesma. Nenhuma tela precisa lembrar disso, e uma rota nova que emita sessão já vem coberta;
+   - **logout;**
+   - **perda de sessão:** o refresh responde 401 (expirou ou foi revogada). Falha de rede, 429 ou 5xx no refresh **não** derrubam a sessão; a requisição só falha. Um refresh que já estava em voo quando a sessão trocou não tem efeito nenhum, e o refresh seguinte **espera** ele terminar: o mesmo token apresentado duas vezes é reuso para o servidor, que derruba a família inteira (a troca de workspace não rotaciona o token). Entre abas da mesma origem, `navigator.locks` faz um refresh de cada vez. Só as **esperas** têm prazo: a de quem chama (15 s) e a pela trava entre abas (30 s). Estourou, a requisição falha e a sessão fica, como numa falha de rede. O pedido de refresh em si **nunca** é abortado: abortar no navegador não cancela a rotação no servidor, o `Set-Cookie` se perderia e o próximo refresh reapresentaria o token velho, o que é reuso. Ele segue segurando a trava até terminar e, quando o navegador oferece a trava (contexto seguro: staging e produção são HTTPS, ADR-046, e `localhost` também), nunca sai sem ela. O logout também não é abortado pela troca de sessão (a época continua conferida): abortado depois de o servidor revogar, o cookie de limpeza se perderia e o próximo refresh seria reuso. O custo, consciente, é o inverso: o navegador sempre aplica esse cookie de limpeza, e se um login de outra pessoa gravou cookie novo entre a execução do logout e a chegada da resposta, a limpeza apaga o cookie novo. Essa sessão cai no login na próxima requisição, sem reuso e sem vazamento. Para `/auth/me`, um 401 que o refresh não resolveu leva ao login de qualquer forma, e aí a aba troca (falha fechada);
+   - **refresh ou `/auth/me` com outra identidade ou outro workspace.** Inclui a membership desativada: o refresh responde 201 **sem workspace**, e o escopo vira `userId:-`;
+   - **resposta de outra sessão:** toda resposta autenticada traz `X-Veyra-Scope`, escrito pelo `JwtAuthGuard` com a identidade **revalidada** no banco. Se ele difere do escopo da aba, a resposta é descartada e a aba recomeça, relendo `/auth/me`. É o caso do login ou da troca de workspace em outra aba;
+   - **a aba volta a ficar visível:** relê `/auth/me`. A aba que perdeu a sessão, ou cujo cookie mudou em outra aba, recomeça na hora, sem esperar o próximo clique. Uma aba em segundo plano não faz requisição nenhuma (o polling para), e sem isso mostraria a tela antiga até a primeira ação.
+4. **Resposta de requisição antiga nunca chega a quem pediu.** `lib/api.ts` continua sendo o único lugar com fetch e anota a época no início de cada requisição. Na troca de sessão:
+   - as requisições em voo são **abortadas**;
+   - qualquer resposta que ainda chegue com época antiga é **descartada** com `SessaoEncerradaError`. Isso vale também para erros e para a repetição depois do refresh.
+
+   O cache por sessão (item 2) já prende as consultas e mutações da árvore velha ao cache velho. **O que só a época faz** é o que fica fora dele, e é por isso que ela não é redundante:
+   - impedir que um `/auth/me` ou um refresh atrasado volte a adotar a identidade anterior;
+   - impedir que o escopo antigo de uma resposta atrasada seja lido como "o cookie mudou", o que derrubaria a sessão nova (por isso a época é conferida **antes** do escopo);
+   - não entregar dado nem erro antigo a código que ainda espera a resposta.
+
+   O login (`POST /api/auth/login`, exatamente) fica de fora, porque a resposta dele **é** a sessão nova. As consultas não retentam `SessaoEncerradaError`.
+
+5. **A requisição declara de qual sessão é, e o servidor recusa a divergência.** Com o escopo conhecido, toda requisição do web leva `X-Veyra-Expected-Scope`. Depois de revalidar a sessão, o `JwtAuthGuard` compara esse valor com o escopo do cookie. Se forem diferentes, responde **409 antes de executar qualquer coisa**, já com o `X-Veyra-Scope` verdadeiro, e a aba recomeça na sessão do cookie.
+   - **O que fecha:** a mutação de uma aba desatualizada. Os cookies são da origem, não da aba. Depois de um login ou de uma troca de workspace em outra aba, a próxima requisição da aba velha, que pode vir horas depois (o formulário preenchido e enviado na volta), seria executada com a identidade nova: autoria e auditoria em nome de outra pessoa, ou escrita no workspace errado. Numa recepção de clínica, duas contas no mesmo navegador são a regra.
+   - **Sem o cabeçalho, nada muda:** login, refresh, rotas públicas e clientes de API com `Bearer` não o mandam.
+   - **Exceção conhecida:** o download de anexo por link (`<a href>` no inbox) não passa pelo `lib/api.ts` e não leva o cabeçalho. Ele não vaza entre workspaces: o id do arquivo é do workspace, e o de outro dá 404. É só leitura, com a identidade do cookie.
+   - **Só o logout que o servidor confirmou leva a aba a "sem sessão".** O de uma aba desatualizada recebe o 409 e recomeça na sessão do cookie. O que falha por rede ou 5xx mantém a sessão e avisa que não foi possível sair. Nenhum dos dois finge que o navegador saiu, com o cookie ainda vivo.
+
+**Consequências.**
+
+- Toda troca de sessão remonta a árvore: formulários e drawers abertos fecham. Numa troca de identidade, é o desejado.
+- A expiração sem logout deixa de mostrar erros sobre a tela velha: a aba vai para o login, sem dado.
+- Um cabeçalho a mais em toda resposta autenticada, com ids que a própria sessão já recebe em `/auth/me`. O CORS o expõe para o caso de origens diferentes; em staging, web e API são a mesma origem.
+- Um cabeçalho a mais em toda requisição do web com sessão conhecida. Para origens diferentes, o CORS do Nest já reflete os cabeçalhos pedidos na pré-verificação.
+- **Residual, anterior a este ADR e fora do cliente:** se a resposta de um refresh se perde depois de o servidor rotacionar (F5 ou aba fechada no meio, 504 do proxy enquanto a API ainda conclui), o próximo refresh reapresenta o token velho, e o servidor trata isso como reuso: derruba todas as sessões do usuário. Falha fechada, sem vazamento. Fica como dívida, com a decisão para um ADR próprio: separar o motivo da revogação (rotação ou logout), ou uma carência curta para o token recém-rotacionado.
+- **Fora do escopo:** uma permissão perdida **dentro** da mesma sessão (só o `tokenVersion` mudou) não troca o cache. O servidor já nega as leituras novas, e o `/auth/me` em cache pode mostrar as permissões antigas por até 60 s. Não é vazamento entre sessões.
+
+**Alternativas.**
+
+- **Identidade e workspace em todas as chaves** (prefixo, ou `queryKeyHashFn` com o escopo). Rejeitada como mecanismo principal: depende de cada chave e de cada `setQueryData`, e não resolve a resposta em voo nem a troca em outra aba.
+- **`queryClient.clear()` no login e na perda de sessão, com o mesmo client.** Rejeitada sozinha: os observadores montados guardam a referência à consulta removida, e uma resposta em voo volta a aparecer neles. O `onSuccess` de uma mutação antiga também escreveria no cache novo.
+- **Recarregar a página na troca.** Limpa o cache, mas não impede a resposta em voo de ser tratada antes do reload, e depende de cada caminho de troca lembrar de recarregar.
+- **Deixar a mutação da aba desatualizada como dívida.** Foi a primeira versão deste ADR. O passe de `security` mostrou que a janela vai até a próxima requisição da aba velha, e não até "logo depois da troca", e que a correção cabe em poucas linhas. Rejeitada.
+
+**Testes.**
+
+- **Web, unidade (`api` e `session-scope`):**
+  - a resposta em voo que chega depois da troca é descartada, com e sem abort, inclusive o erro;
+  - a resposta com outro `X-Veyra-Scope` é descartada e a aba recomeça, e a resposta atrasada com o escopo antigo não derruba a sessão nova;
+  - o refresh com 401 é perda de sessão; com falha de rede, 429 ou 503, não é; sem workspace, troca; em voo durante uma troca, não tem efeito;
+  - a requisição declara o escopo esperado, e o 409 recomeça a aba;
+  - a marca de sessão emitida troca a sessão (login, aceite de convite, troca de workspace);
+  - o login não é abortado, e a isenção dele é exata.
+- **Web, o App inteiro na mesma aba, em StrictMode, com um servidor falso que responde como o real (escopo, 409, marca de sessão):**
+  - duas sessões, em workspaces diferentes, com expiração sem logout; todo cache anterior fica vazio;
+  - a busca global, com `staleTime` de 30 s, não reaparece para a sessão seguinte no mesmo termo;
+  - a resposta antiga que chega depois do novo login não aparece;
+  - a troca feita em outra aba, pela próxima requisição e pela volta da aba à frente;
+  - logout pela tela; o logout de uma aba desatualizada, que não encerra a sessão da outra pessoa nem finge que o navegador saiu; e o logout que falha, que mantém a sessão e avisa.
+- **Integração:** o cabeçalho reflete a identidade revalidada, muda com a troca de workspace e não existe em rota pública nem no 401; o escopo esperado divergente é recusado com 409 antes de executar; login, troca de workspace e aceite de convite marcam a sessão emitida.
+- **E2E, navegador real:**
+  - mesma aba: expiração por revogação no banco e login em outro workspace, sem nenhum dado da sessão anterior. Uma resposta antiga fica retida até depois do novo login e é **abortada** pela troca: o e2e afirma o abort pelo `requestfailed` do pedido retido; a resposta que chega mesmo assim é provada no Vitest;
+  - duas abas: o formulário enviado pela aba desatualizada não grava nada.
+- **Mutação:** cada mecanismo desfeito faz o teste dele falhar.
+
+**Implementação (2026-10-20).**
+
+- **Contratos:** `SESSION_SCOPE_HEADER`, `SESSION_EXPECTED_SCOPE_HEADER`, `SESSION_ISSUED_HEADER` e `sessionScopeKey`, a mesma chave no servidor e no web.
+- **API:** o `JwtAuthGuard`, depois de revalidar a sessão, escreve `X-Veyra-Scope` e recusa com 409 o escopo esperado divergente; `setSessionCookies` marca a sessão emitida; o CORS expõe os dois cabeçalhos. Testes de integração no fluxo de auth e no aceite de convite.
+- **Web:**
+  - `lib/session-scope.ts`: escopo, época, requisições em voo e a troca de sessão;
+  - `lib/api.ts`: um protocolo de sessão só, para JSON e upload. Declara o escopo esperado; aborta e descarta por época e por escopo; o refresh distingue 401 (sessão perdida) de rede, 429 e 5xx, e não tem efeito se a sessão trocou enquanto ele voava; a marca de sessão emitida troca a sessão;
+  - `lib/session-query.tsx`: o `SessionQueryProvider`, que troca de `QueryClient`, remonta a árvore e relê `/auth/me` quando a aba volta a ficar visível;
+  - `lib/session.ts`: o logout vira troca de sessão, e `/auth/me` adota ou troca o escopo;
+  - lint: `fetch` fora de `lib/api.ts` é erro, inclusive `window.fetch` e `globalThis.fetch`.
+- **Testes:** 31 de unidade, 8 com o App inteiro, 2 de integração (mais uma asserção no aceite de convite) e 2 e2e.
+- **Mutação:** cada mecanismo desfeito faz o teste dele falhar:
+  - sem cache novo por sessão;
+  - sem época;
+  - sem conferir o escopo do servidor;
+  - sem abort;
+  - refresh 401 sem perda de sessão;
+  - qualquer falha de refresh como perda;
+  - sem declarar o escopo;
+  - guard sem conferir o escopo esperado;
+  - refresh sem época;
+  - troca de workspace sem troca de sessão;
+  - isenção do login por prefixo;
+  - sem reler a sessão quando a aba volta;
+  - sem limpar o cache anterior;
+  - sem esperar o refresh de outra época;
+  - sem a trava entre abas;
+  - sem prazo na espera pela trava;
+  - sem prazo na espera de quem chama pelo refresh;
+  - pedindo outro refresh com o de outra época ainda pendurado;
+  - logout abortável pela troca de sessão;
+  - logout que falha forçando "sem sessão";
+  - adotando corpo de sessão sem validar.
+- **Terceira rodada do `security` (2026-10-20),** sobre a versão com o 409 e a marca de sessão. Aprovou com ressalvas, e esta versão incorpora:
+  - o refresh encadeado entre épocas: o seguinte espera o anterior, porque a troca de workspace não rotaciona o token e dois refreshes com o mesmo token derrubariam todas as sessões;
+  - a trava entre abas, porque a releitura ao voltar à aba sincroniza duas janelas;
+  - o corpo de sessão validado antes de trocar;
+  - o texto sobre a marca no refresh, tratado por adoção;
+  - o lint de `XMLHttpRequest`, `EventSource`, `WebSocket` e `navigator.sendBeacon`.
+- **Confirmação final do `security` (2026-10-20):** aprovou, e entraram o prazo da trava entre abas e o lint dessas APIs também via `window`. O prazo que entrou também no **pedido** de refresh foi retirado na rodada seguinte do `reviewer`: abortar o pedido não cancela a rotação no servidor e levaria a reuso. O que tem prazo é a espera de quem chama. Fica como sugestão, sem mudança, um aviso na tela quando o logout de uma aba desatualizada a faz recomeçar na sessão de outra pessoa.
+- **Revisão delta do `reviewer` (2026-10-20):**
+  - o e2e passa a **afirmar** o abort (`requestfailed` do pedido retido);
+  - o logout de aba desatualizada não força a tela de login;
+  - o `/auth/me` só adota a sessão se a época não mudou, como o refresh;
+  - a época nunca volta a zero, nem no reinício para testes;
+  - a exceção do download por link está registrada;
+  - na rodada seguinte: o pedido de refresh deixou de ser abortado (prazo só nas esperas, com teste), e o logout que falha mantém a sessão e avisa.
+- **Quarta rodada do `security` (2026-10-20):** aprovou, e entraram:
+  - o logout fora do abort;
+  - o teste do refresh de outra época pendurado;
+  - o aviso de que a pessoa continua conectada;
+  - a premissa de HTTPS;
+  - o caso do Safari sem `AbortSignal.timeout`;
+  - o residual do reuso no servidor, registrado como dívida.
+- **Revisão do `reviewer` (2026-10-20).** Aprovou com ressalvas, e esta versão incorpora:
+  - o teste da busca com `staleTime`, que o texto citava sem existir;
+  - o e2e descrito como "retido e abortado";
+  - a seção 10 da ARCHITECTURE atualizada;
+  - o papel próprio da época escrito no item 4;
+  - a marca de sessão emitida no lugar dos caminhos literais (o aceite de convite também emite sessão);
+  - a releitura da sessão quando a aba volta;
+  - os testes do App em StrictMode, com 409 e conferindo a limpeza do cache anterior;
+  - o protocolo único para JSON e upload;
+  - o lint de `window.fetch` e `globalThis.fetch`.
+- **Segunda rodada do `security` (2026-10-20).** Aprovou a primeira versão com ressalvas, e esta versão incorpora:
+  - a mutação da aba desatualizada, que era dívida e virou o item 5 da decisão;
+  - a correção do caso da membership desativada (refresh 201 sem workspace, não 401), com teste;
+  - o refresh atento à época;
+  - a isenção exata do login;
+  - a troca de workspace centralizada;
+  - a regra de lint;
+  - a trava na função de reinício para testes.
+
+  Ficaram como observação, sem mudança:
+  - com escopo ainda desconhecido (aba recém-aberta), a aba aceita o escopo de qualquer resposta. As únicas requisições nesse estado são `/auth/me` e o login;
+  - a perda de permissão dentro da mesma sessão (ver Consequências).
+
+- **Achado dos testes: a ordem das conferências.** A primeira versão conferia o escopo do cabeçalho antes da época. Uma resposta atrasada da sessão encerrada, com o escopo antigo, era lida como "o cookie mudou" e derrubava a sessão nova. A época vem primeiro, com teste próprio.
+- **Achado do e2e, defeito antigo do Core:** a tela de Contatos congelava a aba quando se digitava na busca antes da primeira resposta da lista.
+  - **Causa:** `useReactTable` recebia um `[]` novo a cada render. O TanStack Table via "dados novos" e agendava em microtarefa a volta à página 0, num laço que não deixava a resposta da rede ser processada.
+  - **Não tinha relação com a sessão:** reproduz com o código anterior a este ADR, e só aparecia com a rede ou a máquina lentas.
+  - **Correção em commit próprio:** um vazio estável, com teste de regressão que não trava o runner se o defeito voltar.

@@ -2,7 +2,7 @@ import { LogOut, Moon, Search, Sun } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { currentSection, useNavGroups } from '../../lib/nav';
-import { hasPermission, useLogout, useSession } from '../../lib/session';
+import { hasPermission, logoutFalhou, useLogout, useSession } from '../../lib/session';
 import { useTheme } from '../../lib/theme';
 import { GlobalSearch } from './GlobalSearch';
 import { NotificationBell } from './NotificationBell';
@@ -158,6 +158,11 @@ export function AppHeader() {
         >
           <LogOut size={13} aria-hidden /> Sair
         </button>
+        {logoutFalhou(logout.error) ? (
+          <span role="alert" className="text-data-sm text-negative">
+            Não foi possível sair — você continua conectado neste navegador. Tente de novo.
+          </span>
+        ) : null}
       </div>
 
       <GlobalSearch open={searchOpen} onOpenChange={setSearchOpen} />
