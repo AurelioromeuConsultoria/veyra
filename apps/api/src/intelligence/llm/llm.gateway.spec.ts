@@ -9,8 +9,10 @@ const WS = '6f1c2a5e-0b8e-4c1f-9a3d-2b7e8f9a0c1d';
 class SpyProvider implements LlmClient {
   readonly model = 'fake';
   calls: LlmRequest[] = [];
-  async complete(request: LlmRequest) {
+  sinais: AbortSignal[] = [];
+  async complete(request: LlmRequest, signal: AbortSignal) {
     this.calls.push(request);
+    this.sinais.push(signal);
     return { kind: 'ok' as const, text: '{}', inputTokens: 1, outputTokens: 1 };
   }
 }
@@ -31,32 +33,37 @@ describe('LlmGateway — ponto único até o provedor (ADR-047 E6)', () => {
     gateway = new LlmGateway(provider, restriction);
   });
 
-  it('pedido SEM escopo é recusado e nada sai', async () => {
-    const outcome = await gateway.complete(base as never);
-    expect(outcome).toEqual({ kind: 'restricted' });
+  it('pedido SEM escopo, ou com escopo VAZIO, é restrito — declarar "nenhum contato" não é atalho', async () => {
+    expect(await gateway.verdict(undefined)).toBe('restricted');
+    expect(await gateway.verdict({ workspaceId: WS, contactIds: [] })).toBe('restricted');
     expect(provider.calls).toEqual([]);
   });
 
-  it('escopo VAZIO também é recusado — declarar "nenhum contato" não é atalho', async () => {
-    const outcome = await gateway.complete({ ...base, scope: { workspaceId: WS, contactIds: [] } });
-    expect(outcome).toEqual({ kind: 'restricted' });
-    expect(provider.calls).toEqual([]);
-  });
-
-  it('contato restrito é recusado antes da rede', async () => {
+  it('contato restrito é restrito; liberado é permitido', async () => {
     restrictedIds.add('c1');
-    const outcome = await gateway.complete({
-      ...base,
-      scope: { workspaceId: WS, contactIds: ['c1'] },
-    });
-    expect(outcome).toEqual({ kind: 'restricted' });
+    expect(await gateway.verdict({ workspaceId: WS, contactIds: ['c1'] })).toBe('restricted');
+    expect(await gateway.verdict({ workspaceId: WS, contactIds: ['c2'] })).toBe('allowed');
     expect(provider.calls).toEqual([]);
   });
 
-  it('liberado: o provedor recebe o pedido SEM o escopo', async () => {
-    await gateway.complete({ ...base, scope: { workspaceId: WS, contactIds: ['c2'] } });
-    expect(provider.calls).toHaveLength(1);
-    expect(provider.calls[0]).toEqual(base);
+  it('sob a guarda: o provedor recebe o pedido SEM o escopo, e o sinal de aborto da guarda', async () => {
+    const controle = new AbortController();
+    await gateway.completeUnderGuard(
+      { ...base, scope: { workspaceId: WS, contactIds: ['c2'] } },
+      controle.signal,
+    );
+    expect(provider.calls).toEqual([base]);
+    expect(provider.sinais).toEqual([controle.signal]);
+  });
+
+  it('não existe chamada ao provedor fora da guarda: o gateway só tem `completeUnderGuard`', () => {
+    expect((gateway as unknown as Record<string, unknown>).complete).toBeUndefined();
+    const fonte = readFileSync(join(__dirname, 'llm.gateway.ts'), 'utf8');
+    // a única chamada ao provedor está dentro de `completeUnderGuard`
+    const chamadas = [...fonte.matchAll(/this\.provider\.complete\(/g)];
+    expect(chamadas).toHaveLength(1);
+    const dono = fonte.lastIndexOf('completeUnderGuard(', chamadas[0].index);
+    expect(fonte.slice(dono, chamadas[0].index)).not.toMatch(/\n {2}[a-zA-Z]+\(/);
   });
 
   it('só o gateway injeta o provedor: ninguém mais na API cita o provedor', () => {

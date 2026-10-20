@@ -7,6 +7,13 @@ import type { LlmClient, LlmOutcome, LlmRequest } from './llm.client';
 const DEFAULT_MODEL = 'claude-sonnet-5';
 
 /**
+ * Opções do SDK (ADR-047 adendo 6 §4, aprovado): prazo de 60 s e NENHUMA
+ * retentativa automática. Cada retentativa do SDK reenviaria o prompt inteiro
+ * sem reconferir a restrição; a nova tentativa é um uso novo, pela guarda.
+ */
+export const OPCOES_DO_SDK = { timeout: 60_000, maxRetries: 0 } as const;
+
+/**
  * O conteúdo escrito por terceiros (mensagem de contato) entra SEMPRE assim:
  * delimitado e explicitamente rotulado como não confiável. Combinado com a
  * ausência de ferramenta de escrita (ADR-029), instrução embutida no texto do
@@ -32,10 +39,15 @@ export class AnthropicClient implements LlmClient {
     const apiKey = config.get<string>('ANTHROPIC_API_KEY');
     this.model = config.get<string>('AI_MODEL') ?? DEFAULT_MODEL;
     // sem chave o produto continua funcionando: cada capacidade degrada
-    this.client = apiKey ? new Anthropic({ apiKey }) : null;
+    this.client = apiKey ? new Anthropic({ apiKey, ...OPCOES_DO_SDK }) : null;
   }
 
-  async complete(request: LlmRequest): Promise<LlmOutcome> {
+  /** O cliente do SDK, para o teste que fixa as opções. */
+  get sdk(): Anthropic | null {
+    return this.client;
+  }
+
+  async complete(request: LlmRequest, signal: AbortSignal): Promise<LlmOutcome> {
     // sem chave, NENHUMA chamada sai — é o único caso em que se pode afirmar
     // que não houve custo
     if (!this.client) return { kind: 'no_provider' };
@@ -43,12 +55,15 @@ export class AnthropicClient implements LlmClient {
       ? `${request.context}\n\n${wrapUntrusted(request.untrusted)}`
       : request.context;
     try {
-      const response = await this.client.messages.create({
-        model: this.model,
-        max_tokens: request.maxOutputTokens,
-        system: request.system,
-        messages: [{ role: 'user', content }],
-      });
+      const response = await this.client.messages.create(
+        {
+          model: this.model,
+          max_tokens: request.maxOutputTokens,
+          system: request.system,
+          messages: [{ role: 'user', content }],
+        },
+        { signal, ...OPCOES_DO_SDK },
+      );
       const text = response.content
         .map((block) => (block.type === 'text' ? block.text : ''))
         .join('');

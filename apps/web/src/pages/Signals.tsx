@@ -239,7 +239,11 @@ export function SignalsPage() {
                           run.status === 'ok' ? 'text-positive' : 'text-warning',
                         )}
                       >
-                        {run.status}
+                        {run.status === 'unknown_after_dispatch'
+                          ? // ADR-047 adendo 7: a chamada pode ter começado; o
+                            // resultado foi descartado e o custo, cobrado pelo teto
+                            'em dúvida (custo cobrado pelo teto)'
+                          : run.status}
                         {run.reasonCode ? ` · ${run.reasonCode}` : ''}
                       </span>
                     </td>

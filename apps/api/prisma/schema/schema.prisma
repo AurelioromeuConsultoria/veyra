@@ -1087,6 +1087,9 @@ enum AiRunStatus {
   ok
   refused
   error
+  /// o uso externo ficou em dúvida (ADR-047 adendo 7): a chamada pode ter
+  /// começado; o resultado foi descartado e as reservas, cobradas pelo teto
+  unknown_after_dispatch
 }
 
 enum AiRunAction {

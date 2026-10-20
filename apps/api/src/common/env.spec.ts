@@ -41,6 +41,16 @@ describe('validateEnv', () => {
     expect(() => validateEnv({ ...minimo, JWT_SECRET: 'curto' })).toThrow(/JWT_SECRET/);
   });
 
+  it('AI_MODEL fora do formato de id de modelo NÃO sobe (ADR-047 adendo 7 §9)', () => {
+    // a especificação do uso de IA recusaria cada geração na hora de usar
+    for (const invalido of ['Claude-Sonnet', 'anthropic/claude', 'claude@2024', 'claude:latest']) {
+      expect(() => validateEnv({ ...minimo, AI_MODEL: invalido })).toThrow(/AI_MODEL/);
+    }
+    expect(validateEnv({ ...minimo, AI_MODEL: 'claude-opus-5.5' }).AI_MODEL).toBe(
+      'claude-opus-5.5',
+    );
+  });
+
   /**
    * A trava do ADR-046. O modo falso não envia nada para a Meta: fora de
    * staging isso é perda SILENCIOSA de mensagem, e o produto prefere não subir

@@ -11,7 +11,9 @@ export const AI_RUN_REPOSITORY = Symbol('AI_RUN_REPOSITORY');
 export const AI_PROPOSAL_REPOSITORY = Symbol('AI_PROPOSAL_REPOSITORY');
 export const AI_CONSENT_REPOSITORY = Symbol('AI_CONSENT_REPOSITORY');
 
-export type AiRunStatus = 'ok' | 'refused' | 'error';
+import type { AiTx } from './ai-use-guard';
+
+export type AiRunStatus = 'ok' | 'refused' | 'error' | 'unknown_after_dispatch';
 export type AiRunAction = 'none' | 'proposed' | 'executed';
 export type AiProposalStatus = 'pending' | 'executing' | 'approved' | 'rejected' | 'expired';
 export type AiProposalType = 'create_task' | 'send_message';
@@ -61,6 +63,11 @@ export interface AiRunSummary extends AiRunRecord {
 
 export interface AiRunRepository {
   create(workspaceId: string, run: AiRunRecord): Promise<string>;
+  /**
+   * O run NA transação da guarda de uso externo, com o id gerado antes da
+   * chamada (ADR-047 adendo 7 §9, G3.1).
+   */
+  createWithin(tx: AiTx, workspaceId: string, run: AiRunRecord & { id: string }): Promise<void>;
   list(limit: number): Promise<AiRunSummary[]>;
   totalCostCents(): Promise<number>;
   /** Último resultado OK de uma capacidade para um alvo — reaproveita o insight. */
@@ -134,6 +141,8 @@ export interface SendMessageExecution {
 
 export interface AiProposalRepository {
   create(workspaceId: string, proposal: AiProposalInput): Promise<string>;
+  /** A proposta NA transação da guarda de uso externo. */
+  createWithin(tx: AiTx, workspaceId: string, proposal: AiProposalInput): Promise<string>;
   findById(id: string): Promise<AiProposalRecord | null>;
   /**
    * `excludeTypes` filtra no WHERE, não depois do `take`: excluir na aplicação
@@ -225,6 +234,18 @@ export interface AiProposalRepository {
     /** quem gerou: vai para a trilha da supersessão, com o workspace */
     author: ApprovalContext,
     // o tipo é fixo e não há deal: a assinatura não promete o que não usa
+    proposal: Omit<AiProposalInput, 'type' | 'dealId' | 'conversationId'> & {
+      conversationId: string;
+    },
+  ): Promise<{ id: string } | 'concurrent'>;
+  /**
+   * `createReplySuperseding` NA transação da guarda de uso externo. A corrida
+   * com outra geração da mesma conversa não aborta a transação: a inserção é
+   * `ON CONFLICT DO NOTHING`, e o perdedor responde `'concurrent'`.
+   */
+  createReplySupersedingWithin(
+    tx: AiTx,
+    author: ApprovalContext,
     proposal: Omit<AiProposalInput, 'type' | 'dealId' | 'conversationId'> & {
       conversationId: string;
     },

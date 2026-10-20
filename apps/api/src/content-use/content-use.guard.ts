@@ -8,7 +8,13 @@ import { PrismaService, type Db } from '../prisma/prisma.service';
 import { UsageService } from '../usage/usage.service';
 import { COORDENACAO } from './coordination-sql';
 import { ID_DA_INSTANCIA, PoolsDaGuarda, type ConfigDaGuarda } from './content-use.pools';
-import { UsosOrfaos, type TipoDeUso, type UsoRegistrado } from './content-use.orphans';
+import {
+  OrigensDosUsos,
+  UsosOrfaos,
+  type EspecificacaoDoUso,
+  type TipoDeUso,
+  type UsoRegistrado,
+} from './content-use.orphans';
 import { prazoDeTrava, tentarTravaDoUso, travarParaUso } from './restriction-locks';
 
 export type Veredito = 'liberado' | 'restrito' | 'indisponivel';
@@ -210,16 +216,25 @@ const IDENTIFICADOR = /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,99}(@[0-9][0-9.-]{0,39})?$
 /**
  * "Só ids", por construção (adendo 7 §3.2): contatos, reservas e origem são
  * uuids, as entidades são 'deal:<uuid>' ou 'task:<uuid>', e os metadados do run
- * são identificadores, números ou booleanos — sem espaço, então sem nome, título
- * ou trecho de mensagem. As chaves são nomes curtos. O contrário é defeito do
- * consumidor. (A lista fechada de chaves por tipo vem com os usos, na G3.)
+ * são identificadores, números ou booleanos — sem espaço, então sem texto
+ * livre nem e-mail. Por cima desse piso, a ESPECIFICAÇÃO do tipo (adendo 7 §9):
+ * só as chaves de origem dela, e cada metadado só com o validador dele (lista
+ * fechada ou formato estrito), o que barra o dado pessoal de uma palavra só.
+ * Tipo sem especificação registrada não começa. O contrário é defeito do
+ * consumidor.
  */
-function validarUso(uso: UsoExterno<unknown, unknown>): void {
+function validarUso(
+  uso: UsoExterno<unknown, unknown>,
+  especificacao: EspecificacaoDoUso | undefined,
+): void {
   const erro = (campo: string) => new Error(`Uso externo inválido: ${campo}.`);
+  // o tipo precisa estar registrado, com a especificação e o tratador de origem
+  if (!especificacao) throw erro('tipo sem registro');
   if (!uso.contactIds.every((id) => UUID.test(id))) throw erro('contactIds');
   if (!(uso.entityKeys ?? []).every((chave) => ENTIDADE.test(chave))) throw erro('entityKeys');
   for (const [chave, id] of Object.entries(uso.origem)) {
     if (!CHAVE_SIMPLES.test(chave) || !(id === null || UUID.test(id))) throw erro('origem');
+    if (!especificacao.origem.includes(chave)) throw erro('origem');
   }
   if (!uso.reservas.every((id) => UUID.test(id))) throw erro('reservas');
   for (const [chave, valor] of Object.entries(uso.metadadosDoRun ?? {})) {
@@ -229,6 +244,11 @@ function validarUso(uso: UsoExterno<unknown, unknown>): void {
       (typeof valor === 'number' && Number.isFinite(valor)) ||
       (typeof valor === 'string' && IDENTIFICADOR.test(valor));
     if (!CHAVE_SIMPLES.test(chave) || !valido) throw erro('metadadosDoRun');
+    // a lista fechada do tipo: só as chaves dele, cada valor pelo validador dele
+    const validador = Object.hasOwn(especificacao.metadados, chave)
+      ? especificacao.metadados[chave]
+      : undefined;
+    if (!validador?.(valor)) throw erro('metadadosDoRun');
   }
   if (!(uso.prazoMs > 0)) throw erro('prazoMs');
 }
@@ -258,6 +278,7 @@ export class ContentUseGuard {
     private readonly prisma: PrismaService,
     private readonly usage: UsageService,
     private readonly orfaos: UsosOrfaos,
+    private readonly origens: OrigensDosUsos,
     private readonly cls: ClsService,
     @Optional() @Inject(GANCHOS_DA_GUARDA) private readonly gancho?: GanchoDaGuarda | null,
   ) {}
@@ -267,7 +288,7 @@ export class ContentUseGuard {
       throw new Error('Guarda de uso externo: workspace do uso diverge do contexto.');
     }
     try {
-      validarUso(uso);
+      validarUso(uso, this.origens.de(uso.kind));
     } catch (erro) {
       // defeito do consumidor: nada começa, e as reservas que são ids voltam já
       // (senão só voltariam pela varredura, depois do prazo delas)

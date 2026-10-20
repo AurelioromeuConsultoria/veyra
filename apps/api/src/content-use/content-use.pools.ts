@@ -38,6 +38,10 @@ export interface ConfigDaGuarda {
   workspaceTravaMs: number;
   /** ... e o prazo da transação */
   workspaceTransacaoMs: number;
+  /** prazos ABSOLUTOS dos usos (adendo 6 §4, aprovados): IA, envio Meta, webhook por destino */
+  prazoDaIaMs: number;
+  prazoDaMetaMs: number;
+  prazoDoWebhookMs: number;
   /** `statement_timeout` da persistência */
   persistenciaMs: number;
   /** margem do `idle_in_transaction_session_timeout` sobre o prazo do tipo */
@@ -63,6 +67,9 @@ export const CONFIG_PADRAO_DA_GUARDA: ConfigDaGuarda = {
   mudancaTransacaoMs: 30_000,
   workspaceTravaMs: 90_000,
   workspaceTransacaoMs: 120_000,
+  prazoDaIaMs: 60_000,
+  prazoDaMetaMs: 20_000,
+  prazoDoWebhookMs: 10_000,
   persistenciaMs: 5_000,
   margemOciosaMs: 30_000,
   margemDoPrazoMs: 30_000,

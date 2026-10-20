@@ -29,6 +29,14 @@ import { MudancasDeRestricao } from './restriction-changes';
   ],
   // os pools NÃO saem do módulo: a conexão crua de registro e o client sem
   // filtro são da guarda (docs/SECURITY.md §2)
-  exports: [ContentUseGuard, UsosOrfaos, OrigensDosUsos, ReconciliacaoDosUsos, MudancasDeRestricao],
+  exports: [
+    // os prazos dos usos vêm daqui: os testes os encurtam
+    CONFIG_DA_GUARDA,
+    ContentUseGuard,
+    UsosOrfaos,
+    OrigensDosUsos,
+    ReconciliacaoDosUsos,
+    MudancasDeRestricao,
+  ],
 })
 export class ContentUseModule {}

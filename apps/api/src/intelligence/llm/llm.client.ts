@@ -7,6 +7,14 @@
  */
 export const LLM_CLIENT = Symbol('LLM_CLIENT');
 
+/**
+ * O formato de um id de modelo: minúsculas, dígitos, ponto e hífen. É o que a
+ * especificação do uso `ai_generation` aceita (ADR-047 adendo 7 §9), e o
+ * ambiente o confere na subida: um `AI_MODEL` fora dele não sobe, em vez de
+ * derrubar cada geração na hora de usar.
+ */
+export const FORMATO_DO_MODELO = /^[a-z0-9][a-z0-9.-]{0,63}$/;
+
 export interface LlmRequest {
   /** instrução do sistema — nossa, versionada */
   system: string;
@@ -41,5 +49,9 @@ export type LlmOutcome =
 
 export interface LlmClient {
   readonly model: string;
-  complete(request: LlmRequest): Promise<LlmOutcome>;
+  /**
+   * `signal` é o prazo ABSOLUTO da guarda de uso externo (ADR-047 adendo 6
+   * §4): abortado, a chamada acaba, e o desfecho é incerto.
+   */
+  complete(request: LlmRequest, signal: AbortSignal): Promise<LlmOutcome>;
 }

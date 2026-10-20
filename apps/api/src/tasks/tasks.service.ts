@@ -231,13 +231,19 @@ export class TasksService {
         },
       });
       if (completing) {
+        // os titulares EM VIGOR, relidos da linha que a escrita travou: o pedido
+        // ou a leitura de antes podem estar velhos (só o protocolo grava o titular)
+        const vigente = (await tx.task.findFirst({
+          where: { id },
+          select: { contactId: true, dealId: true },
+        })) as unknown as { contactId: string | null; dealId: string | null } | null;
         await this.activities.record(tx, auth.workspaceId as string, 'task_completed', {
           actorMembershipId: auth.membershipId,
           payload: { title: input.title ?? existing.title },
           targets: {
             taskId: id,
-            contactId: input.contactId ?? existing.contactId,
-            dealId: input.dealId ?? existing.dealId,
+            contactId: vigente?.contactId ?? null,
+            dealId: vigente?.dealId ?? null,
           },
         });
       }

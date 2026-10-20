@@ -225,6 +225,13 @@ Duas condições do banco valem para a guarda (ADR-047 adendo 7 §3.5):
   sem aviso. Só o pool principal confere a sessão no boot (UTC); para os da
   guarda, a condição é deste runbook.
 
+**Prazo de leitura do proxy (G3.1).** Uma geração de IA sob a guarda pode levar
+mais de 98 s: espera por sessão, travas, reconferência, registro, os 60 s do
+provedor, a desistência e a persistência. O nginx do `web` usa
+`proxy_read_timeout 120s`. Qualquer proxy à frente dele (o da VPS, o do Coolify)
+precisa de um prazo de leitura igual ou maior. Se cortar antes, a pessoa recebe
+504 com o run já gravado e cobrado, e paga de novo ao repetir.
+
 ## 5. Rollback
 
 No painel, o Coolify guarda os deploys anteriores: **Redeploy** do commit

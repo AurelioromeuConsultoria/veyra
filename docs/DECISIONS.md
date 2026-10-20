@@ -1667,7 +1667,7 @@ Os valores vêm da configuração da guarda, para os testes usarem prazos curtos
 - **O uso de tarefa trava também `deal:<dealId>`** (e, em cadeia de automação, a entidade raiz). O evento de tarefa responde pelo contato do deal dela. Um deal sem contato que ganha um contato pega esse contato e `deal:<id>` exclusivos. Se o uso da tarefa só segurasse o workspace e `task:<id>`, a troca não o esperaria, e a marcação por entidade não o alcançaria.
 - **Os tratadores de origem escrevem com `workspaceId` explícito em todo `where` e `data`.** A ativação marca os órfãos numa transação `raw`. A G3 testa cada tratador numa transação `raw` com linhas de outro workspace presentes.
 - **A validação fechada dos metadados do run** entra antes de ligar qualquer consumidor.
-- **Pendência de exibição (nit do `reviewer`, sem efeito na garantia):** a atividade `task_completed` e a `deal_updated` usam como alvo o contato do pedido ou da leitura feita antes da transação. Com uma leitura velha, a atividade pode aparecer na linha do tempo do contato antigo. A IA só usa a data dessas atividades. A correção relê a linha travada pela escrita.
+- **Pendência de exibição (nit do `reviewer`, sem efeito na garantia), resolvida na G3.1:** a atividade `task_completed` e a `deal_updated` usavam como alvo o contato do pedido ou da leitura feita antes da transação. Agora relêem a linha travada pela escrita.
 
 **Testes** (dados fictícios; usos falsos sob a guarda real, com a porta real do Clinics na reconferência; quem espera quem é conferido em `pg_locks` e `pg_blocking_pids`, nunca por sono):
 
@@ -1698,6 +1698,68 @@ Os valores vêm da configuração da guarda, para os testes usarem prazos curtos
   - uma escrita que muda o contato da conversa.
 
   A remoção de empresa em ordem de id não tem teste determinístico: o deadlock que ela evita exige uma corrida exata entre dois lotes. Ela fica coberta pela leitura do código e pelo fim da trava de linha nas aprovações, que era o outro lado da corrida registrada.
+
+#### 9. Implementação — G3, os usos sob a guarda (2026-10-20)
+
+A G2 foi publicada (`9237de8`, quatro jobs do CI verdes). A G3 liga os três usos à guarda da G1, em três partes, cada uma com commit, bateria e revisão: **G3.1** a geração de IA, **G3.2** o envio da mensagem da IA, **G3.3** a entrega de webhook. O B2 segue fechado até a validação final do conjunto (G4).
+
+**Regras comuns às três partes**, exigidas na aprovação da G2:
+
+- **Cada tipo de uso se registra antes de existir.** O módulo do uso registra, no Core, a especificação do tipo: as chaves de `origem` aceitas, as chaves dos metadados do run com o validador de cada valor (lista fechada ou formato estrito) e o tratador de origem. A guarda recusa uso de tipo sem registro e uso com chave ou valor fora da especificação, antes de qualquer trava, e devolve as reservas.
+- **Os tratadores de origem escrevem com `workspaceId` explícito em todo `where` e `data`**, porque a ativação os chama numa transação `raw`. Cada tratador tem teste numa transação `raw` com linhas de outro workspace presentes.
+- **As reservas só mudam na transação da guarda.** O uso reserva antes de chamar a guarda e entrega as reservas a ela. Daí em diante, só a persistência do uso (na transação da guarda) ou os detectores as acertam. Se a reserva já não existir no acerto, a cobrança vai pelo caminho acima do teto (adendo 6 §5).
+- **Os prazos de espera:** 10 s **por trava**, com limite de 30 s para a transação interativa inteira (mudanças e aprovações); 90 s por trava e 120 s de transação na CLI.
+
+**G3.1 — a geração de IA.**
+
+- **A porta.** O módulo `intelligence` continua sem tocar o Prisma (adendo 6 §3.3, "fronteira de módulos"). Ele usa a guarda por uma porta (`AI_USE_GUARD`), entregando o pedido ao provedor e a persistência do resultado. O adaptador em `intelligence-persistence` monta o uso externo, roda a guarda e entrega à persistência um identificador opaco da transação, que só os repositórios aceitam.
+- **O run tem id gerado antes da chamada.** O registro do uso leva esse id na origem, com o prompt, a conversa ou o contato e quem pediu. Os metadados do run são a capacidade (lista fechada do catálogo de prompts), o modelo (formato de id de modelo), a versão do prompt (inteiro) e o teto de custo reservado (inteiro, calculado pelo servidor: é o custo que o run em dúvida registra).
+- **Duas reservas** (`ai_runs` e o custo máximo do run), feitas antes da guarda. A persistência acerta as duas pelo desfecho: pelo real com resposta, por zero sem provedor configurado (nenhuma chamada saiu) e pelo teto com desfecho incerto.
+- **Toda chamada ao provedor passa pela guarda.** O gateway não tem mais a chamada sem guarda: a única saída é `completeUnderGuard`, chamada pela guarda, e um teste estático fixa que o provedor só é chamado ali. O sinal de aborto é obrigatório no cliente do provedor. A chamada sob a guarda não reconfere a porta de novo: a reconferência acontece sob as travas, e uma segunda checagem entre a prova de vida e o início seria I/O no intervalo que a guarda proíbe.
+- **`AI_MODEL` é validado na subida** com o mesmo formato que a especificação aceita: fora dele, a aplicação não sobe, em vez de recusar cada geração na hora de usar.
+- **O SDK** é criado com `timeout: 60_000` e `maxRetries: 0`, e a chamada recebe o sinal de aborto da guarda (prazo absoluto de 60 s).
+- **Persistência na transação da guarda:** o run (com o id pré-gerado), as propostas e o rascunho de resposta. O rascunho concorrente, que já tinha um pendente na conversa, é tratado sem abortar a transação: a inserção usa `ON CONFLICT DO NOTHING`.
+- **`AiRunStatus` ganha `unknown_after_dispatch`** (migration aditiva). O tratador de origem da IA cria o run com o id pré-gerado nesse estado, se ainda não existir, quando o uso vira `in_doubt`. A persistência que falha também o deixa assim. O run em dúvida e o de custo incerto registram o **teto cobrado** (o teto vai nos metadados do uso, como inteiro): o histórico de custo fecha com o contador (§3.10 do `CLAUDE.md`).
+- **Desfechos para quem pediu:**
+  - não começou por restrição: `content_restricted`;
+  - porta indisponível: 503, como hoje;
+  - registro que falhou: `unavailable`, sem run. Se o registro chegou a comitar, a reconciliação cria o run em dúvida com o id reservado; gravar outro deixaria a mesma tentativa com dois runs;
+  - qualquer outro motivo de não começar (trava, sessão, prova de vida, prazo): `unavailable`, com o run registrado como erro `not_started`;
+  - em dúvida ou persistência falha: `unavailable`, com o run `unknown_after_dispatch`.
+
+**Testes da G3.1** (dados fictícios; o provedor falso segura a chamada num portão; a porta real do Clinics na reconferência):
+
+- **Integração, `clinics-ai-guard` (11):**
+  - caminho feliz: o registro `ai_generation` está comitado antes da chamada, com o id do run na origem; o run, a proposta e o acerto das reservas acontecem na transação da guarda;
+  - uso primeiro: revogar a liberação espera a geração, e a limpeza alcança a proposta que comitou antes;
+  - mudança primeiro: a geração espera a revogação e recusa sem chamar o provedor, com as reservas devolvidas;
+  - a guarda morre durante a chamada: o run fica `unknown_after_dispatch` com o id pré-gerado, a proposta não nasce, e as reservas vão pelo teto;
+  - o prazo aborta a chamada pelo sinal; a chamada que ignora o sinal vira `overran_deadline`;
+  - sem provedor configurado, o acerto é por zero; a persistência que falha deixa o run incerto; o run em dúvida e o de custo incerto registram o teto cobrado;
+  - o registro que falha: nada sai, as reservas voltam, e nenhum run `not_started` é gravado;
+  - o rascunho concorrente, com o outro ainda sem commit, espera, vê o conflito e responde `concurrent` sem abortar a transação;
+  - o tratador de origem numa transação `raw`, com linhas de outro workspace: só escreve no workspace do uso, anula a referência alheia e não toca no run do outro.
+- **Unidade:** as opções do SDK (60 s, sem retentativa); o sinal e as opções chegando à chamada; nenhuma chamada sem chave; só a guarda chama `completeUnderGuard`; o gateway sem chamada fora da guarda; `AI_MODEL` fora do formato não sobe.
+- **Adaptados:** o teste da G1 usa a especificação real do tipo e cobre a lista fechada (chave, valor, origem) e o tipo sem registro. As suítes existentes de IA passam inteiras com a geração sob a guarda.
+- **Mutação:** cada uma das 14 abaixo derruba pelo menos um teste, e todas compilam:
+  - tipo sem registro aceito;
+  - chave de origem fora da especificação;
+  - metadado sem validador;
+  - reservas não acertadas;
+  - o caso sem provedor cobrado;
+  - a persistência que falha sem deixar o run incerto;
+  - o tratador ligando referência alheia;
+  - o rascunho concorrente abortando a transação;
+  - o SDK com retentativa;
+  - o sinal que não chega ao provedor;
+  - o registro que falha gravando run;
+  - o run em dúvida sem o custo;
+  - o custo incerto zerado;
+  - o `AI_MODEL` sem a validação de formato.
+
+  A mutação "a chamada reconfere de novo dentro da guarda" deixou de existir: o gateway não tem mais a chamada sem guarda, e a ausência é fixada por teste.
+
+- **Prazo de leitura do proxy:** o nginx de staging passa a 120 s (o orçamento da geração sob a guarda passa de 98 s); registrado no `DEPLOY_STAGING.md`.
 
 ## ADR-048 — Veyra Clinics para estética: domínio próprio, classificação de dados e escopo do MVP
 

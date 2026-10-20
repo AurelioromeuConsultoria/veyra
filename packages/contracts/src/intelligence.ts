@@ -128,7 +128,8 @@ export interface AiRunDto {
   id: string;
   capability: string;
   model: string;
-  status: 'ok' | 'refused' | 'error';
+  /** `unknown_after_dispatch`: o uso externo ficou em dúvida (ADR-047 adendo 7) */
+  status: 'ok' | 'refused' | 'error' | 'unknown_after_dispatch';
   reasonCode: string | null;
   /** descrição do contexto — nunca o payload */
   contextSummary: string;

@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { ClsService } from 'nestjs-cls';
 import { Prisma } from '../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
@@ -27,6 +28,7 @@ import type {
   SendMessageExecution,
 } from '../intelligence/ports/repositories';
 import { PromptHashMismatchError } from '../intelligence/ports/repositories';
+import type { AiTx } from '../intelligence/ports/ai-use-guard';
 
 /**
  * ADAPTADORES Prisma das portas do módulo `intelligence` (ADR-027). Ficam AQUI,
@@ -81,8 +83,28 @@ export class PrismaAiRunRepository implements AiRunRepository {
   ) {}
 
   async create(workspaceId: string, run: AiRunRecord): Promise<string> {
-    const created = await this.prisma.db.aiRun.create({
+    const id = randomUUID();
+    await this.gravar(this.prisma.db, workspaceId, { ...run, id });
+    return id;
+  }
+
+  /** NA transação da guarda (ADR-047 adendo 7 §9): o id veio de antes da chamada. */
+  async createWithin(
+    tx: AiTx,
+    workspaceId: string,
+    run: AiRunRecord & { id: string },
+  ): Promise<void> {
+    await this.gravar(tx as unknown as Db, workspaceId, run);
+  }
+
+  private async gravar(
+    db: Db,
+    workspaceId: string,
+    run: AiRunRecord & { id: string },
+  ): Promise<void> {
+    await db.aiRun.create({
       data: {
+        id: run.id,
         workspaceId,
         capability: run.capability,
         promptVersionId: run.promptVersionId,
@@ -101,7 +123,6 @@ export class PrismaAiRunRepository implements AiRunRepository {
         triggeredByMembershipId: run.triggeredByMembershipId,
       },
     } as never);
-    return (created as unknown as { id: string }).id;
   }
 
   async latestResult(
@@ -234,7 +255,16 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
   ) {}
 
   async create(workspaceId: string, proposal: AiProposalInput): Promise<string> {
-    const created = await this.prisma.db.aiProposal.create({
+    return this.criar(this.prisma.db, workspaceId, proposal);
+  }
+
+  /** NA transação da guarda (ADR-047 adendo 7 §9). */
+  async createWithin(tx: AiTx, workspaceId: string, proposal: AiProposalInput): Promise<string> {
+    return this.criar(tx as unknown as Db, workspaceId, proposal);
+  }
+
+  private async criar(db: Db, workspaceId: string, proposal: AiProposalInput): Promise<string> {
+    const created = await db.aiProposal.create({
       data: {
         workspaceId,
         runId: proposal.runId,
@@ -578,86 +608,149 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
   ): Promise<{ id: string } | 'concurrent'> {
     const db = this.prisma.db as unknown as TxRunner;
     try {
-      return await db.$transaction(async (tx) => {
-        /**
-         * Os substituídos são lidos ANTES de expirar: a trilha precisa dizer
-         * QUAIS rascunhos morreram, e depois do `updateMany` não há como
-         * distingui-los de outros já expirados.
-         */
-        const substituidos = (await tx.aiProposal.findMany({
+      return await db.$transaction((tx) => this.substituirECriar(tx, author, proposal, 'falha'));
+    } catch (error) {
+      if (isPendingReplyConflict(error)) return 'concurrent';
+      throw error;
+    }
+  }
+
+  /**
+   * NA transação da guarda de uso externo (ADR-047 adendo 7 §9). Uma violação
+   * de unicidade abortaria a transação inteira da guarda — e a corrida com
+   * outra geração da mesma conversa é benigna. A inserção é `ON CONFLICT DO
+   * NOTHING`, e o perdedor responde `'concurrent'`.
+   */
+  async createReplySupersedingWithin(
+    tx: AiTx,
+    author: ApprovalContext,
+    proposal: Omit<AiProposalInput, 'type' | 'dealId' | 'conversationId'> & {
+      conversationId: string;
+    },
+  ): Promise<{ id: string } | 'concurrent'> {
+    return this.substituirECriar(tx as unknown as Db, author, proposal, 'pula');
+  }
+
+  /**
+   * Supersede o anterior e cria o novo na MESMA transação (ADR-044, adendo 1).
+   * `conflito`: `'falha'` deixa a violação de unicidade abortar a transação
+   * (quem chama a reconhece); `'pula'` não aborta e devolve `'concurrent'`.
+   */
+  private async substituirECriar(
+    tx: Db,
+    author: ApprovalContext,
+    proposal: Omit<AiProposalInput, 'type' | 'dealId' | 'conversationId'> & {
+      conversationId: string;
+    },
+    conflito: 'falha' | 'pula',
+  ): Promise<{ id: string } | 'concurrent'> {
+    /**
+     * Os substituídos são lidos ANTES de expirar: a trilha precisa dizer
+     * QUAIS rascunhos morreram, e depois do `updateMany` não há como
+     * distingui-los de outros já expirados.
+     */
+    const substituidos = (await tx.aiProposal.findMany({
+      where: {
+        conversationId: proposal.conversationId,
+        type: 'send_message',
+        status: 'pending',
+      },
+      select: { id: true },
+    } as never)) as unknown as { id: string }[];
+
+    /**
+     * Expira id A ID, e SEMPRE com o predicado repetido na escrita
+     * (`status: 'pending'`, `type: 'send_message'`). Duas razões, ambas
+     * aprendidas caro neste projeto:
+     *
+     * 1. Sem o predicado no WHERE da escrita, uma aprovação que commite
+     *    entre a leitura e a atualização é SOBRESCRITA: em READ COMMITTED
+     *    o update destrava, reavalia a linha nova e — se o predicado não
+     *    estiver ali — grava `expired` por cima de `approved`. A mensagem
+     *    foi enviada e a proposta diria que foi supersedida.
+     * 2. Sem o id, o predicado sozinho pegaria também um rascunho nascido
+     *    entre as duas sentenças, que a trilha não registrou.
+     *
+     * Por linha, e não em lote, porque a auditoria precisa saber QUAIS
+     * foram de fato expirados: `updateMany` devolve contagem, não ids.
+     */
+    const expirados: string[] = [];
+    for (const anterior of substituidos) {
+      const { count } = await tx.aiProposal.updateMany({
+        where: { id: anterior.id, status: 'pending', type: 'send_message' },
+        // `expired`, não `rejected`: ninguém recusou — ficou obsoleto. Sem
+        // revisor, porque não houve revisão humana. A marca sai com o estado.
+        data: { status: 'expired', pendingReplyMark: null },
+      });
+      if (count === 1) expirados.push(anterior.id);
+    }
+
+    const dados = {
+      workspaceId: author.workspaceId,
+      runId: proposal.runId,
+      type: 'send_message',
+      payload: proposal.payload as object,
+      rationale: proposal.rationale,
+      contactId: proposal.contactId ?? null,
+      conversationId: proposal.conversationId,
+      expiresAt: proposal.expiresAt,
+      pendingReplyMark: true,
+    };
+    let id: string;
+    let substituto: string;
+    if (conflito === 'falha') {
+      const created = await tx.aiProposal.create({ data: dados } as never);
+      id = (created as unknown as { id: string }).id;
+      substituto = id;
+    } else {
+      id = randomUUID();
+      const { count } = await tx.aiProposal.createMany({
+        data: [{ id, ...dados }],
+        skipDuplicates: true,
+      } as never);
+      if (count === 0) {
+        // outra geração venceu: os que ESTA expirou foram substituídos pelo
+        // rascunho dela, e a trilha diz isso
+        const vencedor = (await tx.aiProposal.findFirst({
           where: {
             conversationId: proposal.conversationId,
             type: 'send_message',
             status: 'pending',
           },
           select: { id: true },
-        } as never)) as unknown as { id: string }[];
+        } as never)) as unknown as { id: string } | null;
+        await this.auditarSubstituidos(tx, author, expirados, vencedor?.id ?? null);
+        return 'concurrent';
+      }
+      substituto = id;
+    }
+    await this.auditarSubstituidos(tx, author, expirados, substituto);
+    return { id };
+  }
 
-        /**
-         * Expira id A ID, e SEMPRE com o predicado repetido na escrita
-         * (`status: 'pending'`, `type: 'send_message'`). Duas razões, ambas
-         * aprendidas caro neste projeto:
-         *
-         * 1. Sem o predicado no WHERE da escrita, uma aprovação que commite
-         *    entre a leitura e a atualização é SOBRESCRITA: em READ COMMITTED
-         *    o update destrava, reavalia a linha nova e — se o predicado não
-         *    estiver ali — grava `expired` por cima de `approved`. A mensagem
-         *    foi enviada e a proposta diria que foi supersedida.
-         * 2. Sem o id, o predicado sozinho pegaria também um rascunho nascido
-         *    entre as duas sentenças, que a trilha não registrou.
-         *
-         * Por linha, e não em lote, porque a auditoria precisa saber QUAIS
-         * foram de fato expirados: `updateMany` devolve contagem, não ids.
-         */
-        const expirados: string[] = [];
-        for (const anterior of substituidos) {
-          const { count } = await tx.aiProposal.updateMany({
-            where: { id: anterior.id, status: 'pending', type: 'send_message' },
-            // `expired`, não `rejected`: ninguém recusou — ficou obsoleto. Sem
-            // revisor, porque não houve revisão humana. A marca sai com o estado.
-            data: { status: 'expired', pendingReplyMark: null },
-          });
-          if (count === 1) expirados.push(anterior.id);
-        }
-
-        const created = await tx.aiProposal.create({
-          data: {
-            workspaceId: author.workspaceId,
-            runId: proposal.runId,
-            type: 'send_message',
-            payload: proposal.payload as object,
-            rationale: proposal.rationale,
-            contactId: proposal.contactId ?? null,
-            conversationId: proposal.conversationId,
-            expiresAt: proposal.expiresAt,
-            pendingReplyMark: true,
-          },
-        } as never);
-        const id = (created as unknown as { id: string }).id;
-
-        /**
-         * Supersessão é AUDITADA (ADR-044, adendo 3): ela invalida trabalho que
-         * outra pessoa poderia aprovar, então precisa dizer quem gerou o
-         * substituto e qual rascunho morreu. Ids e estados apenas — o corpo do
-         * rascunho jamais entra na trilha.
-         *
-         * Só entra quem foi REALMENTE expirado: um rascunho aprovado no meio da
-         * corrida não é supersedido, e a trilha não pode dizer que foi.
-         */
-        for (const expirado of expirados) {
-          await this.audit.record(tx, author.workspaceId, 'ai_proposal.superseded', {
-            entityType: 'aiProposal',
-            entityId: expirado,
-            actor: { type: 'user', membershipId: author.membershipId },
-            before: { type: 'send_message', status: 'pending' },
-            after: { type: 'send_message', status: 'expired', supersededByProposalId: id },
-          });
-        }
-        return { id };
+  /**
+   * Supersessão é AUDITADA (ADR-044, adendo 3): ela invalida trabalho que
+   * outra pessoa poderia aprovar, então precisa dizer quem gerou o
+   * substituto e qual rascunho morreu. Ids e estados apenas — o corpo do
+   * rascunho jamais entra na trilha.
+   *
+   * Só entra quem foi REALMENTE expirado: um rascunho aprovado no meio da
+   * corrida não é supersedido, e a trilha não pode dizer que foi.
+   */
+  private async auditarSubstituidos(
+    tx: Db,
+    author: ApprovalContext,
+    expirados: readonly string[],
+    substituto: string | null,
+  ): Promise<void> {
+    for (const expirado of expirados) {
+      await this.audit.record(tx, author.workspaceId, 'ai_proposal.superseded', {
+        entityType: 'aiProposal',
+        entityId: expirado,
+        actor: { type: 'user', membershipId: author.membershipId },
+        before: { type: 'send_message', status: 'pending' },
+        after: { type: 'send_message', status: 'expired', supersededByProposalId: substituto },
       });
-    } catch (error) {
-      if (isPendingReplyConflict(error)) return 'concurrent';
-      throw error;
     }
   }
 }

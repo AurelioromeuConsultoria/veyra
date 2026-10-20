@@ -13,17 +13,12 @@ export interface LlmScope {
 
 export type ScopedLlmRequest = LlmRequest & { scope: LlmScope };
 
-export type GatewayOutcome =
-  | LlmOutcome
-  | { kind: 'restricted' }
-  /** a porta de restrição não respondeu: nada saiu, e isso NÃO é "restrito" */
-  | { kind: 'restriction_unavailable' };
-
 /**
  * PONTO ÚNICO por onde todo conteúdo sai para o provedor de IA. O serviço não
  * injeta `LLM_CLIENT` diretamente (o teste `llm.gateway.spec.ts` garante): ele
- * fala com este gateway, que confere a restrição de conteúdo ANTES de qualquer
- * byte sair.
+ * fala com este gateway. Desde a G3.1 (ADR-047 adendo 7 §9) a ÚNICA saída é
+ * `completeUnderGuard`, chamada pela guarda de uso externo depois de reconferir
+ * a restrição sob as travas: não existe chamada ao provedor fora da guarda.
  *
  * Pedido sem escopo, ou com escopo vazio, é recusado. Assim uma capacidade
  * nova não escapa da regra por esquecimento: ela simplesmente não funciona
@@ -75,19 +70,26 @@ export class LlmGateway {
     );
   }
 
-  async complete(request: ScopedLlmRequest): Promise<GatewayOutcome> {
-    // confere de novo aqui, e não só no chamador: é a última barreira antes da rede
-    const verdict = await this.verdict(request.scope);
-    if (verdict === 'unavailable') return { kind: 'restriction_unavailable' };
-    if (verdict === 'restricted') return { kind: 'restricted' };
-    // ALLOWLIST do que sai: o escopo é nosso, não do provedor, e campo novo no
-    // pedido não vaza para fora por acidente
-    const providerRequest: LlmRequest = {
-      system: request.system,
-      context: request.context,
-      maxOutputTokens: request.maxOutputTokens,
-      ...(request.untrusted !== undefined ? { untrusted: request.untrusted } : {}),
-    };
-    return this.provider.complete(providerRequest);
+  /**
+   * A chamada DENTRO da guarda de uso externo (ADR-047 adendos 6 e 7): a porta
+   * já foi reconferida sob as travas, que seguem seguras durante a chamada. Uma
+   * segunda checagem aqui seria I/O entre a prova de vida e o início, o
+   * intervalo que a guarda proíbe. Só a guarda chama isto (teste estático).
+   */
+  completeUnderGuard(request: ScopedLlmRequest, signal: AbortSignal): Promise<LlmOutcome> {
+    return this.provider.complete(allowlist(request), signal);
   }
+}
+
+/**
+ * ALLOWLIST do que sai: o escopo é nosso, não do provedor, e campo novo no
+ * pedido não vaza para fora por acidente.
+ */
+function allowlist(request: ScopedLlmRequest): LlmRequest {
+  return {
+    system: request.system,
+    context: request.context,
+    maxOutputTokens: request.maxOutputTokens,
+    ...(request.untrusted !== undefined ? { untrusted: request.untrusted } : {}),
+  };
 }

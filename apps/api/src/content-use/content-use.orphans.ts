@@ -41,18 +41,30 @@ export interface OrigemDoUso {
   marcarIncerta(tx: Db, uso: UsoRegistrado): Promise<void>;
 }
 
-/** Os tratadores de origem, registrados pelos módulos dos usos (G3). */
+/**
+ * A ESPECIFICAÇÃO de um tipo de uso (ADR-047 adendo 7 §9): o que o registro
+ * aceita e o tratador de origem. O módulo do uso a registra antes de existir;
+ * a guarda recusa uso de tipo sem registro, e chave ou valor fora dela.
+ */
+export interface EspecificacaoDoUso extends OrigemDoUso {
+  /** chaves de `origem` aceitas; os valores são sempre uuid ou null */
+  origem: readonly string[];
+  /** chaves dos metadados do run, cada uma com o validador do VALOR: lista fechada ou formato estrito */
+  metadados: Readonly<Record<string, (valor: unknown) => boolean>>;
+}
+
+/** As especificações dos tipos de uso, registradas pelos módulos dos usos (G3). */
 @Injectable()
 export class OrigensDosUsos {
-  private readonly porTipo = new Map<TipoDeUso, OrigemDoUso>();
+  private readonly porTipo = new Map<TipoDeUso, EspecificacaoDoUso>();
 
-  registrar(tipo: TipoDeUso, origem: OrigemDoUso): void {
-    // dois tratadores para o mesmo tipo é engano de composição: recusa
+  registrar(tipo: TipoDeUso, especificacao: EspecificacaoDoUso): void {
+    // duas especificações para o mesmo tipo é engano de composição: recusa
     if (this.porTipo.has(tipo)) throw new Error(`Tratador de origem duplicado para ${tipo}.`);
-    this.porTipo.set(tipo, origem);
+    this.porTipo.set(tipo, especificacao);
   }
 
-  de(tipo: TipoDeUso): OrigemDoUso | undefined {
+  de(tipo: TipoDeUso): EspecificacaoDoUso | undefined {
     return this.porTipo.get(tipo);
   }
 }
@@ -109,7 +121,10 @@ export class UsosOrfaos {
         this.logger.warn(`Uso ${uso.id}: reserva já acertada ao marcar em dúvida`);
       }
     }
-    await this.origens.de(uso.kind)?.marcarIncerta(tx, uso);
+    const especificacao = this.origens.de(uso.kind);
+    // um uso não começa sem especificação; a falta dela aqui é erro de composição
+    if (!especificacao) this.logger.warn(`Uso ${uso.id}: tipo ${uso.kind} sem tratador de origem`);
+    await especificacao?.marcarIncerta(tx, uso);
     await this.audit.record(tx, uso.workspaceId, 'content_use.in_doubt', {
       entityType: 'contentUse',
       entityId: uso.id,

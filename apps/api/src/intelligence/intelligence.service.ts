@@ -7,6 +7,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { replyDraftSchema, sendMessagePayloadSchema } from '@veyra/contracts';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { ActivitiesService } from '../activities/activities.service';
 import { UsageService } from '../usage/usage.service';
@@ -16,12 +17,9 @@ import { ConversationsService } from '../conversations/conversations.service';
 import { DealsService } from '../deals/deals.service';
 import { estimateCostCents, estimateMaxCostCents } from './cost';
 import { computeLeadScore, type LeadScore, type ScoreSignals } from './lead-score';
-import {
-  LlmGateway,
-  type GatewayOutcome,
-  type LlmScope,
-  type ScopedLlmRequest,
-} from './llm/llm.gateway';
+import type { LlmResponse } from './llm/llm.client';
+import { LlmGateway, type LlmScope, type ScopedLlmRequest } from './llm/llm.gateway';
+import { AI_USE_GUARD, type AiTx, type AiUseGuard } from './ports/ai-use-guard';
 import {
   AI_CONSENT_REPOSITORY,
   AI_PROPOSAL_REPOSITORY,
@@ -30,6 +28,7 @@ import {
   type AiConsentRepository,
   type AiProposalRepository,
   type AiRunAction,
+  type AiRunRecord,
   type AiRunRepository,
   type AiRunStatus,
   type ApprovalContext,
@@ -130,6 +129,22 @@ export interface ReplySuggestionResult {
   createdAt?: string;
 }
 
+/** Tokens, custo e latência de um run com resposta. */
+interface RunUsage {
+  inputTokens: number;
+  outputTokens: number;
+  costCents: number;
+  latencyMs: number;
+}
+
+/** A chamada respondeu: o que a capacidade recebe NA transação da guarda para validar e gravar. */
+interface GuardedResponse {
+  runId: string;
+  promptVersionId: string;
+  response: LlmResponse;
+  usage: RunUsage;
+}
+
 export interface NextActionResult {
   status: 'proposed' | 'unavailable' | 'quota_exceeded' | 'content_restricted';
   runId: string | null;
@@ -154,6 +169,7 @@ export class IntelligenceService {
     private readonly deals: DealsService,
     private readonly activities: ActivitiesService,
     private readonly usage: UsageService,
+    @Inject(AI_USE_GUARD) private readonly guard: AiUseGuard,
   ) {}
 
   /**
@@ -219,18 +235,48 @@ export class IntelligenceService {
         ),
     ].join('\n');
 
-    const started = Date.now();
-    const call = await this.callWithQuota(auth.workspaceId as string, {
-      system: CONVERSATION_SUMMARY_PROMPT.system,
-      // só o que o SERVIDOR produziu fica no contexto confiável
-      context: 'Resumo de uma conversa registrada no CRM.',
-      untrusted,
-      maxOutputTokens: MAX_OUTPUT_TOKENS,
-      scope,
-    } satisfies ScopedLlmRequest);
-
-    const promptVersionId = await this.ensurePrompt(CONVERSATION_SUMMARY_PROMPT);
     const contextSummary = `conversation:${conversationId}; ${page.items.length} mensagens (corpo); campos: direction, body`;
+    const call = await this.callUnderGuard<ConversationSummaryResult>(auth, {
+      prompt: CONVERSATION_SUMMARY_PROMPT,
+      request: {
+        system: CONVERSATION_SUMMARY_PROMPT.system,
+        // só o que o SERVIDOR produziu fica no contexto confiável
+        context: 'Resumo de uma conversa registrada no CRM.',
+        untrusted,
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
+        scope,
+      } satisfies ScopedLlmRequest,
+      target: { conversationId },
+      contextSummary,
+      // NA transação da guarda: valida e grava, ainda sob as travas
+      onResponse: async (tx, { runId, promptVersionId, response, usage }) => {
+        const parsed = summarySchema.safeParse(this.parseJson(response.text));
+        if (!parsed.success) {
+          await this.recordWithin(tx, auth, runId, {
+            capability: CONVERSATION_SUMMARY_PROMPT.capability,
+            promptVersionId,
+            contextSummary,
+            status: 'error',
+            reasonCode: 'invalid_output',
+            conversationId,
+            ...usage,
+          });
+          return { status: 'unavailable', runId };
+        }
+        await this.recordWithin(tx, auth, runId, {
+          capability: CONVERSATION_SUMMARY_PROMPT.capability,
+          promptVersionId,
+          contextSummary,
+          status: 'ok',
+          // resultado ESTRUTURADO e já validado: é o que a interface reaproveita
+          // sem pagar outro run. Nunca o prompt nem o corpo das mensagens.
+          result: parsed.data,
+          conversationId,
+          ...usage,
+        });
+        return { status: 'ok', runId, ...parsed.data };
+      },
+    });
 
     if (call.outcome === 'restricted') {
       const runId = await this.refusedAsRestricted(
@@ -244,62 +290,17 @@ export class IntelligenceService {
     if (call.outcome === 'quota_exceeded') {
       const runId = await this.record(auth, {
         capability: CONVERSATION_SUMMARY_PROMPT.capability,
-        promptVersionId,
+        promptVersionId: call.promptVersionId,
         contextSummary,
         status: 'refused',
         reasonCode: 'quota_exceeded',
         conversationId,
-        latencyMs: Date.now() - started,
+        latencyMs: call.latencyMs,
       });
       return { status: 'quota_exceeded', runId };
     }
-    if (call.outcome !== 'ok') {
-      const runId = await this.record(auth, {
-        capability: CONVERSATION_SUMMARY_PROMPT.capability,
-        promptVersionId,
-        contextSummary,
-        status: 'error',
-        // distingue "não houve chamada" de "pode ter havido custo" (revisão 8.1)
-        reasonCode: call.reason,
-        conversationId,
-        latencyMs: Date.now() - started,
-      });
-      return { status: 'unavailable', runId };
-    }
-    const response = call.response;
-
-    const parsed = summarySchema.safeParse(this.parseJson(response.text));
-    const usage = {
-      inputTokens: response.inputTokens,
-      outputTokens: response.outputTokens,
-      costCents: call.costCents,
-      latencyMs: Date.now() - started,
-    };
-    if (!parsed.success) {
-      const runId = await this.record(auth, {
-        capability: CONVERSATION_SUMMARY_PROMPT.capability,
-        promptVersionId,
-        contextSummary,
-        status: 'error',
-        reasonCode: 'invalid_output',
-        conversationId,
-        ...usage,
-      });
-      return { status: 'unavailable', runId };
-    }
-
-    const runId = await this.record(auth, {
-      capability: CONVERSATION_SUMMARY_PROMPT.capability,
-      promptVersionId,
-      contextSummary,
-      status: 'ok',
-      // resultado ESTRUTURADO e já validado: é o que a interface reaproveita
-      // sem pagar outro run. Nunca o prompt nem o corpo das mensagens.
-      result: parsed.data,
-      conversationId,
-      ...usage,
-    });
-    return { status: 'ok', runId, ...parsed.data };
+    if (call.outcome === 'unavailable') return { status: 'unavailable', runId: call.runId };
+    return call.value;
   }
 
   /**
@@ -320,15 +321,60 @@ export class IntelligenceService {
     const signals = await this.collectSignals(contactId);
     const score = computeLeadScore(signals);
 
-    const started = Date.now();
-    const call = await this.callWithQuota(auth.workspaceId as string, {
-      system: NEXT_ACTION_PROMPT.system,
-      context: this.describeSignals(signals, score),
-      maxOutputTokens: MAX_OUTPUT_TOKENS,
-      scope,
-    });
-    const promptVersionId = await this.ensurePrompt(NEXT_ACTION_PROMPT);
     const contextSummary = `contact:${contactId}; sinais determinísticos (recência, pipeline, engajamento); sem conteúdo de mensagem`;
+    const call = await this.callUnderGuard<NextActionResult>(auth, {
+      prompt: NEXT_ACTION_PROMPT,
+      request: {
+        system: NEXT_ACTION_PROMPT.system,
+        context: this.describeSignals(signals, score),
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
+        scope,
+      },
+      target: { contactId },
+      contextSummary,
+      // NA transação da guarda: valida, grava o run e a proposta, sob as travas
+      onResponse: async (tx, { runId, promptVersionId, response, usage }) => {
+        const parsed = nextActionSchema.safeParse(this.parseJson(response.text));
+        if (!parsed.success) {
+          await this.recordWithin(tx, auth, runId, {
+            capability: NEXT_ACTION_PROMPT.capability,
+            promptVersionId,
+            contextSummary,
+            status: 'error',
+            reasonCode: 'invalid_output',
+            ...usage,
+          });
+          return { status: 'unavailable', runId };
+        }
+        await this.recordWithin(tx, auth, runId, {
+          capability: NEXT_ACTION_PROMPT.capability,
+          promptVersionId,
+          contextSummary,
+          status: 'ok',
+          action: 'proposed',
+          result: parsed.data,
+          contactId,
+          ...usage,
+        });
+        const dueAt = new Date(Date.now() + parsed.data.dueInDays * 24 * 60 * 60 * 1000);
+        const proposalId = await this.proposals.createWithin(tx, auth.workspaceId as string, {
+          runId,
+          type: 'create_task',
+          // payload já validado; a execução revalida antes de tocar o domínio
+          payload: { title: parsed.data.title, dueAt: dueAt.toISOString(), contactId },
+          rationale: parsed.data.rationale,
+          contactId,
+          expiresAt: new Date(Date.now() + PROPOSAL_TTL_DAYS * 24 * 60 * 60 * 1000),
+        });
+        return {
+          status: 'proposed',
+          runId,
+          proposalId,
+          title: parsed.data.title,
+          rationale: parsed.data.rationale,
+        };
+      },
+    });
 
     if (call.outcome === 'restricted') {
       const runId = await this.refusedAsRestricted(
@@ -342,76 +388,17 @@ export class IntelligenceService {
     if (call.outcome === 'quota_exceeded') {
       const runId = await this.record(auth, {
         capability: NEXT_ACTION_PROMPT.capability,
-        promptVersionId,
+        promptVersionId: call.promptVersionId,
         contextSummary,
         status: 'refused',
         reasonCode: 'quota_exceeded',
         contactId,
-        latencyMs: Date.now() - started,
+        latencyMs: call.latencyMs,
       });
       return { status: 'quota_exceeded', runId };
     }
-    if (call.outcome !== 'ok') {
-      const runId = await this.record(auth, {
-        capability: NEXT_ACTION_PROMPT.capability,
-        promptVersionId,
-        contextSummary,
-        status: 'error',
-        // distingue "não houve chamada" de "pode ter havido custo" (revisão 8.1)
-        reasonCode: call.reason,
-        contactId,
-        latencyMs: Date.now() - started,
-      });
-      return { status: 'unavailable', runId };
-    }
-    const response = call.response;
-
-    const parsed = nextActionSchema.safeParse(this.parseJson(response.text));
-    const usage = {
-      inputTokens: response.inputTokens,
-      outputTokens: response.outputTokens,
-      costCents: call.costCents,
-      latencyMs: Date.now() - started,
-    };
-    if (!parsed.success) {
-      const runId = await this.record(auth, {
-        capability: NEXT_ACTION_PROMPT.capability,
-        promptVersionId,
-        contextSummary,
-        status: 'error',
-        reasonCode: 'invalid_output',
-        ...usage,
-      });
-      return { status: 'unavailable', runId };
-    }
-
-    const runId = await this.record(auth, {
-      capability: NEXT_ACTION_PROMPT.capability,
-      promptVersionId,
-      contextSummary,
-      status: 'ok',
-      action: 'proposed',
-      result: parsed.data,
-      contactId,
-      ...usage,
-    });
-    const dueAt = new Date(Date.now() + parsed.data.dueInDays * 24 * 60 * 60 * 1000);
-    const proposalId = await this.proposals.create(auth.workspaceId as string, {
-      runId,
-      type: 'create_task',
-      // payload já validado; a execução revalida antes de tocar o domínio
-      payload: { title: parsed.data.title, dueAt: dueAt.toISOString(), contactId },
-      rationale: parsed.data.rationale,
-      contactId,
-      expiresAt: new Date(Date.now() + PROPOSAL_TTL_DAYS * 24 * 60 * 60 * 1000),
-    });
-    return {
-      status: 'proposed',
-      runId,
-      proposalId,
-      title: parsed.data.title,
-      rationale: parsed.data.rationale,
-    };
+    if (call.outcome === 'unavailable') return { status: 'unavailable', runId: call.runId };
+    return call.value;
   }
 
   /**
@@ -434,39 +421,46 @@ export class IntelligenceService {
       return { ...score, explanation: null, runId: null };
     }
 
-    const started = Date.now();
-    const call = await this.callWithQuota(auth.workspaceId as string, {
-      system: LEAD_SCORE_EXPLANATION_PROMPT.system,
-      context: this.describeSignals(signals, score),
-      maxOutputTokens: 300,
-      scope,
+    const contextSummary = `contact:${contactId}; score determinístico + fatores; sem conteúdo de mensagem`;
+    const call = await this.callUnderGuard<{ explanation: string | null; runId: string }>(auth, {
+      prompt: LEAD_SCORE_EXPLANATION_PROMPT,
+      request: {
+        system: LEAD_SCORE_EXPLANATION_PROMPT.system,
+        context: this.describeSignals(signals, score),
+        maxOutputTokens: 300,
+        scope,
+      },
+      target: { contactId },
+      contextSummary,
+      // é uma LEITURA (GET): sem resposta, sem run — como antes
+      semRunNaFalha: true,
+      onResponse: async (tx, { runId, promptVersionId, response, usage }) => {
+        const parsed = explanationSchema.safeParse(this.parseJson(response.text));
+        await this.recordWithin(tx, auth, runId, {
+          capability: LEAD_SCORE_EXPLANATION_PROMPT.capability,
+          promptVersionId,
+          contextSummary,
+          status: parsed.success ? 'ok' : 'error',
+          reasonCode: parsed.success ? null : 'invalid_output',
+          result: parsed.success
+            ? { score: score.score, factors: score.factors, explanation: parsed.data.explanation }
+            : null,
+          contactId,
+          ...usage,
+        });
+        return { explanation: parsed.success ? parsed.data.explanation : null, runId };
+      },
     });
-    // quota estourada NÃO derruba o score: ele é determinístico e continua
-    // valendo — some apenas a redação (ajuste aprovado da Entrega 7)
-    if (call.outcome !== 'ok') return { ...score, explanation: null, runId: null };
-    const response = call.response;
-
-    const promptVersionId = await this.ensurePrompt(LEAD_SCORE_EXPLANATION_PROMPT);
-    const parsed = explanationSchema.safeParse(this.parseJson(response.text));
-    const usage = {
-      inputTokens: response.inputTokens,
-      outputTokens: response.outputTokens,
-      costCents: call.costCents,
-      latencyMs: Date.now() - started,
-    };
-    const runId = await this.record(auth, {
-      capability: LEAD_SCORE_EXPLANATION_PROMPT.capability,
-      promptVersionId,
-      contextSummary: `contact:${contactId}; score determinístico + fatores; sem conteúdo de mensagem`,
-      status: parsed.success ? 'ok' : 'error',
-      reasonCode: parsed.success ? null : 'invalid_output',
-      result: parsed.success
-        ? { score: score.score, factors: score.factors, explanation: parsed.data.explanation }
-        : null,
-      contactId,
-      ...usage,
-    });
-    return { ...score, explanation: parsed.success ? parsed.data.explanation : null, runId };
+    // quota estourada, restrição ou provedor sem resposta NÃO derrubam o score:
+    // ele é determinístico e continua valendo — some apenas a redação
+    if (call.outcome !== 'ok') {
+      return {
+        ...score,
+        explanation: null,
+        runId: call.outcome === 'unavailable' ? call.runId : null,
+      };
+    }
+    return { ...score, ...call.value };
   }
 
   /**
@@ -679,17 +673,76 @@ export class IntelligenceService {
         ),
     ].join('\n');
 
-    const started = Date.now();
-    const call = await this.callWithQuota(workspaceId, {
-      system: REPLY_SUGGESTION_PROMPT.system,
-      context: 'Canal: WhatsApp, dentro da janela livre de atendimento de 24h.',
-      untrusted,
-      maxOutputTokens: MAX_OUTPUT_TOKENS,
-      scope,
-    } satisfies ScopedLlmRequest);
-
-    const promptVersionId = await this.ensurePrompt(REPLY_SUGGESTION_PROMPT);
     const contextSummary = `conversation:${conversationId}; ${page.items.length} mensagens (corpo); campos: direction, body`;
+    const call = await this.callUnderGuard<ReplySuggestionResult | { concurrent: string }>(auth, {
+      prompt: REPLY_SUGGESTION_PROMPT,
+      request: {
+        system: REPLY_SUGGESTION_PROMPT.system,
+        context: 'Canal: WhatsApp, dentro da janela livre de atendimento de 24h.',
+        untrusted,
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
+        scope,
+      } satisfies ScopedLlmRequest,
+      target: { conversationId, contactId: conversation.contactId },
+      contextSummary,
+      // NA transação da guarda: valida, grava o run e o rascunho, sob as travas
+      onResponse: async (tx, { runId, promptVersionId, response, usage }) => {
+        const parsed = replyDraftSchema.safeParse(this.parseJson(response.text));
+        if (!parsed.success) {
+          await this.recordWithin(tx, auth, runId, {
+            capability: REPLY_SUGGESTION_PROMPT.capability,
+            promptVersionId,
+            contextSummary,
+            status: 'error',
+            reasonCode: 'invalid_output',
+            conversationId,
+            ...usage,
+          });
+          return { status: 'unavailable', runId, reason: 'A IA devolveu um rascunho inválido' };
+        }
+        const draft = parsed.data;
+        await this.recordWithin(tx, auth, runId, {
+          capability: REPLY_SUGGESTION_PROMPT.capability,
+          promptVersionId,
+          contextSummary,
+          status: 'ok',
+          result: draft,
+          conversationId,
+          contactId: conversation.contactId,
+          ...usage,
+          action: 'proposed',
+        });
+
+        /**
+         * A proposta não expira depois da janela: aprová-la seria impossível, e
+         * uma pendência impossível na fila é ruído. Quando a janela já está por
+         * fechar, é ela que manda.
+         */
+        const janela = policy.windowExpiresAt ? new Date(policy.windowExpiresAt).getTime() : null;
+        const expiresAt = new Date(
+          Math.min(Date.now() + REPLY_TTL_MS, janela ?? Date.now() + REPLY_TTL_MS),
+        );
+        const criada = await this.proposals.createReplySupersedingWithin(tx, this.approver(auth), {
+          runId,
+          // payload é SÓ o texto: sem destinatário, sem canal, sem anexo
+          payload: { body: draft.body },
+          rationale: draft.rationale ?? 'Rascunho de resposta sugerido pela IA',
+          conversationId,
+          contactId: conversation.contactId,
+          expiresAt,
+        });
+        if (criada === 'concurrent') return { concurrent: runId };
+        return {
+          status: 'proposed',
+          runId,
+          proposalId: criada.id,
+          draft: draft.body,
+          rationale: draft.rationale,
+          injectionAttempt: draft.injectionAttempt,
+          createdAt: new Date().toISOString(),
+        };
+      },
+    });
 
     if (call.outcome === 'restricted') {
       const runId = await this.refusedAsRestricted(
@@ -707,12 +760,12 @@ export class IntelligenceService {
     if (call.outcome === 'quota_exceeded') {
       const runId = await this.record(auth, {
         capability: REPLY_SUGGESTION_PROMPT.capability,
-        promptVersionId,
+        promptVersionId: call.promptVersionId,
         contextSummary,
         status: 'refused',
         reasonCode: 'quota_exceeded',
         conversationId,
-        latencyMs: Date.now() - started,
+        latencyMs: call.latencyMs,
       });
       return {
         status: 'quota_exceeded',
@@ -720,94 +773,25 @@ export class IntelligenceService {
         reason: 'O limite de uso de IA do plano foi atingido',
       };
     }
-    if (call.outcome !== 'ok') {
-      const runId = await this.record(auth, {
-        capability: REPLY_SUGGESTION_PROMPT.capability,
-        promptVersionId,
-        contextSummary,
-        status: 'error',
-        reasonCode: call.reason,
-        conversationId,
-        latencyMs: Date.now() - started,
-      });
-      return {
-        status: 'unavailable',
-        runId,
-        reason: 'A IA não está disponível agora',
-      };
+    if (call.outcome === 'unavailable') {
+      return { status: 'unavailable', runId: call.runId, reason: 'A IA não está disponível agora' };
     }
-
-    const response = call.response;
-    const parsed = replyDraftSchema.safeParse(this.parseJson(response.text));
-    const usage = {
-      inputTokens: response.inputTokens,
-      outputTokens: response.outputTokens,
-      costCents: call.costCents,
-      latencyMs: Date.now() - started,
-    };
-    if (!parsed.success) {
-      const runId = await this.record(auth, {
-        capability: REPLY_SUGGESTION_PROMPT.capability,
-        promptVersionId,
-        contextSummary,
-        status: 'error',
-        reasonCode: 'invalid_output',
-        conversationId,
-        ...usage,
-      });
-      return { status: 'unavailable', runId, reason: 'A IA devolveu um rascunho inválido' };
-    }
-    const draft = parsed.data;
-
-    const runId = await this.record(auth, {
-      capability: REPLY_SUGGESTION_PROMPT.capability,
-      promptVersionId,
-      contextSummary,
-      status: 'ok',
-      result: draft,
-      conversationId,
-      contactId: conversation.contactId,
-      ...usage,
-      action: 'proposed',
-    });
-
-    /**
-     * A proposta não expira depois da janela: aprová-la seria impossível, e uma
-     * pendência impossível na fila é ruído. Quando a janela já está por fechar,
-     * é ela que manda.
-     */
-    const janela = policy.windowExpiresAt ? new Date(policy.windowExpiresAt).getTime() : null;
-    const expiresAt = new Date(
-      Math.min(Date.now() + REPLY_TTL_MS, janela ?? Date.now() + REPLY_TTL_MS),
-    );
-    const criada = await this.proposals.createReplySuperseding(this.approver(auth), {
-      runId,
-      // payload é SÓ o texto: sem destinatário, sem canal, sem anexo
-      payload: { body: draft.body },
-      rationale: draft.rationale ?? 'Rascunho de resposta sugerido pela IA',
-      conversationId,
-      contactId: conversation.contactId,
-      expiresAt,
-    });
-    if (criada === 'concurrent') {
+    if ('concurrent' in call.value) {
       /**
        * Outra geração simultânea venceu. Devolver erro seria estranho para quem
        * pediu — existe um rascunho para revisar, só não é o desta chamada. O
        * custo do run já foi registrado, e o texto descartado nunca chega à tela.
        */
       const vencedor = await this.pendingReply(auth, conversationId);
-      return vencedor ?? { status: 'unavailable', runId, reason: 'Rascunho não pôde ser criado' };
+      return (
+        vencedor ?? {
+          status: 'unavailable',
+          runId: call.value.concurrent,
+          reason: 'Rascunho não pôde ser criado',
+        }
+      );
     }
-
-    return {
-      status: 'proposed',
-      runId,
-      proposalId: criada.id,
-      draft: draft.body,
-      rationale: draft.rationale,
-      injectionAttempt: draft.injectionAttempt,
-      createdAt: new Date().toISOString(),
-    };
+    return call.value;
   }
 
   /**
@@ -1112,95 +1096,201 @@ export class IntelligenceService {
     });
   }
 
+  /** O run NA transação da guarda, com o id gerado antes da chamada. */
+  private async recordWithin(
+    tx: AiTx,
+    auth: AuthContext,
+    runId: string,
+    run: Omit<
+      AiRunRecord,
+      | 'model'
+      | 'triggeredByMembershipId'
+      | 'inputTokens'
+      | 'outputTokens'
+      | 'costCents'
+      | 'latencyMs'
+      | 'action'
+    > &
+      Partial<
+        Pick<AiRunRecord, 'inputTokens' | 'outputTokens' | 'costCents' | 'latencyMs' | 'action'>
+      >,
+  ): Promise<void> {
+    await this.runs.createWithin(tx, auth.workspaceId as string, {
+      id: runId,
+      capability: run.capability,
+      promptVersionId: run.promptVersionId,
+      model: this.llm.model,
+      contextSummary: run.contextSummary,
+      status: run.status,
+      reasonCode: run.reasonCode ?? null,
+      result: run.result ?? null,
+      conversationId: run.conversationId ?? null,
+      contactId: run.contactId ?? null,
+      inputTokens: run.inputTokens ?? 0,
+      outputTokens: run.outputTokens ?? 0,
+      costCents: run.costCents ?? 0,
+      latencyMs: run.latencyMs ?? 0,
+      action: run.action ?? 'none',
+      triggeredByMembershipId: auth.membershipId ?? null,
+    });
+  }
+
   /**
-   * Chamada ao provedor com RESERVA de quota (ADR-033): reserva o teto do run
-   * ANTES de chamar, liquida pelo custo real depois e libera a diferença.
-   * Incrementar só depois da resposta deixaria N chamadas simultâneas furarem
-   * o teto N vezes — com o dinheiro já gasto.
+   * A chamada ao provedor SOB A GUARDA de uso externo (ADR-047 adendos 6 e 7,
+   * G3.1), com RESERVA de quota (ADR-033): as duas reservas são feitas antes e
+   * entregues à guarda, que é a única a acertá-las dali em diante — pelo real
+   * com resposta, por zero sem provedor configurado, pelo teto com desfecho
+   * incerto. O run tem o id gerado ANTES da chamada; ele, as propostas e o
+   * rascunho são gravados NA transação da guarda, ainda sob as travas.
+   *
+   * `semRunNaFalha`: a leitura (score) não registra run quando não há resposta,
+   * como antes; o run em dúvida, esse sempre existe.
    */
-  private async callWithQuota(
-    workspaceId: string,
-    request: ScopedLlmRequest,
+  private async callUnderGuard<R>(
+    auth: AuthContext,
+    args: {
+      prompt: PromptDefinition;
+      request: ScopedLlmRequest;
+      target: { conversationId?: string | null; contactId?: string | null };
+      contextSummary: string;
+      semRunNaFalha?: boolean;
+      onResponse: (tx: AiTx, call: GuardedResponse) => Promise<R>;
+    },
   ): Promise<
-    | {
-        outcome: 'ok';
-        response: { text: string; inputTokens: number; outputTokens: number };
-        costCents: number;
-      }
-    | { outcome: 'quota_exceeded' }
+    | { outcome: 'ok'; value: R }
+    | { outcome: 'quota_exceeded'; promptVersionId: string; latencyMs: number }
     | { outcome: 'restricted' }
-    | { outcome: 'unavailable'; reason: 'provider_unavailable' | 'provider_unknown_cost' }
+    | { outcome: 'unavailable'; runId: string | null }
   > {
+    const { request, prompt } = args;
+    const workspaceId = auth.workspaceId as string;
     // restrição ANTES de reservar: contato restrito não consome orçamento
     if ((await this.assertRestrictionAnswered(request.scope)) === 'restricted') {
       return { outcome: 'restricted' };
     }
+    // o prompt vai no registro do uso: precisa existir antes da chamada
+    const promptVersionId = await this.ensurePrompt(prompt);
+    const started = Date.now();
 
     const promptChars =
       request.system.length + request.context.length + (request.untrusted?.length ?? 0);
     const maxCost = estimateMaxCostCents(this.llm.model, promptChars, request.maxOutputTokens);
-
     const runsReservation = await this.usage.reserve(workspaceId, 'ai_runs', 1);
-    if (runsReservation === 'quota_exceeded') return { outcome: 'quota_exceeded' };
+    if (runsReservation === 'quota_exceeded') {
+      return { outcome: 'quota_exceeded', promptVersionId, latencyMs: Date.now() - started };
+    }
     const costReservation = await this.usage.reserve(workspaceId, 'ai_cost_cents', maxCost);
     if (costReservation === 'quota_exceeded') {
+      // ainda não foi entregue à guarda: devolver aqui é o caminho certo
       await this.usage.release(runsReservation.reservationId);
-      return { outcome: 'quota_exceeded' };
+      return { outcome: 'quota_exceeded', promptVersionId, latencyMs: Date.now() - started };
     }
 
-    let result: GatewayOutcome;
-    try {
-      result = await this.llm.complete(request);
-    } catch {
-      // exceção que escapou do cliente: a requisição pode já ter sido
-      // despachada, então isto é INCERTO, não "não aconteceu"
-      result = { kind: 'unknown_after_dispatch' };
-    }
-
-    if (result.kind === 'restriction_unavailable') {
-      // a porta caiu entre a checagem e a chamada: nada saiu, reserva devolvida,
-      // e o motivo é infraestrutura — 503, nunca "contato restrito"
-      await this.usage.release(runsReservation.reservationId);
-      await this.usage.release(costReservation.reservationId);
-      throw new ServiceUnavailableException(RESTRICTION_UNAVAILABLE);
-    }
-    if (result.kind === 'restricted') {
-      // o gateway recusou ANTES da rede (o contato ficou restrito entre a
-      // checagem acima e a chamada): nada foi gasto, a reserva volta inteira
-      await this.usage.release(runsReservation.reservationId);
-      await this.usage.release(costReservation.reservationId);
-      return { outcome: 'restricted' };
-    }
-
-    if (result.kind === 'no_provider') {
-      // único caso COMPROVADO de custo zero (sem API key): libera tudo
-      await this.usage.release(runsReservation.reservationId);
-      await this.usage.release(costReservation.reservationId);
-      return { outcome: 'unavailable', reason: 'provider_unavailable' };
-    }
-
-    if (result.kind === 'unknown_after_dispatch') {
-      // pode ter havido consumo do outro lado: liquida o TETO reservado como
-      // custo conservador. Devolver o orçamento aqui seria devolver dinheiro
-      // possivelmente já gasto — o prejuízo da incerteza fica com a operação,
-      // não com a conta do cliente.
-      await this.usage.settle(workspaceId, runsReservation.reservationId, 'ai_runs', 1);
-      await this.usage.settle(workspaceId, costReservation.reservationId, 'ai_cost_cents', maxCost);
-      return { outcome: 'unavailable', reason: 'provider_unknown_cost' };
-    }
-
-    const costCents = estimateCostCents(this.llm.model, result.inputTokens, result.outputTokens);
-    await this.usage.settle(workspaceId, runsReservation.reservationId, 'ai_runs', 1);
-    await this.usage.settle(workspaceId, costReservation.reservationId, 'ai_cost_cents', costCents);
-    return {
-      outcome: 'ok',
-      response: {
-        text: result.text,
-        inputTokens: result.inputTokens,
-        outputTokens: result.outputTokens,
+    const runId = randomUUID();
+    const erro = (reasonCode: string, costCents: number, tx: AiTx) =>
+      args.semRunNaFalha
+        ? Promise.resolve()
+        : this.recordWithin(tx, auth, runId, {
+            capability: prompt.capability,
+            promptVersionId,
+            contextSummary: args.contextSummary,
+            status: 'error',
+            // distingue "não houve chamada" de "pode ter havido custo" (revisão 8.1)
+            reasonCode,
+            conversationId: args.target.conversationId ?? null,
+            contactId: args.target.contactId ?? null,
+            // o custo cobrado: zero sem provedor, o teto com desfecho incerto
+            costCents,
+            latencyMs: Date.now() - started,
+          });
+    const resultado = await this.guard.run<{ ok: true; value: R } | { ok: false }>({
+      workspaceId,
+      // conteúdo sem contato (conversa não vinculada) só trava o workspace
+      contactIds: request.scope.contactIds.filter((id): id is string => typeof id === 'string'),
+      runId,
+      origin: {
+        promptVersionId,
+        conversationId: args.target.conversationId ?? null,
+        contactId: args.target.contactId ?? null,
+        triggeredByMembershipId: auth.membershipId ?? null,
       },
-      costCents,
-    };
+      metadata: {
+        capability: prompt.capability,
+        model: this.llm.model,
+        promptVersion: prompt.version,
+        costCeilingCents: maxCost,
+      },
+      reservations: { runs: runsReservation.reservationId, cost: costReservation.reservationId },
+      recheck: () => this.llm.verdict(request.scope),
+      call: (signal) => this.llm.completeUnderGuard(request, signal),
+      persist: async (tx, outcome) => {
+        if (outcome.kind === 'ok') {
+          const costCents = estimateCostCents(
+            this.llm.model,
+            outcome.inputTokens,
+            outcome.outputTokens,
+          );
+          const value = await args.onResponse(tx, {
+            runId,
+            promptVersionId,
+            response: outcome,
+            usage: {
+              inputTokens: outcome.inputTokens,
+              outputTokens: outcome.outputTokens,
+              costCents,
+              latencyMs: Date.now() - started,
+            },
+          });
+          return { value: { ok: true as const, value }, settlement: { runs: 1, costCents } };
+        }
+        if (outcome.kind === 'no_provider') {
+          // único caso COMPROVADO de custo zero (sem API key): nada é cobrado
+          await erro('provider_unavailable', 0, tx);
+          return { value: { ok: false as const }, settlement: { runs: 0, costCents: 0 } };
+        }
+        // incerto (erro do provedor, prazo, conexão): pode ter havido consumo do
+        // outro lado — o TETO reservado é o custo conservador
+        await erro('provider_unknown_cost', maxCost, tx);
+        return { value: { ok: false as const }, settlement: { runs: 1, costCents: maxCost } };
+      },
+    });
+
+    switch (resultado.kind) {
+      case 'done':
+        return resultado.value.ok
+          ? { outcome: 'ok', value: resultado.value.value }
+          : { outcome: 'unavailable', runId: args.semRunNaFalha ? null : runId };
+      case 'in_doubt':
+        // o run existe, `unknown_after_dispatch`, e as reservas foram cobradas pelo teto
+        return { outcome: 'unavailable', runId };
+      case 'not_started':
+        if (resultado.reason === 'restricted') return { outcome: 'restricted' };
+        if (resultado.reason === 'unavailable') {
+          // a porta caiu sob as travas: nada saiu, as reservas voltaram, e o
+          // motivo é infraestrutura — 503, nunca "contato restrito"
+          throw new ServiceUnavailableException(RESTRICTION_UNAVAILABLE);
+        }
+        // a guarda não começou (mudança em andamento, sessão, prova de vida):
+        // nada saiu e as reservas voltaram. O registro que falhou NÃO ganha run
+        // aqui: se ele chegou a comitar, a reconciliação cria o run em dúvida
+        // com o id reservado — e a mesma tentativa ficaria com dois runs
+        if (args.semRunNaFalha || resultado.reason === 'registration') {
+          return { outcome: 'unavailable', runId: null };
+        }
+        return {
+          outcome: 'unavailable',
+          runId: await this.record(auth, {
+            capability: prompt.capability,
+            promptVersionId,
+            contextSummary: args.contextSummary,
+            status: 'error',
+            reasonCode: 'not_started',
+            conversationId: args.target.conversationId ?? null,
+            contactId: args.target.contactId ?? null,
+            latencyMs: Date.now() - started,
+          }),
+        };
+    }
   }
 
   /** Modelo às vezes embrulha JSON em cerca de código; nada além disso é tolerado. */

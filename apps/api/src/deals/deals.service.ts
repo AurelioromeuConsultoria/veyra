@@ -246,6 +246,12 @@ export class DealsService {
       await tx.deal.updateMany({ where: { id }, data });
       // ajuste #8: alteração vira Activity (payload mínimo) E AuditLog
       // (before/after por allowlist) — o AuditLog é o registro de "o que mudou"
+      // os alvos EM VIGOR, relidos da linha que a escrita travou: a leitura de
+      // antes da transação pode estar velha
+      const vigente = (await tx.deal.findFirst({
+        where: { id },
+        select: { contactId: true, companyId: true },
+      })) as unknown as { contactId: string | null; companyId: string | null } | null;
       await this.activities.record(
         tx as unknown as Db,
         auth.workspaceId as string,
@@ -253,7 +259,11 @@ export class DealsService {
         {
           actorMembershipId: auth.membershipId,
           payload: { title: input.title ?? existing.title },
-          targets: { dealId: id, contactId: existing.contactId, companyId: existing.companyId },
+          targets: {
+            dealId: id,
+            contactId: vigente?.contactId ?? null,
+            companyId: vigente?.companyId ?? null,
+          },
         },
       );
       // before/after ESPELHADOS: só as chaves que o PATCH realmente enviou

@@ -47,6 +47,9 @@ const CONFIG: ConfigDaGuarda = {
   mudancaTransacaoMs: 5_000,
   workspaceTravaMs: 1_000,
   workspaceTransacaoMs: 5_000,
+  prazoDaIaMs: 1_000,
+  prazoDaMetaMs: 1_000,
+  prazoDoWebhookMs: 1_000,
   persistenciaMs: 2_000,
   margemOciosaMs: 1_500,
   margemDoPrazoMs: 0,
@@ -91,11 +94,16 @@ describe('Guarda de uso externo (ADR-047 adendos 6 e 7)', () => {
     orfaos = app.get(UsosOrfaos);
     reconciliacao = app.get(ReconciliacaoDosUsos);
     cls = app.get(ClsService);
-    app.get(OrigensDosUsos).registrar('ai_generation', {
-      marcarIncerta: async (_tx, uso) => {
-        if (uso.id === origemQueFalha) throw new Error('tratador de origem com defeito');
-        origensMarcadas.push(uso.id);
-      },
+    // a especificação REAL do tipo `ai_generation` (registrada pelo módulo da
+    // IA na subida), com o tratador espiado: conta as marcações e falha sob
+    // demanda
+    const especificacao = app.get(OrigensDosUsos).de('ai_generation');
+    if (!especificacao) throw new Error('ai_generation sem especificação registrada');
+    const tratadorReal = especificacao.marcarIncerta.bind(especificacao);
+    jest.spyOn(especificacao, 'marcarIncerta').mockImplementation(async (tx, uso) => {
+      if (uso.id === origemQueFalha) throw new Error('tratador de origem com defeito');
+      origensMarcadas.push(uso.id);
+      await tratadorReal(tx, uso);
     });
     observador = new Client({ connectionString: TEST_DATABASE_URL });
     await observador.connect();
@@ -196,7 +204,11 @@ describe('Guarda de uso externo (ADR-047 adendos 6 e 7)', () => {
       prazoMs: opcoes.prazoMs ?? 1_000,
       origem: { runId: randomUUID() },
       reservas: opcoes.reservas ?? [],
-      metadadosDoRun: { capacidade: 'teste' },
+      metadadosDoRun: {
+        capability: 'conversation_summary',
+        model: 'claude-sonnet-5',
+        promptVersion: 1,
+      },
       reconferir: (tx) =>
         opcoes.reconferir ? opcoes.reconferir(tx) : Promise.resolve(opcoes.veredito ?? 'liberado'),
       iniciar: async (signal) => {
@@ -272,7 +284,11 @@ describe('Guarda de uso externo (ADR-047 adendos 6 e 7)', () => {
     expect(visto.registroNoInicio).toBe('authorized');
     const [registro] = await usos();
     expect(registro.status).toBe('concluded');
-    expect(registro.runMetadata).toEqual({ capacidade: 'teste' });
+    expect(registro.runMetadata).toEqual({
+      capability: 'conversation_summary',
+      model: 'claude-sonnet-5',
+      promptVersion: 1,
+    });
     expect(await reservaExiste(reserva)).toBe(false); // acertada pelo real
     expect(await contador()).toBe(1);
   });
@@ -1336,10 +1352,10 @@ describe('Guarda de uso externo (ADR-047 adendos 6 e 7)', () => {
     expect(origensMarcadas).toEqual([seguinte]);
   });
 
-  it('"só ids": texto livre nos metadados do run ou chave inválida na origem é recusado antes de qualquer trava', async () => {
+  it('"só ids" e a ESPECIFICAÇÃO do tipo: texto livre, chave ou valor fora da lista fechada, e tipo sem registro, recusados antes de qualquer trava', async () => {
     const reserva = await reservar();
     const comTexto = falso({ reservas: [reserva] }).uso;
-    comTexto.metadadosDoRun = { capacidade: 'resumo da conversa com Maria' };
+    comTexto.metadadosDoRun = { capability: 'resumo da conversa com Maria' };
     await expect(noWorkspace(() => guarda.executar(comTexto))).rejects.toThrow(/metadadosDoRun/);
     // a reserva do uso recusado volta já, sem esperar a varredura
     expect(await reservaExiste(reserva)).toBe(false);
@@ -1348,14 +1364,36 @@ describe('Guarda de uso externo (ADR-047 adendos 6 e 7)', () => {
     chaveRuim.origem = { 'run id': randomUUID() };
     await expect(noWorkspace(() => guarda.executar(chaveRuim))).rejects.toThrow(/origem/);
     expect(await usos()).toHaveLength(0);
-    // um e-mail não é identificador: o '@' só vale como sufixo de versão
+    // um e-mail não é identificador nem id de modelo
     const comEmail = falso({}).uso;
-    comEmail.metadadosDoRun = { modelo: 'maria.silva@exemplo.com' };
+    comEmail.metadadosDoRun = { model: 'maria.silva@exemplo.com' };
     await expect(noWorkspace(() => guarda.executar(comEmail))).rejects.toThrow(/metadadosDoRun/);
-    // ids de modelo com '/' e '@<versão>' são identificadores
-    const comModelo = falso({}).uso;
-    comModelo.metadadosDoRun = { modelo: 'anthropic/claude-x@2026-10', versao: 3 };
-    expect((await noWorkspace(() => guarda.executar(comModelo))).tipo).toBe('concluido');
+    // um nome de uma palavra só passa no formato, mas não na lista fechada
+    const comNome = falso({}).uso;
+    comNome.metadadosDoRun = { capability: 'Maria' };
+    await expect(noWorkspace(() => guarda.executar(comNome))).rejects.toThrow(/metadadosDoRun/);
+    // chave fora da especificação do tipo
+    const chaveFora = falso({}).uso;
+    chaveFora.metadadosDoRun = { versao: 3 };
+    await expect(noWorkspace(() => guarda.executar(chaveFora))).rejects.toThrow(/metadadosDoRun/);
+    const origemFora = falso({}).uso;
+    origemFora.origem = { dealId: randomUUID() };
+    await expect(noWorkspace(() => guarda.executar(origemFora))).rejects.toThrow(/origem/);
+    // tipo sem especificação registrada (o webhook liga na G3.3)
+    const semRegistro = falso({}).uso;
+    semRegistro.kind = 'webhook_delivery';
+    await expect(noWorkspace(() => guarda.executar(semRegistro))).rejects.toThrow(
+      /tipo sem registro/,
+    );
+    expect(await usos()).toHaveLength(0);
+    // dentro da especificação: começa
+    const valido = falso({}).uso;
+    valido.metadadosDoRun = {
+      capability: 'next_action',
+      model: 'claude-sonnet-5',
+      promptVersion: 3,
+    };
+    expect((await noWorkspace(() => guarda.executar(valido))).tipo).toBe('concluido');
   });
 
   it('o client protegido executa o modelo RECONSTRUÍDO, nunca o `text` de um objeto forjado', async () => {

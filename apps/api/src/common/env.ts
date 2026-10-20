@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { FORMATO_DO_MODELO } from '../intelligence/llm/llm.client';
 
 /**
  * Validação de ambiente no boot (fail-fast): se a env é inválida, a aplicação
@@ -62,7 +63,12 @@ const envSchema = z.object({
   // IA (Entrega 7): SEM chave o produto segue funcionando — cada capacidade
   // degrada com clareza (score continua, explicação some)
   ANTHROPIC_API_KEY: opcional(z.string().min(1)),
-  AI_MODEL: z.string().min(1).default('claude-sonnet-5'),
+  // o MESMO formato que a especificação do uso `ai_generation` aceita (ADR-047
+  // adendo 7 §9): fora dele, a aplicação não sobe
+  AI_MODEL: z
+    .string()
+    .regex(FORMATO_DO_MODELO, 'AI_MODEL fora do formato de id de modelo')
+    .default('claude-sonnet-5'),
   /**
    * Canal WhatsApp (Entrega 9.1). O APP SECRET vive aqui, no ambiente, e não
    * por canal (ADR-037): hoje há um único Meta App. Ausentes, o canal
