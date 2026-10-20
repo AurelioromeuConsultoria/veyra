@@ -544,7 +544,9 @@ describe('Clinics — restrição de conteúdo com a porta real e API de libera�
         prisma.raw.clinicsProfessional.create({
           data: { workspaceId: wsA.workspaceId, name: 'Profissional' },
         }),
-      // junção e horários não existem sem os pais: as linhas deles vêm junto, e
+      // junção, horários, agendamento e atendimento não existem sem os pais
+      // (agendamento e atendimento passam pelo paciente, que já é presença): as
+      // linhas deles vêm junto, e
       // a cobertura POR MODELO da presença é a do teste estático (CLINICS_MODELS
       // igual ao schema, percorrida pela porta)
       ClinicsProfessionalService: async () => {
@@ -584,7 +586,50 @@ describe('Clinics — restrição de conteúdo com a porta real e API de libera�
           data: { workspaceId: wsA.workspaceId, contactId, createdByMembershipId: dono!.id },
         });
       },
+      ClinicsAppointment: () => agendamentoComPais(),
+      ClinicsAttendance: async () => {
+        const ag = await agendamentoComPais();
+        return prisma.raw.clinicsAttendance.create({
+          data: {
+            workspaceId: wsA.workspaceId,
+            appointmentId: ag.id,
+            professionalId: ag.professionalId,
+            completedAt: new Date(),
+            recordedByMembershipId: ag.createdByMembershipId,
+          },
+        });
+      },
     };
+
+    /** Agendamento fictício com os pais (paciente, profissional, serviço, unidade). */
+    async function agendamentoComPais() {
+      const workspaceId = wsA.workspaceId;
+      const dono = await prisma.raw.membership.findFirst({
+        where: { workspaceId, role: { systemKey: 'owner' } },
+      });
+      const paciente = await prisma.raw.clinicsPatient.create({
+        data: { workspaceId, contactId, createdByMembershipId: dono!.id },
+      });
+      const prof = await prisma.raw.clinicsProfessional.create({
+        data: { workspaceId, name: 'P' },
+      });
+      const serv = await prisma.raw.clinicsService.create({
+        data: { workspaceId, name: 'S', durationMin: 30 },
+      });
+      const unit = await prisma.raw.clinicsUnit.create({ data: { workspaceId, name: 'U' } });
+      return prisma.raw.clinicsAppointment.create({
+        data: {
+          workspaceId,
+          patientId: paciente.id,
+          professionalId: prof.id,
+          serviceId: serv.id,
+          unitId: unit.id,
+          startsAt: new Date('2026-11-02T12:00:00Z'),
+          endsAt: new Date('2026-11-02T12:30:00Z'),
+          createdByMembershipId: dono!.id,
+        },
+      });
+    }
 
     it.each([...CLINICS_MODELS])(
       'presença com %s (sem ClinicsSettings ativo; junção e horários vêm com os pais): restrito para os dois consumidores',

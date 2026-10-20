@@ -339,3 +339,132 @@ export interface ClinicsPatientDto {
   name: string;
   createdAt: string;
 }
+
+// ── Agenda e atendimento (F2.2, ADR-048 adendo 4) ──────────────────────────
+
+export const clinicsAppointmentStatusSchema = z.enum([
+  'scheduled',
+  'confirmed',
+  'arrived',
+  'canceled',
+  'no_show',
+  'attended',
+]);
+export type ClinicsAppointmentStatus = z.infer<typeof clinicsAppointmentStatusSchema>;
+
+/** Motivo de cancelamento, por LISTA FECHADA: sem "outro" e sem texto livre. */
+export const clinicsCancelReasonSchema = z.enum([
+  'patient_request',
+  'clinic_request',
+  'professional_unavailable',
+  'scheduling_error',
+]);
+export type ClinicsCancelReason = z.infer<typeof clinicsCancelReasonSchema>;
+
+/** Data LOCAL da unidade, `AAAA-MM-DD`, que precisa existir no calendário. */
+const localDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use AAAA-MM-DD')
+  .refine((value) => {
+    const [ano, mes, dia] = value.split('-').map(Number);
+    const data = new Date(Date.UTC(ano, mes - 1, dia));
+    return (
+      data.getUTCFullYear() === ano && data.getUTCMonth() === mes - 1 && data.getUTCDate() === dia
+    );
+  }, 'Data inexistente')
+  // antes dos fusos padronizados o deslocamento tem segundos, e a hora local
+  // deixaria de ser exata; uma agenda não precisa de mais que isto
+  .refine((value) => {
+    const ano = Number(value.slice(0, 4));
+    return ano >= 2000 && ano <= 2100;
+  }, 'Use um ano entre 2000 e 2100');
+
+/** Hora LOCAL da unidade, `HH:MM`, em passos de 5 minutos (como as durações). */
+const localTime = z
+  .string()
+  .regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:MM')
+  .refine((value) => Number(value.slice(3)) % 5 === 0, 'Use passos de 5 minutos');
+
+/**
+ * Desambiguador da hora que se REPETE na mudança de horário (ex.: `-03:00`).
+ * Só necessário quando a hora local é ambígua (ADR-048 adendo 4, item 3).
+ */
+const utcOffset = z.string().regex(/^[+-](0\d|1[0-4]):[0-5]\d$/, 'Use ±HH:MM');
+
+export const createClinicsAppointmentSchema = z
+  .object({
+    patientId: z.uuid(),
+    professionalId: z.uuid(),
+    serviceId: z.uuid(),
+    /** sem ela, vale a única unidade ativa (no MVP há uma por workspace) */
+    unitId: z.uuid().optional(),
+    date: localDate,
+    time: localTime,
+    utcOffset: utcOffset.optional(),
+  })
+  .strict();
+export type CreateClinicsAppointmentInput = z.infer<typeof createClinicsAppointmentSchema>;
+
+/** Remarcar conserva a duração registrada; trocar o serviço a recalcula. */
+export const rescheduleClinicsAppointmentSchema = z
+  .object({
+    date: localDate,
+    time: localTime,
+    utcOffset: utcOffset.optional(),
+    serviceId: z.uuid().optional(),
+  })
+  .strict();
+export type RescheduleClinicsAppointmentInput = z.infer<typeof rescheduleClinicsAppointmentSchema>;
+
+/** `attended` NÃO está aqui: só o registro de atendimento chega lá. */
+export const changeClinicsAppointmentStatusSchema = z
+  .object({
+    to: z.enum(['confirmed', 'arrived', 'canceled', 'no_show']),
+    cancelReason: clinicsCancelReasonSchema.optional(),
+  })
+  .strict()
+  .refine((value) => (value.to === 'canceled') === (value.cancelReason !== undefined), {
+    message: 'Cancelamento exige motivo; as outras mudanças não aceitam motivo',
+    path: ['cancelReason'],
+  });
+export type ChangeClinicsAppointmentStatusInput = z.infer<
+  typeof changeClinicsAppointmentStatusSchema
+>;
+
+/** O dia LOCAL de uma unidade. Sem `unitId`, vale a única unidade ativa. */
+export const listClinicsAppointmentsSchema = z.object({
+  date: localDate,
+  unitId: z.uuid().optional(),
+  professionalId: z.uuid().optional(),
+});
+export type ListClinicsAppointmentsInput = z.infer<typeof listClinicsAppointmentsSchema>;
+
+export interface ClinicsAppointmentDto {
+  id: string;
+  patientId: string;
+  /** do contato: o paciente aparece na agenda só pelo nome (§5.2) */
+  patientName: string;
+  professionalId: string;
+  professionalName: string;
+  serviceId: string;
+  serviceName: string;
+  unitId: string;
+  /** instantes ISO (UTC) — a verdade */
+  startsAt: string;
+  endsAt: string;
+  /** leitura na hora local da UNIDADE */
+  localDate: string;
+  localStart: string;
+  localEnd: string;
+  status: ClinicsAppointmentStatus;
+  cancelReason: ClinicsCancelReason | null;
+  /** omitido no servidor para quem não tem `clinics:care:read` (autorização de campo) */
+  attendanceId?: string | null;
+}
+
+export interface ClinicsAttendanceDto {
+  id: string;
+  appointmentId: string;
+  professionalId: string;
+  completedAt: string;
+}

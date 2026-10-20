@@ -125,6 +125,8 @@ model Workspace {
   clinicsProfessionalServices ClinicsProfessionalService[]
   clinicsWorkingHours         ClinicsWorkingHours[]
   clinicsPatients             ClinicsPatient[]
+  clinicsAppointments         ClinicsAppointment[]
+  clinicsAttendances          ClinicsAttendance[]
 }
 
 /// Catálogo GLOBAL de permissões (ADR-004): chaves estáveis do sistema —
@@ -198,27 +200,29 @@ model Membership {
   // FK composta (ADR-010): Membership não pode apontar para Role de outro workspace
   role      Role      @relation(fields: [workspaceId, roleId], references: [workspaceId, id])
 
-  ownedCompanies         Company[]               @relation("CompanyOwner")
-  ownedContacts          Contact[]               @relation("ContactOwner")
-  activeSessions         RefreshToken[]          @relation("SessionActiveMembership")
-  ownedDeals             Deal[]                  @relation("DealOwner")
-  assignedTasks          Task[]                  @relation("TaskAssignee")
-  authoredNotes          Note[]                  @relation("NoteAuthor")
-  activities             Activity[]              @relation("ActivityActor")
-  auditLogs              AuditLog[]              @relation("AuditActor")
-  assignedConversations  Conversation[]          @relation("ConversationAssignee")
-  authoredMessages       Message[]               @relation("MessageAuthorMembership")
-  organizedEvents        CalendarEvent[]         @relation("EventOrganizer")
-  notifications          Notification[]          @relation("NotificationRecipient")
-  uploadedFiles          FileObject[]            @relation("FileUploader")
-  aiRuns                 AiRun[]                 @relation("AiRunTrigger")
-  reviewedProposals      AiProposal[]            @relation("ProposalReviewer")
-  consentChanges         AiConsent[]             @relation("ConsentAuthor")
-  grantedConsents        ContactChannelConsent[] @relation("ConsentGranter")
+  ownedCompanies             Company[]               @relation("CompanyOwner")
+  ownedContacts              Contact[]               @relation("ContactOwner")
+  activeSessions             RefreshToken[]          @relation("SessionActiveMembership")
+  ownedDeals                 Deal[]                  @relation("DealOwner")
+  assignedTasks              Task[]                  @relation("TaskAssignee")
+  authoredNotes              Note[]                  @relation("NoteAuthor")
+  activities                 Activity[]              @relation("ActivityActor")
+  auditLogs                  AuditLog[]              @relation("AuditActor")
+  assignedConversations      Conversation[]          @relation("ConversationAssignee")
+  authoredMessages           Message[]               @relation("MessageAuthorMembership")
+  organizedEvents            CalendarEvent[]         @relation("EventOrganizer")
+  notifications              Notification[]          @relation("NotificationRecipient")
+  uploadedFiles              FileObject[]            @relation("FileUploader")
+  aiRuns                     AiRun[]                 @relation("AiRunTrigger")
+  reviewedProposals          AiProposal[]            @relation("ProposalReviewer")
+  consentChanges             AiConsent[]             @relation("ConsentAuthor")
+  grantedConsents            ContactChannelConsent[] @relation("ConsentGranter")
   // lado reverso do vertical Clinics (ADR-047 adendo 2, item 1)
-  clinicsReleasesGranted ClinicsContactRelease[] @relation("ClinicsReleaseGrantedBy")
-  clinicsProfessional    ClinicsProfessional?    @relation("ClinicsProfessionalAccount")
-  clinicsPatientsCreated ClinicsPatient[]        @relation("ClinicsPatientCreatedBy")
+  clinicsReleasesGranted     ClinicsContactRelease[] @relation("ClinicsReleaseGrantedBy")
+  clinicsProfessional        ClinicsProfessional?    @relation("ClinicsProfessionalAccount")
+  clinicsPatientsCreated     ClinicsPatient[]        @relation("ClinicsPatientCreatedBy")
+  clinicsAppointmentsCreated ClinicsAppointment[]    @relation("ClinicsAppointmentCreatedBy")
+  clinicsAttendancesRecorded ClinicsAttendance[]     @relation("ClinicsAttendanceRecordedBy")
 
   // Alvo de FK composta para Team/ownership futuros
   @@unique([workspaceId, id])

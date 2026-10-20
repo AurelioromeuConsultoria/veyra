@@ -4,8 +4,15 @@ import {
   CLINICS_PERMISSION_CATALOG,
   CLINICS_PROFESSIONAL_SYSTEM_KEY,
   clinicsAiReleaseReasonSchema,
+  clinicsAppointmentStatusSchema,
+  clinicsCancelReasonSchema,
 } from '@veyra/contracts/verticals/clinics';
-import { ClinicsReleaseConsumer, ClinicsReleaseReason } from '../../generated/prisma/enums';
+import {
+  ClinicsAppointmentStatus,
+  ClinicsCancelReason,
+  ClinicsReleaseConsumer,
+  ClinicsReleaseReason,
+} from '../../generated/prisma/enums';
 import { CLINICS_ROLE_GRANTS } from './clinics-permissions';
 import { CLINICS_MODELS, clinicsExtension } from './clinics.extension';
 
@@ -55,6 +62,34 @@ describe('Clinics — garantias estáticas (ADR-047, ADR-048)', () => {
     );
     // no MVP só `ai` tem liberação (ADR-048 §6.4); webhook nunca
     expect(Object.values(ClinicsReleaseConsumer)).toEqual(['ai']);
+  });
+
+  it('estados e motivos de cancelamento da agenda: contrato (Zod) e banco (enum) são a MESMA lista', () => {
+    expect([...clinicsAppointmentStatusSchema.options].sort()).toEqual(
+      Object.values(ClinicsAppointmentStatus).sort(),
+    );
+    expect([...clinicsCancelReasonSchema.options].sort()).toEqual(
+      Object.values(ClinicsCancelReason).sort(),
+    );
+  });
+
+  // Garantia PARCIAL nos imports: o `ContactsService` (que publica no outbox) é
+  // importado legitimamente desde a F2.1, para ler e travar contatos. Para a
+  // agenda, quem prova a fronteira é o teste de integração que conta os eventos.
+  it('o vertical NÃO escreve em entidades do Core nem no outbox, e não importa os serviços de tarefa, atividade, notificação, webhook, deal, conversa e canal (adendo 2, item 7)', () => {
+    // dado classe S não pode ir parar em tarefa, atividade, nota, notificação,
+    // deal, conversa, mensagem ou evento — nem por escrita direta, nem por serviço
+    const ESCRITA_NO_CORE =
+      /\b(task|activity|note|notification|outboxEvent|deal|contact|conversation|message|messageDispatch|webhook)\s*\.\s*(create|createMany|createManyAndReturn|update|updateMany|updateManyAndReturn|upsert|delete|deleteMany)\b/;
+    const SERVICOS_QUE_PUBLICAM =
+      /from '\.\.\/(\.\.\/)+(outbox|tasks|activities|notifications|webhooks|deals|conversations|channels)\//;
+    const ofensas = walk(ROOT)
+      .filter((file) => {
+        const texto = readFileSync(file, 'utf8');
+        return ESCRITA_NO_CORE.test(texto) || SERVICOS_QUE_PUBLICAM.test(texto);
+      })
+      .map((file) => relative(ROOT, file));
+    expect(ofensas).toEqual([]);
   });
 
   it('a matriz só concede chaves do catálogo do vertical, e Guest não recebe nada', () => {

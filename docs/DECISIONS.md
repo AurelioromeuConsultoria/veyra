@@ -1676,6 +1676,121 @@ Implementa os itens 1, 2, 3, 6 e 8 do adendo 2. A condição de concorrência do
 
     Na revisão do adendo 6 (2026-10-20), quatro das cinco decisões foram aprovadas. O residual da sessão de guarda **não** foi aceito como prova e ficou em aberto, então o B2 segue fechado também por ele.
 
+### Adendo 4 (2026-10-20) — F2.2: agenda e registro de atendimento na API
+
+Implementa os itens 4 e 5 do adendo 2, só na API. As telas e o e2e ficam para a F2.3. A revisão de 2026-10-20 liberou o desenvolvimento com **dados fictícios apenas**. O Clinics segue desativado em staging, e o B2 segue fechado (adendo 3, item 16; ADR-047 adendo 6).
+
+1. **`ClinicsAppointment` (classe S).**
+   - **Campos:** paciente, profissional, serviço, unidade, `startsAt` e `endsAt` (`timestamptz(3)`), status, motivo de cancelamento, quem criou e datas. Nenhum campo de texto.
+   - **FKs compostas `NO ACTION`:** para paciente, profissional, serviço, unidade e a membership de quem criou. Nada do catálogo é apagado (só arquivado), e excluir o workspace leva tudo em cascata.
+   - **No banco:** `CHECK ("endsAt" > "startsAt")` e o EXCLUDE do item 4 do adendo 2. O EXCLUDE recebe `workspaceId` e `professionalId` com `=` e `tstzrange("startsAt", "endsAt", '[)')` com `&&`, e vale **só** para os estados ativos (`scheduled`, `confirmed`, `arrived`, `attended`).
+   - **Violação de sobreposição** (23P01 nessa constraint): o serviço a converte em 409, "horário já ocupado para este profissional". Não há pré-checagem: o banco é a única fonte da verdade.
+   - **`startsAt` e `endsAt` não vêm de relógio** (ADR-049): são o horário escolhido, convertido da hora local da unidade.
+2. **Motivo de cancelamento, por lista fechada:** `patient_request`, `clinic_request`, `professional_unavailable` e `scheduling_error`. Sem "outro" e sem texto.
+3. **Hora local, fuso e mudança de horário.** A conversão é uma função pura, sem dependência nova, que usa o `Intl` do runtime. Para uma data e hora locais no fuso da unidade, ela procura os instantes cujo horário local é exatamente aquele:
+   - **nenhum instante:** a hora não existe (é o "pulo" da mudança de horário). Resposta 400: "horário inexistente nesse dia por mudança de fuso";
+   - **dois instantes:** a hora é ambígua (é a hora que se repete). Resposta 400, pedindo `utcOffset` (por exemplo, `-03:00`). Com ele, vale o instante desse deslocamento; um deslocamento que não corresponde a nenhum dos dois dá 400;
+   - **um instante:** vale. Um `utcOffset` informado precisa bater com ele.
+   - **Granularidade:** a hora é aceita em passos de 5 minutos, como as durações do catálogo.
+4. **Expediente.** O início e o fim **locais** do agendamento precisam estar no mesmo dia local, dentro de um mesmo intervalo do profissional na unidade:
+   - o dia da semana é o da data local;
+   - o fim local vem do instante `endsAt` convertido de volta, e meia-noite do dia seguinte conta como minuto 1440.
+   - Quem atravessa uma mudança de horário e não cabe recebe 400. Por exemplo: em Nova York, 01:30 + 60 min no domingo da primavera termina às 03:30 locais e não cabe num intervalo que vai até as 03:00.
+   - **Leituras de borda, aceitas como estão:**
+     - **na hora que se repete,** um atendimento pode terminar numa hora local anterior à de início (01:50 −04:00 + 30 min termina às 01:20 −05:00). Ele é aceito, porque o fim é lido na segunda ocorrência da hora;
+     - **num dia sem meia-noite** (onde a mudança é às 00:00), um fim às 24:00 vira 01:00 do dia seguinte e é recusado.
+5. **Regras de agendar e remarcar**, conferidas no serviço:
+   - paciente existente;
+   - profissional, serviço e unidade ativos;
+   - profissional habilitado para o serviço;
+   - horário dentro do expediente;
+   - `endsAt = startsAt + durationMin` do serviço **no momento do agendamento**.
+
+   Na **remarcação**:
+   - conserva a duração registrada (`endsAt − startsAt`), e só a troca de serviço recalcula pela duração atual do novo serviço;
+   - vale a partir de `scheduled` ou `confirmed`;
+   - o agendamento volta a `scheduled`, porque a confirmação era do horário antigo.
+
+   Mudar a duração de um serviço **não altera** agendamentos existentes.
+
+6. **Transições** (`POST /api/clinics/appointments/:id/status`, com `{ to, cancelReason? }`):
+   - `scheduled → confirmed → arrived`;
+   - `canceled` (motivo obrigatório) e `no_show` a partir de `scheduled` ou `confirmed`;
+   - `attended` **só** pelo registro de atendimento.
+
+   Cada transição trava a linha do agendamento, lê o estado e responde 409 se a origem não for permitida; a escrita é condicionada ao estado lido. Cancelar e marcar falta liberam o horário, porque saem do EXCLUDE.
+
+7. **Registro de atendimento (`ClinicsAttendance`, classe S).**
+   - É 1:1 com o agendamento (`@@unique([workspaceId, appointmentId])`), com o profissional que executou (o do agendamento, no MVP), `completedAt` e quem registrou.
+   - Exige `clinics:care:write` + `clinics:schedule:read` e é aceito a partir de `scheduled`, `confirmed` ou `arrived` (H1).
+   - **Na mesma transação**, o agendamento vai a `attended`.
+   - **Repetir** devolve o registro existente.
+   - **Duas chamadas simultâneas** resultam em um só registro: a perdedora relê o vencedor. Teste de rollback: se a transição falhar, o registro não fica.
+   - **Repetir devolve o registro a quem tem `clinics:care:write`.** Nenhum papel atual tem essa chave sem `clinics:care:read`.
+8. **Rotas** (atrás do `ClinicsActiveGuard`, com 403 sem a chave e 404 só no caso residual):
+
+   | Rota                                                                                                                              | Exige                                          |
+   | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+   | `GET /api/clinics/appointments?date=AAAA-MM-DD[&unitId=][&professionalId=]` (o dia local da unidade; sem `unitId`, a única ativa) | `clinics:schedule:read`                        |
+   | `POST /api/clinics/appointments` (`unitId` opcional, pela mesma regra)                                                            | `clinics:schedule:write`                       |
+   | `POST /api/clinics/appointments/:id/reschedule`                                                                                   | `clinics:schedule:write`                       |
+   | `POST /api/clinics/appointments/:id/status`                                                                                       | `clinics:schedule:write`                       |
+   | `POST /api/clinics/appointments/:id/attendance`                                                                                   | `clinics:care:write` + `clinics:schedule:read` |
+   | `GET /api/clinics/appointments/:id/attendance`                                                                                    | `clinics:care:read`                            |
+   - **O que a agenda mostra:** o paciente aparece só pelo nome (§5.2), além dos horários locais e dos instantes.
+   - **Autorização de campo** (SECURITY §4): o vínculo com o atendimento (`attendanceId`) é **omitido no servidor** para quem não tem `clinics:care:read`.
+   - **Teto:** um dia de uma unidade. São no máximo 500 linhas, sem paginação, e o teto entra na dívida.
+
+9. **Mudar o fuso da unidade** com agendamentos ativos futuros responde 409 (item 4 do adendo 2).
+   - **"Futuro"** se compara com o relógio da aplicação. O início do agendamento é um horário escolhido por uma pessoa, não um agendamento de fila, então o ADR-049 não se aplica, e alguns segundos de desvio não mudam a decisão.
+   - **Corrida com quem agenda:** agendar e remarcar travam a linha da unidade na própria transação, e a mudança de fuso trava a mesma linha antes de conferir. O fuso é relido **depois** da trava. Sem isso, um agendamento calculado com o fuso antigo poderia comitar depois da mudança.
+   - **Ordem das travas e ausência de ciclo:** a ordem é unidade → agendamento. O atendimento e as transições travam só o agendamento. Toda transação trava no máximo **uma** unidade, porque a remarcação não muda a unidade. Por isso não há ciclo **entre as travas de linha**.
+   - **Limite com mais de uma unidade:** a espera do EXCLUDE pode, sim, fechar um ciclo entre agendamentos do **mesmo profissional em unidades diferentes**. Exemplo: T1 remarca A (U1) para um horário que C ocuparia, enquanto T2 cria C (U2) num horário que A ainda ocupa. O resultado seria um deadlock (40P01), que hoje responderia 500. Isso não acontece agora, porque há uma unidade por workspace e não existe API para criar outra. Fica como dívida com gatilho "segunda unidade".
+   - **Custo aceito:** a trava serializa as escritas de agenda de uma mesma unidade. O teste de "N simultâneos" prova a sobreposição barrada pelo banco virando 409 em série, não inserções de fato paralelas. Para o volume de uma clínica, é aceitável.
+10. **Auditoria e fronteira.**
+    - **Allowlists só com ids, status, instantes e motivo:**
+      - agendamento: `patientId`, `professionalId`, `serviceId`, `unitId`, `startsAt`, `endsAt`, `status`, `cancelReason`;
+      - atendimento: `appointmentId`, `professionalId`, `completedAt`.
+    - **Nada sai do vertical:** nenhuma entidade do Core (tarefa, atividade, notificação) nem evento de outbox. Há teste.
+    - **Os dois modelos entram em `CLINICS_MODELS`** e, portanto, na checagem de presença da porta do E6.
+11. **Testes, todos com dados fictícios:**
+    - **Isolamento:** P0 e FKs compostas recusando paciente, profissional, serviço, unidade e agendamento de outro workspace.
+    - **Concorrência:**
+      - N agendamentos simultâneos no mesmo horário e profissional → exatamente um, os outros 409;
+      - profissionais diferentes convivem;
+      - cancelar libera o horário;
+      - remarcar para um horário ocupado dá 409.
+    - **Regras e transições:** as regras do item 5; duração registrada; todas as transições válidas e inválidas; `attended` só pelo atendimento.
+    - **Atendimento:** idempotente, concorrente e com rollback.
+    - **RBAC:**
+      - a recepção marca e lê, mas recebe 403 no atendimento, e a agenda omite o vínculo;
+      - o `Profissional` lê a agenda e registra atendimento, mas recebe 403 ao marcar;
+      - Guest e workspace sem o Clinics recebem 403.
+    - **Fuso:** testes com `America/New_York` cobrindo o pulo, a repetição com e sem `utcOffset`, o expediente atravessando a mudança e a listagem do dia; mais o fuso da unidade recusado com agendamento futuro.
+    - **Fronteira:** nada S no Core nem na auditoria, e presença com os modelos novos.
+12. **Implementação (2026-10-20).**
+    - **Migration:** `20261020020000_clinics_schedule` é aditiva, com `lock_timeout`, CHECK e o EXCLUDE parcial.
+    - **Conversão de hora local:** `schedule/local-time.ts`, testada com o pulo e a repetição de Nova York e com o dia sem meia-noite do Brasil em 2018.
+    - **Suíte:** `clinics-schedule.integration-spec.ts`, com 34 testes, e a de restrição com a presença dos dois modelos. A suíte cobre:
+      - a matriz inteira de transições, a partir dos seis estados;
+      - as FKs cruzadas uma a uma;
+      - os ids de A enviados por B no corpo e na consulta;
+      - o 404 residual;
+      - duas corridas determinísticas: a mudança de fuso e a transição de estado.
+    - **Datas:** os testes de mudança de horário usam 2025 (passado, base de fusos fixa). O teste de "futuro" calcula a própria data. O contrato aceita anos de 2000 a 2100, porque antes dos fusos padronizados o deslocamento tem segundos.
+    - **Testes estáticos:** paridade dos enums novos entre contrato e banco, e o vertical sem escrita no Core nem em quem publica eventos.
+    - **Presença com dez modelos:** p50 de 0,92–0,95 ms e p95 de 1,05–1,09 ms. Com oito, o p95 era de 1,00–1,06 ms.
+    - **A transição trava antes de ler,** como a remarcação, e só escreve a partir do estado lido. Assim a trilha registra o estado que de fato substituiu; o defeito foi apontado na revisão.
+    - **A janela da lista do dia** é justa ao dia local, com folga de 3 h. Assim o teto de 500 vale para o dia pedido, não para uma janela UTC de 52 h; também apontado na revisão.
+    - **Defeito achado por teste antes do commit:** agendar e remarcar liam o fuso da unidade **antes** de travar a linha dela. Uma mudança de fuso comitada durante a espera fazia o horário ser calculado com o fuso antigo. Agora a trava devolve a unidade relida depois de travar. O teste determinístico segura a linha numa conexão externa, muda o fuso e comita, e o agendamento sai no fuso novo.
+    - **Mutações que derrubam os testes:**
+      - sem a tradução do 23P01 em "horário ocupado";
+      - sem a trava da unidade;
+      - sem a omissão do vínculo com o atendimento;
+      - sem a checagem de expediente;
+      - recalculando a duração na remarcação sem troca de serviço;
+      - lendo antes de travar na transição: a trilha volta a registrar `scheduled`.
+
 ## ADR-049 — Relógio de agendamento: quem compara define o relógio, e filas e leases usam o do banco
 
 **Status:** aceito (plano aprovado pela revisão de 2026-10-19; a entrega segue para revisão) · **Data:** 2026-10-19

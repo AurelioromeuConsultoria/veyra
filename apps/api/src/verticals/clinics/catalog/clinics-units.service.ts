@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import type { ClinicsUnitDto, UpdateClinicsUnitInput } from '@veyra/contracts/verticals/clinics';
 import { AuditService } from '../../../audit/audit.service';
 import type { AuthContext } from '../../../common/decorators';
@@ -41,6 +41,25 @@ export class ClinicsUnitsService {
       });
       if (count === 0) throw new NotFoundException('Unidade não encontrada');
       const before = (await tx.clinicsUnit.findFirst({ where: { id } })) as unknown as UnitRow;
+      // mudar o fuso moveria a leitura LOCAL de compromissos já combinados
+      // (ADR-048 adendo 2, item 4; adendo 4, item 9). A trava acima serializa
+      // com quem agenda, que trava a mesma linha.
+      if (input.timezone !== undefined && input.timezone !== before.timezone) {
+        const futuro = await tx.clinicsAppointment.findFirst({
+          where: {
+            unitId: id,
+            status: { in: ['scheduled', 'confirmed', 'arrived'] },
+            // pelo FIM: um atendimento em andamento também prende o fuso
+            endsAt: { gt: new Date() },
+          },
+          select: { id: true },
+        } as never);
+        if (futuro) {
+          throw new ConflictException(
+            'Há agendamentos futuros nesta unidade: o fuso não pode mudar enquanto existirem',
+          );
+        }
+      }
       await tx.clinicsUnit.updateMany({
         where: { id },
         data: { name: input.name, timezone: input.timezone },

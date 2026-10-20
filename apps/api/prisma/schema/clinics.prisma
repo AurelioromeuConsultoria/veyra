@@ -57,6 +57,7 @@ model ClinicsUnit {
 
   workspace    Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   workingHours ClinicsWorkingHours[]
+  appointments ClinicsAppointment[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, archivedAt])
@@ -78,6 +79,7 @@ model ClinicsService {
 
   workspace     Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   professionals ClinicsProfessionalService[]
+  appointments  ClinicsAppointment[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, archivedAt])
@@ -98,6 +100,8 @@ model ClinicsProfessional {
   membership   Membership?                  @relation("ClinicsProfessionalAccount", fields: [workspaceId, membershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
   services     ClinicsProfessionalService[]
   workingHours ClinicsWorkingHours[]
+  appointments ClinicsAppointment[]
+  attendances  ClinicsAttendance[]
 
   @@unique([workspaceId, membershipId])
   @@unique([workspaceId, id])
@@ -180,11 +184,92 @@ model ClinicsPatient {
   createdByMembershipId String   @db.Uuid
   createdAt             DateTime @default(now())
 
-  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  contact   Contact    @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  createdBy Membership @relation("ClinicsPatientCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  workspace    Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contact      Contact              @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  createdBy    Membership           @relation("ClinicsPatientCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  appointments ClinicsAppointment[]
 
   @@unique([workspaceId, contactId])
   @@unique([workspaceId, id])
   @@index([workspaceId, createdByMembershipId])
+}
+
+/// Estado do agendamento (ADR-048 §4 e adendo 4, item 6). `attended` só pelo
+/// registro de atendimento.
+enum ClinicsAppointmentStatus {
+  scheduled
+  confirmed
+  arrived
+  canceled
+  no_show
+  attended
+}
+
+/// Motivo de cancelamento, por LISTA FECHADA: sem "outro" e sem texto livre.
+enum ClinicsCancelReason {
+  patient_request
+  clinic_request
+  professional_unavailable
+  scheduling_error
+}
+
+/// Agendamento (ADR-048 adendo 2, item 4; adendo 4). Classe S: liga um
+/// paciente a um atendimento. Sem texto livre. `startsAt`/`endsAt` são
+/// INSTANTES (`timestamptz`): a hora local é só leitura, no fuso da unidade.
+/// `endsAt` é GRAVADO com a duração do serviço no momento do agendamento —
+/// mudar o serviço depois não altera compromissos existentes. Sobreposição do
+/// mesmo profissional, entre agendamentos ativos, é barrada pelo banco
+/// (EXCLUDE em SQL manual na migration).
+model ClinicsAppointment {
+  id                    String                   @id @default(uuid()) @db.Uuid
+  workspaceId           String                   @db.Uuid
+  patientId             String                   @db.Uuid
+  professionalId        String                   @db.Uuid
+  serviceId             String                   @db.Uuid
+  unitId                String                   @db.Uuid
+  startsAt              DateTime                 @db.Timestamptz(3)
+  endsAt                DateTime                 @db.Timestamptz(3)
+  status                ClinicsAppointmentStatus @default(scheduled)
+  cancelReason          ClinicsCancelReason?
+  createdByMembershipId String                   @db.Uuid
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
+
+  workspace    Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  patient      ClinicsPatient      @relation(fields: [workspaceId, patientId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  professional ClinicsProfessional @relation(fields: [workspaceId, professionalId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  service      ClinicsService      @relation(fields: [workspaceId, serviceId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  unit         ClinicsUnit         @relation(fields: [workspaceId, unitId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  createdBy    Membership          @relation("ClinicsAppointmentCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  attendance   ClinicsAttendance?
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, unitId, startsAt])
+  @@index([workspaceId, professionalId, startsAt])
+  @@index([workspaceId, patientId])
+  @@index([workspaceId, serviceId])
+  @@index([workspaceId, createdByMembershipId])
+}
+
+/// Registro de atendimento (ADR-048 adendo 2, item 5; adendo 4, item 7).
+/// Classe S. 1:1 com o agendamento; criado na MESMA transação que o leva a
+/// `attended`. Sem texto clínico (H7).
+model ClinicsAttendance {
+  id                     String   @id @default(uuid()) @db.Uuid
+  workspaceId            String   @db.Uuid
+  appointmentId          String   @db.Uuid
+  professionalId         String   @db.Uuid
+  completedAt            DateTime @db.Timestamptz(3)
+  recordedByMembershipId String   @db.Uuid
+  createdAt              DateTime @default(now())
+
+  workspace    Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  appointment  ClinicsAppointment  @relation(fields: [workspaceId, appointmentId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  professional ClinicsProfessional @relation(fields: [workspaceId, professionalId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  recordedBy   Membership          @relation("ClinicsAttendanceRecordedBy", fields: [workspaceId, recordedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([workspaceId, appointmentId])
+  @@unique([workspaceId, id])
+  @@index([workspaceId, professionalId])
+  @@index([workspaceId, recordedByMembershipId])
 }

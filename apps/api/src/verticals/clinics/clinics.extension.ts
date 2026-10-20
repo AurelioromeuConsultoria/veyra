@@ -16,6 +16,8 @@ export const CLINICS_MODELS = [
   'ClinicsProfessionalService',
   'ClinicsWorkingHours',
   'ClinicsPatient',
+  'ClinicsAppointment',
+  'ClinicsAttendance',
 ] as const;
 
 export const clinicsExtension: CoreExtension = {
@@ -24,13 +26,23 @@ export const clinicsExtension: CoreExtension = {
     workspaceModels: CLINICS_MODELS,
     relationTargets: {
       ClinicsSettings: { workspace: 'Workspace' },
-      ClinicsUnit: { workspace: 'Workspace', workingHours: 'ClinicsWorkingHours' },
-      ClinicsService: { workspace: 'Workspace', professionals: 'ClinicsProfessionalService' },
+      ClinicsUnit: {
+        workspace: 'Workspace',
+        workingHours: 'ClinicsWorkingHours',
+        appointments: 'ClinicsAppointment',
+      },
+      ClinicsService: {
+        workspace: 'Workspace',
+        professionals: 'ClinicsProfessionalService',
+        appointments: 'ClinicsAppointment',
+      },
       ClinicsProfessional: {
         workspace: 'Workspace',
         membership: 'Membership',
         services: 'ClinicsProfessionalService',
         workingHours: 'ClinicsWorkingHours',
+        appointments: 'ClinicsAppointment',
+        attendances: 'ClinicsAttendance',
       },
       ClinicsProfessionalService: {
         workspace: 'Workspace',
@@ -42,7 +54,27 @@ export const clinicsExtension: CoreExtension = {
         professional: 'ClinicsProfessional',
         unit: 'ClinicsUnit',
       },
-      ClinicsPatient: { workspace: 'Workspace', contact: 'Contact', createdBy: 'Membership' },
+      ClinicsPatient: {
+        workspace: 'Workspace',
+        contact: 'Contact',
+        createdBy: 'Membership',
+        appointments: 'ClinicsAppointment',
+      },
+      ClinicsAppointment: {
+        workspace: 'Workspace',
+        patient: 'ClinicsPatient',
+        professional: 'ClinicsProfessional',
+        service: 'ClinicsService',
+        unit: 'ClinicsUnit',
+        createdBy: 'Membership',
+        attendance: 'ClinicsAttendance',
+      },
+      ClinicsAttendance: {
+        workspace: 'Workspace',
+        appointment: 'ClinicsAppointment',
+        professional: 'ClinicsProfessional',
+        recordedBy: 'Membership',
+      },
       ClinicsContactRelease: {
         workspace: 'Workspace',
         contact: 'Contact',
@@ -57,6 +89,8 @@ export const clinicsExtension: CoreExtension = {
         clinicsReleasesGranted: 'ClinicsContactRelease',
         clinicsProfessional: 'ClinicsProfessional',
         clinicsPatientsCreated: 'ClinicsPatient',
+        clinicsAppointmentsCreated: 'ClinicsAppointment',
+        clinicsAttendancesRecorded: 'ClinicsAttendance',
       },
     },
   },
@@ -76,5 +110,18 @@ export const clinicsExtension: CoreExtension = {
     clinicsProfessional: ['membershipId', 'archivedAt', 'serviceIds', 'intervalCount'],
     // classe S: só o FATO e o id do contato (§6.2, item 3) — nada clínico existe
     clinicsPatient: ['contactId'],
+    // classe S: ids, status, instantes e motivo de lista fechada (adendo 4,
+    // item 10) — nada clínico existe nesses modelos
+    clinicsAppointment: [
+      'patientId',
+      'professionalId',
+      'serviceId',
+      'unitId',
+      'startsAt',
+      'endsAt',
+      'status',
+      'cancelReason',
+    ],
+    clinicsAttendance: ['appointmentId', 'professionalId', 'completedAt'],
   },
 };

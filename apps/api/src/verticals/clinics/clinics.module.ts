@@ -12,6 +12,9 @@ import { ClinicsController } from './clinics.controller';
 import { ClinicsPatientsController } from './clinics-patients.controller';
 import { ClinicsPatientsService } from './clinics-patients.service';
 import { ClinicsReleasesService } from './clinics-releases.service';
+import { ClinicsAppointmentsController } from './schedule/clinics-appointments.controller';
+import { ClinicsAppointmentsService } from './schedule/clinics-appointments.service';
+import { ClinicsAttendanceService } from './schedule/clinics-attendance.service';
 
 /**
  * Vertical Veyra Clinics (ADR-048). Importa serviços do Core; o Core nunca o
@@ -19,7 +22,12 @@ import { ClinicsReleasesService } from './clinics-releases.service';
  */
 @Module({
   imports: [AuthModule, ContactsModule, IntelligenceModule],
-  controllers: [ClinicsController, ClinicsCatalogController, ClinicsPatientsController],
+  controllers: [
+    ClinicsController,
+    ClinicsCatalogController,
+    ClinicsPatientsController,
+    ClinicsAppointmentsController,
+  ],
   providers: [
     ClinicsActivationService,
     ClinicsReleasesService,
@@ -28,6 +36,8 @@ import { ClinicsReleasesService } from './clinics-releases.service';
     ClinicsServiceCatalog,
     ClinicsProfessionalsService,
     ClinicsPatientsService,
+    ClinicsAppointmentsService,
+    ClinicsAttendanceService,
   ],
   exports: [ClinicsActivationService],
 })
