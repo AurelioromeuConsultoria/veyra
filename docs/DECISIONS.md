@@ -947,6 +947,7 @@ O prazo nunca entra na prova: só a trava, mantida pela sessão viva.
   - o desfecho do envio fica como está;
   - um evento de auditoria `content_use.guard_lost`, só com ids, abre o incidente.
 - **A revisão decide** se aceita esse residual, com detecção garantida, ou se pede outra forma de prevenção.
+- **Decisão da revisão (2026-10-20): residual NÃO aceito como prova de G.** Se a sessão morrer depois da prova de vida e antes do início da requisição, a mudança pode comitar primeiro e a chamada começar depois. Detectar no `COMMIT` não impede a chamada. **Decisão em aberto:** reforçar a garantia ou rever o critério com aprovação explícita. Até lá, o B2 continua fechado.
 
 #### 4. Prazos e retentativas
 
@@ -1084,6 +1085,14 @@ Para cada uso (IA, mensagem da IA e webhook) e para cada mudança (paciente, rev
 3. Mudanças interativas: esperar até 10 s e responder 409, em vez de esperar o fim da geração.
 4. Religação de conversa: regra mais teste estático (recomendado), ou fotografia no dispatch.
 5. A troca de contato de deal ou de tarefa entra no protocolo como mudança de pertencimento.
+
+**Decisões da revisão (2026-10-20).** O adendo **continua proposto**, e isto não autoriza implementar nem levantar o B2.
+
+1. **Residual da sessão de guarda: NÃO aceito.** Fica como decisão em aberto (item 3.5). Antes de implementar, o plano precisa trazer uma garantia que impeça a chamada (não só que a detecte), ou um critério revisto para aprovação.
+2. **Prazos: aprovados.** São absolutos: 60 s para a IA, 20 s para a Meta e 10 s por destino de webhook. As tentativas automáticas do SDK ficam desligadas, e cada nova tentativa passa pela guarda de novo.
+3. **Espera: aprovada.** Mudanças interativas por contato esperam até 10 s e respondem 409, sem efeito colateral quando o prazo estoura. A CLI de ativar e desativar espera até 90 s.
+4. **Religação de conversa: aprovada a regra.** O vínculo continua imutável, fixado por teste. Se a religação surgir, ela entra no protocolo e protege o contato antigo, o novo e a conversa.
+5. **Troca de contato de deal ou tarefa: aprovada como mudança de titularidade do conteúdo.** Protege os contatos antigo e novo e a entidade, na ordem de travas do item 3.2.
 
 ## ADR-048 — Veyra Clinics para estética: domínio próprio, classificação de dados e escopo do MVP
 
@@ -1664,6 +1673,8 @@ Implementa os itens 1, 2, 3, 6 e 8 do adendo 2. A condição de concorrência do
     - o despacho que confere só o contato atual.
 
     A revisão pediu que esses casos sejam fechados com garantia e testes. O plano está no adendo 6 do ADR-047, proposto e em revisão. O B2 só volta para decisão com a garantia implementada, a bateria completa verde e os passes de segurança. Até lá, o Clinics fica desativado em staging e sem dados reais.
+
+    Na revisão do adendo 6 (2026-10-20), quatro das cinco decisões foram aprovadas. O residual da sessão de guarda **não** foi aceito como prova e ficou em aberto, então o B2 segue fechado também por ele.
 
 ## ADR-049 — Relógio de agendamento: quem compara define o relógio, e filas e leases usam o do banco
 
