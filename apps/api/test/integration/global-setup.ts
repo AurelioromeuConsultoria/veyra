@@ -24,6 +24,9 @@ export default async function globalSetup(): Promise<void> {
     if (rowCount === 0) {
       await admin.query(`CREATE DATABASE "${dbName}"`);
     }
+    // o teste de fuso (ADR-049) muda o padrão do banco e o devolve no fim; se
+    // uma execução morrer no meio, a próxima começa limpa
+    await admin.query(`ALTER DATABASE "${dbName}" RESET timezone`);
   } finally {
     await admin.end();
   }

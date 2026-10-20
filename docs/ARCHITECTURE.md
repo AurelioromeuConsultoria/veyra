@@ -51,6 +51,7 @@ Regras:
 
 - Controllers finos; toda regra vive em services.
 - **Sem camada Repository** (ADR-005): se um service cresce demais, divida em dois services.
+- **Relógio de agendamento** (ADR-049): um instante que o banco compara com `now()` (claim, lease, varredura) é escrito pelo banco: DEFAULT, trigger ou `now()` em SQL. Nunca pelo `new Date()` do Node nem pelo `@default(now())` e `@updatedAt` do Prisma, que usam o relógio do Node. A sessão do banco fica em UTC.
 - Endpoints são privados por padrão (guard global); exceção via `@Public()` explícito. Autorização é **default-deny**: sem `@RequirePermissions(...)`, o endpoint privado é negado; `@AuthenticatedOnly()` cobre o caso raro de rota que só exige autenticação (ADR-016).
 
 ## 4. Multi-tenancy (resumo — detalhe em SECURITY.md)

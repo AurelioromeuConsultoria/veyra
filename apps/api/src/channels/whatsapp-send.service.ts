@@ -252,9 +252,9 @@ export class WhatsappSendService {
               "claimToken" = gen_random_uuid(),
               "leaseExpiresAt" = now() + ($3::int * interval '1 millisecond'),
               "attempts" = "attempts" + 1,
-              -- mantido à mão: o @updatedAt do Prisma não alcança comando cru, e
-              -- o limiar da varredura depende desta coluna. Sem isto, linha
-              -- recém-escrita nasce "velha" e pode ser enterrada na 1a passada
+              -- o trigger do banco já o faria (ADR-049); explícito porque o
+              -- limiar da varredura depende desta coluna: linha recém-escrita
+              -- não pode parecer "velha" e ser enterrada na 1a passada
               "updatedAt" = now()
         WHERE "workspaceId" = $1::uuid
           AND "messageId" = $2::uuid

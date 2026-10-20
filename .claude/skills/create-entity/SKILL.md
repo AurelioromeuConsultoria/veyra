@@ -11,6 +11,7 @@ Referências: `docs/DOMAIN_MODEL.md §1` (convenções), `docs/SECURITY.md §2`,
 
 1. **Modelo Prisma** (com o agente `database`):
    - `id String @id @default(uuid()) @db.Uuid`, `createdAt`/`updatedAt`;
+   - instante que o banco vai comparar com `now()` (fila, lease, varredura) nasce pelo banco, nunca por `@default(now())`/`@updatedAt` (ADR-049);
    - `workspaceId String @db.Uuid` + relação com `Workspace` `onDelete: Cascade`;
    - `@@unique([workspaceId, id])` se a entidade for referenciável por outra;
    - índices compostos liderados por `workspaceId`; uniques tenant-scoped;

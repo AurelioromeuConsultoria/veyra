@@ -51,6 +51,7 @@ pnpm monorepo · TypeScript strict ponta a ponta · NestJS (monólito modular) �
 | Conceito vertical no Core                                          | O Core origina verticais; não os conhece                                                                       |
 | Segredo em DTO, log, front ou commit                               | Hook bloqueia commit; revisão de security é obrigatória                                                        |
 | Float para dinheiro                                                | Erro de arredondamento em produção                                                                             |
+| Agendar pelo relógio do Node algo que o banco compara com `now()`  | Desvio entre Node e banco congela filas ou enterra despachos; quem compara define o relógio (ADR-049)          |
 | Migration destrutiva sem plano                                     | Hook exige confirmação; produção não tem undo                                                                  |
 | Registro público de usuário                                        | Adiado até billing + quotas + rate limit + antiabuso (ADR)                                                     |
 | Estado de servidor duplicado em store de UI                        | TanStack Query é a fonte; store só para UI/sessão                                                              |

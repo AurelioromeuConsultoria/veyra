@@ -163,9 +163,20 @@ Migration destrutiva quebra essa ordem: nesse caso, deploy em duas etapas
 (código que tolera as duas formas → migration → limpeza), como manda o hook de
 migration destrutiva.
 
+**Migration que precisa vir ANTES do código (`20261020010000_scheduling_clock`,
+ADR-049).** O código novo deixa de enviar `updatedAt` ao criar o despacho do
+WhatsApp, e só o DEFAULT desta migration cobre o NOT NULL. Na janela em que o
+container novo já sobe e a migration ainda não rodou, todo envio falharia (500,
+nada enviado nem cobrado). Rode-a ANTES de apontar o recurso para o commit novo,
+num container avulso da imagem nova (`run --rm --no-deps api npx prisma migrate
+deploy`, como no §9). O código antigo funciona com ela aplicada. Antes do primeiro
+deploy dela num ambiente novo, confira `SHOW timezone` no banco: o esperado é
+`UTC` (a aplicação recusa subir com a sessão fora de UTC).
+
 **Migration que estoura `lock_timeout`.** Migrations em tabela muito escrita
-(`20261019200000_outbox_subject_contacts` e
-`20261019210000_outbox_terminal_is_final`, sobre `OutboxEvent`) e as que criam
+(`20261019200000_outbox_subject_contacts`,
+`20261019210000_outbox_terminal_is_final` e
+`20261020010000_scheduling_clock`, sobre `OutboxEvent` e `MessageDispatch`) e as que criam
 FK para tabela muito escrita (`20261019220000_clinics_foundation`, que trava
 `Contact`, `Membership` e `Workspace`, e `20261019230000_clinics_catalog`, que
 trava `Membership` e `Workspace`, durante o `ADD FOREIGN KEY`) fixam

@@ -18,6 +18,7 @@ Manter o schema íntegro e tenant-safe: toda entidade de domínio com `workspace
 2. Relação entre entidades de workspace → FK composta (`workspaceId, xId`) por padrão (ADR-010). FK simples só para catálogo global (Permission, Plan) com justificativa.
 3. Migration destrutiva (DROP, TRUNCATE, NOT NULL sem default, estreitamento de tipo)? Pare: plano de migração de dados, backup, e confirmação explícita. Nunca editar migration já aplicada.
 4. Dinheiro = `Int` centavos; ids = uuid `@db.Uuid`; timestamps sempre; exclusão LGPD via cascade da raiz.
+   - **Relógio de agendamento (ADR-049):** coluna que o banco compara com `now()` (claim, lease, varredura) é escrita pelo banco: `@default(dbgenerated("transaction_timestamp()"))`, trigger ou `now()` em SQL. Nunca `@default(now())`/`@updatedAt`, que o Prisma preenche com o relógio do Node.
 5. Rodou `check:fk` depois de mexer em relações?
 
 ## Limites

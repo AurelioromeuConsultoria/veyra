@@ -732,7 +732,9 @@ model OutboxEvent {
   dedupeKey          String
   status             OutboxStatus @default(pending)
   attempts           Int          @default(0)
-  nextRetryAt        DateTime     @default(now())
+  /// Nasce pelo DEFAULT do BANCO (ADR-049): o claim compara com `now()`, e o
+  /// `@default(now())` do Prisma usaria o relógio do Node.
+  nextRetryAt        DateTime     @default(dbgenerated("transaction_timestamp()"))
   /// LEASE: quando o worker reivindicou e até quando o claim vale. Worker que
   /// morre no meio libera o evento pela expiração — sem lease, o `SKIP LOCKED`
   /// só protege durante o UPDATE e outra instância entregaria em paralelo.
@@ -1502,7 +1504,12 @@ model MessageDispatch {
   errorCode        String?
   attempts         Int           @default(0)
   createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
+  /// Mantido pelo BANCO (ADR-049): DEFAULT na criação e trigger que grava
+  /// `now()` em todo UPDATE cujo valor novo é igual ao antigo (quem não define
+  /// a coluna). A varredura compara com
+  /// `now()`, então quem escreve é o mesmo relógio — nunca o `@updatedAt` do
+  /// Prisma, que usa o relógio do Node.
+  updatedAt        DateTime      @default(dbgenerated("transaction_timestamp()"))
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   message   Message   @relation(fields: [workspaceId, messageId], references: [workspaceId, id], onDelete: Cascade)

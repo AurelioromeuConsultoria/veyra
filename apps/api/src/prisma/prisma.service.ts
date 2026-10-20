@@ -1,5 +1,5 @@
 import { Inject, Injectable, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
-import { PrismaPg } from '@prisma/adapter-pg';
+import { prismaAdapter } from './prisma-adapter';
 import { ClsService } from 'nestjs-cls';
 import { PrismaClient } from '../generated/prisma/client';
 import { CORE_REGISTRY, EXTENSION_REGISTRY, type ComposedRegistry } from '../extensions/registry';
@@ -267,15 +267,22 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
     if (!process.env.DATABASE_URL) {
       throw new Error('DATABASE_URL ausente — o PrismaService não pode iniciar.');
     }
-    this.raw = new PrismaClient({
-      adapter: new PrismaPg(process.env.DATABASE_URL),
-    });
+    this.raw = new PrismaClient({ adapter: prismaAdapter(process.env.DATABASE_URL) });
     // db estende o MESMO client (um pool só; transações compartilham conexão)
     this.db = createWorkspaceClient(this.raw, () => this.cls.get('workspaceId'), registry);
   }
 
   async onModuleInit() {
     await this.raw.$connect();
+    // falha FECHADA (ADR-049): um `?options=` na DATABASE_URL ou um PgBouncer
+    // descartam a fixação sem aviso, e o agendamento erraria pelo fuso
+    const [{ TimeZone }] = await this.raw.$queryRawUnsafe<{ TimeZone: string }[]>('SHOW TimeZone');
+    if (TimeZone !== 'UTC') {
+      throw new Error(
+        `Sessão do banco em "${TimeZone}", não em UTC (ADR-049): confira se a DATABASE_URL ` +
+          'traz `options` ou passa por um pooler que descarta parâmetros de sessão.',
+      );
+    }
   }
 
   async onModuleDestroy() {

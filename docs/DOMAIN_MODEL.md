@@ -5,7 +5,7 @@ Modelo inicial. Nomes de entidades em inglês (código), descrições em pt-BR. 
 ## 1. Convenções
 
 - IDs: `String @id @default(uuid()) @db.Uuid`.
-- `createdAt @default(now())` + `updatedAt @updatedAt` em tudo.
+- `createdAt @default(now())` + `updatedAt @updatedAt` em tudo. **Exceção** (ADR-049): instante que o banco compara com `now()` é escrito pelo banco. Hoje são o `OutboxEvent.nextRetryAt` e o `MessageDispatch.updatedAt`, que usam DEFAULT e trigger.
 - Toda entidade de domínio: `workspaceId String @db.Uuid` obrigatório, relação com `Workspace` com `onDelete: Cascade`, índices compostos liderados por `workspaceId` (`@@index([workspaceId, ...])`), uniques tenant-scoped (`@@unique([workspaceId, ...])`).
 - Toda entidade referenciável por outra entidade de workspace declara `@@unique([workspaceId, id])` para permitir **FKs compostas** (`FOREIGN KEY (workspaceId, xId) REFERENCES X(workspaceId, id)`) — impedindo relações cross-tenant no próprio banco.
 - Dinheiro: `Int` em centavos + `currency` (ISO 4217).

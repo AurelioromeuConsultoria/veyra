@@ -20,7 +20,7 @@ import 'dotenv/config';
 import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
-import { PrismaPg } from '@prisma/adapter-pg';
+import { prismaAdapter } from '../src/prisma/prisma-adapter';
 import { PrismaClient } from '../src/generated/prisma/client';
 
 function arg(name: string): string | undefined {
@@ -111,7 +111,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const prisma = new PrismaClient({ adapter: new PrismaPg(process.env.DATABASE_URL) });
+  const prisma = new PrismaClient({ adapter: prismaAdapter(process.env.DATABASE_URL) });
   try {
     const workspace = await prisma.workspace.findUnique({ where: { slug } });
     if (!workspace) throw new Error(`Workspace não encontrado: ${slug}`);

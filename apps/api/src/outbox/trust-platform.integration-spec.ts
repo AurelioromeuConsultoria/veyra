@@ -14,6 +14,7 @@ import {
   type WorkspaceFixture,
   makeRetriableNowById,
 } from '../../test/integration/fixtures';
+import { agoraNoBanco } from '../../test/integration/clock';
 import { resetDb } from '../../test/integration/harness';
 import { MAX_ATTEMPTS, OutboxService } from './outbox.service';
 
@@ -437,7 +438,7 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
     // simula o worker que morreu: lease vence
     await prisma.raw.outboxEvent.updateMany({
       where: { id: claimed.id },
-      data: { leaseExpiresAt: new Date(Date.now() - 1000) },
+      data: { leaseExpiresAt: new Date((await agoraNoBanco(prisma)) - 1000) },
     });
     const recovered = await outbox.claimBatch(10);
     expect(recovered.map((e) => e.id)).toEqual([claimed.id]);
@@ -452,7 +453,7 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
     // o worker antigo trava; o lease vence e OUTRO worker assume o evento
     await prisma.raw.outboxEvent.updateMany({
       where: { id: antigo.id },
-      data: { leaseExpiresAt: new Date(Date.now() - 1000) },
+      data: { leaseExpiresAt: new Date((await agoraNoBanco(prisma)) - 1000) },
     });
     const [atual] = await outbox.claimBatch(10);
     expect(atual.id).toBe(antigo.id);
@@ -485,16 +486,19 @@ describe('Plataforma de confiança — idempotência, outbox e webhooks (integra
     // entrega longa: o lease encolheria a ponto de vencer — o heartbeat o estende
     await prisma.raw.outboxEvent.updateMany({
       where: { id: dono.id },
-      data: { leaseExpiresAt: new Date(Date.now() + 1000) },
+      data: { leaseExpiresAt: new Date((await agoraNoBanco(prisma)) + 1000) },
     });
     expect(await outbox.renewLease(dono.id, dono.claimToken)).toBe(true);
     const renovado = await prisma.raw.outboxEvent.findFirst({ where: { id: dono.id } });
-    expect(renovado!.leaseExpiresAt!.getTime()).toBeGreaterThan(Date.now() + 60_000);
+    // o lease é do BANCO (ADR-049): compara com o relógio dele, não o do Node
+    expect(renovado!.leaseExpiresAt!.getTime()).toBeGreaterThan(
+      (await agoraNoBanco(prisma)) + 60_000,
+    );
 
     // agora o lease vence de fato e outro worker assume
     await prisma.raw.outboxEvent.updateMany({
       where: { id: dono.id },
-      data: { leaseExpiresAt: new Date(Date.now() - 1000) },
+      data: { leaseExpiresAt: new Date((await agoraNoBanco(prisma)) - 1000) },
     });
     const [novoDono] = await outbox.claimBatch(10);
     expect(novoDono.claimToken).not.toBe(dono.claimToken);

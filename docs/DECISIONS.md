@@ -1664,3 +1664,58 @@ Implementa os itens 1, 2, 3, 6 e 8 do adendo 2. A condição de concorrência do
     - o despacho que confere só o contato atual.
 
     A revisão pediu que esses casos sejam fechados com garantia e testes. O plano está no adendo 6 do ADR-047, proposto e em revisão. O B2 só volta para decisão com a garantia implementada, a bateria completa verde e os passes de segurança. Até lá, o Clinics fica desativado em staging e sem dados reais.
+
+## ADR-049 — Relógio de agendamento: quem compara define o relógio, e filas e leases usam o do banco
+
+**Status:** aceito (plano aprovado pela revisão de 2026-10-19; a entrega segue para revisão) · **Data:** 2026-10-19
+
+**Contexto.** A falha intermitente da integração foi finalmente capturada pelo diagnóstico do outbox:
+
+- o relógio do Node estava **19.447 ms à frente** do Postgres;
+- os eventos novos estavam com `nextRetryAt − now() ≈ +19,4 s`;
+- não havia sessão de outro processo no banco.
+
+O relógio da VM do Docker atrasa sob carga. O mesmo vale para app e banco em hosts diferentes.
+
+O inventário de todas as colunas de data e hora (2026-10-19) mostrou o seguinte:
+
+- **O Prisma 7 preenche `@default(now())` e `@updatedAt` no cliente**, com o relógio do Node. O `DEFAULT CURRENT_TIMESTAMP` das migrations nunca é usado pela aplicação.
+- **Há dois pares mistos Node × Postgres em produção:**
+  1. **`OutboxEvent.nextRetryAt` na criação.** O Node escreve e o claim compara com `"nextRetryAt" <= now()`. Com o Node adiantado, todo evento novo fica invisível pelo tamanho do desvio. Isso atrasa webhooks, automações, envios e expurgos.
+  2. **`MessageDispatch.updatedAt`.** O Prisma escreve com o Node, e a varredura `reapUnretriable` compara com `now() - 15 min`. Com o Node atrasado, um despacho que aguarda nova tentativa é enterrado como `no_retrier` antes da hora.
+- **Um par com relógio externo:** `Conversation.lastInboundAt` é `min(Meta, Node)` e é comparado no Node para a janela de 24 h. Quem decide de fato é a Meta.
+- **Um amplificador latente:** as colunas são `TIMESTAMP(3)` sem fuso, e nada fixa o fuso da sessão do banco. Fora de UTC, cada par misto passaria a errar pelo deslocamento do fuso, em horas.
+- **Testes que comparam um valor gravado pelo banco com `Date.now()`, ou um valor do Node com folga de ±1 s comparado pelo banco.** Eles quebram com o mesmo desvio de VM.
+- **Pares Node × Node entre instâncias:** lease de idempotência de 60 s, TTL da reserva de quota, `exp` do JWT e virada do mês do contador. Ficam seguros enquanto os relógios das instâncias concordam.
+
+**Decisão.**
+
+1. **Regra.** Todo instante que agenda ou decide algo é **escrito e comparado pelo mesmo relógio**. Se a comparação é em SQL com `now()`, quem escreve é o banco. Se a comparação é no Node, quem escreve é o Node. Misturar é proibido.
+2. **Filas, leases e varreduras usam o relógio do banco**, na escrita e na comparação: outbox, despacho do WhatsApp, coleta de mídia e varredura de arquivos.
+   - **`OutboxEvent.nextRetryAt`** nasce pelo DEFAULT do banco (`@default(dbgenerated("transaction_timestamp()"))`): o Prisma deixa de enviar o valor. As retentativas já eram agendadas com `now()` em SQL.
+   - **Por que `transaction_timestamp()` e não `CURRENT_TIMESTAMP`:** é o mesmo instante de `now()`, o início da transação. Escrito como `CURRENT_TIMESTAMP`, o Prisma o leria como o `now()` dele, que é preenchido no cliente, e acusaria drift para sempre.
+   - **`MessageDispatch.updatedAt`** passa a ser mantido pelo banco:
+     - o DEFAULT do banco cobre a criação, e o `@updatedAt` sai do schema;
+     - um trigger `BEFORE UPDATE` grava `now()` quando o valor novo da coluna é **igual** ao antigo, que é o caso de quem não a define;
+     - quem grava um valor diferente tem o valor respeitado. Em produção, só as varreduras em SQL fazem isso, com `now()`; nos testes, o envelhecimento das linhas;
+     - um teste estático proíbe o código de produção de escrever essa coluna, ou o `nextRetryAt`, pelo Prisma (inclusive `*AndReturn`) ou por SQL cru com valor de fora do banco.
+3. **A aplicação fixa o fuso da sessão em UTC.**
+   - Todo `PrismaClient` do projeto (aplicação, CLIs e scripts) usa `prismaAdapter`, que conecta com `options: -c TimeZone=UTC`. Com colunas sem fuso, isso deixa `now()`, o DEFAULT e a leitura pelo adapter (que interpreta como UTC) no mesmo referencial.
+   - **No boot, a aplicação confere `SHOW TimeZone` e recusa subir fora de UTC** (falha fechada). Um `?options=` na `DATABASE_URL`, que tem precedência no `pg`, ou um pooler que descarte parâmetros de sessão, como o PgBouncer em modo transação, desfariam a fixação em silêncio.
+4. **A janela de 24 h do WhatsApp (relógio da Meta) não muda.** A autoridade é a Meta. O ajuste `min(Meta, Node)` já impede uma janela "do futuro", e o caso residual (Node atrasado mais do que a latência de entrega) termina numa recusa permanente da Meta, sem envio indevido.
+5. **Node × Node entre instâncias fica fora desta correção.** Com uma única instância da API, ele não existe. Fica registrado como dívida, com o gatilho "segunda instância da API".
+6. **Testes com desvio artificial.** O relógio do Node é deslocado no processo de teste, pela substituição de `Date`, nos dois sentidos. Cada par corrigido é exercitado pelo caminho real, com mutação que traz o defeito de volta. Os testes frágeis passam a usar o relógio do banco.
+
+**Consequências.**
+
+- Uma migration aditiva com a função e o trigger do `MessageDispatch`, com `lock_timeout`, como a do outbox. Nenhum dado muda. Ela trava `MessageDispatch` antes de `OutboxEvent`, na mesma ordem da aplicação.
+- **Deploy: a migration roda ANTES do código novo.** Sem o DEFAULT, o NOT NULL do `updatedAt` do despacho recusaria todo envio. O código antigo funciona com a migration aplicada, porque manda os valores explícitos e o trigger os respeita (`docs/DEPLOY_STAGING.md` §4).
+- **Premissa sobre dados existentes:** o padrão do servidor de staging (`postgres:17-alpine`, sem `TZ`) é UTC, então fixar a sessão não reinterpreta nada já gravado. Em outro ambiente, confira `SHOW timezone` antes do primeiro deploy: fora de UTC, os instantes gravados pelo banco mudariam de sentido pelo deslocamento do fuso.
+- O `updatedAt` do despacho mostra a hora do banco.
+- `clock_timestamp()` não é usado: `now()` é o início da transação, o mesmo referencial dos claims.
+
+**Alternativas.**
+
+- **Varredura do despacho com corte calculado no Node.** Rejeitada: poria uma fila no relógio do Node e a exporia ao desvio entre instâncias.
+- **Trigger também no outbox.** Desnecessário: `nextRetryAt` só é agendado pelo Node na criação, e o DEFAULT resolve.
+- **Tolerância (folga de N segundos) nos claims.** Rejeitada: esconde o desvio sem eliminar o par misto.

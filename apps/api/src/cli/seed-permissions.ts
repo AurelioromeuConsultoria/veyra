@@ -10,14 +10,14 @@
  * pontos de entrada (o de desenvolvimento por tsx, o de produção compilado).
  */
 import 'dotenv/config';
-import { PrismaPg } from '@prisma/adapter-pg';
 import { PERMISSION_CATALOG } from '@veyra/contracts';
 import { PrismaClient } from '../generated/prisma/client';
+import { prismaAdapter } from '../prisma/prisma-adapter';
 
 export async function seedPermissions(): Promise<number> {
   const prisma = new PrismaClient({
     // Prisma 7 exige adapter explícito; sem ele o cliente nem instancia
-    adapter: new PrismaPg(process.env.DATABASE_URL as string),
+    adapter: prismaAdapter(process.env.DATABASE_URL),
   });
   try {
     for (const [key, description] of Object.entries(PERMISSION_CATALOG)) {

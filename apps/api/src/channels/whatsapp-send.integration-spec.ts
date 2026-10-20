@@ -18,6 +18,11 @@ import {
   type WorkspaceFixture,
 } from '../../test/integration/fixtures';
 import { resetDb } from '../../test/integration/harness';
+import {
+  agoraNoBanco,
+  comRelogioDoNode,
+  restaurarRelogioDoNode,
+} from '../../test/integration/clock';
 import { outboxSnapshot, resumoDoOutbox } from '../../test/integration/diagnostics';
 import { FilesService } from '../files/files.service';
 import { MAX_ATTEMPTS } from '../outbox/outbox.service';
@@ -585,7 +590,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
       data: {
         state: 'sending',
         claimToken: '11111111-1111-4111-8111-111111111111',
-        leaseExpiresAt: new Date(Date.now() - 1000),
+        leaseExpiresAt: new Date((await agoraNoBanco(prisma)) - 1000),
         dispatchedAt: new Date(Date.now() - 30_000),
       },
     });
@@ -619,7 +624,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
       data: {
         state: 'sending',
         claimToken: '11111111-1111-4111-8111-111111111111',
-        leaseExpiresAt: new Date(Date.now() - 1000),
+        leaseExpiresAt: new Date((await agoraNoBanco(prisma)) - 1000),
         dispatchedAt: null,
       },
     });
@@ -755,7 +760,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
       data: {
         state: 'sending',
         claimToken: '22222222-2222-4222-8222-222222222222',
-        leaseExpiresAt: new Date(Date.now() - 30 * 60_000),
+        leaseExpiresAt: new Date((await agoraNoBanco(prisma)) - 30 * 60_000),
         dispatchedAt,
       },
     });
@@ -825,7 +830,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
 
   it('varredura: abandonado COM marcador vira incerto e cobra', async () => {
     const criada = await sendMessage({ direction: 'outbound', body: 'Pode ter saído' }).expect(201);
-    await abandonar(criada.body.id, new Date(Date.now() - 30 * 60_000));
+    await abandonar(criada.body.id, new Date((await agoraNoBanco(prisma)) - 30 * 60_000));
 
     await app.get(WhatsappSendService).reapStaleDispatches();
 
@@ -857,7 +862,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
      */
     await prisma.raw.messageDispatch.updateMany({
       where: { messageId: criada.body.id },
-      data: { leaseExpiresAt: new Date(Date.now() - 30 * 60_000) },
+      data: { leaseExpiresAt: new Date((await agoraNoBanco(prisma)) - 30 * 60_000) },
     });
 
     expect(await app.get(WhatsappSendService).reapStaleDispatches()).toBe(0);
@@ -908,7 +913,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
         state: 'sending',
         reservationId: (reservaB as { reservationId: string }).reservationId,
         claimToken: '44444444-4444-4444-8444-444444444444',
-        leaseExpiresAt: new Date(Date.now() - 30 * 60_000),
+        leaseExpiresAt: new Date((await agoraNoBanco(prisma)) - 30 * 60_000),
         dispatchedAt: new Date(Date.now() - 30 * 60_000), // cobrável
       },
     });
@@ -949,7 +954,10 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     await drain();
     await prisma.raw.messageDispatch.updateMany({
       where: { messageId: criada.body.id },
-      data: { state: 'sending', leaseExpiresAt: new Date(Date.now() - 30 * 60_000) },
+      data: {
+        state: 'sending',
+        leaseExpiresAt: new Date((await agoraNoBanco(prisma)) - 30 * 60_000),
+      },
     });
 
     /**
@@ -1016,7 +1024,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     });
     await prisma.raw.messageDispatch.updateMany({
       where: { messageId: criada.body.id },
-      data: { updatedAt: new Date(Date.now() - 30 * 60_000) },
+      data: { updatedAt: new Date((await agoraNoBanco(prisma)) - 30 * 60_000) },
     });
 
     expect(await app.get(WhatsappSendService).reapStaleDispatches()).toBe(1);
@@ -1036,7 +1044,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     await drain();
     await prisma.raw.messageDispatch.updateMany({
       where: { messageId: criada.body.id },
-      data: { updatedAt: new Date(Date.now() - 30 * 60_000) },
+      data: { updatedAt: new Date((await agoraNoBanco(prisma)) - 30 * 60_000) },
     });
 
     expect(await app.get(WhatsappSendService).reapStaleDispatches()).toBe(0);
@@ -1086,7 +1094,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     });
     await prisma.raw.messageDispatch.updateMany({
       where: { messageId: criada.body.id },
-      data: { updatedAt: new Date(Date.now() - 30 * 60_000) },
+      data: { updatedAt: new Date((await agoraNoBanco(prisma)) - 30 * 60_000) },
     });
 
     expect(await app.get(WhatsappSendService).reapStaleDispatches()).toBe(1);
@@ -1111,7 +1119,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
       data: {
         state: 'sending',
         claimToken: '66666666-6666-4666-8666-666666666666',
-        leaseExpiresAt: new Date(Date.now() + 60_000),
+        leaseExpiresAt: new Date((await agoraNoBanco(prisma)) + 60_000),
       },
     });
 
@@ -1462,7 +1470,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
       data: {
         state: 'sending',
         claimToken: '77777777-7777-4777-8777-777777777777',
-        leaseExpiresAt: new Date(Date.now() - 60_000),
+        leaseExpiresAt: new Date((await agoraNoBanco(prisma)) - 60_000),
         dispatchedAt: new Date(Date.now() - 60_000),
       },
     });
@@ -1493,7 +1501,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
       data: {
         state: 'sending',
         claimToken: '88888888-8888-4888-8888-888888888888',
-        leaseExpiresAt: new Date(Date.now() - 60_000),
+        leaseExpiresAt: new Date((await agoraNoBanco(prisma)) - 60_000),
         dispatchedAt: null,
       },
     });
@@ -1745,5 +1753,94 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     expect(await prisma.raw.fileObject.count()).toBe(0);
     const media = await prisma.raw.inboundMedia.findFirst();
     expect(media).toMatchObject({ state: 'failed', errorCode: 'unsupported_type' });
+  });
+
+  // ── Relógio do Node fora do relógio do banco (ADR-049) ────────────────────
+
+  describe('relógio do Node deslocado do banco (ADR-049)', () => {
+    // um teste que estoure o timeout do Jest não roda o `finally` a tempo
+    afterEach(() => restaurarRelogioDoNode());
+
+    it('Node ADIANTADO 90 s: o envio sai na PRIMEIRA drenagem — o evento nasce no relógio do banco', async () => {
+      let messageId = '';
+      // o desvio REAL que já houver entre os dois relógios entra na conta
+      const real = (await agoraNoBanco(prisma)) - Date.now();
+      await comRelogioDoNode(90_000, async () => {
+        // o desvio está valendo neste processo; o banco não mudou
+        expect(Math.abs(Date.now() - (await agoraNoBanco(prisma)) + real - 90_000)).toBeLessThan(
+          5_000,
+        );
+        messageId = (
+          await sendMessage({ direction: 'outbound', body: 'Relógio adiantado' }).expect(201)
+        ).body.id;
+        await drain(); // SEM tornar o evento devido à mão: é a falha capturada
+      });
+      await expectEnvios(messageId, 1);
+      expect(await prisma.raw.messageDispatch.findFirst({ where: { messageId } })).toMatchObject({
+        state: 'sent',
+      });
+    });
+
+    it('Node ATRASADO 20 min: `failed_before_send` recém-escrito NÃO é enterrado, e a retentativa fica no relógio do banco', async () => {
+      transport.nextSend = { ok: false, failure: { status: 429 } };
+      let messageId = '';
+      const real = (await agoraNoBanco(prisma)) - Date.now();
+      await comRelogioDoNode(-20 * 60_000, async () => {
+        expect(
+          Math.abs((await agoraNoBanco(prisma)) - Date.now() - real - 20 * 60_000),
+        ).toBeLessThan(5_000);
+        messageId = (
+          await sendMessage({ direction: 'outbound', body: 'Relógio atrasado' }).expect(201)
+        ).body.id;
+        await drain();
+      });
+      expect(await prisma.raw.messageDispatch.findFirst({ where: { messageId } })).toMatchObject({
+        state: 'failed_before_send',
+      });
+      // a retentativa foi agendada pelo banco: backoff de 60 s a partir do now() dele
+      const [{ segundos }] = await prisma.raw.$queryRawUnsafe<{ segundos: number }[]>(
+        `SELECT extract(epoch from "nextRetryAt" - now())::int AS segundos
+           FROM "OutboxEvent" WHERE "eventType" = 'whatsapp.send_pending'`,
+      );
+      expect(segundos).toBeGreaterThan(45);
+      expect(segundos).toBeLessThanOrEqual(60);
+
+      // o evento sai de cena e a varredura roda logo depois: a linha foi escrita
+      // AGORA (pelo banco), então ainda não há o que enterrar
+      await prisma.raw.outboxEvent.updateMany({
+        where: { eventType: 'whatsapp.send_pending' },
+        data: { status: 'delivered' },
+      });
+      expect(await app.get(WhatsappSendService).reapStaleDispatches()).toBe(0);
+      expect(await prisma.raw.messageDispatch.findFirst({ where: { messageId } })).toMatchObject({
+        state: 'failed_before_send',
+      });
+    });
+
+    it('o banco mantém `updatedAt` do despacho em todo UPDATE que não o define; valor explícito é respeitado', async () => {
+      const criada = await sendMessage({ direction: 'outbound', body: 'Carimbo' }).expect(201);
+      const id = criada.body.id as string;
+      const lerIdade = async () =>
+        (
+          await prisma.raw.$queryRawUnsafe<{ s: number }[]>(
+            `SELECT extract(epoch from now() - "updatedAt")::int AS s
+               FROM "MessageDispatch" WHERE "messageId" = $1::uuid`,
+            id,
+          )
+        )[0].s;
+      await prisma.raw.messageDispatch.updateMany({
+        where: { messageId: id },
+        data: { updatedAt: new Date((await agoraNoBanco(prisma)) - 30 * 60_000) },
+      });
+      expect(await lerIdade()).toBeGreaterThanOrEqual(30 * 60 - 1);
+      await comRelogioDoNode(-20 * 60_000, () =>
+        prisma.raw.messageDispatch.updateMany({
+          where: { messageId: id },
+          data: { errorCode: 'teste' },
+        }),
+      );
+      // recém-escrita pelo banco: segundos, não os 20 min do relógio do Node
+      expect(await lerIdade()).toBeLessThan(60);
+    });
   });
 });

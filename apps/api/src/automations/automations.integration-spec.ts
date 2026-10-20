@@ -14,6 +14,7 @@ import {
   type WorkspaceFixture,
   makeRetriableNow,
 } from '../../test/integration/fixtures';
+import { agoraNoBanco } from '../../test/integration/clock';
 import { resetDb } from '../../test/integration/harness';
 import { MAX_ATTEMPTS } from '../outbox/outbox.service';
 import { MAX_CHAIN_DEPTH } from './automations.service';
@@ -298,7 +299,8 @@ describe('Automações (integração)', () => {
     expect(evento!.status).toBe('pending');
     expect(evento!.attempts).toBe(1);
     expect(evento!.lastError).toBeTruthy();
-    expect(evento!.nextRetryAt.getTime()).toBeGreaterThan(Date.now());
+    // a retentativa é agendada pelo BANCO (ADR-049): compara com o relógio dele
+    expect(evento!.nextRetryAt.getTime()).toBeGreaterThan(await agoraNoBanco(prisma));
   });
 
   it('consertada a automação, a nova tentativa cria a tarefa', async () => {
