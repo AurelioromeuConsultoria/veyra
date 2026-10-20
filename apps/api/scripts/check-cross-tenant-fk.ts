@@ -77,6 +77,14 @@ const DOCUMENTED_LOOSE_COLUMNS = new Set([
   // Sem FK de propósito; o isolamento é conferido no `enqueue` (mesma transação,
   // mesmo workspace) e, aqui, pela checagem de DADOS de `SNAPSHOT_COLUMNS`.
   'OutboxEvent.subjectContactIds',
+  // REGISTRO de um uso externo (ADR-047 adendos 6 e 7): os contatos do conjunto
+  // de travas, NA AUTORIZAÇÃO — histórico de incidente, que precisa sobreviver à
+  // exclusão do contato. Isolamento conferido pela checagem de DADOS abaixo.
+  'ContentUse.contactIds',
+  // ponteiros para reservas EFÊMERAS (apagadas na liquidação), como no dispatch
+  'ContentUse.reservationIds',
+  // identificador do PROCESSO que registrou o uso (host:pid:boot), não entidade
+  'ContentUse.instanceId',
 ]);
 
 /**
@@ -85,7 +93,10 @@ const DOCUMENTED_LOOSE_COLUMNS = new Set([
  * pode apontar para linha de OUTRO workspace. Id que não existe mais é
  * permitido (o contato foi excluído depois da emissão).
  */
-const SNAPSHOT_COLUMNS = [{ table: 'OutboxEvent', column: 'subjectContactIds', target: 'Contact' }];
+const SNAPSHOT_COLUMNS = [
+  { table: 'OutboxEvent', column: 'subjectContactIds', target: 'Contact' },
+  { table: 'ContentUse', column: 'contactIds', target: 'Contact' },
+];
 
 interface FkRow {
   constraint_name: string;

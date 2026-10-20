@@ -104,6 +104,7 @@ model Workspace {
   subscription           Subscription?
   usageCounters          UsageCounter[]
   usageReservations      UsageReservation[]
+  contentUses            ContentUse[]
   automations            Automation[]
   automationExecutions   AutomationExecution[]
   channelCredentials     ChannelCredential[]
@@ -1322,6 +1323,60 @@ model UsageReservation {
 
   @@index([workspaceId, metric, period])
   @@index([expiresAt])
+}
+
+// ─── Usos externos de conteúdo de contato (ADR-047, adendos 6 e 7) ───────────
+
+enum ContentUseKind {
+  ai_generation
+  ai_message_dispatch
+  webhook_delivery
+}
+
+enum ContentUseStatus {
+  authorized
+  concluded
+  aborted
+  in_doubt
+}
+
+enum ContentUseDetector {
+  commit
+  change
+  workspace_change
+  reconciliation
+  missing_record
+  overran_deadline
+}
+
+/// Registro DURÁVEL de um uso externo, comitado ANTES da chamada (adendo 7 §3.2).
+/// Só ids: nunca conteúdo. `id` vem da aplicação, antes das travas, e dá a
+/// trava própria do uso — a prova de que a guarda dele acabou.
+model ContentUse {
+  id             String              @id @db.Uuid
+  workspaceId    String              @db.Uuid
+  kind           ContentUseKind
+  status         ContentUseStatus
+  detectedBy     ContentUseDetector?
+  /// o conjunto inteiro de travas: contatos e entidades ('deal:<id>', 'task:<id>')
+  contactIds     String[]            @db.Uuid
+  entityKeys     String[]
+  /// ids do registro de origem (pré-gerados, ou o despacho que já existe)
+  origin         Json
+  reservationIds String[]            @db.Uuid
+  /// IA: o mínimo para criar o run se o processo morrer (só ids e descrições)
+  runMetadata    Json?
+  instanceId     String
+  /// relógio do BANCO (ADR-049): a varredura compara com now()
+  authorizedAt   DateTime            @default(dbgenerated("transaction_timestamp()"))
+  deadlineAt     DateTime
+  finishedAt     DateTime?
+  lateAttemptAt  DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, status])
+  @@index([status, deadlineAt])
 }
 
 // ─── Automações (Entrega 8.2) ─────────────────────────────────────────────────

@@ -28,6 +28,16 @@ export function prismaAdapter(connectionString: string | undefined): PrismaPg {
  * parâmetro `options` é tocado; os demais seguem byte a byte.
  */
 export function comSessaoEmUtc(connectionString: string): string {
+  return comOpcoesDeSessao(connectionString, []);
+}
+
+/**
+ * Como `comSessaoEmUtc`, com parâmetros de sessão a mais (`-c nome=valor`), na
+ * mesma regra: na URL, somados ao `options` existente, e o UTC sempre por
+ * último. Os pools da guarda de uso externo (ADR-047 adendo 7) a usam para o
+ * keepalive e os prazos de sessão.
+ */
+export function comOpcoesDeSessao(connectionString: string, extras: readonly string[]): string {
   const cerca = connectionString.indexOf('#');
   const semFragmento = cerca === -1 ? connectionString : connectionString.slice(0, cerca);
   const fragmento = cerca === -1 ? '' : connectionString.slice(cerca);
@@ -53,6 +63,6 @@ export function comSessaoEmUtc(connectionString: string): string {
     }
     return false;
   });
-  const opcoes = [...atuais.filter(Boolean), SESSAO_EM_UTC].join(' ');
+  const opcoes = [...atuais.filter(Boolean), ...extras, SESSAO_EM_UTC].join(' ');
   return `${base}?${[...outros, `options=${encodeURIComponent(opcoes)}`].join('&')}${fragmento}`;
 }

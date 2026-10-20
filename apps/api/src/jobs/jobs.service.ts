@@ -11,6 +11,7 @@ import { FilesService } from '../files/files.service';
 import { UsageService } from '../usage/usage.service';
 import { INTERNAL_EVENT_TYPES, OutboxService, type ClaimedEvent } from '../outbox/outbox.service';
 import { WebhooksService } from '../webhooks/webhooks.service';
+import { ReconciliacaoDosUsos, varrerNaSubida } from '../content-use/content-use.reconciler';
 
 const OUTBOX_QUEUE = 'outbox-dispatch';
 const RETENTION_QUEUE = 'audit-retention';
@@ -18,6 +19,7 @@ const RESERVATION_QUEUE = 'usage-reservations';
 const DISPATCH_REAP_QUEUE = 'dispatch-reap';
 const MEDIA_QUEUE = 'inbound-media';
 const SCAN_QUEUE = 'file-scan';
+const CONTENT_USE_QUEUE = 'content-use-reconcile';
 
 /**
  * Jobs no MESMO Postgres (pg-boss, ADR-007). Kill switch: DISABLE_JOBS.
@@ -49,6 +51,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     @Inject(AI_RUN_REPOSITORY) private readonly aiRuns: AiRunRepository,
     private readonly whatsappSend: WhatsappSendService,
     private readonly mediaCollector: MediaCollectorService,
+    private readonly reconciliacao: ReconciliacaoDosUsos,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -77,6 +80,10 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       const aiDays = this.config.getOrThrow<number>('AI_RESULT_RETENTION_DAYS');
       const limpos = await this.aiRuns.purgeResultsOlderThan(aiDays);
       if (limpos > 0) this.logger.log(`Retenção: ${limpos} resultados de IA expirados`);
+      // usos externos: encerrados em 30 dias; `in_doubt` pela retenção da
+      // auditoria (ADR-047 adendo 7 §3.4)
+      const usos = await this.reconciliacao.expurgar(days);
+      if (usos > 0) this.logger.log(`Retenção: ${usos} registros de uso externo expurgados`);
     });
     await this.boss.schedule(RETENTION_QUEUE, '0 4 * * *', {}, { tz: 'America/Sao_Paulo' });
 
@@ -122,6 +129,22 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       await this.fileScan.purgeQuarantinedBytes();
     });
     await this.boss.schedule(SCAN_QUEUE, '* * * * *', {}, { tz: 'America/Sao_Paulo' });
+
+    /**
+     * Usos externos que ficaram `authorized` depois que a guarda acabou
+     * (ADR-047 adendo 7 §3.3–3.4): a cada minuto, e uma vez logo depois da
+     * subida — assíncrona, sem bloquear o boot. Cobre o processo que morreu e
+     * não voltou, inclusive depois de reinício.
+     */
+    await this.boss.createQueue(CONTENT_USE_QUEUE);
+    await this.boss.work(CONTENT_USE_QUEUE, async () => {
+      await this.reconciliacao.varrer();
+    });
+    await this.boss.schedule(CONTENT_USE_QUEUE, '* * * * *', {}, { tz: 'America/Sao_Paulo' });
+    varrerNaSubida(
+      () => this.reconciliacao.varrer(),
+      (mensagem) => this.logger.warn(mensagem),
+    );
   }
 
   async onModuleDestroy(): Promise<void> {

@@ -67,6 +67,15 @@ export class PrismaExceptionFilter extends BaseExceptionFilter implements Except
       super.catch(new ConflictException('Conflita com um registro existente'), host);
       return;
     }
+    // 55P03 (lock_not_available): a mudança esperou o `lock_timeout` por um uso
+    // externo em andamento no mesmo contato (ADR-047 adendo 6 §4) — 409, sem efeito
+    if (postgresErrorCode(exception) === '55P03') {
+      super.catch(
+        new ConflictException('Uso em andamento para este contato; tente de novo em instantes.'),
+        host,
+      );
+      return;
+    }
     super.catch(exception, host);
   }
 }

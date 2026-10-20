@@ -32,6 +32,8 @@ export const AUDIT_FIELDS: Record<string, readonly string[]> = {
   file: ['fileName', 'mimeType', 'scanStatus'],
   aiConsent: ['conversationContent'],
   automation: ['name', 'trigger', 'enabled', 'depth', 'chainId'],
+  // uso externo de conteúdo (ADR-047 adendo 7): só estado e tipo, nunca conteúdo
+  contentUse: ['status', 'kind', 'detectedBy'],
   /**
    * `externalId` é o wamid — identificador DO PROVEDOR, não conteúdo nem
    * segredo — e é o único ponto de retomada quando perdemos a posse depois de

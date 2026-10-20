@@ -31,6 +31,7 @@ import { JobsModule } from './jobs/jobs.module';
 import { NotesModule } from './notes/notes.module';
 import { OutboxModule } from './outbox/outbox.module';
 import { PipelinesModule } from './pipelines/pipelines.module';
+import { ContentUseModule } from './content-use/content-use.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { TagsModule } from './tags/tags.module';
 import { TasksModule } from './tasks/tasks.module';
@@ -61,6 +62,8 @@ import { ClinicsModule } from './verticals/clinics/clinics.module';
     // RAIZ DE COMPOSIÇÃO (ADR-047): extensões entram no Core só por aqui
     ExtensionsModule.forRoot(COMPOSITION),
     PrismaModule,
+    // usos externos sob guarda (ADR-047 adendos 6 e 7): global, como o Prisma
+    ContentUseModule,
     AuthModule,
     WorkspacesModule,
     TagsModule,

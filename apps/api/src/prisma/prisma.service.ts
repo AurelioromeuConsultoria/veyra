@@ -10,6 +10,7 @@ import { prismaAdapter } from './prisma-adapter';
 import { ClsService } from 'nestjs-cls';
 import { PrismaClient } from '../generated/prisma/client';
 import { CORE_REGISTRY, EXTENSION_REGISTRY, type ComposedRegistry } from '../extensions/registry';
+import { sqlDeCoordenacao } from '../content-use/coordination-sql';
 
 /**
  * Operações por chave única não aceitam filtro extra de workspace no where —
@@ -165,7 +166,7 @@ function blockedRaw(method: string): never {
   );
 }
 
-function createWorkspaceClient(
+export function createWorkspaceClient(
   base: PrismaClient,
   getWorkspaceId: () => unknown,
   reg: ComposedRegistry,
@@ -175,10 +176,24 @@ function createWorkspaceClient(
   return base.$extends({
     query: {
       // SQL cru ignora o filtro de workspace por definição — bloqueado no db.
-      $queryRaw: () => blockedRaw('$queryRaw'),
+      // Única exceção: os modelos de COORDENAÇÃO de restrição (ADR-047 adendos
+      // 6 e 7), conferidos pelo texto — travas consultivas, prazos de sessão,
+      // prova de vida e o SAVEPOINT da guarda, nenhum lendo dado de tenant. Vai
+      // ao banco o SQL reconstruído do modelo, nunca o objeto recebido. Os
+      // `Unsafe` nunca passam.
+      $queryRaw: ({ args, query }) => {
+        const sql = sqlDeCoordenacao(args);
+        return sql ? query(sql as never) : blockedRaw('$queryRaw');
+      },
       $queryRawUnsafe: () => blockedRaw('$queryRawUnsafe'),
-      $executeRaw: () => blockedRaw('$executeRaw'),
+      $executeRaw: ({ args, query }) => {
+        const sql = sqlDeCoordenacao(args);
+        return sql ? query(sql as never) : blockedRaw('$executeRaw');
+      },
       $executeRawUnsafe: () => blockedRaw('$executeRawUnsafe'),
+      // SQL tipado também é cru: bloqueado mesmo que a preview seja ligada um dia
+      // (o tipo do hook só existe com a preview; o runtime aceita a chave)
+      ...({ $queryRawTyped: () => blockedRaw('$queryRawTyped') } as object),
       $allModels: {
         async $allOperations({ model, operation, args, query }) {
           // Fail-closed nos DOIS sentidos: modelo fora do registro composto não é

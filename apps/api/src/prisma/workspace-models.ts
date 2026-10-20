@@ -59,6 +59,8 @@ export const WORKSPACE_MODELS = new Set<string>([
   'Subscription',
   'UsageCounter',
   'UsageReservation',
+  // Usos externos de conteúdo de contato (ADR-047, adendos 6 e 7)
+  'ContentUse',
   // Automações (Entrega 8.2)
   'Automation',
   'AutomationExecution',
@@ -362,6 +364,9 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     workspace: 'Workspace',
   },
   UsageReservation: {
+    workspace: 'Workspace',
+  },
+  ContentUse: {
     workspace: 'Workspace',
   },
   Message: {

@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ClsService } from 'nestjs-cls';
 import type { Prisma } from '../generated/prisma/client';
+import { postgresErrorCode } from '../common/prisma-exception.filter';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import {
   MONETARY_UNITS,
@@ -62,6 +63,15 @@ export interface UsageSnapshot {
   usedRatio: number | null;
   monetaryRedacted?: boolean;
   resetsAt: string | null;
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Os `*Within` recebem o workspace explícito: sem ele, nada é ajustado. */
+function exigirWorkspace(workspaceId: string): void {
+  if (!UUID.test(workspaceId ?? '')) {
+    throw new Error('Acerto de reserva sem workspace válido — recusado.');
+  }
 }
 
 @Injectable()
@@ -253,34 +263,64 @@ export class UsageService {
     metric: MetricKey,
     actualAmount: number,
   ): Promise<boolean> {
+    void metric;
     const db = this.prisma.db as unknown as {
       $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T>;
     };
-    return db.$transaction(async (tx) => {
-      const reservation = (await tx.usageReservation.findFirst({
-        where: { id: reservationId },
-        select: { amount: true, metric: true, period: true },
-      })) as unknown as { amount: number; metric: string; period: string } | null;
-      /**
-       * Já varrida por expiração: o valor reservado voltou ao orçamento. Devolve
-       * `false` para que quem teve um efeito EXTERNO bem-sucedido possa cobrar o
-       * valor real — antes isto era um `return` silencioso, e o envio saía sem
-       * consumir quota nenhuma.
-       */
-      if (!reservation) return false;
-      /**
-       * A POSSE é o delete, não a leitura: dois liquidantes concorrentes (worker
-       * e varredura de expiradas) leriam a mesma linha e aplicariam o ajuste
-       * duas vezes. Só quem apagou de fato ajusta o contador.
-       */
-      const { count } = await tx.usageReservation.deleteMany({ where: { id: reservationId } });
-      if (count === 0) return false;
-      const difference = actualAmount - reservation.amount;
-      if (difference !== 0) {
-        await this.applyDelta(tx, reservation.metric, reservation.period, difference);
-      }
-      return true;
+    return db.$transaction((tx) => this.settleWithin(tx, workspaceId, reservationId, actualAmount));
+  }
+
+  /**
+   * `settle` DENTRO da transação do chamador, com o `workspaceId` explícito
+   * (a guarda de uso externo e os detectores do ADR-047 adendo 7 acertam a
+   * reserva na própria transação, sempre pelo client filtrado). O workspace é
+   * conferido: vazio, o ajuste do contador perderia o filtro.
+   *
+   * Já varrida por expiração: o valor reservado voltou ao orçamento. Devolve
+   * `false` para que quem teve um efeito EXTERNO bem-sucedido possa cobrar o
+   * valor real. A POSSE é o delete, não a leitura: dois liquidantes concorrentes
+   * leriam a mesma linha e aplicariam o ajuste duas vezes; só quem apagou ajusta.
+   */
+  async settleWithin(
+    tx: AnyClient,
+    workspaceId: string,
+    reservationId: string,
+    actualAmount: number,
+  ): Promise<boolean> {
+    exigirWorkspace(workspaceId);
+    const client = tx as Db;
+    const reservation = (await client.usageReservation.findFirst({
+      where: { id: reservationId, workspaceId },
+      select: { amount: true, metric: true, period: true },
+    })) as unknown as { amount: number; metric: string; period: string } | null;
+    if (!reservation) return false;
+    const { count } = await client.usageReservation.deleteMany({
+      where: { id: reservationId, workspaceId },
     });
+    if (count === 0) return false;
+    const difference = actualAmount - reservation.amount;
+    if (difference !== 0) {
+      await this.applyDelta(tx, reservation.metric, reservation.period, difference, workspaceId);
+    }
+    return true;
+  }
+
+  /**
+   * Cobra PELO TETO, dentro da transação do chamador: o contador já carrega o
+   * valor reservado, então basta tomar a posse da reserva (desfecho incerto de
+   * uso externo, ADR-047 adendo 6 §5 e adendo 7 §3.6).
+   */
+  async chargeCeilingWithin(
+    tx: AnyClient,
+    workspaceId: string,
+    reservationId: string,
+  ): Promise<boolean> {
+    exigirWorkspace(workspaceId);
+    const client = tx as Db;
+    const { count } = await client.usageReservation.deleteMany({
+      where: { id: reservationId, workspaceId },
+    });
+    return count > 0;
   }
 
   /**
@@ -328,17 +368,32 @@ export class UsageService {
     const db = this.prisma.db as unknown as {
       $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T>;
     };
-    await db.$transaction(async (tx) => {
-      const reservation = (await tx.usageReservation.findFirst({
-        where: { id: reservationId },
-        select: { amount: true, metric: true, period: true },
-      })) as unknown as { amount: number; metric: string; period: string } | null;
-      if (!reservation) return;
-      // mesma regra do settle: quem apagou é quem devolve o valor
-      const { count } = await tx.usageReservation.deleteMany({ where: { id: reservationId } });
-      if (count === 0) return;
-      await this.applyDelta(tx, reservation.metric, reservation.period, -reservation.amount);
+    const workspaceId = this.cls.get('workspaceId') as string;
+    await db.$transaction((tx) => this.releaseWithin(tx, workspaceId, reservationId));
+  }
+
+  /** `release` DENTRO da transação do chamador, com o `workspaceId` explícito. */
+  async releaseWithin(tx: AnyClient, workspaceId: string, reservationId: string): Promise<boolean> {
+    exigirWorkspace(workspaceId);
+    const client = tx as Db;
+    const reservation = (await client.usageReservation.findFirst({
+      where: { id: reservationId, workspaceId },
+      select: { amount: true, metric: true, period: true },
+    })) as unknown as { amount: number; metric: string; period: string } | null;
+    if (!reservation) return false;
+    // mesma regra do settle: quem apagou é quem devolve o valor
+    const { count } = await client.usageReservation.deleteMany({
+      where: { id: reservationId, workspaceId },
     });
+    if (count === 0) return false;
+    await this.applyDelta(
+      tx,
+      reservation.metric,
+      reservation.period,
+      -reservation.amount,
+      workspaceId,
+    );
+    return true;
   }
 
   /**
@@ -351,26 +406,65 @@ export class UsageService {
     const expired = await this.prisma.raw.usageReservation.findMany({
       where: { expiresAt: { lt: new Date() } },
     });
+    let devolvidas = 0;
+    let adiadas = 0;
     for (const reservation of expired) {
-      await this.prisma.raw.$transaction(async (tx) => {
-        const { count } = await tx.usageReservation.deleteMany({ where: { id: reservation.id } });
-        if (count === 0) return; // outra instância varreu antes
-        await tx.usageCounter.updateMany({
-          where: {
-            workspaceId: reservation.workspaceId,
-            metric: reservation.metric,
-            period: reservation.period,
-          },
-          data: { value: { decrement: reservation.amount } },
+      await this.prisma.raw
+        .$transaction(async (tx) => {
+          /**
+           * Reserva de um uso externo ainda `authorized` (ADR-047 adendo 7 §3.6)
+           * NÃO volta: o uso pode ter começado, e quem o encerrar — a guarda ou
+           * um detector — decide se devolve ou cobra pelo teto.
+           */
+          // a reserva fica PRESA antes da contagem. Presa por outra transação
+          // (um registro de uso em andamento, com FOR SHARE, ou o acerto da
+          // persistência), ela é PULADA e volta na próxima rodada: esperar
+          // aqui seguraria a varredura inteira
+          const presa = await tx.$queryRaw<{ id: string }[]>`
+            SELECT "id" FROM "UsageReservation" WHERE "id" = ${reservation.id}::uuid
+               FOR UPDATE SKIP LOCKED`;
+          if (presa.length === 0) return; // presa por outra transação, ou já varrida
+          const emUso = await tx.contentUse.count({
+            where: {
+              workspaceId: reservation.workspaceId,
+              status: 'authorized',
+              reservationIds: { has: reservation.id },
+            },
+          });
+          if (emUso > 0) return;
+          const { count } = await tx.usageReservation.deleteMany({
+            where: { id: reservation.id },
+          });
+          if (count === 0) return; // outra instância varreu antes
+          await tx.usageCounter.updateMany({
+            where: {
+              workspaceId: reservation.workspaceId,
+              metric: reservation.metric,
+              period: reservation.period,
+            },
+            data: { value: { decrement: reservation.amount } },
+          });
+          devolvidas += 1;
+        })
+        .catch((erro: unknown) => {
+          // falha SÓ desta reserva (o contador preso além do prazo): ela fica
+          // para a próxima rodada, e as outras seguem. Só o id, o nome e o
+          // código do erro — um defeito permanente aparece com a causa
+          adiadas += 1;
+          const codigo =
+            postgresErrorCode(erro) ?? (erro as { code?: string } | null)?.code ?? 'sem código';
+          this.logger.warn(
+            `Reserva ${reservation.id} adiada (${erro instanceof Error ? erro.name : 'erro'}, ${codigo})`,
+          );
         });
-      });
     }
-    if (expired.length > 0) {
-      this.logger.warn(
-        `${expired.length} reserva(s) de uso expiradas foram devolvidas ao orçamento`,
-      );
+    if (devolvidas > 0) {
+      this.logger.warn(`${devolvidas} reserva(s) de uso expiradas foram devolvidas ao orçamento`);
     }
-    return expired.length;
+    if (adiadas > 0) {
+      this.logger.warn(`${adiadas} reserva(s) de uso expiradas ficaram para a próxima rodada`);
+    }
+    return devolvidas;
   }
 
   /**

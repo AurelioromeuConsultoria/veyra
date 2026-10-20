@@ -1436,6 +1436,192 @@ As transições de run, despacho e reserva, inclusive dentro da transação de M
 
 O B2 só volta para decisão com o critério implementado, os testes da seção 4, a bateria completa verde e os passes de `security` e `reviewer`.
 
+#### 7. Implementação — G1, a fundação da guarda (2026-10-20)
+
+A implementação foi dividida em quatro subentregas, cada uma com commit, bateria e revisão:
+
+- **G1:** a fundação da guarda, sem consumidor ligado;
+- **G2:** as mudanças e as aprovações;
+- **G3:** os três usos;
+- **G4:** a bateria de cenários uso × mudança e a revisão final de segurança.
+
+O B2 só volta para decisão depois da G4.
+
+**O que a G1 entrega** (`apps/api/src/content-use/`):
+
+- **Tabela `ContentUse`:** tenant-scoped, com migrations aditivas e entrada em `WORKSPACE_MODELS`. Guarda só ids. No registro, `authorizedAt` e `deadlineAt` vêm do relógio do banco. A lápide e o `missing_record` gravam o `deadlineAt` pelo relógio do Node, mas são estados finais, que nada compara com `now()`.
+- **A primitiva única de travas** (`restriction-locks.ts`), na ordem do adendo 6 §3.2. As chaves de contato e de entidade levam o workspace, e a trava própria do uso é só tentada, inclusive pela guarda que a cria.
+- **Os dois pools:**
+  - **guarda:** um segundo PrismaClient, com o mesmo filtro de tenant do `prisma.db`, keepalive TCP curto e `application_name = veyra-guard`;
+  - **registro:** `pg`, com `synchronous_commit = on`, `statement_timeout`, `idle_in_transaction_session_timeout` de dois prazos de instrução e o mesmo keepalive.
+- **A guarda** (`ContentUseGuard.executar`), com os passos da seção 3.2:
+  - todo prazo de sessão vem antes da primeira trava: `idle_in_transaction_session_timeout` (prazo do tipo + margem), `lock_timeout` por trava e um `statement_timeout` acima do `lock_timeout`;
+  - a trava do uso, as travas de restrição e a reconferência com prazo próprio, na transação da guarda;
+  - o `SAVEPOINT`, o registro comitado, as duas conferências do orçamento, a prova de vida e o início;
+  - a persistência e o `concluded` sob as travas;
+  - o passo 12 por transição condicional.
+- **Os detectores** (`UsosOrfaos`):
+  - M por contato e por entidade, e a mudança do workspace inteiro;
+  - o próprio processo, quando o `COMMIT` falha, quando o registro sumiu, ou quando a chamada passou do prazo sem responder;
+  - a reconciliação, pela trava do uso.
+
+  Todos usam transição condicional: a linha do uso muda primeiro, e só então vêm as reservas pelo teto, a origem incerta (pelos tratadores que a G3 registra) e o incidente `content_use.in_doubt`.
+
+- **A reconciliação:** roda a cada minuto e uma vez depois da subida, assíncrona e sujeita a `DISABLE_JOBS`. Pagina pelo cursor (`deadlineAt`, `id`), para que guardas vivas com prazo vencido não escondam os órfãos que vêm depois. Cada candidato é examinado no workspace dele, pelo client filtrado, numa transação própria, com `lock_timeout`, `statement_timeout` e prazo de transação explícitos. Um candidato que falha (linha presa além do prazo, tratador de origem com defeito) é contado, registrado no log e deixado para a rodada seguinte, sem parar os que vêm depois.
+- **A retenção:** `concluded` e `aborted` saem depois de 30 dias. `in_doubt` fica pela retenção da auditoria e depois sai também. Os dois expurgos comparam o `authorizedAt`.
+- **A varredura de reservas:** trava cada reserva antes de contar os usos (`FOR UPDATE SKIP LOCKED`) e não devolve reserva de uso `authorized`. Uma reserva presa por outra transação (um registro em andamento, que a prende com `FOR SHARE` até o commit, ou o acerto da persistência) é pulada e volta na rodada seguinte; esperar por ela seguraria a varredura inteira. Cada reserva tem a sua transação, e a falha de uma não para as outras. O registro recusa se alguma reserva do uso já não existe.
+- **O 55P03 vira 409** ("Uso em andamento para este contato; tente de novo em instantes.").
+
+**Desvios do texto aprovado, todos para o lado conservador:**
+
+- **Índice:** `(status, deadlineAt)` no lugar do índice parcial `(deadlineAt) WHERE status = 'authorized'`. O Prisma não modela índice parcial, e ele apareceria como drift. Para a busca da varredura (`status = 'authorized' AND deadlineAt < now()`) o efeito é o mesmo.
+- **Só o `INSERT` do registro é SQL próprio** (seção 3.8). A lápide, a transição do passo 6 e a do passo 12 passam pelo client filtrado, com `workspaceId` explícito:
+  - a lápide é um `createMany` com `skipDuplicates` (que vira `INSERT … ON CONFLICT DO NOTHING` e espera um registro ainda em andamento pelo índice único), seguido da transição condicional. Um registro que chega depois da lápide esbarra nela pelo índice único (23505);
+  - o passo 6 e o passo 12 rodam no pool principal, com prazos explícitos (`prazosDaRecuperacao`): `lock_timeout` igual ao de trava da guarda (5 s na produção), `statement_timeout` acima dele e prazo de transação que cobre a instrução que esperou mais as seguintes. Sem eles valeriam os padrões do Prisma (5 s), iguais à espera de trava.
+
+  Quando eles rodam, a transação da guarda já terminou e não segura trava nenhuma, então não há espera circular.
+
+- **A recuperação nunca lança depois do registro.** Sem conseguir decidir no passo 6 ou no passo 12 (pool cheio, linha presa, prazo), o resultado é `em_duvida`: o uso fica `authorized` e a reconciliação decide pela prova.
+- **O passo 6 e o passo 12 reconhecem o que a própria guarda já escreveu.** O `COMMIT` pode chegar ao banco e o cliente ver erro:
+  - um `aborted` por prazo já gravado vale como `aborted`, com o motivo `prazo` e sem devolver as reservas de novo, porque elas voltaram no mesmo commit;
+  - um `in_doubt` por `overran_deadline` já gravado não vira "conclusão tardia", porque a guarda não estava concluindo;
+  - se o `COMMIT` do `overran_deadline` não chegou, o passo 12 marca com o mesmo detector.
+- **A reconciliação escreve pelo client filtrado,** no workspace de cada candidato. Fora de `content-use/`, a única outra leitura de `ContentUse` por `raw` é a da varredura de reservas, com `workspaceId` explícito. Dentro, só duas operações usam `raw`, as duas cross-workspace por definição: a busca de candidatos e o expurgo de retenção. Testes estáticos fixam as três pelo nome da função, junto com o registro.
+- **O SQL de coordenação vai ao banco reconstruído do modelo.** O Prisma executa o `text` do objeto que recebe, e um objeto forjado poderia trazer as partes de texto de um modelo e o `text` de outro SQL. O filtro confere as partes de texto e exige um parâmetro simples por lacuna (texto ou número; um `Prisma.Sql` como valor seria emendado no texto). Depois, monta um `Prisma.Sql` novo com eles.
+- **A reconferência recebe a transação da guarda:** a porta lê sob as travas, com o prazo próprio `reconferenciaMs`. Estourado, o uso não começa (`indisponivel`).
+- **Falha de registro:**
+  - a lápide e a devolução das reservas acontecem na mesma transação da guarda, sem janela entre as duas;
+  - se a própria lápide falhar, nada volta na hora, porque o registro pode ter comitado `authorized`. Nesse caso, a reconciliação cobra pelo teto se o registro existe, e a varredura de reservas devolve se ele não existe.
+- **Chamada que passa do prazo:** o sinal aborta no prazo absoluto do tipo. Se a chamada não responder mais 1 s depois, ela ainda pode começar após a restrição. O próprio processo marca o uso `in_doubt` na transação da guarda, com o detector `overran_deadline`, e a resposta tardia é ignorada. É uma migration aditiva, que acrescenta o valor ao enum.
+- **Orçamento do prazo da transação** (`orcamentoDaGuarda`, função pura):
+  - o trecho comum, até o registro: cada trava com o seu `lock_timeout`, a reconferência e o registro (conexão e instrução);
+  - depois, o maior de dois caminhos: o da lápide, ou o da prova de vida (o seu `statement_timeout`), da chamada com a folga de desistência e da persistência;
+  - a folga.
+
+  A guarda confere o que resta duas vezes: antes da prova de vida e logo depois dela, só pelo relógio, sem instrução nenhuma entre a prova e o início. Se não bastar, o uso vira `aborted` com o motivo `prazo` na própria transação da guarda, ainda sob as travas, com a devolução das reservas. Soltar as travas antes de escrever deixaria uma mudança achar o uso `authorized` e marcá-lo em dúvida sem ele ter começado.
+
+- **A persistência tem uma janela, não um prazo por instrução.** O `statement_timeout` vale por instrução, e o orçamento conta `persistenciaMs` uma vez. Uma persistência de várias instruções que passe disso (inclusive o caminho de `persistenciaFalhou`) faz a transação expirar, e vale o passo 12: o uso termina `in_doubt`. A G3 dimensiona a persistência de cada uso dentro dessa janela.
+- **A reserva já varrida não é cobrada acima do teto pelos detectores.** A varredura pula as reservas de uso `authorized`, e o registro recusa reserva que não existe, então a reserva de um uso que vira `in_doubt` não pode ter sido varrida. Se faltar, fica um aviso no log para investigação. A cobrança acima do teto continua valendo no acerto da persistência, na G3.
+
+  **Contrato da G3:** essa premissa vale só se o consumidor nunca devolver nem acertar reserva fora da guarda. Depois de entregar as reservas a `executar`, o consumidor só as toca dentro de `persistir` ou `persistenciaFalhou`.
+
+- **"Só ids" por formato:** contatos, reservas e ids de origem são uuids, e as entidades são `deal:<uuid>` ou `task:<uuid>`. As chaves de `origem` e dos metadados do run são nomes curtos. Os valores de texto dos metadados são identificadores, sem espaço (versão, modelo, capacidade). `/` vale, para ids de modelo, e `@` só como sufixo de versão numérico (`modelo@2026-10`), então um e-mail não passa. Isso recusa texto livre com espaço e e-mail, mas um dado pessoal de uma palavra só (um nome, um telefone, um CPF) ainda passa no formato. Por isso a G3 fecha, por tipo de uso, as chaves aceitas e o formato ou o catálogo dos valores de cada chave. Um uso recusado pela validação não começa, e as reservas dele voltam na hora.
+- **Exceção inesperada no meio da guarda** (um defeito):
+  - antes do registro: as reservas voltam;
+  - entre o registro e o início: o uso vira `aborted`;
+  - depois do início: vale o passo 12.
+- **Quando o processo vivo não escreve o desfecho.** Com a guarda viva, todo desfecho é escrito na transação dela. Perdida a guarda, o processo tenta decidir noutra conexão. O uso fica `authorized`, e a decisão passa à reconciliação, em três casos:
+  - a lápide falhou depois de um registro ambíguo;
+  - o passo 6 ficou sem resposta;
+  - o passo 12 ficou sem resposta.
+- **`finishedAt`:** é informativo e escrito pelo Node. A retenção compara o `authorizedAt`, que é do banco (ADR-049).
+
+**Testes** (dados fictícios, operação falsa). As falhas são determinísticas: pontos de teste param a guarda onde a falha precisa acontecer, e uma conexão observadora derruba a sessão, segura travas ou confere o banco. Nenhum teste depende de sono fixo para vencer um prazo de banco; os sonos que restam só consomem o orçamento da própria guarda.
+
+- **Integração (47):** cobrem todas as falhas da seção 4 que já se aplicam sem consumidor.
+  - **Caminho feliz e ordem:**
+    - o registro está comitado e visível de outra conexão no instante do início;
+    - a ordem dos passos;
+    - a última instrução da sessão da guarda antes do início é a prova de vida (`pg_stat_activity`).
+  - **Antes do registro:** reconferência restrita; trava ocupada por mudança; "só ids", com texto livre ou chave inválida recusados antes de qualquer trava.
+  - **Registro:**
+    - falha de registro e commit ambíguo;
+    - registro ainda comitando, com a lápide esperando e prova pelo `pg_xact_status` de que ele comitou;
+    - registro atrasado, que esbarra na lápide com 23505;
+    - reserva varrida antes do registro;
+    - varredura de reservas no meio do registro, que pula a reserva presa sem esperar (`FOR SHARE` × `SKIP LOCKED`).
+  - **Lápide que falha:** depois de um registro que comitou (a reconciliação cobra) e depois de um que não comitou (a varredura devolve, uma vez).
+  - **Orçamento:**
+    - prazo insuficiente antes da prova, com uma mudança esperando, que não acha nada para marcar;
+    - prova de vida lenta, recusada pela segunda conferência;
+    - o `COMMIT` do `aborted` por prazo que falha, e o que chega ao banco com erro no cliente;
+    - fumaça: os prazos internos consumidos quase inteiros (a prova da soma é o teste de unidade).
+  - **Prova de vida que falha:** sozinha, ou com M antes.
+  - **Persistência:**
+    - falha com a guarda viva, por exceção e por erro de banco (o `SAVEPOINT` desfaz o resultado e o acerto da quota);
+    - acontece na conexão da guarda.
+  - **Depois do início:**
+    - `COMMIT` da guarda falha;
+    - passo 12 com registro perdido (`missing_record`), com `COMMIT` que comitou mas deu erro no cliente, com linha presa sem resposta, e com falha de outro tipo (sem lançar);
+    - chamada que passa do prazo sem responder (`overran_deadline`), inclusive com o `COMMIT` perdido, que chegou ou não chegou ao banco, e com a guarda perdida antes de marcar e M marcando primeiro.
+  - **Detecção:**
+    - processo morto depois do registro, com a auditoria;
+    - guarda viva com prazo vencido, sem contato;
+    - guarda congelada além dos prazos de sessão, com a conclusão tardia;
+    - órfão com outro uso vivo no mesmo contato; paginação da reconciliação;
+    - candidato com a linha presa e candidato com tratador de origem com defeito, sem parar os seguintes;
+    - M por contato e por entidade, e a mudança do workspace;
+    - dois detectores no mesmo órfão, os dois em voo ao mesmo tempo: uma cobrança, uma origem incerta, um incidente.
+  - **Validação:** texto livre, e-mail e chave inválida recusados, com as reservas devolvidas; id de modelo com `/` e `@<versão>` aceito.
+  - **Outros:**
+    - N usos acima do tamanho dos pools;
+    - reserva de uso `authorized` preservada;
+    - retenção dos três estados;
+    - SQL cru no client protegido, inclusive um objeto forjado e um valor emendado.
+
+  Os testes que dependem de terminar dentro do prazo do registro têm uma janela de cerca de 800 ms (o prazo de instrução do registro nos testes). Se a janela for perdida, o teste falha de forma visível e não passa em silêncio.
+
+- **Unidade e estáticos (16):**
+  - a lista fixa de modelos de coordenação (10);
+  - a liberação só pelo texto;
+  - a reconstrução do SQL;
+  - o orçamento contra o pior caso de cada fase, escrito à parte da implementação, em quatro configurações, uma delas com a lápide dominando;
+  - a ordem dos prazos da recuperação e da reconciliação com os padrões da produção;
+  - o 55P03 → 409;
+  - a varredura na subida, que não espera nem derruba;
+  - `workspaceId` em toda escrita, salvo as exceções nomeadas;
+  - o SQL próprio e o `raw` só nas funções das exceções nomeadas; fora de `content-use/`, em todo o `src`, só a leitura da varredura de reservas;
+  - os pools da guarda só dentro de `content-use/`;
+  - as chaves de restrição só na primitiva.
+- **Mutação:** cada uma das 33 abaixo faz pelo menos um teste falhar, e todas compilam: uma mutação que só quebra a compilação não prova nada, e as duas que caíram assim foram refeitas.
+  - **Registro e lápide:**
+    - registro que falha sem impedir o envio;
+    - registro que não confere as reservas;
+    - registro sem `FOR SHARE`;
+    - lápide sem a transição condicional;
+    - lápide que falha e devolve as reservas;
+    - registro perdido sem recriar o uso.
+  - **Prova de vida, chamada e persistência:**
+    - instrução entre a prova de vida e o início;
+    - sem a segunda conferência do orçamento;
+    - `aborted` por prazo escrito fora da transação da guarda;
+    - guarda que não desiste da chamada no prazo;
+    - sem `SAVEPOINT`.
+  - **Orçamento:** sem a reconferência, sem a persistência ou sem a prova de vida.
+  - **Recuperação:**
+    - recuperação que lança;
+    - transação de recuperação com o prazo padrão;
+    - passo 6 que ignora o `aborted` já gravado;
+    - passo 6 que perde o motivo `prazo`;
+    - `overran_deadline` com conclusão tardia falsa;
+    - `overran_deadline` marcado como `commit`;
+    - `pendente` só depois da escrita.
+  - **Detecção e reconciliação:**
+    - origem incerta antes da transição condicional;
+    - reconciliação sem a prova da trava;
+    - reconciliação sem isolar o candidato;
+    - cursor parado na paginação.
+  - **Varredura de reservas:**
+    - varredura que devolve reserva de uso `authorized`;
+    - varredura sem `FOR UPDATE`;
+    - varredura que espera a reserva presa, sem `SKIP LOCKED`.
+  - **SQL cru:** o hook que passa adiante o objeto recebido; valor emendado aceito.
+  - **"Só ids":** texto livre aceito nos metadados; `@` sem restrição; uso inválido que não devolve as reservas.
+
+  Antes, na primeira rodada da G1, já faziam falhar o teste correspondente: lápide trocada por `UPDATE`, persistência fora da transação da guarda, transição não condicional e ausência dos prazos de sessão.
+
+- **Defeitos que só os testes e as revisões acharam:**
+  - Com o `statement_timeout` igual ao `lock_timeout`, o Postgres dispara o 57014 antes do 55P03, e uma trava ocupada deixava de ser reconhecida como "não começou". O prazo de instrução passou a ser o dobro do de trava, e o 57014 na aquisição das travas também conta como trava.
+  - O filtro de SQL cru conferia as partes de texto, mas o Prisma executa o `text` do objeto recebido. Agora o SQL é reconstruído.
+  - Os passos 6 e 12 usavam os prazos padrão do Prisma e podiam lançar exceção depois do início. Agora têm prazos explícitos e nunca lançam.
+  - A reconciliação parava inteira num candidato preso ou com defeito. Agora tem prazos explícitos e isola cada candidato.
+  - O `aborted` por prazo era escrito depois de soltar as travas.
+  - Um `COMMIT` ambíguo depois do `aborted` por prazo virava `em_duvida`, e depois do `overran_deadline` virava uma conclusão tardia falsa.
+  - A varredura de reservas esperava, com o prazo padrão, uma reserva presa por outra transação.
+- **Risco aceito:** um registro atrasado com reservas pode entrar em deadlock com a lápide. O registro espera o índice da lápide, e a devolução da lápide espera o `FOR SHARE` do registro. O Postgres desfaz uma das duas, e os dois desfechos ficam consistentes:
+  - se cai o registro, a lápide segue, com o `aborted` e as reservas devolvidas;
+  - se cai a lápide, o uso fica sem desfecho escrito (`registro_incerto`), o registro comita `authorized` sem a chamada ter começado, e a reconciliação o marca `in_doubt` e cobra pelo teto. É o falso positivo conservador da lápide que falha.
+
 ## ADR-048 — Veyra Clinics para estética: domínio próprio, classificação de dados e escopo do MVP
 
 **Status:** aceito · **Data:** 2026-10-19 · Aprovação da F0 (documental): aprova o desenho e as decisões marcadas como aprovadas, não código nem migrations. **Seguem pendentes:** validação operacional das hipóteses H1–H7, avaliação jurídica (§9.2) e bloqueios B1–B4 — sem eles, nenhum dado real de paciente e nenhum piloto clínico

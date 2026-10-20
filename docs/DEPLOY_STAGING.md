@@ -200,6 +200,29 @@ sobreposição. É uma extensão confiável: basta o usuário da migration ter
 oficial, dono do banco, e funciona sem ajuste. Num Postgres gerenciado, confira
 esse privilégio antes do deploy.
 
+**Conexões da guarda de uso externo (ADR-047 adendo 7, G1).** Cada instância
+da API abre até **10 conexões a mais** com o Postgres: 5 do pool de guarda e 5
+do pool de registro, além das 10 do Prisma. Confira `max_connections` (o padrão
+do Postgres é 100) contra o número de instâncias e o que mais usa o mesmo
+servidor. As duas migrations da G1 (`20261020200000_content_use` e
+`20261020200100_content_use_overran_deadline`) são aditivas e rodam ANTES do
+código, como as demais. A reconciliação dos usos roda a cada minuto com os
+jobs ligados; sem consumidor ligado (G3), não há uso a reconciliar.
+
+Duas condições do banco valem para a guarda (ADR-047 adendo 7 §3.5):
+
+- **Durabilidade.** Um commit confirmado não pode se perder: failover só para
+  réplica **síncrona**. Com réplica assíncrona, um registro de uso comitado
+  pode sumir no failover, e o critério G′ deixa de valer. Hoje o staging tem
+  um Postgres só (o serviço `db` do compose), sem réplica e sem pooler, com a
+  API ligada direto nele. Qualquer réplica futura entra com essa condição.
+- **Conexão direta ou pooler em modo sessão.** Os pools da guarda e do
+  registro fixam parâmetros de sessão pela URL (`statement_timeout`,
+  `idle_in_transaction_session_timeout`, `synchronous_commit`, keepalive). Um
+  pooler em modo transação (PgBouncer `pool_mode = transaction`) os descarta
+  sem aviso. Só o pool principal confere a sessão no boot (UTC); para os da
+  guarda, a condição é deste runbook.
+
 ## 5. Rollback
 
 No painel, o Coolify guarda os deploys anteriores: **Redeploy** do commit
