@@ -1094,6 +1094,58 @@ Para cada uso (IA, mensagem da IA e webhook) e para cada mudança (paciente, rev
 4. **Religação de conversa: aprovada a regra.** O vínculo continua imutável, fixado por teste. Se a religação surgir, ela entra no protocolo e protege o contato antigo, o novo e a conversa.
 5. **Troca de contato de deal ou tarefa: aprovada como mudança de titularidade do conteúdo.** Protege os contatos antigo e novo e a entidade, na ordem de travas do item 3.2.
 
+### Adendo 7 (2026-10-20, PROPOSTO — em revisão; não autoriza código) — o residual da guarda: o que se pode garantir e o que precisa ser decidido
+
+**Situação:** responde à decisão da revisão sobre o adendo 6, que não aceitou o residual da sessão de guarda como prova de G. Não autoriza código nem levanta o B2.
+
+#### 1. G estrita não é alcançável só do nosso lado
+
+G pede: se M comita em t, nenhuma operação externa com conteúdo do contato **começa** depois de t.
+
+**"Começar" é uma ação local do processo** (escrever a requisição no socket) e acontece **depois** da última interação dele com o banco. Daí:
+
+- **Toda coordenação feita no banco** (trava, lease, permissão durável, confirmação) termina num instante t₀ em que o processo ainda não começou. Entre t₀ e o início existe sempre um intervalo, ainda que sem I/O.
+- **Se o processo for suspenso nesse intervalo**, o banco não tem como distinguir "suspenso e ainda vai começar" de "morto". Uma suspensão longa pode vir de pausa da VM, de coleta de lixo ou de congelamento do contêiner. Este projeto já mediu uma: a VM do Docker atrasou 19 s (ADR-049).
+  - Se M esperar, pode esperar para sempre.
+  - Se M não esperar, o processo pode acordar e começar depois de t.
+- **Prazo e relógio local não resolvem.** O teste "comece em até W depois da confirmação" é ele próprio uma verificação seguida de ação. E numa pausa de VM, o relógio monotônico do processo também para.
+- **Só uma cerca no receptor fecharia o intervalo.** Seria o destino recusar uma requisição com token vencido. O provedor de IA e a Meta não oferecem isso, e os webhooks vão para endpoints dos clientes. Um proxy de saída nosso é outro processo, com o mesmo intervalo.
+
+Logo, **G estrita depende de algo fora do nosso controle**. Nenhum mecanismo interno a satisfaz, nem a trava do adendo 6, nem permissões duráveis, nem prazos. Insistir em G estrita equivale a manter o B2 fechado indefinidamente.
+
+#### 2. O que se pode garantir: G′
+
+> **G′.** Se M comita em t:
+>
+> - (a) nenhuma operação externa com conteúdo do contato é **autorizada** depois de t;
+> - (b) toda operação autorizada antes de t termina antes de M comitar, é abortada antes de começar, ou é **detectada** quando o processo foi suspenso entre a última confirmação e o envio. Detectada significa: resultado descartado, run ou despacho marcado `guard_lost` e incidente auditado;
+> - (c) nenhum resultado dessas operações é lido, aprovado ou enviado depois de t.
+
+O mecanismo é o do adendo 6:
+
+- trava mantida por sessão viva;
+- reconferência e prova de vida;
+- prazos absolutos, sem retentativa do SDK;
+- resultado persistido sob a trava;
+- `COMMIT` da guarda como detector.
+
+A única diferença em relação a G é o caso da suspensão do processo exatamente no intervalo sem I/O. Esse caso não é impedido, mas é **sempre detectado**.
+
+#### 3. Opções para a revisão
+
+1. **Adotar G′ como critério do B2** (recomendado), com o mecanismo do adendo 6 e a detecção obrigatória: teste de sessão morta, incidente e descarte. É o máximo verificável com os provedores atuais.
+2. **Reduzir o alcance do risco, junto com G′:** proibir a liberação de IA em workspace com o Clinics.
+   - Sem liberação, nenhum contato de workspace com o Clinics é processado pela IA. A janela por contato, que é o caso que motivou o B2, deixa de existir para a IA.
+   - Resta a ativação do vertical, que é um ato único da operação e pode exigir IA e webhooks desligados antes, por procedimento.
+   - **Custo:** a clínica perde a IA para fornecedores e parceiros, justamente o caso de uso da liberação.
+3. **Manter G estrita e o B2 fechado até haver cerca no receptor.** Na prática, sem prazo.
+
+#### 4. Recomendação
+
+Opção 1, com a opção 2 avaliada com alguém da clínica (D6). Se a liberação para fornecedores tiver pouco valor real, a opção 2 elimina a janela para a IA a um custo pequeno.
+
+Em qualquer caso, o B2 só volta para decisão com o adendo 6 implementado, a bateria completa verde e os passes de `security` e `reviewer`.
+
 ## ADR-048 — Veyra Clinics para estética: domínio próprio, classificação de dados e escopo do MVP
 
 **Status:** aceito · **Data:** 2026-10-19 · Aprovação da F0 (documental): aprova o desenho e as decisões marcadas como aprovadas, não código nem migrations. **Seguem pendentes:** validação operacional das hipóteses H1–H7, avaliação jurídica (§9.2) e bloqueios B1–B4 — sem eles, nenhum dado real de paciente e nenhum piloto clínico
