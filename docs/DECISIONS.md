@@ -1171,3 +1171,134 @@ O plano da F1.c foi aprovado com as decisões abaixo. A entrega 1 traz contratos
     - **`PUT .../profile` exige os três campos.** Ele substitui conjuntos, e um default faria um corpo só com o nome apagar serviços e semana sem erro. Os defaults ficam só na criação (`POST`). Salvar o mesmo perfil, em qualquer ordem, não altera dados nem audita (a trava toca só o `updatedAt`). Cada parte é substituída **só se mudou**: trocar o nome não revalida um conjunto de serviços intacto, que pode conter um serviço arquivado depois. A trilha registra só o que mudou, com os serviços ordenados nos dois lados.
     - **O editor só monta com serviços e unidades carregados** (achado P1 da revisão). Montado antes, os serviços marcados nasceriam de uma lista vazia, e "Salvar perfil" apagaria todos com a mensagem de sucesso. Os marcados partem do que o profissional tem; o filtro de arquivados acontece no envio, e a tela avisa quantos deixam de estar habilitados (item 19).
     - **Nome e e-mail de membros só aparecem com `members:read`**, mesmo que outra tela tenha deixado a lista no cache: a permissão decide se o dado é usado, não só se a consulta sai.
+
+### Adendo 2 (2026-10-19, PROPOSTO, em revisão) — plano da F2: paciente, agenda e atendimento
+
+**Situação: proposto.** Nada aqui vale como decisão aceita, nem autoriza código, antes da aprovação. O Clinics segue desativado em staging. Enquanto B1–B4 estiverem abertos, todos os testes usam **somente dados fictícios** (§10).
+
+**Escopo.** A revisão pediu que a F2 cubra perfil de paciente, agenda, **atendimento** e a perda da liberação de IA quando o contato vira paciente. Por isso, o **registro de atendimento** sobe da F3 para a F2. Ficam na F3 os pacotes, o consumo de sessão, o retorno como `Task` e a apuração da taxa de faltas (H2, H3, H6, D1).
+
+**Entregas propostas.** Cada entrega tem ADR antes do código, reviewer e security, bateria completa e parada para revisão.
+
+- **F2.1:** paciente, a regra da liberação e a tela mínima de liberação para IA.
+- **F2.2:** agenda e registro de atendimento, na API.
+- **F2.3:** telas de agenda e de atendimento, mais o e2e.
+
+#### Decisões propostas
+
+1. **Perfil de paciente (`ClinicsPatient`, classe S).**
+   - É 1:1 sobre `Contact`, com `@@unique([workspaceId, contactId])` e FK composta `NO ACTION`.
+   - Só guarda o vínculo, quem criou e quando. Nada clínico e nenhum campo de texto (H7).
+   - Nome e telefone continuam no contato.
+   - Criar o perfil exige `clinics:schedule:write` + `contacts:read`.
+   - Virar paciente é um **ato explícito**, com consequências mostradas na tela: restrição definitiva para IA e exclusão do contato recusada. **Recomendação:** o agendamento recebe um `patientId` já existente, e nunca cria paciente de passagem.
+2. **A liberação de IA perde efeito ao virar paciente (§6.3, item 6).**
+   - **Regra derivada na porta do E6:** a existência de `ClinicsPatient` para o contato torna-o restrito para IA, **com ou sem** liberação. É a garantia principal. Ela vale a partir do commit, e a leitura, a aprovação e o despacho já reconferem a porta.
+   - **Na mesma transação que cria o paciente,** a linha da liberação é apagada e auditada (`clinics.ai_release.revoked_by_patient`, com o id do contato).
+   - **Conceder liberação a um paciente** é recusado com 409.
+   - **Desvio proposto em relação ao texto do §6.3, item 6:** a expiração de propostas e resultados acontece **depois do commit** (`expireContentFor`), como já é na ativação e na revogação, e não dentro da mesma transação. A proteção vem da regra derivada; a expiração é limpeza complementar. Pôr a escrita da IA dentro da transação do vertical acoplaria os dois módulos sem ganho de segurança. **Requer aprovação explícita.**
+3. **Exclusão de contato com perfil de paciente: 409 (§9.1).**
+   - A FK `NO ACTION` faz o `DELETE` do Core falhar no fim da transação de exclusão. O filtro global converte em 409, e **nada** da exclusão fica (notas, deals desvinculados, auditoria, outbox, cota), com teste.
+   - A mensagem é a genérica do Core ("Registro em uso por outros dados"). Uma mensagem específica exigiria uma porta nova no Core, com ADR, e não compensa enquanto só há dados fictícios.
+   - Nenhuma exclusão ou anonimização de dado S é implementada (B3).
+4. **Agenda (`ClinicsAppointment`, classe S).**
+   - **Campos:** paciente, profissional, serviço, unidade, `startsAt` e `endsAt` (`timestamptz`, UTC), status e motivo de cancelamento de **lista fechada**, quem criou, datas. Sem texto livre.
+   - **Status (§4):** `scheduled`, `confirmed`, `arrived`, `canceled`, `no_show` e `attended`.
+   - **Sobreposição barrada pelo banco:** `EXCLUDE USING gist` por workspace e profissional sobre `tstzrange(startsAt, endsAt)`, valendo só para os estados ativos (`scheduled`, `confirmed`, `arrived`, `attended`). É o mesmo mecanismo provado na F1.c. A violação responde 409 pelo filtro global.
+   - **Duração:** `endsAt = startsAt + durationMin` do serviço no momento do agendamento (H4).
+   - **Regras validadas no serviço:**
+     - profissional **habilitado** para o serviço;
+     - profissional, serviço e unidade ativos;
+     - horário **dentro do expediente** do profissional, na hora local da unidade. A conversão usa o fuso da unidade, sem dependência nova.
+   - **Remarcar** reaplica as mesmas regras.
+   - **Transições:**
+     - `scheduled → confirmed → arrived`;
+     - `canceled` e `no_show` a partir de `scheduled` ou `confirmed`;
+     - `attended` **só** pelo registro de atendimento.
+   - **Permissões:** marcar, remarcar, confirmar, cancelar, chegada e falta exigem `clinics:schedule:write` (recepção). Ler exige `clinics:schedule:read`.
+   - **Paciente na agenda:** aparece só pelo nome. O papel `Profissional` vê o paciente pela agenda, não pelo CRM (§5.2).
+5. **Registro de atendimento (`ClinicsAttendance`, classe S).**
+   - É 1:1 com o agendamento (`appointmentId` único), com quem executou (profissional), quando foi concluído e quem registrou.
+   - Exige `clinics:care:write` + `clinics:schedule:read`.
+   - Na **mesma transação**, o agendamento vai a `attended`. Repetir ou registrar ao mesmo tempo resulta em exatamente um registro (unique mais trava).
+   - O vínculo com pacote fica para a F3, com coluna anulável acrescentada lá.
+   - **Na agenda:** a resposta **omite no servidor** o vínculo com atendimento para quem não tem `clinics:care:read` (autorização de campo, SECURITY §4).
+6. **Tela mínima de liberação para IA** (pendência da F1).
+   - Lista, concede com motivo de lista fechada e revoga. Exige `clinics:restriction:manage`.
+   - Paciente aparece como "não liberável".
+7. **Auditoria e fronteira.**
+   - **Auditoria:** allowlists só com ids, status, horários e motivo de cancelamento (§6.2, item 3).
+   - **Nada S sai do vertical:** nenhum conteúdo S em entidade do Core (`Task`, `Activity`, deal, nota, notificação), com teste estático e de integração. O vertical não publica eventos de outbox.
+   - **Agenda do Core:** a página "Agenda" do Core não mostra os agendamentos da clínica, como já aceito no §2.
+8. **Custo da checagem de presença (dívida com gatilho "antes da F2").**
+   - A F2 leva a lista para dez modelos.
+   - **Recomendação:**
+     - rodar as consultas de presença **em paralelo** (`Promise.all`), mantendo o client protegido;
+     - medir o p95 da porta antes e depois;
+     - manter a dívida aberta.
+   - Uma consulta única por SQL exigiria `raw` na porta, contra a regra atual, e precisaria de ADR.
+9. **Telas (F2.3).** O ADR-048 adendo 1, item 9, adiou a escolha de biblioteca de agenda para a F2.
+   - **Recomendação:** uma grade simples de **dia por profissional**, com os primitivos existentes. A visão de recursos do FullCalendar é paga; o `react-big-calendar` (MIT) traz localizador de datas e adaptação de estilo. Uma grade simples basta enquanto H1 não estiver validada. Reavaliamos com o piloto.
+   - **Escopo:**
+     - agenda do dia;
+     - drawer para agendar (paciente, serviço, profissional habilitado, horário livre);
+     - ações de status;
+     - registro de atendimento para o papel `Profissional`;
+     - lista de pacientes;
+     - tela de liberação.
+   - **Horários:** sempre na hora local da **unidade**, não do navegador.
+   - **Filtro "minha agenda":** opcional, pelo profissional vinculado à conta. É só conveniência; não é restrição de acesso (D8).
+
+#### Testes, todos com dados fictícios
+
+- **Isolamento:** P0 em cada modelo novo, e FK composta recusando paciente, profissional, serviço ou unidade de outro workspace.
+- **Concorrência:**
+  - N agendamentos simultâneos no mesmo horário e profissional resultam em **exatamente um**; os outros recebem 409, nunca 500;
+  - profissionais diferentes no mesmo horário convivem;
+  - cancelar libera o horário;
+  - remarcar para um horário ocupado dá 409.
+- **Regras do agendamento:** profissional não habilitado, item arquivado e fora do expediente (na hora da unidade) dão 400. A duração vem do serviço. Transições inválidas são recusadas, e `attended` só sai pelo atendimento.
+- **Atendimento:**
+  - registro idempotente;
+  - registro concorrente resulta em um só;
+  - agendamento e atendimento na mesma transação, com rollback testado.
+- **RBAC:**
+  - recepção marca e lê a agenda, mas não lê atendimento, nem pela API (403), e a agenda omite o vínculo;
+  - `Profissional` lê a agenda e registra atendimento, mas não marca (403) nem lê o CRM;
+  - Guest não acessa nada;
+  - 403 sem a chave, 404 só no caso residual.
+- **Regra da liberação:**
+  - contato liberado para IA vira paciente: no commit, a porta o restringe para IA, a linha da liberação some com trilha, e cada ponto de checagem da IA recusa (§6.3, itens 1 a 5);
+  - propostas pendentes ficam ocultas na hora e expiradas depois do commit;
+  - conceder liberação a um paciente dá 409;
+  - a bateria do §6.6 roda de novo com dados do vertical.
+- **Exclusão de contato com paciente:** 409, sem efeito colateral nenhum.
+- **Fronteira:** nenhum conteúdo S em entidade do Core nem na auditoria; webhooks continuam sem eventos de contato.
+- **E2E:**
+  - a recepção agenda e vê o conflito recusado;
+  - o `Profissional` registra o atendimento;
+  - a recepção não vê o atendimento;
+  - workspace sem o Clinics, nada aparece.
+
+#### Decisões que dependem de validação (H1–H7) ou de bloqueio (B1–B4)
+
+| Ponto do plano                                                                         | Depende de    | Enquanto não houver validação                                                                      |
+| -------------------------------------------------------------------------------------- | ------------- | -------------------------------------------------------------------------------------------------- |
+| Estados e transições da agenda; se o atendimento exige chegada antes                   | **H1**        | Os estados do §4; atendimento aceito a partir de `scheduled`, `confirmed` ou `arrived`             |
+| Duração fixa pelo serviço; profissional habilitado obrigatório; expediente obrigatório | **H4**        | Como proposto; se H4 cair, a agenda passa a slot livre ou duração variável                         |
+| Sala na agenda                                                                         | **H5 / D2**   | Sem sala; o EXCLUDE é só por profissional                                                          |
+| Pacote, consumo de sessão, pago/em aberto                                              | **H2 / D1**   | Fora da F2 (F3)                                                                                    |
+| Retorno calculado                                                                      | **H3**        | Fora da F2 (F3)                                                                                    |
+| Faltas, conversão e recuperados como métricas                                          | **H6**        | A F2 registra `no_show`; a apuração fica na F3                                                     |
+| Nenhum texto clínico, prontuário nem foto                                              | **H7** (e §7) | Nenhum campo livre em paciente, agenda ou atendimento                                              |
+| `Profissional` vê todos os agendamentos e atendimentos                                 | **D8**        | Vê todos (§5.3); "minha agenda" é só filtro                                                        |
+| Uma pessoa que é recepção **e** profissional                                           | **D7 / B4**   | Um papel por membro; o vínculo profissional–conta não muda papel                                   |
+| Texto clínico escrito pela equipe em notas, tarefas e conversas do Core                | **B1**        | Continua bloqueando dados reais; a F2 não o resolve                                                |
+| Regra "restrito por padrão" provada                                                    | **B2**        | **Proposta:** com a bateria do §6.6 verde também com pacientes, B2 pode ser levantado ao fim da F2 |
+| Exclusão e retenção de dado S                                                          | **B3 / D5**   | Só a recusa com 409; nenhuma exclusão nem anonimização                                             |
+| Montar a equipe pela interface                                                         | **B4**        | Convites e troca de papel só pela API do Core                                                      |
+
+**O que esta proposta não muda:**
+
+- **Sem dados reais nem piloto clínico** enquanto B1–B4 estiverem abertos. A validação de H1–H7 com alguém de uma clínica continua pendente (D6); a revisão do PO não a substitui.
+- **O Clinics continua desativado em staging.**

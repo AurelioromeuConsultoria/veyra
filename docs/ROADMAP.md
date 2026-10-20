@@ -88,10 +88,10 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
   - D1 (pago/em aberto), D2 (salas), D7 (um papel por membro) e D8 (profissional vê todos os atendimentos);
   - os bloqueios B1–B4. Sem eles, **nenhum dado real de paciente e nenhum piloto clínico**.
 
-- **F1 — Fundação do vertical 🚧** Dividida em três entregas, cada uma com revisão própria:
+- **F1 — Fundação do vertical ✅ (concluída em 2026-10-19, CI verde)** Dividida em três entregas, cada uma com revisão própria. Só o item que depende de paciente (a liberação de IA que perde efeito) passa para a F2.
   - **F1.a — pontos de extensão no Core ✅ (publicada):** E1, E2 (checagem de boot e teste de concessão), E4 e E6, com o schema em `prisma/schema/`, a barreira de lint e o teste de fronteira, sem vertical composto. Decisões de implementação no adendo 1 do ADR-047; a pendência sobre o lado oposto da relação no schema do Core foi decidida no adendo 2, item 1.
   - **F1.b — esqueleto do vertical ✅ (publicada, CI verde):** fotografia dos contatos no outbox; schema do vertical; CLI de ativação e desativação; papel `Profissional`; porta real do E6; API de status e de liberação para IA; estados terminais do outbox definitivos no banco. Decisões nos adendos 2 e 3 do ADR-047. O vertical está composto e **desativado em todo workspace, inclusive em staging**.
-  - **F1.c — catálogo da clínica 🚧** (plano aprovado; decisões no adendo 1 do ADR-048 e no adendo 4 do ADR-047). **Entrega 1, contratos, schema e API: publicada, CI verde.** **Entrega 2, navegação (E5) e tela do catálogo: implementada, em revisão.** A entrada "Clínica" só aparece com o status confirmado como ativo e a permissão; o perfil do profissional (nome, serviços e horários) é salvo numa transação só, e o vínculo de conta, à parte, avisa que não muda papel nem permissões.
+  - **F1.c — catálogo da clínica ✅ (publicada, CI verde):** serviços, profissionais com vínculo opcional a uma conta, serviços habilitados, horários semanais sem sobreposição garantida pelo banco (`EXCLUDE`) e edição da unidade; navegação (E5) e tela do catálogo. A entrada "Clínica" só aparece com o status confirmado como ativo e a permissão; o perfil do profissional é salvo numa transação só, e o vínculo de conta, à parte, avisa que não muda papel nem permissões. Decisões no adendo 1 do ADR-048 e no adendo 4 do ADR-047.
 
   Escopo e critérios da F1 como um todo: Os seis pontos de extensão do Core (ADR-047), incluindo a **restrição de conteúdo por contato (E6)** com a regra "restrito por padrão"; a barreira de dependência; a CLI de ativação e desativação com o ciclo de vida do ADR-047 §4, criando o papel `Profissional`; as sete permissões; a liberação de contato pela API; unidade, serviço, profissional e horários. Sala só se D2 for decidida a favor.
   **Pronto quando:**
@@ -115,18 +115,22 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
   - teste P0 de isolamento em cada modelo, e FK composta recusa profissional ou membership de outro workspace;
   - `reviewer` + `security` aprovaram as mudanças no Core.
 
-- **F2 — Paciente e agenda 🔜** `ClinicsPatient` sobre `Contact` e `ClinicsAppointment` com sobreposição impedida pelo banco.
-  **Pronto quando:**
-  - agendar exige profissional habilitado para o serviço;
-  - **dois agendamentos concorrentes no mesmo horário resultam em exatamente um**;
+- **F2 — Paciente, agenda e atendimento 📝 (plano PROPOSTO, em revisão: adendo 2 do ADR-048)** `ClinicsPatient` sobre `Contact`; `ClinicsAppointment` com sobreposição impedida pelo banco; `ClinicsAttendance` (registro de atendimento, que **sobe da F3** a pedido da revisão); a liberação de IA perde efeito quando o contato vira paciente; tela mínima de liberação para IA. Entregas propostas: F2.1 (paciente, regra da liberação e tela de liberação), F2.2 (agenda e atendimento na API), F2.3 (telas e e2e). **Testes só com dados fictícios.**
+  **Pronto quando (proposto):**
+  - agendar exige profissional habilitado para o serviço, item ativo e horário dentro do expediente, na hora local da unidade;
+  - **N agendamentos concorrentes no mesmo horário e profissional resultam em exatamente um**, com 409 para os demais, nunca 500;
   - paciente de outro workspace é recusado pelo banco, e o workspace A não lista a agenda do B;
-  - excluir um contato com perfil de paciente é **recusado com 409** (provisório aprovado, ADR-048 §9.1). Exclusão e anonimização definitivas só depois da decisão jurídica;
-  - contato liberado para IA que ganha perfil de paciente volta a ser restrito na mesma transação; tela mínima de liberação para IA no Clinics.
-- **F3 — Atendimento e continuidade 🔜** `ClinicsAttendance` separado da agenda; chegada, conclusão e falta; pacote com consumo de sessão; retorno como `Task` do Core com título neutro.
+  - o registro de atendimento é único por agendamento, mesmo concorrente, e leva o agendamento a `attended` na mesma transação;
+  - a recepção não vê atendimento, nem pela API; o papel `Profissional` registra atendimento mas não agenda, e não lê o CRM do Core;
+  - excluir um contato com perfil de paciente é **recusado com 409**, sem efeito colateral (provisório aprovado, ADR-048 §9.1). Exclusão e anonimização definitivas só depois da decisão jurídica;
+  - contato liberado para IA que ganha perfil de paciente fica restrito para IA a partir do commit, em todos os pontos de checagem; a liberação some com trilha; conceder liberação a paciente é recusado;
+  - nenhum conteúdo S em entidade do Core nem na auditoria;
+  - a bateria do §6.6 roda de novo com dados do vertical. **Proposta:** com ela verde, B2 pode ser levantado ao fim da F2. B1, B3 e B4 continuam.
+- **F3 — Continuidade 🔜** Pacote com consumo de sessão no atendimento; retorno como `Task` do Core com título neutro; taxa de faltas apurável. Depende de H2, H3, H6 e D1.
   **Pronto quando:**
-  - quem tem só permissão de agenda (Member/recepção) não vê atendimento, pacote nem saldo, nem pela API; o papel `Profissional` registra atendimento mas não agenda, e não lê o CRM do Core;
   - conclusão repetida ou concorrente não consome duas sessões, e consumo além do total é recusado;
   - sessões restantes e retornos pendentes estão corretos;
+  - quem tem só permissão de agenda não vê pacote nem saldo, nem pela API;
   - nenhum conteúdo S aparece em entidade do Core nem na auditoria;
   - a taxa de faltas é apurável.
 - **F4 — Fluxo comercial 🔜** Confirmação e reativação pelo WhatsApp com aprovação humana, e conversão a partir do pipeline.
