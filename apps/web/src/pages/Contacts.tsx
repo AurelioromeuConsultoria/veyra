@@ -41,6 +41,13 @@ type ContactFormValues = z.infer<typeof contactFormSchema>;
 
 const columnHelper = createColumnHelper<ContactDto>();
 const dateFormat = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'short' });
+/**
+ * Referência ESTÁVEL enquanto a lista não chegou: o TanStack Table exige que
+ * `data` seja estável. Um `[]` novo a cada render faz a tabela ver "dados
+ * novos" e voltar à página 0, que muda o estado e re-renderiza com outro `[]` —
+ * para sempre. A aba congelava ao digitar na busca antes da primeira resposta.
+ */
+const SEM_CONTATOS: ContactDto[] = [];
 
 type SortBy = 'name' | 'createdAt' | 'updatedAt';
 
@@ -183,7 +190,7 @@ export function ContactsPage() {
   );
 
   const table = useReactTable({
-    data: contacts.data?.items ?? [],
+    data: contacts.data?.items ?? SEM_CONTATOS,
     columns,
     getCoreRowModel: getCoreRowModel(),
   });
