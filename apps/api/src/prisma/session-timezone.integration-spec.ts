@@ -2,6 +2,7 @@ import { Client } from 'pg';
 import { PrismaClient } from '../generated/prisma/client';
 import { TEST_DATABASE_URL, assertIsTestDb } from '../../test/integration/db-url';
 import { prismaAdapter } from './prisma-adapter';
+import { PrismaService } from './prisma.service';
 
 /**
  * A sessão da aplicação fica em UTC qualquer que seja o padrão do servidor
@@ -46,6 +47,39 @@ describe('fuso da sessão do banco (ADR-049)', () => {
       await controle.end().catch(() => undefined);
       await app.$disconnect().catch(() => undefined);
       await admin.end().catch(() => undefined);
+    }
+  });
+
+  it('um `options` que a URL já traga é preservado e não desfaz a fixação (no `pg`, a URL vence o config)', async () => {
+    const url = new URL(TEST_DATABASE_URL);
+    url.searchParams.set('options', '-c TimeZone=America/Sao_Paulo -c statement_timeout=12345');
+    const app = new PrismaClient({
+      adapter: prismaAdapter(url.toString()),
+    });
+    try {
+      const [{ TimeZone }] = await app.$queryRawUnsafe<{ TimeZone: string }[]>('SHOW TimeZone');
+      const [{ statement_timeout }] =
+        await app.$queryRawUnsafe<{ statement_timeout: string }[]>('SHOW statement_timeout');
+      expect({ TimeZone, statement_timeout }).toEqual({
+        TimeZone: 'UTC',
+        statement_timeout: '12345ms',
+      });
+    } finally {
+      await app.$disconnect();
+    }
+  });
+
+  it('o boot NÃO depende do banco: com o banco inexistente, a aplicação sobe (o e2e cria o banco depois)', async () => {
+    const original = process.env.DATABASE_URL;
+    const inexistente = new URL(TEST_DATABASE_URL);
+    inexistente.pathname = '/veyra_test_que_nao_existe';
+    process.env.DATABASE_URL = inexistente.toString();
+    const servico = new PrismaService({ get: () => undefined } as never);
+    process.env.DATABASE_URL = original;
+    try {
+      await expect(servico.onModuleInit()).resolves.toBeUndefined();
+    } finally {
+      await servico.onModuleDestroy();
     }
   });
 });

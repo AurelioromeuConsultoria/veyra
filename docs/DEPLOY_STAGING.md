@@ -171,7 +171,8 @@ nada enviado nem cobrado). Rode-a ANTES de apontar o recurso para o commit novo,
 num container avulso da imagem nova (`run --rm --no-deps api npx prisma migrate
 deploy`, como no §9). O código antigo funciona com ela aplicada. Antes do primeiro
 deploy dela num ambiente novo, confira `SHOW timezone` no banco: o esperado é
-`UTC` (a aplicação recusa subir com a sessão fora de UTC).
+`UTC`. A aplicação fixa a sessão em UTC pela própria URL e, com o banco
+alcançável no boot, recusa subir se a sessão não estiver em UTC.
 
 **Migration que estoura `lock_timeout`.** Migrations em tabela muito escrita
 (`20261019200000_outbox_subject_contacts`,

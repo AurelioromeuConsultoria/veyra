@@ -1,4 +1,11 @@
-import { Inject, Injectable, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+  Optional,
+} from '@nestjs/common';
 import { prismaAdapter } from './prisma-adapter';
 import { ClsService } from 'nestjs-cls';
 import { PrismaClient } from '../generated/prisma/client';
@@ -255,6 +262,7 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
    * cross-workspace, rotinas administrativas.
    */
   readonly raw: PrismaClient;
+  private readonly logger = new Logger(PrismaService.name);
 
   constructor(
     private readonly cls: ClsService,
@@ -274,13 +282,34 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleInit() {
     await this.raw.$connect();
-    // falha FECHADA (ADR-049): um `?options=` na DATABASE_URL ou um PgBouncer
-    // descartam a fixação sem aviso, e o agendamento erraria pelo fuso
-    const [{ TimeZone }] = await this.raw.$queryRawUnsafe<{ TimeZone: string }[]>('SHOW TimeZone');
+    // Confere a fixação de UTC (ADR-049): um pooler que descarte parâmetros de
+    // sessão a perderia sem aviso. A conexão do Prisma é preguiçosa e o boot
+    // NUNCA dependeu do banco (o e2e sobe a API antes de criar o banco; em
+    // staging o banco sobe antes). Então: banco fora do ar ou inexistente NÃO
+    // derruba a subida — só se registra; banco alcançável fora de UTC, sim.
+    let TimeZone: string;
+    try {
+      [{ TimeZone }] = await this.raw.$queryRawUnsafe<{ TimeZone: string }[]>('SHOW TimeZone');
+    } catch (error) {
+      // o código (do Prisma ou o SQLSTATE) não é segredo e diz o que houve
+      const erro = error as {
+        code?: string;
+        meta?: { driverAdapterError?: { cause?: { originalCode?: string } } };
+      };
+      const codigo =
+        erro.meta?.driverAdapterError?.cause?.originalCode ?? erro.code ?? 'sem código';
+      this.logger.warn(
+        `Fuso da sessão não conferido no boot: o banco não respondeu (${
+          error instanceof Error ? error.name : 'erro desconhecido'
+        }, ${codigo}). A fixação vai na URL de cada conexão nova.`,
+      );
+      return;
+    }
     if (TimeZone !== 'UTC') {
       throw new Error(
-        `Sessão do banco em "${TimeZone}", não em UTC (ADR-049): confira se a DATABASE_URL ` +
-          'traz `options` ou passa por um pooler que descarta parâmetros de sessão.',
+        `Sessão do banco em "${TimeZone}", não em UTC (ADR-049): a fixação vai na URL, então ` +
+          'algo no caminho a descartou — confira se há um pooler que não repassa parâmetros de ' +
+          'sessão (ex.: PgBouncer em modo transação).',
       );
     }
   }
