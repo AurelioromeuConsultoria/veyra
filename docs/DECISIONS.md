@@ -865,7 +865,9 @@ Condição aprovada na revisão do plano da F2 (ADR-048, adendo 2, item 2). **Se
    - **(c) Despacho de mensagem da IA:** reconfere só o contato **atual** da conversa. Se a conversa for religada a outro contato liberado entre a aprovação e o despacho, a mensagem sai. É anterior a este adendo e exige religação.
    - Os três estão registrados como dívida. O plano para fechá-los, com a fronteira da garantia, está no adendo 6 (proposto).
 
-### Adendo 6 (2026-10-19, PROPOSTO — em revisão; não autoriza código) — fronteira da garantia: nenhum uso externo começa depois de uma mudança de restrição
+### Adendo 6 (2026-10-19, APROVADO PARA IMPLEMENTAÇÃO em 2026-10-20, junto com o adendo 7, sob o critério G′) — fronteira da garantia: nenhum uso externo começa depois de uma mudança de restrição
+
+**Situação em 2026-10-20:** o critério deixou de ser G e passou a ser **G′**, com o texto do adendo 7 aprovado. A implementação deste adendo, com os acréscimos do adendo 7, está autorizada. O B2 continua fechado (adendo 7, "Aprovação").
 
 **Situação:** proposta para revisão. A revisão de 2026-10-19 **não levantou o B2**, por causa dos limites do item 7 do adendo 5. Pediu que esses casos sejam fechados com garantia e testes antes de o B2 voltar para decisão. O B2 só volta para decisão depois de três coisas: este adendo aprovado e implementado, a bateria completa verde e os passes de `security` e `reviewer`. Até lá, o Clinics fica desativado em staging e sem dados reais.
 
@@ -1096,9 +1098,19 @@ Para cada uso (IA, mensagem da IA e webhook) e para cada mudança (paciente, rev
 4. **Religação de conversa: aprovada a regra.** O vínculo continua imutável, fixado por teste. Se a religação surgir, ela entra no protocolo e protege o contato antigo, o novo e a conversa.
 5. **Troca de contato de deal ou tarefa: aprovada como mudança de titularidade do conteúdo.** Protege os contatos antigo e novo e a entidade, na ordem de travas do item 3.2.
 
-### Adendo 7 (2026-10-20, PROPOSTO — direção aceita, texto revisado; não autoriza código) — o residual da guarda: o que se pode garantir e o que precisa ser decidido
+### Adendo 7 (2026-10-20, APROVADO — texto aprovado e implementação autorizada sob G′; o B2 continua fechado) — o residual da guarda: o que se pode garantir e o que precisa ser decidido
 
-**Situação:** responde à decisão da revisão sobre o adendo 6, que não aceitou o residual da sessão de guarda como prova de G. Não autoriza código nem levanta o B2.
+**Situação:** responde à decisão da revisão sobre o adendo 6, que não aceitou o residual da sessão de guarda como prova de G.
+
+**Aprovação (revisão de 2026-10-20, depois da quarta rodada do `reviewer`).** O texto foi aprovado, e a implementação dos adendos 6 e 7 está autorizada **sob G′**.
+
+- **O que a aprovação aceita, explicitamente:** na perda da guarda, uma chamada autorizada antes da restrição pode começar depois dela. O registro durável, a reconciliação e o descarte posterior permitem **tratar** esse caso; não desfazem o envio externo.
+- **Critérios obrigatórios da implementação:**
+  - o registro é confirmado (comitado) antes da chamada, e uma falha de registro impede o envio;
+  - a reconciliação se apoia em **prova de encerramento da guarda**, nunca só em prazo vencido;
+  - resultados, auditoria e reservas ficam consistentes, inclusive com reinício, conclusão tardia e dois detectores concorrentes;
+  - testes determinísticos dessas falhas e revisão final de segurança.
+- **O B2 não está resolvido.** Ele só volta para decisão depois da implementação validada: critérios acima, bateria completa verde e passes de `reviewer` e `security`. Até lá, o Clinics continua desativado em staging, sem dados reais.
 
 **Decisão da revisão (2026-10-20).** A revisão aceitou a **mudança de direção para uma autorização coordenada com a restrição** (G′), mas pediu três ajustes no texto antes da implementação:
 
