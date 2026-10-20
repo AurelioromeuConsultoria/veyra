@@ -8,7 +8,10 @@ const PNG_BYTES = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4];
 test.describe('Anexos (UI)', () => {
   test('anexa arquivo à mensagem e o link de download aparece na thread', async ({ page }) => {
     await login(page, OWNER_A);
-    await page.getByRole('link', { name: 'Inbox' }).click();
+    await page
+      .getByRole('navigation', { name: 'Principal' })
+      .getByRole('link', { name: 'Inbox' })
+      .click();
 
     const assunto = `Com anexo ${Date.now()}`;
     await page.getByLabel('Assunto da nova conversa').fill(assunto);
@@ -32,7 +35,10 @@ test.describe('Anexos (UI)', () => {
 
   test('extensão que diverge do conteúdo é recusada com mensagem clara', async ({ page }) => {
     await login(page, OWNER_A);
-    await page.getByRole('link', { name: 'Inbox' }).click();
+    await page
+      .getByRole('navigation', { name: 'Principal' })
+      .getByRole('link', { name: 'Inbox' })
+      .click();
 
     const assunto = `Anexo invalido ${Date.now()}`;
     await page.getByLabel('Assunto da nova conversa').fill(assunto);

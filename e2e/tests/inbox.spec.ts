@@ -7,7 +7,10 @@ test.describe('Inbox (UI)', () => {
     page,
   }) => {
     await login(page, OWNER_A);
-    await page.getByRole('link', { name: 'Inbox' }).click();
+    await page
+      .getByRole('navigation', { name: 'Principal' })
+      .getByRole('link', { name: 'Inbox' })
+      .click();
 
     const assunto = `Renovação ${Date.now()}`;
     await page.getByLabel('Assunto da nova conversa').fill(assunto);
@@ -67,7 +70,10 @@ test.describe('Inbox (UI)', () => {
       });
     }, contactId);
 
-    await page.getByRole('link', { name: 'Inbox' }).click();
+    await page
+      .getByRole('navigation', { name: 'Principal' })
+      .getByRole('link', { name: 'Inbox' })
+      .click();
     await page
       .getByRole('button', { name: new RegExp(nome) })
       .first()
@@ -120,7 +126,10 @@ test.describe('Inbox (UI)', () => {
       );
 
       await login(page, OWNER_A);
-      await page.getByRole('link', { name: 'Inbox' }).click();
+      await page
+        .getByRole('navigation', { name: 'Principal' })
+        .getByRole('link', { name: 'Inbox' })
+        .click();
       await page.getByRole('button', { name: new RegExp(assunto.slice(0, 12)) }).click();
 
       // selo do canal na LISTA (triagem) e o veredito acima do compositor

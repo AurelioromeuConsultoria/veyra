@@ -63,7 +63,10 @@ test.describe('Sugestão de resposta por IA (UI)', () => {
       if (!(await consentimento.isChecked())) await consentimento.click();
       await expect(consentimento).toBeChecked();
 
-      await page.getByRole('link', { name: 'Inbox' }).click();
+      await page
+        .getByRole('navigation', { name: 'Principal' })
+        .getByRole('link', { name: 'Inbox' })
+        .click();
       await page.getByRole('button', { name: new RegExp(assunto.slice(0, 12)) }).click();
 
       // sem provedor configurado, o MOTIVO vem do servidor — a tela não inventa
@@ -254,7 +257,10 @@ test.describe('Sugestão de resposta por IA (UI)', () => {
       );
 
       await login(page, email);
-      await page.getByRole('link', { name: 'Inbox' }).click();
+      await page
+        .getByRole('navigation', { name: 'Principal' })
+        .getByRole('link', { name: 'Inbox' })
+        .click();
       await page.getByRole('button', { name: new RegExp(assunto.slice(0, 12)) }).click();
 
       const painel = page.getByTestId('reply-suggestion');
@@ -346,7 +352,10 @@ test.describe('Sugestão de resposta por IA (UI)', () => {
       );
 
       await login(page, OWNER_A);
-      await page.getByRole('link', { name: 'Inbox' }).click();
+      await page
+        .getByRole('navigation', { name: 'Principal' })
+        .getByRole('link', { name: 'Inbox' })
+        .click();
       await page.getByRole('button', { name: new RegExp(assunto.slice(0, 12)) }).click();
 
       const painel = page.getByTestId('reply-suggestion');

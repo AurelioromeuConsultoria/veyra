@@ -35,7 +35,10 @@ test.describe('Sinais (UI)', () => {
     if (await consentimento.isChecked()) await consentimento.click();
     await expect(consentimento).not.toBeChecked();
 
-    await page.getByRole('link', { name: 'Inbox' }).click();
+    await page
+      .getByRole('navigation', { name: 'Principal' })
+      .getByRole('link', { name: 'Inbox' })
+      .click();
 
     const assunto = `Resumo ${Date.now()}`;
     await page.getByLabel('Assunto da nova conversa').fill(assunto);
