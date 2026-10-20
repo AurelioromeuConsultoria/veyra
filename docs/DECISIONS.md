@@ -895,7 +895,7 @@ O inventário do código (2026-10-19) mostrou o seguinte:
 > **G.** Seja M uma escrita que torna o conteúdo de um contato C restrito para um consumidor, ou que muda a qual contato um conteúdo pertence (lista no item 6). Se M comita no instante t, nenhuma operação externa que carregue conteúdo de C para esse consumidor **começa** depois de t.
 
 - **"Começar"** é o processo iniciar a requisição de rede. Cada retentativa é uma operação nova, que começa de novo.
-- **Operações começadas antes de t** podem terminar depois. O resultado delas é tratado como conteúdo restrito: fica oculto na leitura, é expirado, não vira ação, e o desfecho incerto **nunca** é retentado.
+- **Operações começadas antes de t** podem terminar depois. O resultado delas é tratado como conteúdo restrito: fica oculto na leitura, é expirado, não vira ação, e o desfecho incerto **nunca** é retentado dentro do uso (a nova tentativa é um uso novo, que passa pela guarda).
 - **Consequência direta:** M não pode comitar enquanto existir uma operação **autorizada** que ainda possa começar. A prova disso **não usa prazo**. Usa uma trava de banco mantida por uma **sessão viva** durante toda a janela em que a operação pode começar, e M precisa da trava em modo conflitante.
 
 #### 3. Mecanismo: uso externo sob trava (`ContentUseGuard`, Core)
@@ -905,7 +905,7 @@ O inventário do código (2026-10-19) mostrou o seguinte:
 - **workspace:** `hashtextextended('veyra.restriction.ws:' || workspaceId, 0)`;
 - **contato:** `hashtextextended('veyra.restriction.contact:' || contactId, 0)`.
 
-Uma colisão de hash só causa espera a mais, nunca liberação indevida. A primitiva `lockContactsForRestriction` passa a pegar essas travas em vez de tocar a linha. Ela é a única peça do Core com SQL próprio para isso, registrada como exceção ao §3.3 com a justificativa "coordenação de restrição".
+Uma colisão de hash só causa espera a mais, nunca liberação indevida. A primitiva `lockContactsForRestriction` passa a pegar essas travas em vez de tocar a linha. Ela é a única peça do Core com SQL próprio para isso, registrada como exceção ao §3.3 com a justificativa "coordenação de restrição". _(Alterado pelo adendo 7, seção 3.8: as outras peças de SQL próprio da coordenação estão listadas lá.)_
 
 **3.2. Ordem global das travas (sem exceção):**
 
@@ -918,10 +918,10 @@ Nenhum caminho pega um nível depois de um nível posterior. A trava tentada de 
 
 Os lotes que hoje travam contatos fora de ordem (`companies.service.ts`, remoção de empresa) passam a travar em ordem de id. Isso paga a dívida registrada.
 
-**3.3. Sessões de guarda num pool próprio.** Um uso segura a trava durante a chamada externa. Para não disputar o pool do Prisma, a guarda usa um **pool dedicado** (`pg`, `application_name = veyra-guard`), com tamanho configurável (padrão 5) e keepalive TCP ligado. Cada sessão de guarda:
+**3.3. Sessões de guarda num pool próprio.** Um uso segura a trava durante a chamada externa. Para não disputar o pool do Prisma, a guarda usa um **pool dedicado** (`pg`, `application_name = veyra-guard`), com tamanho configurável (padrão 5) e keepalive TCP ligado. Cada sessão de guarda: _(Alterado pelo adendo 7, seções 3.1 e 3.2: a guarda é uma transação do Prisma sobre este pool, o registro usa um segundo pool, e a guarda pega uma trava própria do uso.)_
 
 1. `BEGIN`.
-2. `SET LOCAL idle_in_transaction_session_timeout = 0` (a sessão fica ociosa em transação durante a chamada, e um padrão do servidor não pode derrubá-la no meio) e `SET LOCAL lock_timeout = '5s'`.
+2. `SET LOCAL idle_in_transaction_session_timeout = 0` (a sessão fica ociosa em transação durante a chamada, e um padrão do servidor não pode derrubá-la no meio) e `SET LOCAL lock_timeout = '5s'`. _(Alterado pelo adendo 7, seção 3.1: o prazo passa a ser o do tipo mais 30 s, com `statement_timeout` e keepalive curtos, para uma guarda congelada não segurar M sem limite.)_
 3. Pega as travas compartilhadas dos níveis 1 a 3, na ordem.
 4. **Reconfere a porta.** É uma consulta nova, feita depois das travas, que enxerga qualquer mudança já comitada.
 5. Faz uma **prova de vida** da própria sessão (`SELECT 1` nela): as travas existem neste instante.
@@ -929,6 +929,8 @@ Os lotes que hoje travam contatos fora de ordem (`companies.service.ts`, remoç�
 7. Espera o desfecho dentro do prazo absoluto (item 4).
 8. **Persiste o resultado ainda sob a trava**: run, proposta, desfecho do dispatch ou da entrega.
 9. `COMMIT`, que solta as travas.
+
+_(Alterado pelo adendo 7, seção 3.2: trava própria do uso, registro durável antes da prova de vida e estado final escrito antes do `COMMIT`.)_
 
 **Fronteira de módulos.** A IA usa a guarda por uma porta, `run(escopo, operação)`. A operação é a chamada ao provedor mais a persistência do resultado. O módulo `intelligence` continua sem tocar o Prisma, e a guarda fica no Core, ao lado da porta do E6.
 
@@ -941,12 +943,12 @@ O prazo nunca entra na prova: só a trava, mantida pela sessão viva.
 
 **3.5. O único caso que a trava não cobre: a sessão de guarda morrer.** Se a sessão morrer, o Postgres solta as travas; isso acontece com reinício do banco ou conexão derrubada.
 
-- **Prevenção:** a prova de vida (passo 5) fica imediatamente antes do início. Para M comitar indevidamente, a sessão teria de morrer, e M pegar a trava e comitar, dentro do intervalo, sem I/O, entre a resposta da prova de vida e o início da requisição.
-- **Detecção garantida:** se o `COMMIT` da guarda falhar, o uso é marcado `guard_lost`:
+- **Prevenção:** a prova de vida (passo 5) fica imediatamente antes do início. Para M comitar indevidamente, a sessão teria de morrer, e M pegar a trava e comitar, dentro do intervalo, sem I/O, entre a resposta da prova de vida e o início da requisição. _(Alterado pelo adendo 7, seção 3.2: a prova de vida passa a ser o passo 6.)_
+- **Detecção garantida:** se o `COMMIT` da guarda falhar, o uso é marcado `guard_lost`: _(Texto original, superado: o `COMMIT` não garante detecção, porque um processo que morre nunca chega a ele. `guard_lost` passa a ser `in_doubt`, e o evento, `content_use.in_doubt`; ver o adendo 7, seções 3.3 e 3.6.)_
   - o resultado da IA é descartado (não é persistido) e a reserva é cobrada;
   - o desfecho do envio fica como está;
   - um evento de auditoria `content_use.guard_lost`, só com ids, abre o incidente.
-- **A revisão decide** se aceita esse residual, com detecção garantida, ou se pede outra forma de prevenção.
+- **A revisão decide** se aceita esse residual, com detecção garantida, ou se pede outra forma de prevenção. _(Texto original, superado: o `COMMIT` não garante detecção; ver o adendo 7, seção 3.)_
 - **Decisão da revisão (2026-10-20): residual NÃO aceito como prova de G.** Se a sessão morrer depois da prova de vida e antes do início da requisição, a mudança pode comitar primeiro e a chamada começar depois. Detectar no `COMMIT` não impede a chamada. **Decisão em aberto:** reforçar a garantia ou rever o critério com aprovação explícita. Até lá, o B2 continua fechado.
 
 #### 4. Prazos e retentativas
@@ -982,14 +984,14 @@ O prazo nunca entra na prova: só a trava, mantida pela sessão viva.
 
 #### 5. Reserva e desfecho incerto
 
-**Antes de começar:** recusa na reconferência, porta indisponível, guarda sem conexão disponível, trava não obtida ou prova de vida falha. Nada começou:
+**Antes de começar:** recusa na reconferência, porta indisponível, guarda sem conexão disponível, trava não obtida ou prova de vida falha. Nada começou: _(Alterado pelo adendo 7, seção 3.2: depois do registro, a reserva só volta se a transição para `aborted` afetou a linha.)_
 
 - a **reserva volta inteira**;
 - a proposta continua pendente (503) ou é expirada (restrito).
 
 **Começou e terminou com resposta:** cobra o consumo real, como hoje.
 
-**Começou e ficou incerto** (prazo estourado, conexão caída, erro depois do início, ou `guard_lost`):
+**Começou e ficou incerto** (prazo estourado, conexão caída, erro depois do início, ou `guard_lost`): _(Alterado pelo adendo 7, seções 3.2 e 3.6: o prazo estourado com a guarda viva termina `concluded`; `guard_lost` passa a ser `in_doubt`, e são duas as reservas da IA.)_
 
 - **a reserva fica e é cobrada pelo teto**: na IA, o `ai_runs` e o custo máximo reservado; na mensagem, a quota do envio;
 - nunca é retentado;
@@ -1011,7 +1013,7 @@ Conceder liberação **reduz** a restrição. Entra no protocolo pela ordem das 
 
 **Mudanças do workspace inteiro.** Ativar e desativar pegam a trava do workspace **exclusiva**:
 
-- esperam os usos e as aprovações em andamento no workspace;
+- esperam os usos e as aprovações em andamento no workspace; _(Alterado pelo adendo 7, seção 3.3: e marcam `in_doubt` todo uso órfão do workspace.)_
 - a desativação passa a expirar o conteúdo de IA do workspace depois do commit, como a ativação já faz.
 
 **Aprovações** (limite (b)). `executeSendMessage` e `executeCreateTask`:
@@ -1029,12 +1031,12 @@ Uma aprovação concorrente com a ativação espera, reconfere e recusa: a taref
 | Envio de mensagem da IA          | workspace | contato da conversa                                | —                                            |
 | Entrega de webhook (por destino) | workspace | contatos (fotografia ∪ resolução atual, como hoje) | deal ou tarefa do evento e da raiz da cadeia |
 
-O envio de mensagem da IA guarda os passos 3.3.3 a 3.3.9 em volta do envio. Os passos de política, consentimento e reserva continuam antes da guarda.
+O envio de mensagem da IA guarda os passos 3.3.3 a 3.3.9 em volta do envio. Os passos de política, consentimento e reserva continuam antes da guarda. _(Alterado pelo adendo 7, seção 3.2: a numeração dos passos muda com o registro.)_
 
 #### 8. Custos aceitos
 
-- **Uma sessão do pool de guarda por operação externa em andamento.** Com o pool cheio, a operação espera (no máximo 5 s) e depois segue o caminho de "não começou". O tamanho do pool limita as operações externas simultâneas **por instância**; é um parâmetro operacional.
-- **Uma mudança por contato pode esperar** até o fim de uma geração de IA em andamento (no máximo 60 s mais a persistência). Na prática, espera até 10 s e responde 409 para tentar de novo.
+- **Uma sessão do pool de guarda por operação externa em andamento.** Com o pool cheio, a operação espera (no máximo 5 s) e depois segue o caminho de "não começou". O tamanho do pool limita as operações externas simultâneas **por instância**; é um parâmetro operacional. _(Alterado pelo adendo 7, seção 3.1: e uma conexão curta do pool de registro.)_
+- **Uma mudança por contato pode esperar** até o fim de uma geração de IA em andamento (no máximo 60 s mais a persistência). Na prática, espera até 10 s e responde 409 para tentar de novo. _(Alterado pelo adendo 7, seção 3.1: com uma guarda congelada, o limite real é o prazo do tipo, mais a margem, mais a detecção do keepalive.)_
 - **Ativar e desativar** esperam os usos do workspace inteiro.
 - **Duas a quatro consultas a mais por operação externa**, numa transação curta fora do pool principal.
 - **Fim do custo do adendo 5:** o `updatedAt` do contato deixa de ser reescrito pelas travas.
@@ -1054,10 +1056,10 @@ Para cada uso (IA, mensagem da IA e webhook) e para cada mudança (paciente, rev
 
 1. **Uso primeiro.** O transporte falso segura a chamada em andamento. O teste comprova que a mudança está bloqueada (`esperarBloqueadosPor`). Ao soltar a chamada, o resultado é persistido, a mudança comita e a expiração alcança o resultado.
 2. **Mudança primeiro.** Uma conexão externa segura a trava exclusiva. O uso fica comprovadamente bloqueado, e o transporte não é chamado. Depois do commit, o uso recusa sem chamar o transporte.
-3. **Sessão de guarda morta antes da prova de vida.** O teste mata a sessão (`pg_terminate_backend`) por um ponto de teste. O uso não começa, responde 503 e devolve a reserva.
-4. **Sessão de guarda morta durante a chamada.** O `COMMIT` falha, o caso vira `guard_lost` com auditoria, e a reserva é cobrada.
+3. **Sessão de guarda morta antes da prova de vida.** O teste mata a sessão (`pg_terminate_backend`) por um ponto de teste. O uso não começa, responde 503 e devolve a reserva. _(Alterado pelo adendo 7, seção 4: o uso termina `aborted` ou `in_doubt`, conforme o registro tenha comitado.)_
+4. **Sessão de guarda morta durante a chamada.** O `COMMIT` falha, o caso vira `guard_lost` com auditoria, e a reserva é cobrada. _(Alterado pelo adendo 7, seções 3.3 e 3.6: vira `in_doubt` com `detectedBy: commit`.)_
 5. **Prazo estourado.** Desfecho incerto, reserva cobrada pelo teto, sem retentativa. A trava é solta, e a mudança que esperava comita.
-6. **Pool de guarda esgotado.** O uso não começa (503 ou nova tentativa), sem chamar o transporte.
+6. **Pool de guarda esgotado.** O uso não começa (503 ou nova tentativa), sem chamar o transporte. _(Alterado pelo adendo 7, seção 3.1: vale para os dois pools, e há teste de N usos simultâneos acima do tamanho do pool.)_
 7. **Aprovação contra ativação.** A ativação primeiro faz a tarefa não nascer. A aprovação primeiro faz a ativação esperar.
 8. **Webhook contra troca de contato do deal**, com a mesma bateria.
 9. **Ordem das travas:**
@@ -1065,7 +1067,7 @@ Para cada uso (IA, mensagem da IA e webhook) e para cada mudança (paciente, rev
    - um cenário com mudança por contato, ativação, aprovação e uso concorrentes termina sem deadlock.
 10. **Mutações:**
     - sem a trava no uso, os testes do cenário 2 caem;
-    - sem a prova de vida, cai o cenário 3;
+    - sem a prova de vida, cai o cenário 3; _(Alterado pelo adendo 7, seção 4: as mutações das peças novas estão listadas lá.)_
     - persistindo o resultado fora da trava, cai a expiração do cenário 1;
     - com retentativa do SDK ligada, cai o cenário 5;
     - sem conferir o `settle`, cai o teste da reserva expurgada.
@@ -1080,8 +1082,8 @@ Para cada uso (IA, mensagem da IA e webhook) e para cada mudança (paciente, rev
 
 #### 12. Decisões para a revisão
 
-1. Aceitar o residual do item 3.5 (sessão de guarda morta no intervalo sem I/O), com detecção garantida e incidente auditado.
-2. Prazos: 60 s para a IA (sem retentativa do SDK), 20 s para a Meta e 10 s por destino de webhook. Tamanho do pool de guarda: 5.
+1. Aceitar o residual do item 3.5 (sessão de guarda morta no intervalo sem I/O), com detecção garantida e incidente auditado. _(Texto original, superado: ver o adendo 7.)_
+2. Prazos: 60 s para a IA (sem retentativa do SDK), 20 s para a Meta e 10 s por destino de webhook. Tamanho do pool de guarda: 5. _(Alterado pelo adendo 7, seção 3.1: mais o pool de registro.)_
 3. Mudanças interativas: esperar até 10 s e responder 409, em vez de esperar o fim da geração.
 4. Religação de conversa: regra mais teste estático (recomendado), ou fotografia no dispatch.
 5. A troca de contato de deal ou de tarefa entra no protocolo como mudança de pertencimento.
@@ -1094,57 +1096,333 @@ Para cada uso (IA, mensagem da IA e webhook) e para cada mudança (paciente, rev
 4. **Religação de conversa: aprovada a regra.** O vínculo continua imutável, fixado por teste. Se a religação surgir, ela entra no protocolo e protege o contato antigo, o novo e a conversa.
 5. **Troca de contato de deal ou tarefa: aprovada como mudança de titularidade do conteúdo.** Protege os contatos antigo e novo e a entidade, na ordem de travas do item 3.2.
 
-### Adendo 7 (2026-10-20, PROPOSTO — em revisão; não autoriza código) — o residual da guarda: o que se pode garantir e o que precisa ser decidido
+### Adendo 7 (2026-10-20, PROPOSTO — direção aceita, texto revisado; não autoriza código) — o residual da guarda: o que se pode garantir e o que precisa ser decidido
 
 **Situação:** responde à decisão da revisão sobre o adendo 6, que não aceitou o residual da sessão de guarda como prova de G. Não autoriza código nem levanta o B2.
 
-#### 1. G estrita não é alcançável só do nosso lado
+**Decisão da revisão (2026-10-20).** A revisão aceitou a **mudança de direção para uma autorização coordenada com a restrição** (G′), mas pediu três ajustes no texto antes da implementação:
+
+1. explicitar a consequência no cenário de perda da guarda;
+2. retirar "sempre detectado" como garantia do `COMMIT`, e prever registro durável antes da chamada e reconciliação dos usos sem conclusão, inclusive depois de reinício;
+3. ajustar o item (c), distinguindo o que ainda pode ser recusado do que já saiu.
+
+Pediu também que o texto não afirme que G estrita é impossível em qualquer desenho. **Não aprovou** a proibição geral de liberações para IA. O B2 continua bloqueado até a implementação do critério revisado, seus testes e os passes finais.
+
+**Esta versão** incorpora os três ajustes e quatro revisões do `reviewer` sobre a redação deles.
+
+A primeira apontou:
+
+- a ordem do registro contra a guarda de transação única;
+- a varredura marcando usos vivos;
+- a mudança do workspace inteiro;
+- a durabilidade do registro;
+- o mapeamento com o adendo 6.
+
+A segunda apontou:
+
+- a prova de que a guarda acabou, que falhava no webhook sem contato e sofria inanição: agora há uma trava própria por uso;
+- a espera circular de pegar duas conexões do mesmo pool: agora há um pool de registro;
+- os `in_doubt` falsos quando o processo decide o desfecho: agora o estado final é escrito antes do `COMMIT`;
+- a numeração dos passos;
+- os ponteiros no adendo 6;
+- a exceção ao §3.3.
+
+A terceira apontou:
+
+- **por qual conexão a persistência roda:** agora é a transação da guarda, por um PrismaClient filtrado sobre o pool de guarda;
+- **o registro de origem que ainda não existe na hora do registro:** agora há ids pré-gerados e as duas reservas da IA;
+- **o commit ambíguo do registro:** agora há uma lápide com `ON CONFLICT`;
+- **a prova de vida que falha depois do registro;**
+- **a exceção cross-workspace da reconciliação,** o índice e a retenção;
+- **a guarda congelada sem limite:** agora há prazos de sessão.
+
+A quarta apontou:
+
+- o prazo da transação da guarda, que precisa somar todas as esperas de antes da chamada;
+- os metadados mínimos do run no registro;
+- a ordem "uso primeiro" restrita a quem está fora da guarda viva;
+- as reservas cobradas pelo teto quando a persistência falha;
+- a lista completa do SQL próprio;
+- a numeração;
+- os desfechos da trava do uso e da lápide.
+
+Volta para aprovação do texto antes do código.
+
+#### 1. O conflito de G estrita
 
 G pede: se M comita em t, nenhuma operação externa com conteúdo do contato **começa** depois de t.
 
-**"Começar" é uma ação local do processo** (escrever a requisição no socket) e acontece **depois** da última interação dele com o banco. Daí:
+**"Começar" é uma ação local do processo** (escrever a requisição no socket) e acontece **depois** da última interação dele com o banco:
 
 - **Toda coordenação feita no banco** (trava, lease, permissão durável, confirmação) termina num instante t₀ em que o processo ainda não começou. Entre t₀ e o início existe sempre um intervalo, ainda que sem I/O.
-- **Se o processo for suspenso nesse intervalo**, o banco não tem como distinguir "suspenso e ainda vai começar" de "morto". Uma suspensão longa pode vir de pausa da VM, de coleta de lixo ou de congelamento do contêiner. Este projeto já mediu uma: a VM do Docker atrasou 19 s (ADR-049).
-  - Se M esperar, pode esperar para sempre.
-  - Se M não esperar, o processo pode acordar e começar depois de t.
-- **Prazo e relógio local não resolvem.** O teste "comece em até W depois da confirmação" é ele próprio uma verificação seguida de ação. E numa pausa de VM, o relógio monotônico do processo também para.
-- **Só uma cerca no receptor fecharia o intervalo.** Seria o destino recusar uma requisição com token vencido. O provedor de IA e a Meta não oferecem isso, e os webhooks vão para endpoints dos clientes. Um proxy de saída nosso é outro processo, com o mesmo intervalo.
+- **Se o processo for suspenso nesse intervalo**, o banco não distingue "suspenso e ainda vai começar" de "morto". Uma suspensão longa pode vir de pausa da VM, de coleta de lixo ou de congelamento do contêiner. Este projeto já mediu uma: a VM do Docker atrasou 19 s (ADR-049).
+- **Prazo e relógio local não fecham o intervalo.** O teste "comece em até W depois da confirmação" é ele próprio uma verificação seguida de ação. E numa pausa de VM, o relógio monotônico do processo também para.
 
-Logo, **G estrita depende de algo fora do nosso controle**. Nenhum mecanismo interno a satisfaz, nem a trava do adendo 6, nem permissões duráveis, nem prazos. Insistir em G estrita equivale a manter o B2 fechado indefinidamente.
+**O que isso mostra é um conflito, não uma impossibilidade.** G estrita e "a mudança de restrição sempre prossegue em tempo limitado" não valem juntas enquanto houver um uso autorizado cujo resultado é desconhecido. Há desenhos que satisfazem G, e cada um paga com uma destas três coisas: a disponibilidade da restrição, algo fora do nosso processo ou funcionalidade.
 
-#### 2. O que se pode garantir: G′
+- **M espera até o destino de todo uso autorizado ser conhecido:** a conclusão do uso, ou uma prova externa de que o processo não vai mais começar (por exemplo, a instância reiniciou ou o orquestrador confirmou que o contêiner foi parado). Com o registro da seção 3, essa espera só acontece no caso raro de perda da guarda (seção 5, opção 3).
+- **Cerca no receptor:** o destino recusa uma requisição com token vencido. O provedor de IA e a Meta não oferecem isso, e os webhooks vão para endpoints dos clientes. Um proxy de saída nosso é outro processo, com o mesmo intervalo.
+- **Não autorizar uso externo** do conteúdo de contatos que possam ficar restritos. Para a IA, é o que a opção 2 da seção 5 faz.
+
+#### 2. G′: autorização coordenada com a restrição
 
 > **G′.** Se M comita em t:
 >
 > - (a) nenhuma operação externa com conteúdo do contato é **autorizada** depois de t;
-> - (b) toda operação autorizada antes de t termina antes de M comitar, é abortada antes de começar, ou é **detectada** quando o processo foi suspenso entre a última confirmação e o envio. Detectada significa: resultado descartado, run ou despacho marcado `guard_lost` e incidente auditado;
-> - (c) nenhum resultado dessas operações é lido, aprovado ou enviado depois de t.
+> - (b) toda operação autorizada antes de t **termina** antes de M comitar, é **abortada** antes de começar, ou, se a guarda dela se perdeu, fica **registrada como uso em dúvida** e vira incidente auditado. O registro sobrevive à morte do processo e ao reinício, dentro da premissa de durabilidade da seção 3.5;
+> - (c) **o que ainda não saiu é recusado:** toda nova leitura, aprovação ou envio depois de t reconfere a restrição. **O que já saiu não pode ser recolhido:** o conteúdo já enviado e o que o destino guarda dele. Isso vale para o prompt ao provedor de IA, para a mensagem à Meta (e, por ela, ao paciente) e para o webhook ao endpoint do cliente. **A nossa cópia** da resposta, essa sim, é descartada se chegar depois de t: não é persistida como legível, nem aprovada, nem enviada adiante.
 
-O mecanismo é o do adendo 6:
+O mecanismo é o do adendo 6, com os acréscimos da seção 3:
 
 - trava mantida por sessão viva;
 - reconferência e prova de vida;
 - prazos absolutos, sem retentativa do SDK;
-- resultado persistido sob a trava;
-- `COMMIT` da guarda como detector.
+- resultado persistido sob a trava.
 
-A única diferença em relação a G é o caso da suspensão do processo exatamente no intervalo sem I/O. Esse caso não é impedido, mas é **sempre detectado**.
+**A consequência, explícita: esta é a diferença concreta entre G′ e G.** No cenário de perda da guarda, uma chamada autorizada **antes** da restrição pode **começar depois dela**. O conteúdo do contato chega ao destino quando a restrição já vale: o provedor de IA; a Meta e, por ela, o paciente; ou o endpoint do cliente, no webhook. Descartar o resultado protege o que o Veyra faz a seguir, mas **não desfaz** o conteúdo já enviado. Nesse caso, G′ oferece só três coisas:
 
-#### 3. Opções para a revisão
+- o caso não passa despercebido;
+- fica registrado com o contato, o uso e o destino;
+- vira incidente para resposta.
 
-1. **Adotar G′ como critério do B2** (recomendado), com o mecanismo do adendo 6 e a detecção obrigatória: teste de sessão morta, incidente e descarte. É o máximo verificável com os provedores atuais.
-2. **Reduzir o alcance do risco, junto com G′:** proibir a liberação de IA em workspace com o Clinics.
-   - Sem liberação, nenhum contato de workspace com o Clinics é processado pela IA. A janela por contato, que é o caso que motivou o B2, deixa de existir para a IA.
-   - Resta a ativação do vertical, que é um ato único da operação e pode exigir IA e webhooks desligados antes, por procedimento.
-   - **Custo:** a clínica perde a IA para fornecedores e parceiros, justamente o caso de uso da liberação.
-3. **Manter G estrita e o B2 fechado até haver cerca no receptor.** Na prática, sem prazo.
+#### 3. Detecção recuperável: registro durável antes da chamada e reconciliação
 
-#### 4. Recomendação
+**O `COMMIT` da guarda não é garantia de detecção.** Se o processo morre depois de começar a chamada, ou no intervalo sem I/O, ele nunca executa esse passo nem registra nada. A detecção precisa de três coisas:
 
-Opção 1, com a opção 2 avaliada com alguém da clínica (D6). Se a liberação para fornecedores tiver pouco valor real, a opção 2 elimina a janela para a IA a um custo pequeno.
+- um registro que já exista **antes** da chamada;
+- uma prova de que a guarda de um uso acabou, que valha para **todo** uso, com ou sem contato;
+- detectores que só marquem um uso quando tiverem essa prova.
 
-Em qualquer caso, o B2 só volta para decisão com o adendo 6 implementado, a bateria completa verde e os passes de `security` e `reviewer`.
+**3.1. A transação da guarda e os dois pools.**
+
+- **A guarda é uma transação do Prisma sobre o pool de guarda.** A guarda do adendo 6 é uma transação única, em que o `COMMIT` solta as travas. A persistência do resultado precisa acontecer **dentro dela**. Se fosse por outra conexão, uma guarda que morre no meio da chamada deixaria M comitar e, depois, o resultado legível comitaria depois de t, contra G′(c).
+  - Por isso a guarda é uma **transação interativa de um segundo PrismaClient**: o mesmo cliente filtrado por tenant (`prisma.db`), com `PrismaPg` sobre o pool de guarda.
+  - **O prazo dela cobre tudo, e não só a chamada.** O `timeout` da transação interativa conta desde o `BEGIN` e desfaz pelo próprio processo, soltando as travas. Por isso ele é a soma explícita dos prazos internos, mais uma margem:
+    - a espera das travas (`lock_timeout` de 5 s);
+    - o registro (2 s para a conexão e 2 s de instrução) e a lápide;
+    - a prova de vida;
+    - o prazo do tipo;
+    - a persistência (`statement_timeout`).
+
+    O `maxWait` é de 5 s, a espera pelo pool cheio. Com um prazo menor, a guarda soltaria as travas no meio da chamada (no webhook, durante o DNS ou o TCP) sob carga normal, sem pausa de VM nenhuma.
+
+  - Persistência, run, proposta, acerto da quota e auditoria passam pelo cliente dessa transação.
+  - As travas e os `SET LOCAL` são as únicas instruções em SQL próprio, na exceção da seção 3.8.
+  - O isolamento é `READ COMMITTED`, explícito: em `REPEATABLE READ`, a transição do passo 10 não enxergaria o registro, comitado depois do início da transação.
+- **O pool de registro dá conexões curtas,** que não seguram trava nenhuma: cada uma faz uma transação curta e comitada (o registro do passo 5, ou a transição do passo 6) e volta.
+  - **Esperar esse pool segurando as travas da guarda não gera espera circular,** porque quem ocupa uma conexão de registro a solta em milissegundos, sem depender de guarda nenhuma.
+  - Pegar as duas conexões do mesmo pool, uma de cada vez, geraria espera circular: com o pool cheio de guardas esperando a segunda conexão, nenhuma começaria.
+- **Prazos de sessão: uma guarda congelada não segura M para sempre.** O adendo 6 desligava `idle_in_transaction_session_timeout`. Com o processo da guarda congelado (pausa de VM, `docker pause`) ou o host sumido, M ficaria em 409 enquanto durasse o congelamento, ou até o keepalive padrão derrubar a conexão (cerca de 2 h). Agora:
+  - `SET LOCAL idle_in_transaction_session_timeout` = o prazo do tipo + uma margem de 30 s;
+  - `statement_timeout` na persistência;
+  - keepalive TCP e `tcp_user_timeout` curtos na sessão.
+
+  Uma guarda congelada além disso é derrubada pelo servidor. Isso é perda da guarda: as travas soltam, M segue, e o uso vira `in_doubt` (seção 3.3). **Sob G′ isso é seguro.** O limite real da espera de M passa a ser o prazo do tipo + a margem + a detecção do keepalive, da ordem de 2 min no pior caso.
+
+**3.2. Ordem dos passos.** Antes de qualquer trava, o uso ganha **ids gerados na aplicação**:
+
+- o do próprio uso, e com ele uma **trava própria do uso**: `hashtextextended('veyra.content_use:' || useId, 0)`;
+- os do registro de origem que ainda não existe na hora do registro: o run da IA e a entrega do webhook (evento, webhook e tentativa). Assim o fluxo do ADR-031, em que o run nasce depois da chamada, não muda.
+
+**A transação da guarda começa com os passos 1 a 4 do adendo 6, com três acréscimos:**
+
+- `BEGIN` (`READ COMMITTED`) e os `SET LOCAL`, agora com os prazos da seção 3.1;
+- a **trava própria do uso, exclusiva e tentada** (`pg_try_advisory_xact_lock`). O id é novo, então na prática ela sempre é obtida; como a chave de 64 bits divide o espaço com as travas de restrição, uma colisão é possível, e a tentativa que falha é tratada como "não começou". **Ninguém espera por ela, só a tenta**, por isso ela fica fora da ordem de deadlock. Ela é a prova de vida da guarda: alguém só a obtém quando a transação da guarda acabou;
+- as travas dos níveis 1 a 3, compartilhadas, na ordem do 3.2 do adendo 6. Elas valem **mesmo com zero contatos**: o webhook de um deal ou tarefa sem contato segura o workspace e a entidade. Hoje o código pula a porta quando não há contato (`webhooks.service.ts`), e isso muda;
+- a **reconferência**;
+- um `SAVEPOINT`.
+
+**Depois disso, os passos 5 a 8 do adendo 6 passam a 6 a 9, e o 9 (`COMMIT`) passa a 11. Os passos 5, 10 e 12 são novos:**
+
+5. **Registro.** Numa conexão do pool de registro, obtida em até 2 s, numa transação própria com `SET LOCAL synchronous_commit = on` e `statement_timeout` de 2 s, nasce e **comita** o uso `authorized`. Os campos:
+   - o id do uso;
+   - workspace;
+   - o **conjunto inteiro de travas** (contatos e entidades);
+   - o tipo (geração de IA, despacho para a Meta ou entrega de webhook), com os ids do registro de origem (o run e a entrega pré-gerados, ou o despacho, que já existe);
+   - na IA, os **metadados mínimos para criar o run** se o processo morrer: capacidade, modelo, versão do prompt, alvo, quem disparou e a descrição do contexto (só ids, dentro da minimização). Sem isso, o detector não conseguiria criar o run sem afrouxar o schema, e o §3.10 do CLAUDE.md exige esses dados em todo run;
+   - as **reservas**: as duas da IA (`ai_runs` e `ai_cost_cents`) ou a quota do envio;
+   - o id da instância;
+   - `authorizedAt` e `deadlineAt`, pelo relógio do banco (ADR-049).
+
+   **Se o registro falhar ou estourar o prazo, o uso não começa.** A conexão de registro é **destruída**, não devolvida ao pool. Ainda sob as travas, a guarda grava uma **lápide**:
+
+   ```sql
+   INSERT … VALUES ($id, …, 'aborted')
+   ON CONFLICT (id) DO UPDATE SET status = 'aborted' WHERE content_use.status = 'authorized'
+   ```
+
+   - O índice único faz esse `INSERT` **esperar** um registro ainda em andamento (o caso do commit ambíguo, em que o cliente desistiu e o servidor ainda comitava).
+   - Um registro que chegue depois da lápide falha por unicidade.
+   - A guarda comita, e só então as reservas voltam.
+   - **Se a própria lápide falhar** (`lock_timeout` estourado, sessão morta), o uso pode ficar `authorized`, e a reconciliação o marcará `in_doubt`, cobrado pelo teto, sem ter começado. É um falso positivo aceito sob G′, e fica declarado.
+
+6. **Prova de vida** da sessão de guarda. **Se ela falhar,** o uso não começa. Numa transação curta do pool de registro, a transição condicional `authorized → aborted` é tentada, e as reservas voltam **na mesma transação**:
+   - se afetou a linha, as reservas voltam;
+   - se não afetou, M já marcou o uso `in_doubt`, e as reservas ficam cobradas pelo teto.
+7. **Início** da operação externa, sem I/O entre a prova de vida e o início.
+8. **Desfecho** dentro do prazo absoluto.
+9. **Persistência,** sob o `SAVEPOINT`, pelo cliente da transação da guarda. **Se ela falhar,** volta-se ao `SAVEPOINT`, o que também desfaz o acerto da quota. O resultado é descartado, o run ou despacho fica `unknown_after_dispatch`, e as reservas são **cobradas pelo teto, na transação da guarda**. Sem isso, a varredura de reservas devolveria a reserva de uma chamada que aconteceu.
+10. **O uso vira `concluded`,** em qualquer caso, por transição condicional, na transação da guarda. Isso vale também para o prazo estourado com a guarda viva: começou e terminou sob a trava, sem dúvida sobre a guarda.
+11. **`COMMIT`,** que solta as travas.
+12. **Se o `COMMIT` falhar,** ele pode ter comitado ou não. Noutra conexão, a decisão é tomada pela **transição condicional** `authorized → in_doubt` (`detectedBy: commit`), que espera a trava de linha de um `COMMIT` ainda em andamento, e não por um `SELECT`:
+    - se afetou a linha, é perda da guarda;
+    - se não afetou, o uso já está `concluded` (comitou) ou `in_doubt` (outro detector chegou antes);
+    - se o uso não existe, vira `in_doubt` com `missing_record`.
+
+**Por que essa ordem:**
+
+- **Registro depois das travas e da reconferência.** Antes, M poderia marcar como em dúvida um uso que ainda seria recusado, e o incidente seria falso.
+- **Registro antes da prova de vida.** Depois dela, seria I/O entre a prova e o início, contra o passo 7.
+- **Morte do processo entre o registro e o início** gera um `in_doubt` que, de fato, não começou. Isso é aceito: `in_doubt` quer dizer "pode ter começado".
+- **Só a perda da guarda deixa um uso `authorized` depois que as travas soltam.** Ela vem da sessão morta, derrubada pelos prazos da seção 3.1, ou do processo morto. Todo desfecho que o processo vivo decide é escrito por ele: `aborted` nos passos 5 e 6, `concluded` no passo 10.
+- **Um teste fixa a ordem dos passos.**
+
+**Alternativa rejeitada: travas de sessão (`pg_advisory_lock_shared`) com transações curtas,** em que o commit do registro seria a própria prova de vida. Exige destravar explicitamente e limpar a conexão ao devolvê-la ao pool, e uma trava esquecida bloquearia M para sempre.
+
+**3.3. Estados, transições e quem marca `in_doubt`.**
+
+**Estados.** Um uso nasce `authorized` e termina em um destes estados finais: `concluded`, `aborted` (decidido antes de começar) ou `in_doubt`.
+
+- **Toda transição é condicional:** `UPDATE … WHERE status = 'authorized'`.
+- **Fora da guarda viva, a linha do uso muda primeiro.** Nos detectores e nos passos 6 e 12, o registro de origem e as reservas só mudam se a transição do uso afetou uma linha. Isso evita cobrança dupla e deadlock entre dois detectores no mesmo órfão. **Dentro da guarda viva** (passos 9 e 10) a ordem é a inversa: a persistência vem antes e o `concluded` depois, porque o `SAVEPOINT` desfaria o `concluded` se a persistência falhasse.
+- **Conclusão tardia:** a conclusão que encontra `in_doubt` não sobrescreve o estado. Ela descarta o resultado e registra a tentativa **na auditoria**, que é o indício de que a chamada pode ter começado depois de t. No webhook, isso não pode ser uma linha de `WebhookDelivery`: a unicidade por tentativa a recusaria.
+
+**Detectores.** Só marca `in_doubt` quem tem prova de que a guarda acabou. A marcação mora dentro da primitiva do Core que pega as travas, então um M de vertical nunca toca nas tabelas de run, despacho ou reserva.
+
+- **O próprio processo,** quando o `COMMIT` da guarda falha (passo 12). É o antigo `guard_lost` do adendo 6.
+- **A mudança por contato ou por entidade (M).**
+  - Com as travas exclusivas dos contatos e, na troca de contato de deal ou tarefa, a da entidade, um uso ainda `authorized` cujo conjunto de travas contém um desses contatos ou entidades é necessariamente órfão, porque uma guarda viva seguraria a trava compartilhada.
+  - M o marca na mesma transação. A detecção acontece no instante da mudança.
+  - A busca é feita depois das travas, em `READ COMMITTED`, e enxerga todo registro comitado.
+- **A mudança do workspace inteiro (ativar e desativar).** Com a trava exclusiva do workspace, todo uso `authorized` do workspace é órfão e é marcado na mesma transação.
+- **A reconciliação.**
+  - **O prazo só escolhe candidatos** (`deadlineAt` vencido).
+  - **Para cada candidato,** numa transação própria, ela tenta **só a trava própria do uso** (`pg_try_advisory_xact_lock`). Consegue se, e somente se, a transação da guarda acabou.
+  - **Conseguiu:** marca `in_doubt`, por transição condicional.
+  - **Não conseguiu:** a guarda está viva. Ela não marca e tenta de novo na próxima rodada; os prazos de sessão da seção 3.1 limitam quanto isso dura.
+  - **O que isso resolve:** nunca marca um uso vivo, com ou sem contato, nem o de outra instância. E não sofre inanição, porque usos vivos do mesmo contato não seguram a trava deste uso.
+  - **`deadlineAt`** é `authorizedAt` + o prazo do tipo + uma margem fixa de 30 s. Como é só filtro, a margem não sustenta a garantia.
+
+**3.4. A varredura.** É um job periódico (pg-boss, respeita `DISABLE_JOBS`) mais uma execução assíncrona logo depois da subida.
+
+- A execução da subida não bloqueia o boot, que não depende do banco (ADR-049).
+- O limite de tempo da seção 3.7 vale enquanto houver ao menos uma instância com jobs de pé; sem nenhuma, a detecção acontece na próxima subida.
+- **Retenção:** o mesmo job expurga os usos `concluded` e `aborted` depois de 30 dias. Os `in_doubt` ficam pela retenção da auditoria. O registro guarda só ids, nunca conteúdo (minimização).
+
+**3.5. Durabilidade.** O registro comita com `synchronous_commit = on`, explícito.
+
+- **Premissa:** um failover do banco não perde transação comitada, o que exige replicação síncrona. Hoje não há réplica. A premissa vai para `docs/DEPLOY_STAGING.md` como condição de qualquer réplica.
+- **Fora da premissa:** se o registro se perder e o processo sobreviver, o passo 12 ou a conclusão tratam o uso como `in_doubt` com `missing_record`. Se o processo também morrer, o caso não é detectado. É o limite declarado.
+
+**3.6. Mapeamento com o adendo 6.**
+
+- **`guard_lost` passa a ser este `in_doubt`:** um estado só, qualquer que seja o detector. O evento de auditoria é um só, `content_use.in_doubt`, só com ids, e leva `detectedBy`: `commit`, `change`, `workspace_change`, `reconciliation` ou `missing_record`.
+- **Registro de origem.** Quem marca o deixa no estado incerto, na mesma transação, por transição condicional e só se a do uso afetou a linha:
+  - **o despacho da mensagem,** que já existe, vai para `unknown_after_dispatch` e nunca é reenviado;
+  - **o run da IA** é **criado** com o id pré-gerado e os metadados do registro, já `unknown_after_dispatch`, se ainda não existir. O estado entra em `AiRunStatus` por migration aditiva, se ainda não existir;
+  - **a entrega de webhook** é **criada** com o id pré-gerado, como falha incerta, se ainda não existir. A retentativa pelo outbox é um uso novo, que passa pela guarda; depois de uma restrição, é recusada.
+- **Reservas** (as do registro).
+  - A varredura de reservas **não devolve** reserva ligada a um uso `authorized`.
+  - Quem marca `in_doubt` cobra as reservas pelo teto na mesma transação: as duas da IA, ou a quota do envio.
+  - Se uma reserva já tiver sido expurgada, a cobrança vai pelo caminho acima do teto (adendo 6 §5).
+
+**3.7. O que a detecção garante.** Todo uso autorizado chega a um estado final — `concluded`, `aborted` ou `in_doubt` — dentro da premissa da seção 3.5, mesmo que o processo morra e não volte:
+
+- quando M ou a mudança do workspace acontecem, no instante delas;
+- sem elas, no máximo em `deadlineAt` + o período da varredura depois que a guarda de fato acabou, desde que haja instância com jobs de pé (seção 3.4). Os prazos de sessão da seção 3.1 limitam quanto uma guarda congelada demora a acabar.
+
+**O que ela não garante:** `in_doubt` quer dizer "pode ter começado depois de t", não "começou". O banco não tem como saber.
+
+**3.8. Exceção ao §3.3 do CLAUDE.md, índices e custo.**
+
+**A exceção.** A coordenação de restrição já tinha SQL próprio (`lockContactsForRestriction`, adendo 6 §3.1). Passam a ser SQL próprio também:
+
+- as travas, os `SET LOCAL` e o `SAVEPOINT` da transação da guarda;
+- o `INSERT` do registro, a lápide e a transição do passo 6 (com a devolução das reservas), pelas conexões `pg` dos dois pools;
+- a transição condicional do passo 12;
+- a trava tentada da reconciliação;
+- a **busca de candidatos da reconciliação**, que é **cross-workspace por definição**. É um job cross-workspace e usa `prisma.raw`, como o §3.3 permite para esses jobs.
+
+As transições de run, despacho e reserva, inclusive dentro da transação de M, passam pelo cliente filtrado. **Toda escrita** leva `workspaceId` explícito, inclusive a da reconciliação, que escreve por candidato, com o workspace dele. Um teste estático confere as escritas. A única leitura sem workspace é a busca de candidatos, nomeada aqui.
+
+**Índices:**
+
+- `(deadlineAt) WHERE status = 'authorized'`, parcial, para a varredura cross-workspace (o Postgres 17 não tem _skip scan_);
+- `(workspaceId, status)` para a busca de M e da mudança do workspace.
+
+**Custo:**
+
+- uma tabela nova, tenant-scoped, com migration aditiva e entrada em `WORKSPACE_MODELS`;
+- um segundo PrismaClient sobre o pool de guarda e um pool pequeno a mais, o de registro;
+- um commit síncrono a mais por uso externo, antes da chamada;
+- uma varredura no relógio do banco, com expurgo.
+
+#### 4. Testes que o critério exige
+
+- **Processo morto depois do registro e antes do envio, com reinício:** a reconciliação marca `in_doubt` e audita, sem M concorrente. O run da IA é criado com o id pré-gerado, como incerto.
+- **Guarda perdida com M concorrente:** M marca o órfão na mesma transação, e o resultado tardio é descartado sem sobrescrever o `in_doubt`.
+- **Troca de contato de deal sem contato:** M marca o órfão pela trava da entidade.
+- **Guarda perdida com ativação ou desativação concorrente:** a mudança do workspace marca todos os órfãos do workspace.
+- **Guarda viva com prazo vencido, congelada por menos que os prazos de sessão:** a reconciliação **não** marca, inclusive no webhook **sem contato**, e o uso termina `concluded`.
+- **Guarda congelada além dos prazos de sessão:** o servidor derruba a sessão, M segue, e o uso vira `in_doubt`.
+- **Órfão com outro uso vivo no mesmo contato:** a reconciliação marca o órfão, sem inanição.
+- **Persistência falha com a guarda viva:** o uso termina `concluded`, o run fica `unknown_after_dispatch` e as reservas ficam cobradas pelo teto, sem `in_doubt` falso.
+- **A guarda gasta todos os prazos de antes da chamada mais o prazo inteiro do tipo** e termina `concluded`, sem que a transação expire.
+- **A persistência roda na conexão da guarda:** com a guarda morta no meio da chamada, nenhum resultado legível comita.
+- **Registro com commit ambíguo:** a lápide espera o registro e o uso termina `aborted`. Um registro atrasado falha por unicidade, e as reservas voltam uma vez, sem cobrança.
+- **Prova de vida falha depois do registro:**
+  - sem M: o uso vira `aborted` e as reservas voltam;
+  - com M antes: o uso fica `in_doubt` e as reservas ficam cobradas.
+- **`COMMIT` da guarda falha:**
+  - a transição condicional afetou a linha: vira `in_doubt`;
+  - não afetou: fica `concluded` ou o `in_doubt` de outro detector;
+  - o registro não existe: vira `in_doubt` com `missing_record`.
+- **Dois detectores no mesmo órfão:** uma só cobrança, sem deadlock.
+- **N usos simultâneos, com N ≥ o tamanho de cada pool:** todos começam ou recusam dentro do prazo, sem espera circular.
+- **Varredura na subida:** roda sem bloquear o boot e respeita `DISABLE_JOBS`. O expurgo respeita os 30 dias e não toca em `in_doubt`.
+- **Reservas:** não são devolvidas enquanto o uso está `authorized`, e as duas da IA são cobradas pelo teto quando ele vira `in_doubt`.
+- **Depois de t:** leitura, aprovação e envio novos são recusados.
+- **Ordem dos passos:** um teste fixa trava do uso → travas de restrição → reconferência → registro → prova de vida → início, sem I/O entre a prova e o início.
+- **Teste estático:** `workspaceId` explícito em toda escrita das peças da seção 3.8.
+- **Prova por mutação** de cada peça:
+  - registro depois da prova de vida, ou sem registro;
+  - sem a trava própria do uso, ou com a reconciliação tentando as travas de contato;
+  - persistência fora da transação da guarda;
+  - lápide trocada por `UPDATE`;
+  - sem a marcação por M, por entidade ou pela mudança do workspace;
+  - transição não condicional;
+  - origem ou reserva mudando antes da transição do uso, fora da guarda viva;
+  - estado final escrito depois do `COMMIT`;
+  - sem os prazos de sessão;
+  - sem a varredura na subida.
+
+#### 5. Opções para a revisão
+
+1. **G′ como revisado aqui** (recomendado; direção aceita pela revisão), sobre o mecanismo do adendo 6, com a seção 3 e os testes da seção 4.
+2. **Reduzir o alcance com a proibição** da liberação de IA em workspace com o Clinics. **Não aprovada pela revisão de 2026-10-20.** Fica como opção a avaliar com alguém da clínica (D6), se a liberação para fornecedores tiver pouco valor real.
+3. **G estrita, com a espera restrita aos órfãos.** Com o registro da seção 3, M só precisa esperar quando há um uso órfão nos contatos dela. O órfão se resolve de três jeitos:
+   - quando o processo dele conclui;
+   - quando a instância dele comprovadamente reiniciou (pelo id da instância no registro);
+   - por confirmação da operação.
+
+   Enquanto isso, a mudança fica pendente. Para não autorizar usos novos nesse meio-tempo, ela precisaria ser dividida em "pendente", que já recusa autorizações, e "efetiva".
+
+   **A exposição física é a mesma de G′:** o órfão pode ter começado depois do clique de quem restringiu. O que muda é o instante em que o sistema declara a restrição efetiva. O custo é a restrição pendente, por tempo indeterminado, nos casos de perda da guarda, e uma mudança em dois tempos na interface e nos serviços.
+
+#### 6. Recomendação
+
+**Opção 1.** A opção 3 não reduz o que sai para o destino: ela muda só quando a restrição é declarada, ao custo de pendências sem prazo. Com a aprovação deste texto, o adendo 6 é implementado com os acréscimos da seção 3:
+
+- a guarda como transação do Prisma sobre o pool de guarda, com a persistência dentro dela e prazos de sessão;
+- os ids pré-gerados e a trava própria do uso;
+- o registro durável no pool de registro, antes da prova de vida, com a lápide;
+- o estado final escrito antes do `COMMIT`;
+- as transições condicionais, com a linha do uso mudando primeiro;
+- a marcação por M (contato e entidade), pela mudança do workspace e pela reconciliação com a trava do uso;
+- o mapeamento de `guard_lost`, do run ou despacho e das reservas;
+- a retenção dos registros.
+
+O B2 só volta para decisão com o critério implementado, os testes da seção 4, a bateria completa verde e os passes de `security` e `reviewer`.
 
 ## ADR-048 — Veyra Clinics para estética: domínio próprio, classificação de dados e escopo do MVP
 
