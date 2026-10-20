@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import type {
   BoardDto,
   CreateDealInput,
@@ -10,12 +15,15 @@ import { ActivitiesService } from '../activities/activities.service';
 import { AuditService } from '../audit/audit.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { AuthContext } from '../common/decorators';
+import { MudancasDeRestricao, type OpcoesDaTransacao } from '../content-use/restriction-changes';
 import type { Prisma } from '../generated/prisma/client';
 import { PipelinesService } from '../pipelines/pipelines.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 
 type Tx = Prisma.TransactionClient;
-type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
+type TxRunner = {
+  $transaction: <T>(fn: (tx: Db) => Promise<T>, options?: OpcoesDaTransacao) => Promise<T>;
+};
 
 /** Gaps de 1024 entre posições: milhares de inserções sem rebalancear. */
 const POSITION_GAP = 1024;
@@ -49,6 +57,7 @@ export class DealsService {
     private readonly activities: ActivitiesService,
     private readonly audit: AuditService,
     private readonly outbox: OutboxService,
+    private readonly restricao: MudancasDeRestricao,
   ) {}
 
   async board(pipelineId?: string): Promise<BoardDto> {
@@ -184,9 +193,16 @@ export class DealsService {
     })) as unknown as DealRow | null;
     if (!existing) throw new NotFoundException('Oportunidade não encontrada');
     await this.validateReferences(input);
+    // trocar o contato muda a TITULARIDADE do conteúdo do deal para o webhook
+    // (ADR-047 adendo 6 §6): protege o contato antigo, o novo e o próprio deal
+    const trocaContato = input.contactId !== undefined && input.contactId !== existing.contactId;
     const data = {
       title: input.title,
-      contactId: input.contactId,
+      // SÓ pelo protocolo: um PATCH que repete o contato de uma leitura velha
+      // (o formulário sempre o envia) desfaria, sem trava nenhuma, uma troca
+      // que comitou no meio — e um uso do deal começaria com o conteúdo de
+      // volta ao contato antigo
+      contactId: trocaContato ? input.contactId : undefined,
       companyId: input.companyId,
       ownerMembershipId: input.ownerMembershipId,
       amountCents: input.amountCents,
@@ -198,8 +214,35 @@ export class DealsService {
             ? null
             : new Date(input.expectedCloseDate),
     };
-    const db = this.prisma.db as unknown as TxRunner;
-    await db.$transaction(async (tx) => {
+    const corpo = async (tx: Db) => {
+      if (trocaContato) {
+        await this.restricao.porContato(tx, {
+          workspaceId: auth.workspaceId as string,
+          contactIds: [existing.contactId, input.contactId],
+          entityKeys: [`deal:${id}`],
+        });
+        // relido SOB as travas: se o contato mudou entre a leitura e as
+        // travas, as que foram pegas não são as do contato de agora — e não
+        // dá para pegar outra depois da do deal sem quebrar a ordem
+        const atual = (await tx.deal.findFirst({
+          where: { id },
+          select: { contactId: true },
+        })) as unknown as { contactId: string | null } | null;
+        if (!atual) throw new NotFoundException('Oportunidade não encontrada');
+        if (atual.contactId !== existing.contactId) {
+          throw new ConflictException(
+            'A oportunidade mudou enquanto era alterada; tente de novo em instantes.',
+          );
+        }
+        // o contato novo, sob a trava exclusiva dele: uma exclusão que comitou
+        // antes é vista aqui
+        if (
+          input.contactId &&
+          !(await tx.contact.findFirst({ where: { id: input.contactId }, select: { id: true } }))
+        ) {
+          throw new BadRequestException('Contato inválido');
+        }
+      }
       await tx.deal.updateMany({ where: { id }, data });
       // ajuste #8: alteração vira Activity (payload mínimo) E AuditLog
       // (before/after por allowlist) — o AuditLog é o registro de "o que mudou"
@@ -227,7 +270,9 @@ export class DealsService {
           changedKeys.map((key) => [key, (data as Record<string, unknown>)[key]]),
         ),
       });
-    });
+    };
+    const db = this.prisma.db as unknown as TxRunner;
+    await (trocaContato ? this.restricao.naTransacaoInterativa(db, corpo) : db.$transaction(corpo));
     return this.get(id);
   }
 

@@ -17,11 +17,11 @@ export type AiProposalStatus = 'pending' | 'executing' | 'approved' | 'rejected'
 export type AiProposalType = 'create_task' | 'send_message';
 
 /**
- * GUARDA da execução de uma proposta (ADR-047 adendo 5). Dentro da transação,
- * ANTES do claim, o adaptador trava as linhas de `contactIds` e chama
- * `recheck`, que consulta a porta de restrição: uma mudança de restrição que
- * comitou enquanto a aprovação esperava a trava é vista aqui, e nada é
- * executado.
+ * GUARDA da execução de uma proposta (ADR-047 adendo 5, com as travas do
+ * adendo 6 §6). Dentro da transação, ANTES do claim, o adaptador pega as travas
+ * de restrição de `contactIds`, compartilhadas, e chama `recheck`, que consulta
+ * a porta de restrição: uma mudança de restrição que comitou enquanto a
+ * aprovação esperava as travas é vista aqui, e nada é executado.
  */
 export interface ExecutionGuard {
   workspaceId: string;

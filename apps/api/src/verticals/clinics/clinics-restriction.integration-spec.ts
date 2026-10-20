@@ -448,24 +448,26 @@ describe('Clinics — restrição de conteúdo com a porta real e API de libera�
       await webhookSuprime(depois);
     });
 
-    it('aprovar proposta de contato liberado depois do disable: a APROVAÇÃO reconfere pela porta e recusa', async () => {
+    it('proposta de contato liberado: o disable EXPIRA o conteúdo de IA (ADR-047 adendo 6 §6), e aprovar recusa sem criar tarefa', async () => {
       await enable();
       await release(contactId).expect(201);
       llm.nextText = ACAO;
       const proposta = await post(`/api/intelligence/contacts/${contactId}/next-action`, sessionA);
       expect(proposta.body.status).toBe('proposed');
 
-      // o disable NÃO expira conteúdo: quem recusa aqui é a reconferência
+      // a desativação expira o conteúdo de IA do workspace depois do commit,
+      // como a ativação; a recusa pela reconferência sob as travas, com a
+      // mudança concorrente, está em clinics-restriction-changes
       await disable();
       expect(
         (await prisma.raw.aiProposal.findFirst({ where: { id: proposta.body.proposalId } }))!
           .status,
-      ).toBe('pending');
+      ).toBe('expired');
       const recusa = await post(
         `/api/intelligence/proposals/${proposta.body.proposalId}/approve`,
         sessionA,
       ).expect(400);
-      expect(recusa.body.message).toMatch(/restrito/);
+      expect(recusa.body.message).toMatch(/revisada|restrito/);
       expect(
         (await prisma.raw.aiProposal.findFirst({ where: { id: proposta.body.proposalId } }))!
           .status,

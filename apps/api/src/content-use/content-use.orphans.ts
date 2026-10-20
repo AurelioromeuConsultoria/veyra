@@ -30,9 +30,12 @@ export interface UsoRegistrado {
  * O que cada TIPO de uso faz com o registro de origem quando o uso vira
  * `in_doubt` (adendo 7 §3.6): o despacho vai a `unknown_after_dispatch`; o run
  * da IA e a entrega do webhook são CRIADOS incertos com o id pré-gerado, se
- * ainda não existirem. Escrita com `workspaceId` explícito, sempre pelo client
- * filtrado: a transação é a de M, a da guarda, a da recuperação ou a da
- * reconciliação (essa no workspace do candidato).
+ * ainda não existirem. A transação pode ser do client filtrado (M, a guarda,
+ * a recuperação, a reconciliação) OU do `raw`: a ativação e a desativação de
+ * um vertical marcam os órfãos numa transação administrativa sem contexto.
+ * Por isso TODO `where` e TODO `data` levam `workspaceId` explícito, sem
+ * depender do filtro (ADR-047 adendo 7 §8). A G3 testa cada tratador numa
+ * transação `raw` com linhas de outro workspace presentes.
  */
 export interface OrigemDoUso {
   marcarIncerta(tx: Db, uso: UsoRegistrado): Promise<void>;

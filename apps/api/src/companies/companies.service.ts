@@ -146,7 +146,22 @@ export class CompaniesService {
     };
     await db.$transaction(async (tx) => {
       // FK Contact→Company é Restrict (SET NULL em FK composta anularia o
-      // workspaceId): desvincula os contatos explicitamente antes de excluir
+      // workspaceId): desvincula os contatos explicitamente antes de excluir.
+      // Um a um, em ORDEM DE ID (ADR-047 adendo 6 §3.2): o lote travaria as
+      // linhas na ordem do plano, e dois lotes sobre os mesmos contatos
+      // poderiam se travar em cruz
+      const contatos = (await tx.contact.findMany({
+        where: { companyId: id },
+        select: { id: true },
+        orderBy: { id: 'asc' },
+      })) as unknown as { id: string }[];
+      for (const contato of contatos) {
+        await tx.contact.updateMany({
+          where: { id: contato.id, companyId: id },
+          data: { companyId: null },
+        });
+      }
+      // quem entrou na empresa depois da leitura (as linhas acima já são nossas)
       await tx.contact.updateMany({ where: { companyId: id }, data: { companyId: null } });
       await this.customFields.deleteValues(tx, 'company', id);
       await tx.company.deleteMany({ where: { id } });

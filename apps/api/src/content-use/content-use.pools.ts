@@ -30,6 +30,14 @@ export interface ConfigDaGuarda {
   reconferenciaMs: number;
   /** `lock_timeout` de cada candidato da reconciliação (a linha presa por M) */
   reconciliacaoMs: number;
+  /** mudança interativa por contato e aprovação: espera pelas travas (adendo 6 §4) */
+  mudancaTravaMs: number;
+  /** ... e o prazo da transação dela */
+  mudancaTransacaoMs: number;
+  /** ativar e desativar (CLI): espera pela trava do workspace */
+  workspaceTravaMs: number;
+  /** ... e o prazo da transação */
+  workspaceTransacaoMs: number;
   /** `statement_timeout` da persistência */
   persistenciaMs: number;
   /** margem do `idle_in_transaction_session_timeout` sobre o prazo do tipo */
@@ -51,6 +59,10 @@ export const CONFIG_PADRAO_DA_GUARDA: ConfigDaGuarda = {
   travaMs: 5_000,
   reconferenciaMs: 3_000,
   reconciliacaoMs: 5_000,
+  mudancaTravaMs: 10_000,
+  mudancaTransacaoMs: 30_000,
+  workspaceTravaMs: 90_000,
+  workspaceTransacaoMs: 120_000,
   persistenciaMs: 5_000,
   margemOciosaMs: 30_000,
   margemDoPrazoMs: 30_000,

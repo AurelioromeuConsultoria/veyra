@@ -12,6 +12,7 @@ import { UsageService } from '../usage/usage.service';
 import { AuditService } from '../audit/audit.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { AuthContext } from '../common/decorators';
+import { MudancasDeRestricao, type OpcoesDaTransacao } from '../content-use/restriction-changes';
 import { CustomFieldsService } from '../custom-fields/custom-fields.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { TagsService } from '../tags/tags.service';
@@ -36,7 +37,9 @@ const CONTACT_INCLUDE = {
   tags: { include: { tag: true } },
 } as const;
 
-type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
+type TxRunner = {
+  $transaction: <T>(fn: (tx: Db) => Promise<T>, options?: OpcoesDaTransacao) => Promise<T>;
+};
 
 @Injectable()
 export class ContactsService {
@@ -48,6 +51,7 @@ export class ContactsService {
     private readonly usage: UsageService,
     private readonly audit: AuditService,
     private readonly outbox: OutboxService,
+    private readonly restricao: MudancasDeRestricao,
   ) {}
 
   async list(input: ListContactsInput): Promise<Paginated<ContactDto>> {
@@ -272,45 +276,58 @@ export class ContactsService {
     })) as unknown as ContactRow | null;
     if (!existing) throw new NotFoundException('Contato não encontrado');
     const contactsLimit = await this.usage.prepareConsume(auth.workspaceId as string, 'contacts');
-    await (this.prisma.db as unknown as TxRunner).$transaction(async (tx) => {
-      /**
-       * TRAVA a linha antes de qualquer efeito: duas exclusões do mesmo contato
-       * passam a ser SERIAIS. A segunda espera a primeira; quando ela conclui,
-       * o UPDATE reavalia a linha (já apagada), não toca nada e vira 404 —
-       * em vez de seguir até o outbox e quebrar no unique de deduplicação (500),
-       * ou de descontar a cota de contatos duas vezes.
-       */
-      const atual = await this.lockAndRead(tx, id);
-      await this.audit.record(tx, auth.workspaceId as string, 'contact.deleted', {
-        entityType: 'contact',
-        entityId: id,
-        actor: this.audit.actorFrom(auth),
-        // o estado de AGORA, relido sob a trava — não o de antes da transação
-        before: { name: atual.name, status: atual.status },
-        after: null,
-      });
-      // preserva o registro comercial, desvinculando o titular
-      await tx.deal.updateMany({ where: { contactId: id }, data: { contactId: null } });
-      await tx.task.updateMany({ where: { contactId: id }, data: { contactId: null } });
-      // remove o que é conteúdo SOBRE o titular
-      await tx.note.deleteMany({ where: { contactId: id } });
-      // CustomFieldValue.entityId não tem FK (exceção documentada): limpeza aqui
-      await this.customFields.deleteValues(tx, 'contact', id);
-      await this.outbox.enqueue(
-        tx,
-        auth.workspaceId as string,
-        'contact.deleted',
-        { id },
-        `contact.deleted:${id}`,
-        // emitido ANTES do delete: a validação de isolamento ainda vê o contato
-        { subjectContactIds: [id] },
-      );
-      await tx.contact.deleteMany({ where: { id } }); // junções/activities: cascade
-      // só quem contava é descontado: arquivado já tinha liberado a vaga
-      if (atual.status === 'active') {
-        await this.usage.consume(tx, auth.workspaceId as string, 'contacts', -1, contactsLimit);
-      }
-    });
+    await this.restricao.naTransacaoInterativa(
+      this.prisma.db as unknown as TxRunner,
+      async (tx) => {
+        /**
+         * A exclusão MUDA A RESTRIÇÃO (ADR-047 adendo 6 §6): depois do commit,
+         * nenhum uso do conteúdo apagado começa. As travas de restrição vêm
+         * antes de qualquer linha, esperam os usos e as aprovações em andamento
+         * e marcam os órfãos deste contato.
+         */
+        await this.restricao.porContato(tx, {
+          workspaceId: auth.workspaceId as string,
+          contactIds: [id],
+        });
+        /**
+         * TRAVA a linha antes de qualquer efeito: duas exclusões do mesmo contato
+         * passam a ser SERIAIS. A segunda espera a primeira; quando ela conclui,
+         * o UPDATE reavalia a linha (já apagada), não toca nada e vira 404 —
+         * em vez de seguir até o outbox e quebrar no unique de deduplicação (500),
+         * ou de descontar a cota de contatos duas vezes.
+         */
+        const atual = await this.lockAndRead(tx, id);
+        await this.audit.record(tx, auth.workspaceId as string, 'contact.deleted', {
+          entityType: 'contact',
+          entityId: id,
+          actor: this.audit.actorFrom(auth),
+          // o estado de AGORA, relido sob a trava — não o de antes da transação
+          before: { name: atual.name, status: atual.status },
+          after: null,
+        });
+        // preserva o registro comercial, desvinculando o titular
+        await tx.deal.updateMany({ where: { contactId: id }, data: { contactId: null } });
+        await tx.task.updateMany({ where: { contactId: id }, data: { contactId: null } });
+        // remove o que é conteúdo SOBRE o titular
+        await tx.note.deleteMany({ where: { contactId: id } });
+        // CustomFieldValue.entityId não tem FK (exceção documentada): limpeza aqui
+        await this.customFields.deleteValues(tx, 'contact', id);
+        await this.outbox.enqueue(
+          tx,
+          auth.workspaceId as string,
+          'contact.deleted',
+          { id },
+          `contact.deleted:${id}`,
+          // emitido ANTES do delete: a validação de isolamento ainda vê o contato
+          { subjectContactIds: [id] },
+        );
+        await tx.contact.deleteMany({ where: { id } }); // junções/activities: cascade
+        // só quem contava é descontado: arquivado já tinha liberado a vaga
+        if (atual.status === 'active') {
+          await this.usage.consume(tx, auth.workspaceId as string, 'contacts', -1, contactsLimit);
+        }
+      },
+    );
   }
 
   /** Import simples (linhas já parseadas pelo cliente). source = 'import'. */

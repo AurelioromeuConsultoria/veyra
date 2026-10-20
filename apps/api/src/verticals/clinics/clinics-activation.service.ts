@@ -5,9 +5,11 @@ import {
 } from '@veyra/contracts/verticals/clinics';
 import { ClsService } from 'nestjs-cls';
 import { AuditService } from '../../audit/audit.service';
+import { postgresErrorCode } from '../../common/prisma-exception.filter';
+import { MudancasDeRestricao } from '../../content-use/restriction-changes';
 import type { Prisma } from '../../generated/prisma/client';
 import { IntelligenceService } from '../../intelligence/intelligence.service';
-import { PrismaService } from '../../prisma/prisma.service';
+import { PrismaService, type Db } from '../../prisma/prisma.service';
 import {
   CLINICS_PROFESSIONAL_CORE_KEYS,
   CLINICS_PROFESSIONAL_ROLE_NAME,
@@ -19,6 +21,13 @@ type Tx = Prisma.TransactionClient;
 export type ActivationOutcome = 'enabled' | 'reenabled' | 'already_active';
 export type DeactivationOutcome = 'disabled' | 'already_inactive';
 
+export interface DeactivationReport {
+  outcome: DeactivationOutcome;
+  workspaceId: string;
+  /** conteúdo de IA expirado depois do commit; `null` = a limpeza falhou ou nada mudou */
+  expiredContent: { results: number; proposals: number; replays: number } | null;
+}
+
 export interface ActivationReport {
   outcome: ActivationOutcome;
   workspaceId: string;
@@ -29,8 +38,6 @@ export interface ActivationReport {
 }
 
 const ACTOR = { type: 'system' as const, id: 'clinics-cli' };
-/** Prazo explícito: o padrão de 5 s do Prisma é curto para o catálogo + matriz sob carga. */
-const TX_OPTIONS = { timeout: 15_000 } as const;
 
 /**
  * Ciclo de vida da ativação do Clinics (ADR-047 §4), usado pela CLI.
@@ -40,6 +47,12 @@ const TX_OPTIONS = { timeout: 15_000 } as const;
  * `workspaceId` explícito em toda escrita. Tudo numa transação, sob trava
  * consultiva por workspace: reexecutar é seguro e o efeito depende do estado,
  * não do número de execuções.
+ *
+ * Ativar e desativar são MUDANÇAS DO WORKSPACE INTEIRO (ADR-047 adendo 6 §6):
+ * depois da trava tentada entre CLIs, a trava de restrição do workspace,
+ * EXCLUSIVA, espera os usos e as aprovações em andamento (até 90 s) e marca os
+ * usos órfãos do workspace. Estourar a espera não muda nada e responde com uma
+ * mensagem clara. Os dois expiram o conteúdo de IA depois do commit.
  *
  * É o ÚNICO escritor de `RolePermission` do vertical (teste de fronteira), e só
  * concede onde o vertical está sendo ativado.
@@ -53,12 +66,14 @@ export class ClinicsActivationService {
     private readonly audit: AuditService,
     private readonly cls: ClsService,
     private readonly intelligence: IntelligenceService,
+    private readonly restricao: MudancasDeRestricao,
   ) {}
 
   async enable(slug: string): Promise<ActivationReport> {
     const workspaceId = await this.workspaceIdOf(slug);
-    const outcome = await this.prisma.raw.$transaction(async (tx) => {
+    const outcome = await this.naMudanca(async (tx) => {
       await this.lock(tx, workspaceId);
+      await this.restricao.doWorkspaceInteiro(tx as unknown as Db, workspaceId);
       const settings = await tx.clinicsSettings.findFirst({ where: { workspaceId } });
       if (settings?.status === 'active') return 'already_active' as const;
 
@@ -93,7 +108,7 @@ export class ClinicsActivationService {
         after: { status: 'active' },
       });
       return settings ? ('reenabled' as const) : ('enabled' as const);
-    }, TX_OPTIONS);
+    });
 
     const activeWebhooks = await this.prisma.raw.webhook.count({
       where: { workspaceId, status: 'active' },
@@ -104,10 +119,11 @@ export class ClinicsActivationService {
     return { outcome, workspaceId, activeWebhooks, expiredContent: await this.expire(workspaceId) };
   }
 
-  async disable(slug: string): Promise<{ outcome: DeactivationOutcome; workspaceId: string }> {
+  async disable(slug: string): Promise<DeactivationReport> {
     const workspaceId = await this.workspaceIdOf(slug);
-    const outcome = await this.prisma.raw.$transaction(async (tx) => {
+    const outcome = await this.naMudanca(async (tx) => {
       await this.lock(tx, workspaceId);
+      await this.restricao.doWorkspaceInteiro(tx as unknown as Db, workspaceId);
       const settings = await tx.clinicsSettings.findFirst({ where: { workspaceId } });
       if (!settings || settings.status !== 'active') return 'already_inactive' as const;
 
@@ -140,11 +156,35 @@ export class ClinicsActivationService {
         after: { status: 'disabled' },
       });
       return 'disabled' as const;
-    }, TX_OPTIONS);
-    return { outcome, workspaceId };
+    });
+    if (outcome === 'already_inactive') return { outcome, workspaceId, expiredContent: null };
+    // como na ativação (ADR-047 adendo 6 §6): o conteúdo de IA do workspace
+    // expira depois do commit
+    return { outcome, workspaceId, expiredContent: await this.expire(workspaceId) };
   }
 
   // ── Internos ──────────────────────────────────────────────────────────────
+
+  /**
+   * A transação da mudança, com o prazo da espera pelos usos (120 s). Estourar
+   * a espera pela trava do workspace (55P03) não muda nada e vira uma mensagem
+   * clara para quem roda a CLI.
+   */
+  private async naMudanca<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
+    try {
+      return await this.prisma.raw.$transaction(fn, this.restricao.transacaoDoWorkspace);
+    } catch (error) {
+      // 55P03: a espera pela trava; P2028: o prazo da transação inteira
+      const codigo = postgresErrorCode(error) ?? (error as { code?: unknown } | null)?.code;
+      if (codigo === '55P03' || codigo === 'P2028') {
+        throw new ConflictException(
+          'Há usos de conteúdo em andamento neste workspace que não terminaram a tempo. ' +
+            'Nada mudou; tente de novo em instantes.',
+        );
+      }
+      throw error;
+    }
+  }
 
   private async workspaceIdOf(slug: string): Promise<string> {
     // `raw` justificado: Workspace é a raiz global; lookup administrativo por slug
@@ -272,7 +312,7 @@ export class ClinicsActivationService {
       });
     } catch (error) {
       this.logger.error(
-        `Limpeza de conteúdo de IA falhou após a ativação: ${
+        `Limpeza de conteúdo de IA falhou após mudar a ativação: ${
           error instanceof Error ? error.name : 'erro desconhecido'
         }`,
       );

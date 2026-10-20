@@ -27,12 +27,15 @@ export async function runClinicsCommand(
   { command, slug }: ClinicsCommand,
 ): Promise<string[]> {
   if (command === 'disable') {
-    const { outcome } = await service.disable(slug);
-    return [
-      outcome === 'disabled'
-        ? `Clinics DESATIVADO em ${slug}: chaves clinics:* removidas de todos os papéis; os tokens de acesso emitidos antes deixam de valer. Nenhum dado apagado; a restrição de conteúdo continua valendo.`
-        : `Clinics já não estava ativo em ${slug}: nada mudou.`,
+    const { outcome, expiredContent } = await service.disable(slug);
+    if (outcome !== 'disabled') return [`Clinics já não estava ativo em ${slug}: nada mudou.`];
+    const lines = [
+      `Clinics DESATIVADO em ${slug}: chaves clinics:* removidas de todos os papéis; os tokens de acesso emitidos antes deixam de valer. Nenhum dado apagado; a restrição de conteúdo continua valendo.`,
     ];
+    if (expiredContent === null) {
+      lines.push('Aviso: a limpeza do conteúdo de IA falhou; a leitura já o oculta.');
+    }
+    return lines;
   }
   const report = await service.enable(slug);
   if (report.outcome === 'already_active')

@@ -211,7 +211,9 @@ jobs ligados; sem consumidor ligado (G3), não há uso a reconciliar.
 
 Duas condições do banco valem para a guarda (ADR-047 adendo 7 §3.5):
 
-- **Durabilidade.** Um commit confirmado não pode se perder: failover só para
+- **Durabilidade.** Não é preciso criar réplica: o Postgres único continua
+  válido. A condição vale só se um dia houver replicação com failover. Um commit
+  confirmado não pode se perder: failover só para
   réplica **síncrona**. Com réplica assíncrona, um registro de uso comitado
   pode sumir no failover, e o critério G′ deixa de valer. Hoje o staging tem
   um Postgres só (o serviço `db` do compose), sem réplica e sem pooler, com a

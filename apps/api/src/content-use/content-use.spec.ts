@@ -2,6 +2,7 @@ import { ConflictException, type ArgumentsHost } from '@nestjs/common';
 import { BaseExceptionFilter } from '@nestjs/core';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { updateConversationSchema } from '@veyra/contracts';
 import { PrismaExceptionFilter } from '../common/prisma-exception.filter';
 import { Prisma } from '../generated/prisma/client';
 import {
@@ -17,6 +18,7 @@ import {
 } from './content-use.guard';
 import { CONFIG_PADRAO_DA_GUARDA, type ConfigDaGuarda } from './content-use.pools';
 import { prazosDaReconciliacao, varrerNaSubida } from './content-use.reconciler';
+import { MudancasDeRestricao } from './restriction-changes';
 
 /**
  * Regras estáticas e de unidade da guarda de uso externo (ADR-047 adendos 6 e 7).
@@ -140,6 +142,38 @@ describe('a ORDEM dos prazos das transações fora da guarda (com os padrões da
     const p = prazosDaReconciliacao(cfg);
     expect(p.instrucaoMs).toBeGreaterThan(p.travaMs);
     expect(p.timeoutMs).toBeGreaterThanOrEqual(p.instrucaoMs + cfg.persistenciaMs);
+  });
+});
+
+describe('a transação interativa das mudanças e aprovações', () => {
+  const restricao = new MudancasDeRestricao({} as never, CONFIG_PADRAO_DA_GUARDA);
+  const falhaCom = (code: string) => ({
+    $transaction: async () => {
+      throw Object.assign(new Error('falha'), { code });
+    },
+  });
+
+  it('usa o prazo da transação interativa (30 s)', async () => {
+    let opcoes: unknown;
+    await restricao.naTransacaoInterativa(
+      {
+        $transaction: async (fn: (tx: never) => Promise<unknown>, o?: unknown) => {
+          opcoes = o;
+          return fn({} as never);
+        },
+      } as never,
+      async () => 1,
+    );
+    expect(opcoes).toEqual({ timeout: CONFIG_PADRAO_DA_GUARDA.mudancaTransacaoMs });
+  });
+
+  it('o prazo da transação vencido (P2028) vira 409, como a espera de trava; outro erro passa como veio', async () => {
+    await expect(
+      restricao.naTransacaoInterativa(falhaCom('P2028') as never, async () => 1),
+    ).rejects.toBeInstanceOf(ConflictException);
+    await expect(
+      restricao.naTransacaoInterativa(falhaCom('P2002') as never, async () => 1),
+    ).rejects.toMatchObject({ code: 'P2002' });
   });
 });
 
@@ -284,6 +318,53 @@ describe('regras estáticas', () => {
     };
     varrer(raiz);
     expect([...new Set(achados)]).toEqual(['/usage/usage.service.ts:purgeExpiredReservations']);
+  });
+
+  it('fora de `content-use/`, as travas de restrição só se pegam pela primitiva das mudanças (adendo 6 §10.9)', () => {
+    const raiz = join(__dirname, '..');
+    const achados: string[] = [];
+    const varrer = (dir: string) => {
+      for (const entrada of readdirSync(dir, { withFileTypes: true })) {
+        const caminho = join(dir, entrada.name);
+        if (entrada.isDirectory()) {
+          if (!['generated', 'content-use'].includes(entrada.name)) varrer(caminho);
+        } else if (entrada.name.endsWith('.ts') && !entrada.name.includes('spec')) {
+          const texto = readFileSync(caminho, 'utf8');
+          // a primitiva baixa (sem marcação de órfãos) e a trava de linha antiga
+          if (/restriction-locks|lockContactsForRestriction|contact-restriction-lock/.test(texto)) {
+            achados.push(caminho.slice(raiz.length));
+          }
+        }
+      }
+    };
+    varrer(raiz);
+    expect(achados).toEqual([]);
+  });
+
+  it('o contato da CONVERSA é imutável: o contrato não o atualiza e nenhuma escrita o muda (adendo 6 §9)', () => {
+    expect(Object.keys(updateConversationSchema.shape)).not.toContain('contactId');
+    const raiz = join(__dirname, '..');
+    const achados: string[] = [];
+    const varrer = (dir: string) => {
+      for (const entrada of readdirSync(dir, { withFileTypes: true })) {
+        const caminho = join(dir, entrada.name);
+        if (entrada.isDirectory()) {
+          if (entrada.name !== 'generated') varrer(caminho);
+        } else if (entrada.name.endsWith('.ts') && !entrada.name.includes('spec')) {
+          const texto = readFileSync(caminho, 'utf8');
+          for (const escrita of texto.matchAll(/\.conversation\.(updateMany|update|upsert)\(/g)) {
+            // o objeto da escrita inteiro: até o fechamento da chamada
+            const trecho = texto.slice(escrita.index, (escrita.index ?? 0) + 600);
+            const fim = trecho.indexOf('});');
+            if ((fim === -1 ? trecho : trecho.slice(0, fim)).includes('contactId')) {
+              achados.push(caminho.slice(raiz.length));
+            }
+          }
+        }
+      }
+    };
+    varrer(raiz);
+    expect(achados).toEqual([]);
   });
 
   it('as chaves das travas de restrição só existem na primitiva', () => {

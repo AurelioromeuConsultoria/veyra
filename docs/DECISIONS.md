@@ -1622,6 +1622,83 @@ O B2 só volta para decisão depois da G4.
   - se cai o registro, a lápide segue, com o `aborted` e as reservas devolvidas;
   - se cai a lápide, o uso fica sem desfecho escrito (`registro_incerto`), o registro comita `authorized` sem a chamada ter começado, e a reconciliação o marca `in_doubt` e cobra pelo teto. É o falso positivo conservador da lápide que falha.
 
+#### 8. Implementação — G2, as mudanças e as aprovações (2026-10-20)
+
+A G1 foi publicada (`8b609de`, quatro jobs do CI verdes). A G2 leva todas as mudanças de restrição e as aprovações para a mesma primitiva de travas, como pede o adendo 6 §6. Os três usos continuam desligados até a G3. O B2 segue fechado.
+
+**A primitiva das mudanças** (`MudancasDeRestricao`, em `apps/api/src/content-use/`). Fora da guarda, ela é o único caminho para as travas de restrição, e a marcação dos usos órfãos mora dentro dela (adendo 7 §3.3). Assim, uma mudança de vertical nunca toca nas tabelas de run, despacho ou reserva. Tem três operações:
+
+- **`porContato`:** a trava do workspace compartilhada; as dos contatos e das entidades exclusivas, na ordem; e, na mesma transação, a marcação `in_doubt` (`change`) dos usos ainda `authorized` desses contatos e entidades.
+- **`doWorkspaceInteiro`:** a trava do workspace exclusiva e a marcação (`workspace_change`) de todo uso `authorized` do workspace.
+- **`paraAprovacao`:** a trava do workspace e as dos contatos compartilhadas, como um uso.
+
+Cada operação fixa o próprio `lock_timeout`, que vale **por trava**. As mudanças interativas e as aprovações rodam na transação aberta pela própria primitiva (`naTransacaoInterativa`); a CLI usa o prazo dela:
+
+| Tipo                                       | `lock_timeout` | Transação |
+| ------------------------------------------ | -------------- | --------- |
+| Mudança interativa por contato e aprovação | 10 s           | 30 s      |
+| Ativar e desativar (CLI)                   | 90 s           | 120 s     |
+
+Os valores vêm da configuração da guarda, para os testes usarem prazos curtos. Uma troca de tarefa pode esperar até seis travas, e a soma das esperas passaria do prazo da transação. Por isso o prazo vencido (P2028) também vira 409, como o 55P03, e a transação inteira é desfeita.
+
+**Os caminhos:**
+
+- **Criar paciente, conceder e revogar liberação** (Clinics): `porContato` no lugar da trava de linha do adendo 5. Criar paciente e conceder liberação conferem a existência do contato depois das travas: uma exclusão concorrente segura a mesma trava exclusiva, e a resposta é 404.
+- **Excluir contato:** `porContato` antes da trava de linha. A trava de linha (`lockAndRead`) continua, no nível 4, para serializar duas exclusões e a cota de contatos.
+- **Trocar o contato de deal:** os contatos antigo e novo e a entidade `deal:<id>`. Sob as travas, o deal é relido; se o contato mudou entre a leitura e as travas, a resposta é 409 "tente de novo", sem efeito. O contato novo também é conferido sob a trava exclusiva dele.
+- **Trocar o contato ou o deal de tarefa:** os contatos que o evento da tarefa resolve antes e depois da troca (o da tarefa e o do deal dela, a mesma regra de `resolveEventSubjects`) e a entidade `task:<id>`, com a mesma releitura e a mesma conferência do contato e do deal novos.
+- **Só o protocolo grava o titular.** O contato do deal e o contato e o deal da tarefa só entram na escrita quando a troca passou pelas travas. Um PATCH que repete o valor de uma leitura velha (o formulário de deal sempre envia o contato) não o grava. Antes, ele desfaria, sem trava nenhuma, uma troca que comitou no meio, e um uso do deal começaria com o conteúdo de volta ao contato antigo. Achado pelas revisões de `security` e `reviewer` da G2.
+- **Ativar e desativar:** a trava tentada de ativação vem primeiro (exclusão mútua entre CLIs, antes do nível 1, adendo 6 §3.2), depois `doWorkspaceInteiro`. A desativação passa a expirar o conteúdo de IA do workspace depois do commit, como a ativação já faz. O 55P03 vira uma mensagem clara na CLI, sem efeito.
+- **Aprovações** (`executeSendMessage`, `executeCreateTask`): `paraAprovacao` no lugar de `lockContactsForRestriction`. A reconferência continua sob as travas. O claim da proposta continua impedindo dupla execução, e aprovações do mesmo contato deixam de ser seriais entre si.
+- **`lockContactsForRestriction` sai do código.** Nenhuma trava de restrição toca mais a linha do contato, e o `updatedAt` deixa de ser reescrito (adendo 6 §8).
+- **Remover empresa:** trava as linhas dos contatos da empresa em ordem de id antes do lote (nível 4). Isso paga a dívida registrada, que as aprovações já não podiam mais causar, porque deixaram de travar linhas.
+
+**Desvios do texto aprovado, para o lado conservador:**
+
+- **A troca do deal de uma tarefa também entra no protocolo.** O adendo 6 §6 cita a troca de contato. Mas o evento de tarefa responde também pelo contato do deal dela, então mudar o deal muda a quem o conteúdo pertence.
+- **A troca concorrente da mesma entidade responde 409** em vez de tentar de novo. As travas não podem ser pegas fora de ordem depois da releitura, e repetir a transação inteira esconderia uma corrida rara que a pessoa resolve repetindo.
+- **As aprovações esperam 10 s**, o prazo das mudanças interativas, e não os 5 s de um uso: são interativas como elas.
+- **A marcação na ativação roda numa transação `raw`.** A ativação é rotina administrativa fora de sessão, com `workspaceId` explícito em toda escrita. Os detectores e os tratadores de origem já escrevem com o workspace explícito, e a G3 mantém essa regra.
+
+**Religação de conversa** (adendo 6 §9, regra aprovada): um teste estático fixa que o contrato de atualização da conversa não tem `contactId` e que nenhuma escrita em `Conversation` muda o contato.
+
+**Requisitos que a G2 deixa para a G3:**
+
+- **O uso de tarefa trava também `deal:<dealId>`** (e, em cadeia de automação, a entidade raiz). O evento de tarefa responde pelo contato do deal dela. Um deal sem contato que ganha um contato pega esse contato e `deal:<id>` exclusivos. Se o uso da tarefa só segurasse o workspace e `task:<id>`, a troca não o esperaria, e a marcação por entidade não o alcançaria.
+- **Os tratadores de origem escrevem com `workspaceId` explícito em todo `where` e `data`.** A ativação marca os órfãos numa transação `raw`. A G3 testa cada tratador numa transação `raw` com linhas de outro workspace presentes.
+- **A validação fechada dos metadados do run** entra antes de ligar qualquer consumidor.
+- **Pendência de exibição (nit do `reviewer`, sem efeito na garantia):** a atividade `task_completed` e a `deal_updated` usam como alvo o contato do pedido ou da leitura feita antes da transação. Com uma leitura velha, a atividade pode aparecer na linha do tempo do contato antigo. A IA só usa a data dessas atividades. A correção relê a linha travada pela escrita.
+
+**Testes** (dados fictícios; usos falsos sob a guarda real, com a porta real do Clinics na reconferência; quem espera quem é conferido em `pg_locks` e `pg_blocking_pids`, nunca por sono):
+
+- **Integração, `clinics-restriction-changes` (25):**
+  - **Uso primeiro**, para cada mudança (revogar, tornar paciente, excluir contato, trocar o contato do deal com o webhook sem contato no escopo, trocar o contato da tarefa, trocar o deal da tarefa, desativar): a mudança comprovadamente espera o uso; o uso termina `concluded` e a mudança comita depois.
+  - **Mudança primeiro** (revogar, tornar paciente, excluir contato, trocar o contato do deal, ativar): o uso comprovadamente espera a mudança; depois do commit, ele reconfere e recusa sem chamar.
+  - **Órfãos:** marcados pela mudança na mesma transação, pelo contato, pela entidade (deal sem contato) e pelo workspace inteiro; o de outro contato fica.
+  - **Espera estourada:** revogar com um uso em andamento dá 55P03 (409 na rota), e a liberação continua; desativar dá a mensagem clara da CLI, e o Clinics continua ativo.
+  - **Aprovação × ativação:** com a ativação primeiro, a tarefa não nasce; com a aprovação primeiro, a ativação espera. Duas aprovações do mesmo contato não se esperam, e o claim impede a dupla execução.
+  - **Troca concorrente da mesma entidade:** 409, sem efeito. A troca do deal da tarefa, enquanto o contato do deal antigo muda, é vista pela releitura e responde 409.
+  - **Só o protocolo grava o titular:** um PATCH de deal ou de tarefa com a leitura velha, enquanto outra troca comita, não a desfaz.
+  - **Fumaça da ordem global:** mudança por contato, ativação, aprovação, troca de tarefa e uso concorrentes terminam sem deadlock, cada um com um desfecho previsto (o uso termina; as recusas são espera estourada, restrito ou proposta já revisada). É o único teste com um sono, para soltar o uso no meio; a prova da ordem é a dos testes determinísticos e a regra estática.
+- **Adaptados:**
+  - os testes do adendo 5 em `clinics-patients` passam a segurar as travas consultivas: a exclusiva do contato, como uma mudança, ou a compartilhada, como um uso;
+  - o teste da desativação em `clinics-restriction` passa a exigir a expiração do conteúdo de IA.
+- **Estáticos (2):** fora de `content-use/`, ninguém pega as travas sem a primitiva das mudanças, e a trava de linha antiga não existe mais; o contato da conversa não se atualiza (contrato e escritas).
+- **Unidade (2):** a transação interativa usa o prazo de 30 s, e o prazo vencido (P2028) vira 409, enquanto outro erro passa como veio.
+- **Mutação:** cada uma das 17 abaixo derruba pelo menos um teste, e todas compilam:
+  - revogar, tornar paciente, excluir contato, trocar o contato do deal ou da tarefa sem a primitiva;
+  - a troca de contato do deal sem a releitura sob as travas, e a da tarefa também;
+  - o deal ou a tarefa que gravam o titular da leitura velha;
+  - o prazo da transação vencido respondido como 500;
+  - a tarefa que ignora a troca de deal;
+  - a ativação sem a trava do workspace;
+  - a desativação sem expirar o conteúdo de IA;
+  - a aprovação sem travas, ou com travas exclusivas;
+  - a mudança sem marcar os órfãos;
+  - uma escrita que muda o contato da conversa.
+
+  A remoção de empresa em ordem de id não tem teste determinístico: o deadlock que ela evita exige uma corrida exata entre dois lotes. Ela fica coberta pela leitura do código e pelo fim da trava de linha nas aprovações, que era o outro lado da corrida registrada.
+
 ## ADR-048 — Veyra Clinics para estética: domínio próprio, classificação de dados e escopo do MVP
 
 **Status:** aceito · **Data:** 2026-10-19 · Aprovação da F0 (documental): aprova o desenho e as decisões marcadas como aprovadas, não código nem migrations. **Seguem pendentes:** validação operacional das hipóteses H1–H7, avaliação jurídica (§9.2) e bloqueios B1–B4 — sem eles, nenhum dado real de paciente e nenhum piloto clínico

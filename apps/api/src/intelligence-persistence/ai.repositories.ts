@@ -4,7 +4,7 @@ import { Prisma } from '../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { TasksService } from '../tasks/tasks.service';
-import { lockContactsForRestriction } from '../contacts/contact-restriction-lock';
+import { MudancasDeRestricao, type OpcoesDaTransacao } from '../content-use/restriction-changes';
 import { WhatsappSendService } from '../channels/whatsapp-send.service';
 import type {
   AiConsentRepository,
@@ -34,7 +34,9 @@ import { PromptHashMismatchError } from '../intelligence/ports/repositories';
  * dentro seja absoluto e verificável — sem pasta de exceção.
  */
 
-type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
+type TxRunner = {
+  $transaction: <T>(fn: (tx: Db) => Promise<T>, options?: OpcoesDaTransacao) => Promise<T>;
+};
 
 /**
  * Reconhece a violação do unique do RASCUNHO PENDENTE — e só ela: engolir
@@ -228,6 +230,7 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
      */
     private readonly send: WhatsappSendService,
     private readonly cls: ClsService,
+    private readonly restricao: MudancasDeRestricao,
   ) {}
 
   async create(workspaceId: string, proposal: AiProposalInput): Promise<string> {
@@ -390,8 +393,8 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
     guard: ExecutionGuard,
   ): Promise<{ taskId: string } | 'not_pending' | GuardRefusal> {
     const db = this.prisma.db as unknown as TxRunner;
-    return db.$transaction(async (tx) => {
-      // trava os contatos e reconfere ANTES do claim (ADR-047 adendo 5)
+    return this.restricao.naTransacaoInterativa(db, async (tx) => {
+      // trava os contatos e reconfere ANTES do claim (ADR-047 adendo 6 §6)
       const veredito = await this.underGuard(tx, guard);
       if (veredito !== 'allowed') return veredito;
       const claimed = await tx.aiProposal.updateMany({
@@ -466,8 +469,8 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
     const authorType = input.edited ? 'user' : 'ai';
     try {
       const db = this.prisma.db as unknown as TxRunner;
-      const outcome = await db.$transaction(async (tx) => {
-        // trava os contatos e reconfere ANTES do claim (ADR-047 adendo 5)
+      const outcome = await this.restricao.naTransacaoInterativa(db, async (tx) => {
+        // trava os contatos e reconfere ANTES do claim (ADR-047 adendo 6 §6)
         const veredito = await this.underGuard(tx, guard);
         if (veredito !== 'allowed') return veredito;
         const claimed = await tx.aiProposal.updateMany({
@@ -534,17 +537,23 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
   }
 
   /**
-   * Trava os contatos da proposta e reconfere a restrição SOB a trava. Uma
-   * mudança de restrição que comitou enquanto esta transação esperava é vista
-   * aqui: a reconferência é uma consulta NOVA, feita depois de a trava ser
-   * concedida — e a trava só é concedida depois do commit de quem a segurava.
+   * Pega as travas de restrição da proposta — compartilhadas, como um uso
+   * (ADR-047 adendo 6 §6) — e reconfere a restrição SOB elas. Uma mudança que
+   * comitou enquanto esta transação esperava é vista aqui: a reconferência é
+   * uma consulta NOVA, feita depois de as travas serem concedidas — e elas só
+   * são concedidas depois do commit de quem segurava a exclusiva. Duas
+   * aprovações do mesmo contato não se esperam; o claim impede a dupla
+   * execução.
    *
    * Custo conhecido (ADR-047 adendo 5, item 5): a reconferência usa OUTRA
    * conexão do pool enquanto esta transação segura a sua. Rajada que esgote o
    * pool termina pelo timeout da porta (503) — falha fechada; dívida registrada.
    */
   private async underGuard(tx: Db, guard: ExecutionGuard): Promise<'allowed' | GuardRefusal> {
-    await lockContactsForRestriction(tx, guard.workspaceId, guard.contactIds);
+    await this.restricao.paraAprovacao(tx, {
+      workspaceId: guard.workspaceId,
+      contactIds: guard.contactIds,
+    });
     return guard.recheck();
   }
 

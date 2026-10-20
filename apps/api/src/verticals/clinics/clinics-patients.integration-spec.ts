@@ -3,7 +3,8 @@ import type { INestApplication } from '@nestjs/common';
 import { Client } from 'pg';
 import request from 'supertest';
 import { CryptoService } from '../../common/crypto.service';
-import * as travaDoContato from '../../contacts/contact-restriction-lock';
+import { CHAVE } from '../../content-use/restriction-locks';
+import { MudancasDeRestricao } from '../../content-use/restriction-changes';
 import {
   META_TRANSPORT,
   type FetchOutcome,
@@ -511,8 +512,10 @@ describe('Clinics — paciente e a regra da liberação de IA (integração, F2.
 
   describe('associação a paciente × aprovação concorrente', () => {
     /**
-     * Uma conexão externa faz o que a criação do paciente faz — TRAVA a linha
-     * do contato e insere o paciente — e segura a transação aberta. A
+     * Uma conexão externa faz o que a criação do paciente faz — pega as travas
+     * de restrição do contato, a do workspace compartilhada e a do contato
+     * EXCLUSIVA (ADR-047 adendo 6 §6), e insere o paciente — e segura a
+     * transação aberta. A
      * aprovação, disparada nesse meio, passa pela checagem rápida (o paciente
      * ainda não comitou) e precisa ficar BLOQUEADA na trava do contato; depois
      * do commit, reconfere e recusa. Sem a trava na aprovação, ela terminaria
@@ -526,7 +529,12 @@ describe('Clinics — paciente e a regra da liberação de IA (integração, F2.
       await trava.connect();
       try {
         await trava.query('BEGIN');
-        await trava.query(`UPDATE "Contact" SET "updatedAt" = now() WHERE "id" = $1`, [contactId]);
+        await trava.query('SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))', [
+          CHAVE.workspace(wsA.workspaceId),
+        ]);
+        await trava.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [
+          CHAVE.contato(wsA.workspaceId, contactId),
+        ]);
         await trava.query(
           `INSERT INTO "ClinicsPatient" ("id", "workspaceId", "contactId", "createdByMembershipId")
            VALUES ($1, $2, $3, $4)`,
@@ -605,16 +613,16 @@ describe('Clinics — paciente e a regra da liberação de IA (integração, F2.
       const { rascunho, tarefa } = await gerarPropostas();
       const mensagensAntes = await prisma.raw.message.count({ where: { direction: 'outbound' } });
 
-      // a porta falha só DEPOIS de a aprovação tomar a trava do contato: a
-      // checagem rápida passa, e quem responde é a reconferência sob trava
-      const travaReal = travaDoContato.lockContactsForRestriction;
+      // a porta falha só DEPOIS de a aprovação tomar as travas do contato: a
+      // checagem rápida passa, e quem responde é a reconferência sob as travas
+      const restricao = app.get(MudancasDeRestricao);
+      const travaReal = restricao.paraAprovacao.bind(restricao);
       let travou = false;
       const espiaTrava = jest
-        .spyOn(travaDoContato, 'lockContactsForRestriction')
+        .spyOn(restricao, 'paraAprovacao')
         .mockImplementation(async (...args) => {
-          const travados = await travaReal(...args);
+          await travaReal(...args);
           travou = true;
-          return travados;
         });
       const port = app.get(ClinicsContentRestriction);
       const portaReal = port.restricted.bind(port);
@@ -650,14 +658,18 @@ describe('Clinics — paciente e a regra da liberação de IA (integração, F2.
       expect(await prisma.raw.task.count()).toBe(1);
     });
 
-    it('o outro lado do contrato: criar paciente, conceder e revogar liberação ESPERAM a trava do contato', async () => {
+    it('o outro lado do contrato: criar paciente, conceder e revogar liberação ESPERAM as travas que um uso ou uma aprovação seguram', async () => {
       const sobTrava = async (mudar: () => request.Test, esperado: number) => {
         const trava = new Client({ connectionString: TEST_DATABASE_URL });
         await trava.connect();
         try {
+          // o que um uso ou uma aprovação seguram: tudo COMPARTILHADO
           await trava.query('BEGIN');
-          await trava.query(`UPDATE "Contact" SET "updatedAt" = now() WHERE "id" = $1`, [
-            contactId,
+          await trava.query('SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))', [
+            CHAVE.workspace(wsA.workspaceId),
+          ]);
+          await trava.query('SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))', [
+            CHAVE.contato(wsA.workspaceId, contactId),
           ]);
           let respondeu: number | null = null;
           const pedido = mudar().then((res) => {
