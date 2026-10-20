@@ -56,6 +56,20 @@ export function isPendingReplyConflict(error: unknown): boolean {
   return JSON.stringify(error.meta ?? '').includes('pendingReplyMark');
 }
 
+/**
+ * Reconhece a violação do unique `(capability, version)` de `PromptVersion` —
+ * a corrida do PRIMEIRO uso de uma versão de prompt. Mesmo critério de
+ * `isPendingReplyConflict`: o `meta` inteiro, porque no driver adapter do
+ * Prisma 7 o alvo vem aninhado, não em `target`.
+ */
+export function isPromptVersionConflict(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') {
+    return false;
+  }
+  const meta = JSON.stringify(error.meta ?? '');
+  return meta.includes('capability') && meta.includes('version');
+}
+
 @Injectable()
 export class PrismaAiRunRepository implements AiRunRepository {
   constructor(
@@ -701,22 +715,44 @@ export class PrismaPromptVersionRepository implements PromptVersionRepository {
     hash: string,
     changelog: string,
   ): Promise<string> {
-    const existing = await this.prisma.raw.promptVersion.findFirst({
-      where: { capability, version },
-    });
-    if (existing) {
-      if (existing.hash !== hash) {
-        // editar o texto sem subir a versão faria runs antigos e novos
-        // apontarem para a MESMA versão com conteúdos diferentes
-        throw new PromptHashMismatchError(
-          `Prompt ${capability}@${version} foi alterado sem subir a versão — crie a versão ${version + 1}`,
-        );
-      }
-      return existing.id;
+    const existing = await this.find(capability, version);
+    if (existing) return conferido(existing, capability, version, hash);
+    try {
+      const created = await this.prisma.raw.promptVersion.create({
+        data: { capability, version, hash, changelog },
+      });
+      return created.id;
+    } catch (error) {
+      // corrida do PRIMEIRO uso: outra geração criou esta versão entre a
+      // leitura e a criação. Vale a vencedora — relida e com o hash conferido,
+      // como no caminho normal —, nunca um 409 para quem só pediu uma geração.
+      // Sem transação em volta, a releitura depois do erro é segura.
+      if (!isPromptVersionConflict(error)) throw error;
+      const vencedora = await this.find(capability, version);
+      if (!vencedora) throw error;
+      return conferido(vencedora, capability, version, hash);
     }
-    const created = await this.prisma.raw.promptVersion.create({
-      data: { capability, version, hash, changelog },
-    });
-    return created.id;
   }
+
+  private find(capability: string, version: number) {
+    return this.prisma.raw.promptVersion.findFirst({ where: { capability, version } });
+  }
+}
+
+/**
+ * Editar o texto sem subir a versão faria runs antigos e novos apontarem para
+ * a MESMA versão com conteúdos diferentes: o hash precisa bater.
+ */
+function conferido(
+  row: { id: string; hash: string },
+  capability: string,
+  version: number,
+  hash: string,
+): string {
+  if (row.hash !== hash) {
+    throw new PromptHashMismatchError(
+      `Prompt ${capability}@${version} foi alterado sem subir a versão — crie a versão ${version + 1}`,
+    );
+  }
+  return row.id;
 }

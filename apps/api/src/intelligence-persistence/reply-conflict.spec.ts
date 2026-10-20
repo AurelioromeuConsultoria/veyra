@@ -1,5 +1,5 @@
 import { Prisma } from '../generated/prisma/client';
-import { isPendingReplyConflict } from './ai.repositories';
+import { isPendingReplyConflict, isPromptVersionConflict } from './ai.repositories';
 
 /**
  * A FORMA do erro é do provedor, e mudou entre versões: no Prisma 7 com driver
@@ -66,5 +66,46 @@ describe('isPendingReplyConflict', () => {
     expect(isPendingReplyConflict(p2003)).toBe(false);
     expect(isPendingReplyConflict(new Error('pendingReplyMark'))).toBe(false);
     expect(isPendingReplyConflict(null)).toBe(false);
+  });
+});
+
+/** A mesma lição para o unique `(capability, version)` de `PromptVersion`. */
+describe('isPromptVersionConflict', () => {
+  const p2002 = (meta: Record<string, unknown>) =>
+    new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+      code: 'P2002',
+      clientVersion: '7.9.1',
+      meta,
+    });
+
+  it('reconhece o unique da versão de prompt na forma do driver adapter e na antiga', () => {
+    expect(
+      isPromptVersionConflict(
+        p2002({
+          modelName: 'PromptVersion',
+          driverAdapterError: {
+            name: 'DriverAdapterError',
+            cause: {
+              originalCode: '23505',
+              kind: 'UniqueConstraintViolation',
+              constraint: { fields: ['"capability"', '"version"'] },
+            },
+          },
+        }),
+      ),
+    ).toBe(true);
+    expect(isPromptVersionConflict(p2002({ target: ['capability', 'version'] }))).toBe(true);
+  });
+
+  it('NÃO engole outro unique, outro código nem erro comum', () => {
+    expect(isPromptVersionConflict(p2002({ target: ['id'] }))).toBe(false);
+    const p2003 = new Prisma.PrismaClientKnownRequestError('FK', {
+      code: 'P2003',
+      clientVersion: '7.9.1',
+      meta: { target: ['capability', 'version'] },
+    });
+    expect(isPromptVersionConflict(p2003)).toBe(false);
+    expect(isPromptVersionConflict(new Error('capability version'))).toBe(false);
+    expect(isPromptVersionConflict(null)).toBe(false);
   });
 });

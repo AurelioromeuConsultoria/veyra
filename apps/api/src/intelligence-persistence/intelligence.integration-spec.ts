@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
+import { Client } from 'pg';
 import request from 'supertest';
 import { PrismaService } from '../prisma/prisma.service';
 import { createTestApp } from '../../test/integration/app';
@@ -12,8 +13,15 @@ import {
   setPlanLimit,
   type WorkspaceFixture,
 } from '../../test/integration/fixtures';
+import { TEST_DATABASE_URL } from '../../test/integration/db-url';
 import { resetDb } from '../../test/integration/harness';
+import { esperarBloqueadosPor } from '../../test/integration/locks';
 import { IntelligenceService } from '../intelligence/intelligence.service';
+import {
+  PROMPT_VERSION_REPOSITORY,
+  PromptHashMismatchError,
+  type PromptVersionRepository,
+} from '../intelligence/ports/repositories';
 import {
   LLM_CLIENT,
   type LlmClient,
@@ -369,6 +377,111 @@ describe('Intelligence v1 — consentimento, runs e propostas (integração)', (
     const res = await post(`/api/intelligence/proposals/${proposalId}/approve`, sessionA);
     expect(res.status).toBeGreaterThanOrEqual(400);
     expect(await prisma.raw.task.count()).toBe(0);
+  });
+
+  // ── Primeiro uso de uma versão de prompt ──────────────────────────────────
+
+  /**
+   * Corrida do PRIMEIRO uso: duas gerações leem "a versão não existe" e as duas
+   * tentam criá-la. A conexão externa segura a tabela em modo SHARE — ler pode,
+   * inserir não —, então as duas passam pela leitura e param no INSERT com
+   * certeza, não por sorte. Ao soltar, uma vence; a outra relê a vencedora e
+   * confere o hash. Antes da correção, a perdedora respondia 409.
+   */
+  it('as duas PRIMEIRAS gerações simultâneas de um prompt: uma versão vencedora, relida com hash conferido, sem 409', async () => {
+    await consentir().expect(200);
+    const outraConversa = (
+      await post('/api/conversations', sessionA, { contactId: contactA, subject: 'Outra' }).expect(
+        201,
+      )
+    ).body.id as string;
+    await post(`/api/conversations/${outraConversa}/messages`, sessionA, {
+      direction: 'inbound',
+      body: 'Pode me ligar amanhã?',
+    }).expect(201);
+    expect(await prisma.raw.promptVersion.count()).toBe(0); // primeiro uso de verdade
+
+    const trava = new Client({ connectionString: TEST_DATABASE_URL });
+    await trava.connect();
+    let respostas: request.Response[];
+    let pedidos: Promise<request.Response>[] = [];
+    try {
+      await trava.query('BEGIN');
+      await trava.query('LOCK TABLE "PromptVersion" IN SHARE MODE');
+      const responderam: number[] = [];
+      const gerar = (conversa: string) =>
+        post(`/api/intelligence/conversations/${conversa}/summary`, sessionA).then((res) => {
+          responderam.push(res.status);
+          return res;
+        });
+      // conversas diferentes: a única disputa é a da versão do prompt
+      pedidos = [gerar(conversaA), gerar(outraConversa)];
+      await esperarBloqueadosPor(trava, 2, {
+        descricao: 'duas gerações paradas no INSERT da versão do prompt',
+        aCadaTentativa: () => {
+          if (responderam.length > 0) {
+            throw new Error(`uma geração respondeu ${responderam[0]} sem chegar ao INSERT`);
+          }
+        },
+      });
+      await trava.query('COMMIT');
+      respostas = await Promise.all(pedidos);
+    } finally {
+      await trava.end();
+      // nunca deixar pedido em voo para o próximo teste (o TRUNCATE colidiria)
+      await Promise.allSettled(pedidos);
+    }
+    expect(respostas.map((res) => [res.status, res.body.status])).toEqual([
+      [201, 'ok'],
+      [201, 'ok'],
+    ]);
+    const versoes = await prisma.raw.promptVersion.findMany({
+      where: { capability: 'conversation_summary' },
+    });
+    expect(versoes).toHaveLength(1);
+    const runs = await prisma.raw.aiRun.findMany({
+      where: { capability: 'conversation_summary', status: 'ok' },
+    });
+    expect(runs.map((run) => run.promptVersionId)).toEqual([versoes[0].id, versoes[0].id]);
+  });
+
+  it('na releitura depois da corrida, o hash é conferido: vencedora com OUTRO texto é recusada, com o mesmo é adotada', async () => {
+    const repo = app.get<PromptVersionRepository>(PROMPT_VERSION_REPOSITORY);
+    const corrida = async (capability: string, hashDaVencedora: string) => {
+      const trava = new Client({ connectionString: TEST_DATABASE_URL });
+      await trava.connect();
+      let resultado: Promise<{ id: string } | { erro: unknown }> | undefined;
+      try {
+        await trava.query('BEGIN');
+        const { rows } = await trava.query<{ id: string }>(
+          `INSERT INTO "PromptVersion" ("id", "capability", "version", "hash", "changelog")
+           VALUES (gen_random_uuid(), $1, 1, $2, 'fictício') RETURNING "id"`,
+          [capability, hashDaVencedora],
+        );
+        let terminou = false;
+        // a leitura não vê a linha (ainda sem commit); a criação para no unique
+        resultado = repo.ensure(capability, 1, 'hash-deste-texto', 'fictício').then(
+          (id) => ((terminou = true), { id }),
+          (erro: unknown) => ((terminou = true), { erro }),
+        );
+        await esperarBloqueadosPor(trava, 1, {
+          descricao: 'criação da versão parada no unique',
+          aCadaTentativa: () => {
+            if (terminou) throw new Error('o ensure terminou sem disputar a versão');
+          },
+        });
+        await trava.query('COMMIT');
+        return { vencedora: rows[0].id, ...(await resultado) };
+      } finally {
+        await trava.end();
+        await resultado; // nunca fica em voo para o próximo teste
+      }
+    };
+
+    const diferente = await corrida('teste_corrida_outro_texto', 'hash-de-outro-texto');
+    expect('erro' in diferente && diferente.erro).toBeInstanceOf(PromptHashMismatchError);
+    const igual = await corrida('teste_corrida_mesmo_texto', 'hash-deste-texto');
+    expect(igual).toEqual({ vencedora: igual.vencedora, id: igual.vencedora });
   });
 
   // ── P0: isolamento e RBAC ─────────────────────────────────────────────────
