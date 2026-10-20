@@ -844,6 +844,27 @@ A F1.c, entrega 2, implementa o E5 com a forma abaixo.
 4. **Rota acessada direto com o vertical inativo** mostra uma mensagem de indisponível, sem consultar dados. Enquanto o status carrega, mostra só o carregamento; se ele falhar, mostra o erro. Uma falha de **recarga** do status também esconde o vertical (falha fechada), mesmo depois de uma confirmação anterior. É deliberado: é o critério aprovado, e o custo é perder um formulário não salvo numa rede instável.
 5. **Notas.** A estabilidade do hook vindo do contexto depende de convenção (a raiz entrega uma função de módulo) e dos testes de navegação; o projeto não usa `eslint-plugin-react-hooks`. O `vite.config.ts` cita o subpath de contratos do vertical em `optimizeDeps`: é configuração de build, não import de código, e a barreira de lint não o alcança. As rotas de vertical têm prefixo próprio e não podem coincidir com uma seção do Core (teste em `composition.test.ts`).
 
+### Adendo 5 (2026-10-19) — E6: mudança de restrição e aprovação serializadas pela linha do contato
+
+Condição aprovada na revisão do plano da F2 (ADR-048, adendo 2, item 2). **Se uma mudança POR CONTATO que torna um contato restrito comitar, nenhuma aprovação concorrente pode converter uma proposta daquele contato em mensagem ou tarefa.** Reconferir a porta antes da transação não basta: entre a checagem e o claim, a mudança pode comitar. Mudanças que valem para o workspace inteiro (ativar e desativar o vertical) usam trava consultiva por workspace e **não** se serializam com aprovações; ver item 7.
+
+1. **Primitiva do Core: `lockContactsForRestriction(tx, workspaceId, contactIds)`** (`src/contacts/`). Ela trava, dentro da transação do chamador, a linha de cada contato, em ordem de id para não haver deadlock. O `workspaceId` vai explícito no filtro, porque o tipo da transação é o mesmo para o client protegido e o `raw`. Usa o mesmo mecanismo de `ContactsService.lockAndRead` e ignora `null` e contato que não existe mais (a porta trata id desconhecido como restrito). É uma função pura do domínio de contatos, sem injeção de dependência, para que o Core e as extensões a usem sem ciclo de módulos.
+2. **Regra do contrato do E6 para extensões:** toda escrita que **muda a restrição** de um contato (no Clinics: criar paciente, conceder e revogar liberação) **trava a linha do contato** com essa primitiva antes de escrever, na mesma transação.
+3. **Aprovação no Core:** `executeSendMessage` e `executeCreateTask` recebem uma **guarda** com os contatos da proposta e uma função de reconferência. Dentro da transação, **antes do claim**, o repositório trava os contatos e chama a reconferência, que consulta a porta. Se a resposta for "restrito" ou "indisponível", nada é executado. A aprovação responde como hoje (400 e proposta expirada, ou 503 sem expirar), e a reserva de envio é liberada. A checagem rápida antes da transação continua, porque evita trabalho, mas a garantia vem da reconferência sob trava.
+4. **Ordem resultante:**
+   - **mudança comitada primeiro:** a aprovação esperava a trava, reconfere depois do commit e recusa;
+   - **aprovação travada primeiro:** ela termina inteira antes da mudança, numa ordem serial legítima, e o despacho de mensagem da IA reconfere a porta antes de enviar.
+5. **Custo aceito:**
+   - a trava atualiza o `updatedAt` do contato, como já fazem a exclusão e o arquivamento concorrentes;
+   - aprovações de propostas do mesmo contato passam a ser seriais;
+   - **a reconferência usa outra conexão do pool** enquanto a transação da aprovação segura a sua. Uma rajada de aprovações simultâneas que esgote o pool (10 conexões por instância, por padrão) só termina pelo timeout da porta (3 s, resposta 503) ou da transação (5 s). A falha é fechada: nada é executado nem expirado. Fica como dívida com gatilho. A correção, que é a porta ler pela própria transação, muda o contrato do E6 e pede adendo próprio.
+6. **Prova:** teste determinístico com uma conexão que segura a linha do contato e insere a mudança de restrição na mesma transação. A aprovação, de mensagem e de tarefa, fica comprovadamente bloqueada e recusa depois do commit, sem mensagem, tarefa nem despacho. Uma mutação que remova a trava da aprovação derruba o teste.
+7. **Limites conhecidos, fora desta garantia:**
+   - **(a) Geração nova:** o gateway confere a porta e chama o provedor sem trava. Uma mudança que comite durante esse único `await` deixa sair o pedido já autorizado. Uma trava não pode atravessar uma chamada de LLM, que leva segundos. O resultado fica oculto na leitura e é recusado na aprovação, mas pode sobrar sem expirar até a próxima limpeza.
+   - **(b) Mudanças do workspace inteiro:** ativar e desativar não travam contatos. Uma aprovação de tarefa concorrente pode comitar depois. A mensagem é barrada no despacho e o webhook na entrega, mas a tarefa nasce.
+   - **(c) Despacho de mensagem da IA:** reconfere só o contato **atual** da conversa. Se a conversa for religada a outro contato liberado entre a aprovação e o despacho, a mensagem sai. É anterior a este adendo e exige religação.
+   - Os três estão registrados como dívida.
+
 ## ADR-048 — Veyra Clinics para estética: domínio próprio, classificação de dados e escopo do MVP
 
 **Status:** aceito · **Data:** 2026-10-19 · Aprovação da F0 (documental): aprova o desenho e as decisões marcadas como aprovadas, não código nem migrations. **Seguem pendentes:** validação operacional das hipóteses H1–H7, avaliação jurídica (§9.2) e bloqueios B1–B4 — sem eles, nenhum dado real de paciente e nenhum piloto clínico

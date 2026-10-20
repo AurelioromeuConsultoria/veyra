@@ -17,6 +17,20 @@ export type AiProposalStatus = 'pending' | 'executing' | 'approved' | 'rejected'
 export type AiProposalType = 'create_task' | 'send_message';
 
 /**
+ * GUARDA da execução de uma proposta (ADR-047 adendo 5). Dentro da transação,
+ * ANTES do claim, o adaptador trava as linhas de `contactIds` e chama
+ * `recheck`, que consulta a porta de restrição: uma mudança de restrição que
+ * comitou enquanto a aprovação esperava a trava é vista aqui, e nada é
+ * executado.
+ */
+export interface ExecutionGuard {
+  workspaceId: string;
+  contactIds: readonly (string | null)[];
+  recheck: () => Promise<'allowed' | 'restricted' | 'unavailable'>;
+}
+export type GuardRefusal = 'restricted' | 'unavailable';
+
+/**
  * Registro de um run. `contextSummary` é a DESCRIÇÃO do contexto (quais
  * entidades e campos), nunca o payload; `reasonCode` é código curto, nunca
  * stack trace nem mensagem do provedor.
@@ -159,7 +173,8 @@ export interface AiProposalRepository {
     runId: string,
     input: CreateTaskExecution,
     approver: ApprovalContext,
-  ): Promise<{ taskId: string } | 'not_pending'>;
+    guard: ExecutionGuard,
+  ): Promise<{ taskId: string } | 'not_pending' | GuardRefusal>;
   /**
    * Mesma garantia para o ENVIO (ADR-044.5): a proposta é reivindicada na
    * MESMA transação que grava a mensagem, o despacho e o evento de outbox —
@@ -175,7 +190,8 @@ export interface AiProposalRepository {
     runId: string,
     input: SendMessageExecution,
     approver: ApprovalContext,
-  ): Promise<{ messageId: string } | 'not_pending'>;
+    guard: ExecutionGuard,
+  ): Promise<{ messageId: string } | 'not_pending' | GuardRefusal>;
   /**
    * Rascunho de resposta ainda pendente de UMA conversa. Método próprio em vez
    * de filtrar `list('pending')`: a fila do workspace inteiro pode ser longa, e

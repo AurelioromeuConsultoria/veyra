@@ -26,7 +26,8 @@ Referências: `docs/ARCHITECTURE.md §6`, ADR-015, **ADR-047** (contrato de exte
 9. **Restrição de conteúdo (E6)** quando o vertical tem dado S:
    - é derivada da **presença** do vertical (linha de ativação em qualquer status **ou** qualquer dado do vertical), nunca do status;
    - é restrita por padrão e controlada **por consumidor** (`ai`, `webhook`), e uma liberação nunca vale para outro consumidor;
-   - falha fechada e não usa cache.
+   - falha fechada e não usa cache;
+   - **toda escrita que muda a restrição de um contato** (no Clinics: criar paciente, conceder e revogar liberação) trava a linha do contato com `lockContactsForRestriction` (`src/contacts/`), na mesma transação, antes de escrever. É isso que serializa a mudança com a aprovação de propostas da IA (ADR-047 adendo 5). Teste com uma conexão que segura a trava, `esperarBloqueadosPor` e uma mutação que remova a trava.
 10. **Testes obrigatórios**:
 
     - P0 de isolamento em cada tabela, e FK composta recusando referência de outro workspace;

@@ -34,6 +34,7 @@ import {
   type AiRunStatus,
   type ApprovalContext,
   type ContentTarget,
+  type ExecutionGuard,
   type PromptVersionRepository,
 } from './ports/repositories';
 import {
@@ -870,10 +871,9 @@ export class IntelligenceService {
       throw new BadRequestException('Proposta sem conversa vinculada');
     }
     const conversation = await this.conversations.get(proposal.conversationId);
-    await this.assertProposalNotRestricted(auth, id, [
-      proposal.contactId ?? null,
-      conversation.contactId,
-    ]);
+    const contatos = [proposal.contactId ?? null, conversation.contactId];
+    // checagem rápida (evita trabalho); a GARANTIA é a reconferência sob trava
+    await this.assertProposalNotRestricted(auth, id, contatos);
     // revalida o payload NO ACEITE: entre propor e aprovar, nada garante que a
     // linha não foi adulterada por outro caminho
     const payload = sendMessagePayloadSchema.parse(proposal.payload);
@@ -884,8 +884,12 @@ export class IntelligenceService {
       proposal.runId,
       { conversationId: proposal.conversationId, body, edited: body !== payload.body },
       { workspaceId: auth.workspaceId as string, membershipId: auth.membershipId as string },
+      this.guardFor(auth, contatos),
     );
     if (result === 'not_pending') throw new BadRequestException('Proposta já revisada');
+    if (result === 'restricted' || result === 'unavailable') {
+      return this.refuseRestricted(auth, id, result);
+    }
     return result;
   }
 
@@ -903,7 +907,6 @@ export class IntelligenceService {
       await this.proposals.transition(id, 'expired', this.approver(auth), 'system');
       throw new BadRequestException('Proposta expirada');
     }
-    await this.assertProposalNotRestricted(auth, id, [proposal.contactId ?? null]);
     // revalida o payload NO ACEITE: entre propor e aprovar, nada garante que a
     // linha não foi adulterada por outro caminho
     const payload = z
@@ -914,14 +917,24 @@ export class IntelligenceService {
       })
       .strict()
       .parse(proposal.payload);
+    // o contato da proposta E o da tarefa que ela criaria — nas duas checagens
+    const contatos = [proposal.contactId ?? null, payload.contactId];
+    // checagem rápida (evita trabalho); a GARANTIA é a reconferência sob trava
+    await this.assertProposalNotRestricted(auth, id, contatos);
 
     // reivindicar → criar → registrar → concluir, tudo em UMA transação
     // (ADR-030): falha na criação devolve a proposta a `pending` por rollback
-    const result = await this.proposals.executeCreateTask(id, proposal.runId, payload, {
-      workspaceId: auth.workspaceId as string,
-      membershipId: auth.membershipId as string,
-    });
+    const result = await this.proposals.executeCreateTask(
+      id,
+      proposal.runId,
+      payload,
+      { workspaceId: auth.workspaceId as string, membershipId: auth.membershipId as string },
+      this.guardFor(auth, contatos),
+    );
     if (result === 'not_pending') throw new BadRequestException('Proposta já revisada');
+    if (result === 'restricted' || result === 'unavailable') {
+      return this.refuseRestricted(auth, id, result);
+    }
     return result;
   }
 
@@ -1009,9 +1022,40 @@ export class IntelligenceService {
   }
 
   /**
-   * Reconferência NO ACEITE (ADR-048 §6.3, item 4): o contato pode ter ficado
-   * restrito entre gerar e aprovar. A proposta caduca — ninguém a recusou, ela
-   * deixou de ser aprovável — e a aprovação falha antes de qualquer efeito.
+   * Guarda da execução (ADR-047 adendo 5): o adaptador trava estes contatos
+   * dentro da transação, antes do claim, e chama a reconferência — que vê uma
+   * mudança de restrição comitada enquanto a aprovação esperava a trava.
+   */
+  private guardFor(auth: AuthContext, contactIds: readonly (string | null)[]): ExecutionGuard {
+    return {
+      workspaceId: auth.workspaceId as string,
+      contactIds,
+      recheck: () => this.llm.verdict(this.scope(auth, contactIds)),
+    };
+  }
+
+  /**
+   * Recusa da aprovação por restrição — na checagem rápida ou sob a trava. A
+   * proposta caduca: ninguém a recusou, ela deixou de ser aprovável.
+   */
+  private async refuseRestricted(
+    auth: AuthContext,
+    id: string,
+    veredito: 'restricted' | 'unavailable',
+  ): Promise<never> {
+    if (veredito === 'unavailable') {
+      // a porta não respondeu: NÃO aprova e também NÃO expira — a proposta
+      // continua pendente para quando a checagem voltar (fail-closed sem perda)
+      throw new ServiceUnavailableException('Não foi possível conferir a restrição agora');
+    }
+    await this.proposals.transition(id, 'expired', this.approver(auth), 'system');
+    throw new BadRequestException('Proposta indisponível: o conteúdo deste contato é restrito');
+  }
+
+  /**
+   * Checagem RÁPIDA no aceite (ADR-048 §6.3, item 4): o contato pode ter ficado
+   * restrito entre gerar e aprovar. Evita trabalho; a garantia contra mudança
+   * concorrente é a reconferência sob trava (`guardFor`).
    */
   private async assertProposalNotRestricted(
     auth: AuthContext,
@@ -1019,14 +1063,7 @@ export class IntelligenceService {
     contactIds: readonly (string | null)[],
   ): Promise<void> {
     const verdict = await this.llm.verdict(this.scope(auth, contactIds));
-    if (verdict === 'allowed') return;
-    if (verdict === 'unavailable') {
-      // a porta não respondeu: NÃO aprova e também NÃO expira — a proposta
-      // continua pendente para quando a checagem voltar (fail-closed sem perda)
-      throw new ServiceUnavailableException('Não foi possível conferir a restrição agora');
-    }
-    await this.proposals.transition(id, 'expired', this.approver(auth), 'system');
-    throw new BadRequestException('Proposta indisponível: o conteúdo deste contato é restrito');
+    if (verdict !== 'allowed') await this.refuseRestricted(auth, id, verdict);
   }
 
   private async ensurePrompt(prompt: PromptDefinition): Promise<string> {

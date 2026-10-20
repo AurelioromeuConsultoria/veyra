@@ -4,6 +4,7 @@ import { Prisma } from '../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { TasksService } from '../tasks/tasks.service';
+import { lockContactsForRestriction } from '../contacts/contact-restriction-lock';
 import { WhatsappSendService } from '../channels/whatsapp-send.service';
 import type {
   AiConsentRepository,
@@ -20,6 +21,8 @@ import type {
   ConsentActor,
   ContentTarget,
   CreateTaskExecution,
+  ExecutionGuard,
+  GuardRefusal,
   PromptVersionRepository,
   SendMessageExecution,
 } from '../intelligence/ports/repositories';
@@ -370,9 +373,13 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
     runId: string,
     input: CreateTaskExecution,
     approver: ApprovalContext,
-  ): Promise<{ taskId: string } | 'not_pending'> {
+    guard: ExecutionGuard,
+  ): Promise<{ taskId: string } | 'not_pending' | GuardRefusal> {
     const db = this.prisma.db as unknown as TxRunner;
     return db.$transaction(async (tx) => {
+      // trava os contatos e reconfere ANTES do claim (ADR-047 adendo 5)
+      const veredito = await this.underGuard(tx, guard);
+      if (veredito !== 'allowed') return veredito;
       const claimed = await tx.aiProposal.updateMany({
         where: { id, status: 'pending' },
         data: {
@@ -434,7 +441,8 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
     runId: string,
     input: SendMessageExecution,
     approver: ApprovalContext,
-  ): Promise<{ messageId: string } | 'not_pending'> {
+    guard: ExecutionGuard,
+  ): Promise<{ messageId: string } | 'not_pending' | GuardRefusal> {
     const prepared = await this.send.prepareOutbound(approver.workspaceId, {
       conversationId: input.conversationId,
     });
@@ -445,6 +453,9 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
     try {
       const db = this.prisma.db as unknown as TxRunner;
       const outcome = await db.$transaction(async (tx) => {
+        // trava os contatos e reconfere ANTES do claim (ADR-047 adendo 5)
+        const veredito = await this.underGuard(tx, guard);
+        if (veredito !== 'allowed') return veredito;
         const claimed = await tx.aiProposal.updateMany({
           where: { id, status: 'pending' },
           data: {
@@ -485,7 +496,7 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
         if (concluida.count === 0) throw new Error('proposta perdeu o claim durante a execução');
         return { messageId };
       });
-      if (outcome === 'not_pending') {
+      if (outcome === 'not_pending' || outcome === 'restricted' || outcome === 'unavailable') {
         /**
          * Reserva sem mensagem: outra aprovação venceu o claim. A falha em
          * liberar NÃO pode derrubar a resposta — o perdedor da corrida precisa
@@ -493,7 +504,12 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
          * é o comportamento já assumido em todo o caminho de envio.
          */
         await this.send.releaseReservation(prepared).catch((erro: unknown) => {
-          this.logger.warn(`Reserva ${prepared.reservationId} não liberada: ${String(erro)}`);
+          // só o NOME do erro: a mensagem do Prisma traz a invocação, com ids
+          this.logger.warn(
+            `Reserva ${prepared.reservationId} não liberada: ${
+              erro instanceof Error ? erro.name : 'erro desconhecido'
+            }`,
+          );
         });
       }
       return outcome;
@@ -501,6 +517,21 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
       await this.send.releaseReservation(prepared);
       throw error;
     }
+  }
+
+  /**
+   * Trava os contatos da proposta e reconfere a restrição SOB a trava. Uma
+   * mudança de restrição que comitou enquanto esta transação esperava é vista
+   * aqui: a reconferência é uma consulta NOVA, feita depois de a trava ser
+   * concedida — e a trava só é concedida depois do commit de quem a segurava.
+   *
+   * Custo conhecido (ADR-047 adendo 5, item 5): a reconferência usa OUTRA
+   * conexão do pool enquanto esta transação segura a sua. Rajada que esgote o
+   * pool termina pelo timeout da porta (503) — falha fechada; dívida registrada.
+   */
+  private async underGuard(tx: Db, guard: ExecutionGuard): Promise<'allowed' | GuardRefusal> {
+    await lockContactsForRestriction(tx, guard.workspaceId, guard.contactIds);
+    return guard.recheck();
   }
 
   async findPendingReply(conversationId: string): Promise<AiProposalRecord | null> {
