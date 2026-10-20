@@ -108,7 +108,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
     - chamada ao cliente de LLM sem declarar os contatos é recusada;
     - resultados e propostas persistidos de contato restrito não são devolvidos por nenhum endpoint, inclusive os gerados antes da ativação;
     - aprovação e despacho de mensagem da IA reconferem e recusam;
-    - contato liberado para IA que vira paciente volta a ser recusado em todos esses pontos (depende de `ClinicsPatient`: entra na F2);
+    - contato liberado para IA que vira paciente volta a ser recusado em todos esses pontos (feito na F2.1, adendo 3 do ADR-048);
   - **webhooks:** para cada tipo de evento, nada ligado a contato de workspace com o Clinics é entregue, **inclusive de contato liberado para IA** e inclusive evento pendente de antes da ativação; deal ou tarefa sem contato, e workspaces sem o Clinics, seguem entregues;
   - a porta do E6 falhando equivale a "restrito" para os dois consumidores;
   - o Core não importa `verticals/` (lint + teste de fronteira);
@@ -128,6 +128,8 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
   - **se a associação a paciente comitar, nenhuma aprovação concorrente converte a proposta em mensagem ou tarefa**, por trava transacional na linha do contato, com prova determinística e mutação;
   - a duração fica gravada no agendamento (mudar o serviço não altera compromissos existentes); hora local inexistente ou ambígua por mudança de fuso é recusada com mensagem clara, com testes em fusos fictícios com horário de verão;
   - a bateria do §6.6 roda de novo com dados do vertical. B2 **só** é levantado depois dela, da prova de concorrência e dos passes de `reviewer` e `security`. B1, B3 e B4 continuam.
+    **Andamento:**
+  - **F2.1 — paciente, regra da liberação e tela de liberação 🔍 (implementada, aguardando revisão; adendo 3 do ADR-048):** `ClinicsPatient` pela API; a porta restringe paciente com ou sem liberação; criar paciente revoga as liberações dele; quem muda a restrição e a aprovação de propostas se serializam pela linha do contato (ADR-047 adendo 5), com prova determinística e mutação; tela "Liberação para IA" com lista paginada. B2 segue aberto até a bateria e os passes de revisão.
 - **F3 — Continuidade 🔜** Pacote com consumo de sessão no atendimento; retorno como `Task` do Core com título neutro; taxa de faltas apurável. Depende de H2, H3, H6 e D1.
   **Pronto quando:**
   - conclusão repetida ou concorrente não consome duas sessões, e consumo além do total é recusado;

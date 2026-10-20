@@ -6,13 +6,17 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import {
   grantClinicsAiReleaseSchema,
+  listClinicsAiReleasesSchema,
   type ClinicsAiReleaseDto,
+  type ClinicsAiReleasePageDto,
   type ClinicsStatusDto,
   type GrantClinicsAiReleaseInput,
+  type ListClinicsAiReleasesInput,
 } from '@veyra/contracts/verticals/clinics';
 import { AuthContext, AuthenticatedOnly, CurrentAuth } from '../../common/decorators';
 import { ZodPipe } from '../../common/zod.pipe';
@@ -43,11 +47,14 @@ export class ClinicsController {
     return { active: settings?.status === 'active' };
   }
 
+  /** A listagem traz o NOME do contato: exige também `contacts:read`. */
   @UseGuards(ClinicsActiveGuard)
-  @RequireClinicsPermissions('clinics:restriction:manage')
+  @RequireClinicsPermissions('clinics:restriction:manage', 'contacts:read')
   @Get('ai-releases')
-  list(): Promise<ClinicsAiReleaseDto[]> {
-    return this.releases.list();
+  list(
+    @Query(new ZodPipe(listClinicsAiReleasesSchema)) query: ListClinicsAiReleasesInput,
+  ): Promise<ClinicsAiReleasePageDto> {
+    return this.releases.list(query);
   }
 
   /** Liberar exige também ler o contato: a rota declara as duas famílias. */

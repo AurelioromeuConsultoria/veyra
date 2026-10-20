@@ -15,6 +15,7 @@ export const CLINICS_MODELS = [
   'ClinicsProfessional',
   'ClinicsProfessionalService',
   'ClinicsWorkingHours',
+  'ClinicsPatient',
 ] as const;
 
 export const clinicsExtension: CoreExtension = {
@@ -41,16 +42,21 @@ export const clinicsExtension: CoreExtension = {
         professional: 'ClinicsProfessional',
         unit: 'ClinicsUnit',
       },
+      ClinicsPatient: { workspace: 'Workspace', contact: 'Contact', createdBy: 'Membership' },
       ClinicsContactRelease: {
         workspace: 'Workspace',
         contact: 'Contact',
         releasedBy: 'Membership',
       },
       // lado reverso que o Prisma exige nos modelos do Core (ADR-047 adendo 2)
-      Contact: { clinicsContactReleases: 'ClinicsContactRelease' },
+      Contact: {
+        clinicsContactReleases: 'ClinicsContactRelease',
+        clinicsPatient: 'ClinicsPatient',
+      },
       Membership: {
         clinicsReleasesGranted: 'ClinicsContactRelease',
         clinicsProfessional: 'ClinicsProfessional',
+        clinicsPatientsCreated: 'ClinicsPatient',
       },
     },
   },
@@ -68,5 +74,7 @@ export const clinicsExtension: CoreExtension = {
     // classe P: ids, vínculo e arquivamento; o NOME vira [changed]. Horários e
     // serviços habilitados entram como o fato e os ids (quantidade, lista)
     clinicsProfessional: ['membershipId', 'archivedAt', 'serviceIds', 'intervalCount'],
+    // classe S: só o FATO e o id do contato (§6.2, item 3) — nada clínico existe
+    clinicsPatient: ['contactId'],
   },
 };

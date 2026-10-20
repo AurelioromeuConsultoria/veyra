@@ -56,11 +56,26 @@ export interface ClinicsStatusDto {
   active: boolean;
 }
 
+/** Lista de liberações: cursor keyset (createdAt, id) desc, estável sob inserções. */
+export const listClinicsAiReleasesSchema = z.object({
+  cursor: z.string().max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+export type ListClinicsAiReleasesInput = z.infer<typeof listClinicsAiReleasesSchema>;
+
 export interface ClinicsAiReleaseDto {
   contactId: string;
+  /** nome do contato — a listagem exige também `contacts:read` */
+  contactName: string;
   reason: ClinicsAiReleaseReason;
   releasedByMembershipId: string;
   createdAt: string;
+}
+
+export interface ClinicsAiReleasePageDto {
+  items: ClinicsAiReleaseDto[];
+  /** cursor da próxima página; null = fim */
+  nextCursor: string | null;
 }
 
 // ── Catálogo da clínica (F1.c, ADR-048 adendo 1) ───────────────────────────
@@ -290,4 +305,37 @@ export interface ClinicsWorkingIntervalDto {
   weekday: number;
   startMinute: number;
   endMinute: number;
+}
+
+// ── Paciente (F2.1, ADR-048 adendo 2) ──────────────────────────────────────
+
+/**
+ * Tornar um contato PACIENTE: ato explícito, com consequências — o contato
+ * fica restrito para IA mesmo com liberação, e excluí-lo passa a ser recusado.
+ */
+export const createClinicsPatientSchema = z.object({ contactId: z.uuid() }).strict();
+export type CreateClinicsPatientInput = z.infer<typeof createClinicsPatientSchema>;
+
+/**
+ * Lista de pacientes. `contactIds` (até 50, separados por vírgula) restringe a
+ * resposta a esses contatos: a tela de liberação marca "não liberável" só nos
+ * resultados da busca, sem baixar a lista inteira (minimização, classe S).
+ */
+export const listClinicsPatientsSchema = z.object({
+  contactIds: z
+    .string()
+    .max(50 * 37)
+    .optional()
+    .transform((value) => (value ? value.split(',') : undefined))
+    .pipe(z.array(z.uuid()).min(1).max(50).optional()),
+});
+export type ListClinicsPatientsInput = z.infer<typeof listClinicsPatientsSchema>;
+
+export interface ClinicsPatientDto {
+  id: string;
+  /** omitido no servidor para quem não tem `contacts:read` (autorização de campo) */
+  contactId?: string;
+  /** do contato; nada clínico existe no perfil (classe S, H7) */
+  name: string;
+  createdAt: string;
 }

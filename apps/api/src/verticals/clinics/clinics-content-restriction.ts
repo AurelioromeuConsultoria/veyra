@@ -22,7 +22,8 @@ type Delegate = { findFirst: (args: unknown) => Promise<unknown> };
  *   não existe liberação para eles.
  * - `ai`: restrito, exceto contato com liberação de IA vigente e Clinics
  *   ATIVO. Desativado, as liberações ficam suspensas. `null` e id sem contato
- *   no workspace (excluído depois da emissão) são restritos.
+ *   no workspace (excluído depois da emissão) são restritos. PACIENTE é
+ *   sempre restrito, com ou sem liberação (o vínculo clínico vence).
  *
  * Roda com o client protegido, no CLS do workspace pedido — nunca `raw`.
  */
@@ -53,30 +54,52 @@ export class ClinicsContentRestriction implements ContentRestrictionProvider {
       if (settings?.status !== 'active') return subjects.map(() => true);
 
       const ids = [...new Set(subjects.filter((s): s is string => s !== null))];
-      const released = new Set(
+      const [liberacoes, pacientes] =
         ids.length === 0
-          ? []
-          : (
-              (await db.clinicsContactRelease.findMany({
-                where: { consumer: 'ai', contactId: { in: ids } },
-                select: { contactId: true },
-              })) as { contactId: string }[]
-            ).map((row) => row.contactId),
-      );
+          ? [[], []]
+          : // funções `async`: até um erro SÍNCRONO vira rejeição tratada
+            ((await Promise.all([
+              (async () =>
+                db.clinicsContactRelease.findMany({
+                  where: { consumer: 'ai', contactId: { in: ids } },
+                  select: { contactId: true },
+                }))(),
+              (async () =>
+                db.clinicsPatient.findMany({
+                  where: { contactId: { in: ids } },
+                  select: { contactId: true },
+                }))(),
+            ])) as unknown as [{ contactId: string }[], { contactId: string }[]]);
+      const released = new Set(liberacoes.map((row) => row.contactId));
+      // PACIENTE vence a liberação (ADR-048 §6.3, item 6; adendo 2, item 2):
+      // regra DERIVADA, vale a partir do commit que cria o paciente, mesmo que
+      // uma liberação sobre — é a garantia principal, não a limpeza
+      const patients = new Set(pacientes.map((row) => row.contactId));
       // a liberação cai em CASCADE com o contato: id de contato excluído não
       // tem liberação e fica restrito, como manda o contrato da porta
-      return subjects.map((subject) => subject === null || !released.has(subject));
+      return subjects.map(
+        (subject) => subject === null || patients.has(subject) || !released.has(subject),
+      );
     });
   }
 
-  /** Alguma linha de algum modelo do vertical, neste workspace. */
+  /**
+   * Alguma linha de algum modelo do vertical, neste workspace. As consultas
+   * saem EM PARALELO (ADR-048 adendo 2, item 8): o caso comum é o workspace
+   * SEM o Clinics, em que todas são feitas; em série, a latência crescia com
+   * cada modelo novo. Qualquer erro rejeita — nunca vira "ausente".
+   */
   private async hasVerticalData(): Promise<boolean> {
-    for (const model of CLINICS_MODELS) {
-      const delegate = (this.prisma.db as unknown as Record<string, Delegate>)[
-        model.charAt(0).toLowerCase() + model.slice(1)
-      ];
-      if (await delegate.findFirst({ select: { id: true } })) return true;
-    }
-    return false;
+    const delegates = this.prisma.db as unknown as Record<string, Delegate>;
+    const achados = await Promise.all(
+      // `async`: até um erro SÍNCRONO de um delegate vira rejeição tratada, sem
+      // deixar as consultas irmãs sem dono
+      CLINICS_MODELS.map(async (model) =>
+        delegates[model.charAt(0).toLowerCase() + model.slice(1)].findFirst({
+          select: { id: true },
+        }),
+      ),
+    );
+    return achados.some((linha) => linha !== null);
   }
 }

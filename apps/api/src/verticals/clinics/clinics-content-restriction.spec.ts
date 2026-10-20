@@ -17,10 +17,9 @@ const vazio = () => {
   const db = Object.fromEntries(
     CLINICS_MODELS.map((model) => [
       model.charAt(0).toLowerCase() + model.slice(1),
-      { findFirst: ok(null) } as { findFirst: jest.Mock; findMany?: jest.Mock },
+      { findFirst: ok(null), findMany: ok([]) } as { findFirst: jest.Mock; findMany?: jest.Mock },
     ]),
   ) as Record<string, { findFirst: jest.Mock; findMany?: jest.Mock }>;
-  db.clinicsContactRelease.findMany = ok([]);
   return db as Record<string, { findFirst: jest.Mock; findMany: jest.Mock }> & {
     clinicsSettings: { findFirst: jest.Mock };
     clinicsContactRelease: { findFirst: jest.Mock; findMany: jest.Mock };
@@ -51,6 +50,21 @@ describe('ClinicsContentRestriction — falha nunca vira "liberado"', () => {
     db.clinicsSettings.findFirst = ok({ status: 'active' });
     db.clinicsContactRelease.findMany = boom();
     await expect(portWith(db).restricted('ws', 'ai', ['c1'])).rejects.toThrow(/indisponível/);
+  });
+
+  it('falha ao ler os PACIENTES (Clinics ativo): rejeita', async () => {
+    const db = vazio();
+    db.clinicsSettings.findFirst = ok({ status: 'active' });
+    db.clinicsPatient.findMany = boom();
+    await expect(portWith(db).restricted('ws', 'ai', ['c1'])).rejects.toThrow(/indisponível/);
+  });
+
+  it('PACIENTE é restrito para IA mesmo com liberação (o vínculo clínico vence)', async () => {
+    const db = vazio();
+    db.clinicsSettings.findFirst = ok({ status: 'active' });
+    db.clinicsContactRelease.findMany = ok([{ contactId: 'c1' }, { contactId: 'c2' }]);
+    db.clinicsPatient.findMany = ok([{ contactId: 'c1' }]);
+    expect(await portWith(db).restricted('ws', 'ai', ['c1', 'c2'])).toEqual([true, false]);
   });
 
   it('sem presença nenhuma: nada restrito (Core puro); com presença, `null` sempre restrito', async () => {

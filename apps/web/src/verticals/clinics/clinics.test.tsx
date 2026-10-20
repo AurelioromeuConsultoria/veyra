@@ -1,11 +1,12 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
 import { AppShell } from '../../components/layout/AppShell';
 import { GlobalSearch } from '../../components/layout/GlobalSearch';
 import { NavContributionsProvider } from '../../lib/nav';
+import { ClinicsAiReleasesPage, RELEASE_REASON_LABELS } from './AiReleasesPage';
 import { ACCOUNT_LINK_NOTICE, ProfessionalsTab } from './catalog/ProfessionalsTab';
 import { ClinicsCatalogPage } from './CatalogPage';
 import { useClinicsNavGroups } from './nav';
@@ -375,5 +376,203 @@ describe('drawer do profissional — limites de salvamento e o aviso do vínculo
     ).toBeInTheDocument();
     expect(screen.queryByRole('option', { name: /Bia/ })).toBeNull();
     expect(chamadas).not.toContain('GET /api/members');
+  });
+});
+
+const C1 = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e11';
+const C2 = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e12';
+
+describe('liberação para IA — porta, lista, conceder e revogar', () => {
+  const RESTRICAO = ['clinics:restriction:manage', 'contacts:read'];
+  const liberado = {
+    contactId: C1,
+    contactName: 'Fornecedora de Luvas',
+    reason: 'supplier',
+    releasedByMembershipId: 'm1',
+    createdAt: '2026-10-19T12:00:00.000Z',
+  };
+  const dasLiberacoes = (chamadas: string[]) =>
+    chamadas.filter((c) => /\/api\/(clinics\/(ai-releases|contacts)|contacts)/.test(c));
+
+  it.each([
+    ['status CARREGANDO', { pendente: true }, RESTRICAO, /Carregando/],
+    ['vertical INATIVO', { body: { active: false } }, RESTRICAO, /não está ativo/],
+    [
+      'sem `contacts:read` (a lista traz nomes)',
+      { body: { active: true } },
+      ['clinics:restriction:manage'],
+      /não tem acesso à liberação/,
+    ],
+    [
+      'só o catálogo',
+      { body: { active: true } },
+      ['clinics:catalog:read', 'contacts:read'],
+      /não tem acesso à liberação/,
+    ],
+  ] as [string, Resposta, string[], RegExp][])(
+    '%s: só a mensagem, e nada da liberação é consultado',
+    async (_caso, status, permissoes, mensagem) => {
+      const chamadas = mockApi({
+        'GET /api/auth/me': { body: usuario(permissoes) },
+        'GET /api/clinics/status': status,
+      });
+      renderizar(<ClinicsAiReleasesPage />, '/clinics/ai-releases');
+      expect(await screen.findByText(mensagem)).toBeInTheDocument();
+      expect(dasLiberacoes(chamadas)).toEqual([]);
+    },
+  );
+
+  it('a lateral mostra cada item da Clínica só a quem tem a permissão da rota', async () => {
+    mockApi({
+      'GET /api/auth/me': { body: usuario(['clinics:catalog:read']) },
+      'GET /api/clinics/status': { body: { active: true } },
+    });
+    renderizar(<AppShell />);
+    expect(await lateral().findByRole('link', { name: 'Catálogo' })).toBeInTheDocument();
+    expect(lateral().queryByRole('link', { name: 'Liberação para IA' })).toBeNull();
+  });
+
+  it('RECARGA do status que falha depois de confirmar: a lateral esconde a Clínica de novo', async () => {
+    let consultas = 0;
+    mockApi({
+      'GET /api/auth/me': { body: usuario(RESTRICAO) },
+      'GET /api/clinics/status': () =>
+        ++consultas === 1 ? { body: { active: true } } : { status: 500, body: { message: 'x' } },
+    });
+    const queryClient = renderizar(<AppShell />);
+    expect(await lateral().findByRole('link', { name: 'Liberação para IA' })).toBeInTheDocument();
+    await act(() => queryClient.invalidateQueries({ queryKey: ['clinics', 'status'] }));
+    await waitFor(() =>
+      expect(lateral().queryByRole('link', { name: 'Liberação para IA' })).toBeNull(),
+    );
+    expect(lateral().queryByText('Clínica')).toBeNull();
+    expect(consultas).toBe(2);
+  });
+
+  it('com as duas permissões: a lateral leva à tela; a lista traz nome e motivo; revogar apaga e recarrega', async () => {
+    let lista = [liberado];
+    const chamadas = mockApi({
+      'GET /api/auth/me': { body: usuario(RESTRICAO) },
+      'GET /api/clinics/status': { body: { active: true } },
+      'GET /api/clinics/ai-releases': () => ({ body: { items: lista, nextCursor: null } }),
+      [`DELETE /api/clinics/contacts/${C1}/ai-release`]: () => {
+        lista = [];
+        return { body: { ok: true } };
+      },
+    });
+    renderizar(
+      <>
+        <AppShell />
+        <ClinicsAiReleasesPage />
+      </>,
+      '/clinics/ai-releases',
+    );
+    expect(await lateral().findByRole('link', { name: 'Liberação para IA' })).toHaveAttribute(
+      'href',
+      '/clinics/ai-releases',
+    );
+    expect(lateral().queryByRole('link', { name: 'Catálogo' })).toBeNull();
+    expect(await screen.findByText('Fornecedora de Luvas')).toBeInTheDocument();
+    expect(screen.getByText(RELEASE_REASON_LABELS.supplier)).toBeInTheDocument();
+    expect(screen.getByText(/Paciente nunca é liberável/)).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Revogar liberação de Fornecedora de Luvas' }),
+    );
+    expect(await screen.findByText('Nenhum contato liberado.')).toBeInTheDocument();
+    expect(chamadas).toContain(`DELETE /api/clinics/contacts/${C1}/ai-release`);
+  });
+
+  it('lista longa: "Carregar mais" segue o cursor e acrescenta, sem repetir', async () => {
+    const outro = { ...liberado, contactId: C2, contactName: 'Parceira de Eventos' };
+    const chamadas = mockApi({
+      'GET /api/auth/me': { body: usuario(RESTRICAO) },
+      'GET /api/clinics/status': { body: { active: true } },
+      'GET /api/clinics/ai-releases?cursor=c2': { body: { items: [outro], nextCursor: null } },
+      'GET /api/clinics/ai-releases': { body: { items: [liberado], nextCursor: 'c2' } },
+    });
+    renderizar(<ClinicsAiReleasesPage />, '/clinics/ai-releases');
+    expect(await screen.findByText('Fornecedora de Luvas')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Carregar mais' }));
+    expect(await screen.findByText('Parceira de Eventos')).toBeInTheDocument();
+    expect(screen.getByText('Fornecedora de Luvas')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Carregar mais' })).toBeNull();
+    expect(chamadas.filter((c) => c.includes('ai-releases'))).toEqual([
+      'GET /api/clinics/ai-releases',
+      'GET /api/clinics/ai-releases?cursor=c2',
+    ]);
+  });
+
+  it('quem lê pacientes vê o paciente como NÃO LIBERÁVEL, sem poder escolhê-lo', async () => {
+    const chamadas = mockApi({
+      'GET /api/auth/me': { body: usuario([...RESTRICAO, 'clinics:schedule:read']) },
+      'GET /api/clinics/status': { body: { active: true } },
+      'GET /api/clinics/ai-releases': { body: { items: [], nextCursor: null } },
+      [`GET /api/clinics/patients?contactIds=${C2}`]: {
+        body: [{ id: 'p1', contactId: C2, name: 'Paciente Fictícia', createdAt: '' }],
+      },
+      'GET /api/contacts?': {
+        body: { items: [{ id: C2, name: 'Paciente Fictícia' }], total: 1, page: 1, pageSize: 8 },
+      },
+    });
+    renderizar(<ClinicsAiReleasesPage />, '/clinics/ai-releases');
+    fireEvent.click(await screen.findByRole('button', { name: /Liberar contato/ }));
+    fireEvent.change(await screen.findByLabelText(/^Buscar contato/), { target: { value: 'Pac' } });
+    expect(await screen.findByText(/paciente — não liberável/)).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /Paciente Fictícia/ })).toBeDisabled();
+    // só os contatos da busca: a lista inteira de pacientes nunca é baixada
+    expect(chamadas.filter((c) => c.includes('/api/clinics/patients'))).toEqual([
+      `GET /api/clinics/patients?contactIds=${C2}`,
+    ]);
+  });
+
+  it('conceder: só envia com contato E motivo da lista fechada; paciente volta 409 e a tela mostra o motivo', async () => {
+    const pedidos: unknown[] = [];
+    const chamadas = mockApi({
+      'GET /api/auth/me': { body: usuario(RESTRICAO) },
+      'GET /api/clinics/status': { body: { active: true } },
+      'GET /api/clinics/ai-releases': { body: { items: [], nextCursor: null } },
+      'GET /api/contacts?': {
+        body: {
+          items: [{ id: C2, name: 'Paciente Fictícia' }],
+          total: 1,
+          page: 1,
+          pageSize: 8,
+        },
+      },
+      [`POST /api/clinics/contacts/${C2}/ai-release`]: (corpo: unknown) => {
+        pedidos.push(corpo);
+        return {
+          status: 409,
+          body: { message: 'Contato é paciente da clínica: não pode ser liberado para IA' },
+        };
+      },
+    });
+    renderizar(<ClinicsAiReleasesPage />, '/clinics/ai-releases');
+    fireEvent.click(await screen.findByRole('button', { name: /Liberar contato/ }));
+    const enviar = await screen.findByRole('button', { name: 'Liberar para IA' });
+    expect(enviar).toBeDisabled();
+
+    // uma letra não busca
+    fireEvent.change(screen.getByLabelText(/^Buscar contato/), { target: { value: 'P' } });
+    fireEvent.change(screen.getByLabelText(/^Buscar contato/), { target: { value: 'Pac' } });
+    fireEvent.click(await screen.findByRole('radio', { name: /Paciente Fictícia/ }));
+    expect(chamadas.filter((c) => c.startsWith('GET /api/contacts'))).toEqual([
+      'GET /api/contacts?search=Pac&pageSize=8&status=active',
+    ]);
+    expect(enviar).toBeDisabled(); // falta o motivo
+
+    // sem `schedule:read`, nenhuma consulta de pacientes
+    expect(chamadas.some((c) => c.includes('/api/clinics/patients'))).toBe(false);
+    fireEvent.change(screen.getByLabelText(/^Motivo/), { target: { value: 'partner' } });
+    fireEvent.click(enviar);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Contato é paciente da clínica: não pode ser liberado para IA',
+    );
+    expect(pedidos).toEqual([{ reason: 'partner' }]);
+    expect(enviar).toBeEnabled();
+    // a escolha não sobrevive a uma busca nova: nada de enviar quem sumiu da lista
+    fireEvent.change(screen.getByLabelText(/^Buscar contato/), { target: { value: 'Outra' } });
+    expect(enviar).toBeDisabled();
   });
 });

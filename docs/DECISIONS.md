@@ -1351,3 +1351,89 @@ O Clinics segue desativado em staging. Enquanto B1–B4 estiverem abertos, todos
 
 - **Sem dados reais nem piloto clínico** enquanto B1–B4 estiverem abertos. A validação de H1–H7 com alguém de uma clínica continua pendente (D6); a revisão do PO não a substitui.
 - **O Clinics continua desativado em staging.**
+
+### Adendo 3 (2026-10-19) — F2.1: paciente, a regra da liberação e a tela de liberação
+
+Implementa os itens 1, 2, 3, 6 e 8 do adendo 2. A condição de concorrência do item 2 foi cumprida **por trava**, como descreve o adendo 5 do ADR-047. A alternativa de expirar na mesma transação não foi necessária. Todos os testes usam dados fictícios.
+
+1. **`ClinicsPatient` (classe S):**
+   - campos `workspaceId`, `contactId`, `createdByMembershipId` e `createdAt`;
+   - FKs compostas `NO ACTION` para `Contact` e `Membership`, e cascata a partir do `Workspace`;
+   - nenhum campo de texto;
+   - migration aditiva `20261020000000_clinics_patient`, com `lock_timeout`;
+   - entra em `CLINICS_MODELS` e, portanto, na checagem de presença da porta.
+2. **API do paciente** (atrás do `ClinicsActiveGuard`):
+   - `POST /api/clinics/patients` exige `clinics:schedule:write` + `contacts:read`. É idempotente: repetir devolve o perfil existente, sem nova trilha. Contato inexistente ou de outro workspace dá 404.
+   - `GET /api/clinics/patients` exige `clinics:schedule:read` e traz o nome do contato. O papel `Profissional` lê por aqui (§5.2: vê o paciente pela clínica, não pelo CRM).
+   - O `contactId` sai **só para quem tem `contacts:read`**. O servidor omite o campo para os demais (autorização de campo, SECURITY §4). Sem essa chave, o filtro `contactIds` dá 403: sondar ids refaria o vínculo que a omissão esconde.
+   - Filtro opcional `contactIds` (até 50 ids). A tela de liberação o usa para conferir só os resultados da busca, sem baixar a lista inteira, que é classe S.
+   - O teto de 500 sem paginação é dívida; o gatilho é a tela de pacientes da F2.3.
+   - Não há tela de paciente na F2.1: o perfil nasce só pela API.
+3. **Criar paciente, numa transação só:**
+   - trava a linha do contato;
+   - cria o perfil e o audita (`clinics.patient.created`, `after: {contactId}`);
+   - apaga cada liberação do contato e audita cada uma (`clinics.ai_release.revoked_by_patient`, `before: {contactId, consumer, reason}`).
+   - Depois do commit, `expireContentFor` expira o conteúdo de IA do contato. É limpeza complementar: se falhar, só o nome do erro vai para o log.
+4. **Porta do E6:** paciente é restrito para `ai` **com ou sem** liberação. Há teste com uma liberação inserida por fora do produto depois do paciente. Liberações e pacientes são lidos em paralelo.
+5. **Liberação:**
+   - conceder e revogar travam a linha do contato;
+   - conceder a paciente dá 409: "Contato é paciente da clínica: não pode ser liberado para IA";
+   - `GET /api/clinics/ai-releases` passa a exigir também `contacts:read`, porque traz o nome do contato. Há teste com um papel que tem só as chaves do Clinics;
+   - o 409 da concessão revela a quem tem `clinics:restriction:manage` que o contato é paciente. É aceito: gerenciar a restrição implica conhecer esse status. Hoje só Owner e Admin têm a chave, e os dois leem a agenda;
+   - a lista agora pagina por cursor keyset (`createdAt`, `id`), com `limit` de 1 a 100 (padrão 50). A dívida do teto de 500 tinha o gatilho "antes da tela de liberação" e foi paga aqui. Não há índice dedicado ao cursor; com o volume de liberações por workspace, ele não faz diferença.
+6. **Aprovação no Core:** exatamente como no adendo 5 do ADR-047.
+7. **Exclusão de contato que é paciente:** 409 pela FK, com a mensagem genérica do Core (item 3 do adendo 2). O teste confere que notas, auditoria, outbox e cota ficam iguais.
+8. **Tela "Liberação para IA"** (`/clinics/ai-releases`):
+   - **Acesso:** a entrada na lateral exige `clinics:restriction:manage` e só aparece com o status confirmado como ativo. A página exige também `contacts:read`; sem as duas permissões, só explica e nada consulta.
+   - **Lista:** nome, motivo e data, com "Carregar mais" seguindo o cursor.
+   - **Revogar:** sem confirmação, porque revogar torna o contato mais restrito.
+   - **Conceder:** busca na lista de contatos do Core (`/api/contacts?search=`, a partir de 2 letras) e motivo da lista fechada.
+   - **Paciente:** aparece como "não liberável", com a opção desabilitada, para quem tem `clinics:schedule:read`. A conferência pede só os contatos da busca, e as opções ficam desabilitadas até ela voltar. Para quem não tem a chave, a tela não consulta pacientes e mostra o 409 do servidor.
+   - **Busca nova limpa a escolha:** não é possível enviar um contato que sumiu da lista.
+   - **Navegação:** o grupo "Clínica" passa a depender só do status ativo, e cada item leva a permissão da sua rota. O shell e a busca escondem o que a pessoa não pode abrir. Antes, o grupo inteiro dependia de `clinics:catalog:read`. Uma **recarga** do status que falha depois de uma confirmação esconde o grupo de novo (falha fechada, adendo 4 do ADR-047), com teste.
+9. **Medição da presença (item 8):** feita localmente, no `veyra_test`, com um workspace sem o Clinics (o caso comum) e oito modelos.
+
+   | Consulta                                   | p50          | p95          |
+   | ------------------------------------------ | ------------ | ------------ |
+   | Sequencial                                 | 1,71–1,80 ms | 2,20–2,40 ms |
+   | Paralela (`Promise.all`, client protegido) | 0,84 ms      | 1,00–1,06 ms |
+
+   Adotada a forma paralela. A dívida segue aberta: continuam sendo N consultas por checagem, ainda longe do gatilho de 20 ms.
+
+10. **Prova de concorrência** (`clinics-patients.integration-spec.ts`). Uma conexão externa trava a linha do contato e insere o paciente sem comitar. A aprovação de mensagem e a de tarefa ficam comprovadamente bloqueadas (`esperarBloqueadosPor`, que falha se a aprovação responder antes). Depois do commit, as duas recusam com 400 e expiram a proposta, sem mensagem, despacho, tarefa nem reserva. Na ordem inversa, aprovação primeiro e paciente depois, o despacho reconfere e não envia (`failed_permanent`, `content_restricted`). Outro teste prova que criar paciente, conceder e revogar esperam a trava do contato. Um terceiro cobre a porta **indisponível só na reconferência sob a trava**: a falha é injetada depois de a aprovação tomar a trava. As duas aprovações respondem 503, a proposta segue pendente, nada é criado e a reserva de envio volta. Com a porta de volta, a mesma proposta é aprovada. **Quatro mutações derrubaram os testes:**
+    - sem a trava na aprovação, ela responde 201 antes do commit;
+    - sem a reconferência sob trava, ela responde 201 depois do commit, e o caso indisponível também passa a aprovar;
+    - sem devolver a reserva no desfecho indisponível, sobra uma reserva;
+    - sem a trava na criação do paciente, a criação não espera.
+11. **Bateria do §6.6 com paciente:** na suíte de restrição, um contato liberado que vira paciente é recusado em toda a superfície de IA. O conteúdo gerado enquanto estava liberado deixa de ser devolvido, e nada dele sai por webhook.
+12. **Achado fora do escopo (bug pré-existente):** `PrismaPromptVersionRepository.ensure` faz busca e criação sem tratar P2002. Os dois primeiros usos simultâneos de uma capacidade, com a versão do prompt ainda inexistente, fazem um deles receber 409 (`PromptVersion_capability_version_key`). Reproduz isolado no teste "duas gerações SIMULTÂNEAS" do `reply-suggestion`, também no `HEAD` sem a F2.1. Fica registrado como dívida; a correção será proposta à parte.
+13. **Revisão (`reviewer` e `security`, 2026-10-19):** os dois aprovaram com ressalvas, sem bloqueante, P0 nem achado alto. Corrigido antes do commit:
+    - a lateral escondendo o Clinics quando a recarga do status falha;
+    - o teste do desfecho indisponível sob a trava;
+    - os testes de `contacts:read`;
+    - a trava com `workspaceId` explícito;
+    - o `contactId` omitido para quem não lê contatos, e o filtro por contatos na lista de pacientes;
+    - o log de reserva só com o nome do erro;
+    - o cursor validado como UUID;
+    - a checagem rápida da tarefa olhando os mesmos contatos da guarda;
+    - a busca nova limpando a escolha;
+    - a asserção do motivo no e2e;
+    - comentários.
+
+    Registrado como limite ou dívida: a conexão extra da reconferência e as janelas (a), (b) e (c) do item 7 do adendo 5 do ADR-047. Também o lote de `updateMany` de contatos em `companies.service.ts`, que não segue ordem de id e pode, raramente, entrar em deadlock com uma aprovação de dois contatos. O Postgres aborta um dos lados.
+
+14. **Bateria final (2026-10-19, logs `b12-*`):** verde.
+    - lint, format e build passaram;
+    - testes: 200 de unidade, 30 do web, 545/545 de integração em duas rodadas seguidas e 37 de e2e;
+    - migrations: sem drift, e o banco montado do zero não tem diferença;
+    - `check:fk` limpo.
+
+    Numa bateria anterior, um e2e anterior à F2.1 falhou por seletor ambíguo: o link "Inbox" da lateral e o cartão da tela Hoje de um contato "Cliente Inbox…". Não reproduziu em 7 execuções. Os seletores foram escopados à navegação, num commit só de teste.
+
+15. **Bloqueios:** os critérios do B2 estão **atendidos**:
+    - a bateria do §6.6 está verde também com pacientes;
+    - a prova de concorrência do item 2 existe, com mutações;
+    - os passes de `reviewer` e `security` aprovaram, inclusive o delta;
+    - a bateria completa está verde.
+
+    O `security` confirma essa leitura. **O levantamento do B2 fica proposto à revisão e só vale com a decisão dela, registrada aqui.** B1, B3 e B4 seguem bloqueando dados reais e piloto, e o Clinics segue desativado em staging.

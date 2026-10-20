@@ -166,3 +166,25 @@ model ClinicsContactRelease {
   @@unique([workspaceId, id])
   @@index([workspaceId, releasedByMembershipId])
 }
+
+/// Perfil de PACIENTE sobre um contato (ADR-048 §4 e adendo 2, itens 1 a 3).
+/// Classe S: liga uma pessoa a atendimento. Só o vínculo, quem criou e quando
+/// — nada clínico, nenhum texto (H7). Criar é ato EXPLÍCITO e torna o contato
+/// restrito para IA com ou sem liberação. FK para o contato com NO ACTION:
+/// excluir contato que é paciente é recusado (409, §9.1) até a decisão
+/// jurídica (B3).
+model ClinicsPatient {
+  id                    String   @id @default(uuid()) @db.Uuid
+  workspaceId           String   @db.Uuid
+  contactId             String   @db.Uuid
+  createdByMembershipId String   @db.Uuid
+  createdAt             DateTime @default(now())
+
+  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contact   Contact    @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  createdBy Membership @relation("ClinicsPatientCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([workspaceId, contactId])
+  @@unique([workspaceId, id])
+  @@index([workspaceId, createdByMembershipId])
+}

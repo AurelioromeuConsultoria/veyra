@@ -576,6 +576,14 @@ describe('Clinics — restrição de conteúdo com a porta real e API de libera�
           },
         });
       },
+      ClinicsPatient: async () => {
+        const dono = await prisma.raw.membership.findFirst({
+          where: { workspaceId: wsA.workspaceId, role: { systemKey: 'owner' } },
+        });
+        return prisma.raw.clinicsPatient.create({
+          data: { workspaceId: wsA.workspaceId, contactId, createdByMembershipId: dono!.id },
+        });
+      },
     };
 
     it.each([...CLINICS_MODELS])(
@@ -781,7 +789,7 @@ describe('Clinics — restrição de conteúdo com a porta real e API de libera�
       // o FATO e os ids: qual contato, consumidor e motivo — nada do contato
       expect(trilha[0].after).toEqual({ contactId, consumer: 'ai', reason: 'staff' });
       const lista = await get('/api/clinics/ai-releases', sessionA).expect(200);
-      expect(lista.body).toEqual([primeira.body]);
+      expect(lista.body).toEqual({ items: [primeira.body], nextCursor: null });
     });
 
     it('revogar: restringe na hora, expira o conteúdo gerado enquanto liberado e audita; revogar de novo → 404', async () => {
@@ -809,6 +817,20 @@ describe('Clinics — restrição de conteúdo com a porta real e API de libera�
       await del(`/api/clinics/contacts/${contactId}/ai-release`, sessionA).expect(404);
     });
 
+    it('contato LIBERADO vira PACIENTE (F2.1): a bateria inteira recusa, o conteúdo gerado enquanto liberado expira, e nada dele sai por webhook', async () => {
+      await subscribe(sessionA);
+      await enable();
+      await release(contactId).expect(201);
+      await post(`/api/intelligence/conversations/${conversationId}/summary`, sessionA).expect(201);
+
+      await post('/api/clinics/patients', sessionA, { contactId }).expect(201);
+      expect(await port.restricted(wsA.workspaceId, 'ai', [contactId])).toEqual([true]);
+      await iaRecusa(contactId, conversationId);
+      const runs = await prisma.raw.aiRun.findMany({ where: { workspaceId: wsA.workspaceId } });
+      expect(runs.filter((run) => run.result !== null)).toEqual([]);
+      await webhookSuprime(contactId);
+    });
+
     it('listar mostra só as liberações do próprio workspace', async () => {
       await enable();
       await enable('beta');
@@ -817,9 +839,36 @@ describe('Clinics — restrição de conteúdo com a porta real e API de libera�
       await release(contactId).expect(201);
       await release(contatoB, sessionB).expect(201);
       const listaA = await get('/api/clinics/ai-releases', sessionA).expect(200);
-      expect(listaA.body.map((r: { contactId: string }) => r.contactId)).toEqual([contactId]);
+      expect(listaA.body.items.map((r: { contactId: string }) => r.contactId)).toEqual([contactId]);
       const listaB = await get('/api/clinics/ai-releases', sessionB).expect(200);
-      expect(listaB.body.map((r: { contactId: string }) => r.contactId)).toEqual([contatoB]);
+      expect(listaB.body.items.map((r: { contactId: string }) => r.contactId)).toEqual([contatoB]);
+    });
+
+    it('listar pagina por cursor, sem repetir nem pular; cursor de outro formato → 400', async () => {
+      await enable();
+      const nomes = ['Fornecedor 1', 'Fornecedor 2', 'Fornecedor 3'];
+      for (const name of nomes) {
+        const id = (await post('/api/contacts', sessionA, { name }).expect(201)).body.id as string;
+        await release(id).expect(201);
+      }
+      await release(contactId).expect(201);
+      const vistos: string[] = [];
+      let cursor: string | null = null;
+      let paginas = 0;
+      do {
+        const pagina: request.Response = await get(
+          `/api/clinics/ai-releases?limit=3${cursor ? `&cursor=${cursor}` : ''}`,
+          sessionA,
+        ).expect(200);
+        vistos.push(...pagina.body.items.map((r: { contactName: string }) => r.contactName));
+        cursor = pagina.body.nextCursor;
+        paginas += 1;
+      } while (cursor);
+      expect(paginas).toBe(2);
+      expect([...vistos].sort()).toEqual([...nomes, 'Paciente Teste'].sort());
+      expect(new Set(vistos).size).toBe(4);
+      await get('/api/clinics/ai-releases?cursor=nao-e-cursor', sessionA).expect(400);
+      await get('/api/clinics/ai-releases?limit=101', sessionA).expect(400);
     });
   });
 });

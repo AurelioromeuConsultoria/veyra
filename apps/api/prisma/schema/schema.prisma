@@ -124,6 +124,7 @@ model Workspace {
   clinicsProfessionals        ClinicsProfessional[]
   clinicsProfessionalServices ClinicsProfessionalService[]
   clinicsWorkingHours         ClinicsWorkingHours[]
+  clinicsPatients             ClinicsPatient[]
 }
 
 /// Catálogo GLOBAL de permissões (ADR-004): chaves estáveis do sistema —
@@ -217,6 +218,7 @@ model Membership {
   // lado reverso do vertical Clinics (ADR-047 adendo 2, item 1)
   clinicsReleasesGranted ClinicsContactRelease[] @relation("ClinicsReleaseGrantedBy")
   clinicsProfessional    ClinicsProfessional?    @relation("ClinicsProfessionalAccount")
+  clinicsPatientsCreated ClinicsPatient[]        @relation("ClinicsPatientCreatedBy")
 
   // Alvo de FK composta para Team/ownership futuros
   @@unique([workspaceId, id])
@@ -344,6 +346,7 @@ model Contact {
   contactChannelConsents ContactChannelConsent[]
   // lado reverso do vertical Clinics (ADR-047 adendo 2, item 1)
   clinicsContactReleases ClinicsContactRelease[]
+  clinicsPatient         ClinicsPatient?
 
   @@unique([workspaceId, id])
   @@index([workspaceId, status, createdAt])

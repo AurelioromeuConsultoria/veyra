@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AuthModule } from '../../auth/auth.module';
 import { ContactsModule } from '../../contacts/contacts.module';
 import { IntelligenceModule } from '../../intelligence/intelligence.module';
 import { ClinicsCatalogController } from './catalog/clinics-catalog.controller';
@@ -8,6 +9,8 @@ import { ClinicsUnitsService } from './catalog/clinics-units.service';
 import { ClinicsActivationService } from './clinics-activation.service';
 import { ClinicsActiveGuard } from './clinics-active.guard';
 import { ClinicsController } from './clinics.controller';
+import { ClinicsPatientsController } from './clinics-patients.controller';
+import { ClinicsPatientsService } from './clinics-patients.service';
 import { ClinicsReleasesService } from './clinics-releases.service';
 
 /**
@@ -15,8 +18,8 @@ import { ClinicsReleasesService } from './clinics-releases.service';
  * importa — só a raiz de composição (`app.module.ts`, `composition.ts`).
  */
 @Module({
-  imports: [ContactsModule, IntelligenceModule],
-  controllers: [ClinicsController, ClinicsCatalogController],
+  imports: [AuthModule, ContactsModule, IntelligenceModule],
+  controllers: [ClinicsController, ClinicsCatalogController, ClinicsPatientsController],
   providers: [
     ClinicsActivationService,
     ClinicsReleasesService,
@@ -24,6 +27,7 @@ import { ClinicsReleasesService } from './clinics-releases.service';
     ClinicsUnitsService,
     ClinicsServiceCatalog,
     ClinicsProfessionalsService,
+    ClinicsPatientsService,
   ],
   exports: [ClinicsActivationService],
 })
