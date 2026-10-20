@@ -1,8 +1,10 @@
-import { ClipboardList, ShieldCheck } from 'lucide-react';
+import { CalendarDays, ClipboardList, ShieldCheck, UsersRound } from 'lucide-react';
 import { useMemo } from 'react';
 import type { NavGroup } from '../../lib/nav';
 import { useClinicsStatus } from './access';
 
+export const CLINICS_AGENDA_PATH = '/clinics/agenda';
+export const CLINICS_PATIENTS_PATH = '/clinics/patients';
 export const CLINICS_CATALOG_PATH = '/clinics/catalog';
 export const CLINICS_AI_RELEASES_PATH = '/clinics/ai-releases';
 
@@ -27,6 +29,20 @@ export function useClinicsNavGroups(): readonly NavGroup[] {
             {
               label: 'Clínica',
               items: [
+                {
+                  to: CLINICS_AGENDA_PATH,
+                  label: 'Agenda da clínica',
+                  icon: CalendarDays,
+                  permission: 'clinics:schedule:read',
+                  aliases: ['agendamento', 'horário', 'atendimento', 'consulta'],
+                },
+                {
+                  to: CLINICS_PATIENTS_PATH,
+                  label: 'Pacientes',
+                  icon: UsersRound,
+                  permission: 'clinics:schedule:read',
+                  aliases: ['paciente', 'cliente da clínica'],
+                },
                 {
                   to: CLINICS_CATALOG_PATH,
                   label: 'Catálogo',

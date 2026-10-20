@@ -35,12 +35,16 @@ export default defineConfig({
       },
     },
     {
-      command: `pnpm --filter @veyra/web dev`,
+      // `--force`: refaz o pré-bundle das dependências a cada execução. O cache
+      // do Vite não percebe mudança no `dist` dos contratos (pacote do
+      // workspace), e um pré-bundle velho quebra a tela em silêncio
+      command: `pnpm --filter @veyra/web dev --force`,
       url: E2E_WEB_ORIGIN,
       reuseExistingServer: false,
       env: {
         VITE_PORT: String(E2E_WEB_PORT),
         VITE_API_PROXY_TARGET: `http://localhost:${E2E_API_PORT}`,
+        VITE_CACHE_DIR: 'node_modules/.vite-e2e', // separado do dev (ver vite.config.ts)
       },
     },
   ],

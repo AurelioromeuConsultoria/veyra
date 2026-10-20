@@ -6,6 +6,9 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // o E2E usa um cache próprio: o `--force` dele não apaga o pré-bundle de um
+  // dev server aberto ao mesmo tempo
+  cacheDir: process.env.VITE_CACHE_DIR ?? 'node_modules/.vite',
   build: {
     rolldownOptions: {
       output: {

@@ -44,15 +44,19 @@ export class ClinicsPatientsService {
    * (o papel `Profissional` vê o paciente pela clínica, não pelo CRM).
    */
   async list(
-    { contactIds }: ListClinicsPatientsInput,
+    { contactIds, search, limit }: ListClinicsPatientsInput,
     withContactId: boolean,
   ): Promise<ClinicsPatientDto[]> {
     const rows = (await this.prisma.db.clinicsPatient.findMany({
-      where: contactIds ? { contactId: { in: contactIds } } : {},
+      where: {
+        ...(contactIds ? { contactId: { in: contactIds } } : {}),
+        ...(search ? { contact: { name: { contains: search, mode: 'insensitive' } } } : {}),
+      },
       include: COM_NOME,
-      orderBy: { createdAt: 'desc' },
-      // teto SEM paginação: dívida com gatilho (technical-debt.md)
-      take: 500,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      // teto com AVISO na tela e busca pelo nome; o cursor completo é dívida
+      // com gatilho (technical-debt.md)
+      take: limit,
     } as never)) as unknown as PatientRow[];
     return rows.map((row) => toDto(row, withContactId));
   }

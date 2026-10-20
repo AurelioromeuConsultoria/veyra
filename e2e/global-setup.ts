@@ -14,6 +14,7 @@ import {
   E2E_DATABASE_URL,
   E2E_PASSWORD_HASH,
   MEMBER_C,
+  PROF_C,
   OWNER_A,
   OWNER_B,
   OWNER_C,
@@ -167,6 +168,34 @@ function activateClinics(): void {
   });
 }
 
+/**
+ * Usuário com o papel `Profissional` do Clinics (systemKey do vertical), que a
+ * ATIVAÇÃO cria — por isso depois dela. Dados fictícios.
+ */
+async function seedProfessionalUser(): Promise<void> {
+  const db = new Client({ connectionString: E2E_DATABASE_URL });
+  await db.connect();
+  try {
+    const userId = randomUUID();
+    await db.query(
+      `INSERT INTO "User" ("id", "email", "name", "passwordHash", "updatedAt")
+       VALUES ($1, $2, 'Profissional Clínica', $3, now())`,
+      [userId, PROF_C, E2E_PASSWORD_HASH],
+    );
+    const { rowCount } = await db.query(
+      `INSERT INTO "Membership" ("id", "workspaceId", "userId", "roleId", "updatedAt")
+       SELECT $1, w."id", $2, r."id", now()
+         FROM "Workspace" w JOIN "Role" r ON r."workspaceId" = w."id" AND r."systemKey" = 'clinics:professional'
+        WHERE w."slug" = 'clinica'`,
+      [randomUUID(), userId],
+    );
+    if (rowCount !== 1)
+      throw new Error('Papel Profissional do Clinics não encontrado após a ativação');
+  } finally {
+    await db.end();
+  }
+}
+
 export default async function globalSetup(): Promise<void> {
   const dbName = assertIsE2eDb();
   // fora do CI, só banco LOCAL — checado ANTES do DROP e da ativação do Clinics
@@ -183,4 +212,5 @@ export default async function globalSetup(): Promise<void> {
   });
   await seed();
   activateClinics();
+  await seedProfessionalUser();
 }

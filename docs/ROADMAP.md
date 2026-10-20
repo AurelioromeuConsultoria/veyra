@@ -131,6 +131,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
     **Andamento:**
   - **F2.1 — paciente, regra da liberação e tela de liberação 🔍 (implementada, aguardando revisão; adendo 3 do ADR-048):** `ClinicsPatient` pela API; a porta restringe paciente com ou sem liberação; criar paciente revoga as liberações dele; quem muda a restrição e a aprovação de propostas se serializam pela linha do contato (ADR-047 adendo 5), com prova determinística e mutação; tela "Liberação para IA" com lista paginada. A revisão **não levantou o B2**: antes, é preciso fechar com garantia os usos externos em andamento, ativar e desativar, e o despacho (plano no adendo 6 do ADR-047, proposto). Publicada com o Clinics desativado.
   - **F2.2 — agenda e registro de atendimento na API 🔍 (implementada, aguardando revisão; adendo 4 do ADR-048):** agendar, remarcar (com a duração registrada) e mudar de estado; sobreposição barrada pelo banco; hora local da unidade com recusa do horário inexistente ou ambíguo por mudança de fuso; registro de atendimento 1:1 na mesma transação; RBAC com autorização de campo. Só dados fictícios. As telas e o e2e ficam para a F2.3.
+  - **F2.3 — telas da agenda, do atendimento e dos pacientes, e e2e 🔍 (implementada, aguardando revisão; adendo 5 do ADR-048):** agenda da clínica em grade por profissional, na hora local da unidade; agendar e remarcar só em horário livre, inclusive na mudança de horário; ações de estado e registro de atendimento conforme o papel; pacientes com as consequências antes de confirmar. Só dados fictícios; não habilita o Clinics nem abre o B2.
 - **F3 — Continuidade 🔜** Pacote com consumo de sessão no atendimento; retorno como `Task` do Core com título neutro; taxa de faltas apurável. Depende de H2, H3, H6 e D1.
   **Pronto quando:**
   - conclusão repetida ou concorrente não consome duas sessões, e consumo além do total é recusado;
@@ -149,6 +150,8 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
   - a regra "restrito por padrão" implementada e provada;
   - a decisão jurídica sobre exclusão e retenção;
   - a gestão de equipe pela interface.
+
+  Além dos quatro, **a limpeza do cache da tela no login e na perda de sessão** (Core; `docs/MEMORY/technical-debt.md`, achado do `security` na F2.3). Sem ela, na mesma aba, a sessão seguinte pode ver dados de paciente da anterior.
 
   Até lá, staging e testes usam somente dados fictícios.
 

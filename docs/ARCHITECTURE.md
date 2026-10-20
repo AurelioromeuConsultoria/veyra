@@ -131,6 +131,7 @@ Direção de dependência: vertical → Core. Nunca o contrário. A skill `creat
 ## 7. Contratos
 
 - **Internos** (`packages/contracts`): schemas Zod para entrada (`createContactSchema` → `CreateContactInput`) e interfaces TS para saída (`ContactDto`). Backend valida com `ZodPipe`; frontend importa tipos. Fonte única, checada em compile-time nos dois lados.
+- **Funções puras compartilhadas** também moram em `packages/contracts` quando a tela e o servidor precisam decidir pela **mesma** regra — por exemplo, a hora local da unidade do Clinics (`resolverHoraLocal`, `horaLocal`; ADR-048 adendo 5). Só funções sem I/O e sem dependência nova; o servidor continua sendo quem decide, a tela só evita o pedido que ele recusaria.
 - **API pública**: OpenAPI gerado a partir dos controllers/schemas (ADR-006), versionada (`/api/v1`), autenticada por API key por workspace com escopos = permissões RBAC.
 - Ordem de implementação: `packages/contracts` → `apps/api` → `apps/web`.
 

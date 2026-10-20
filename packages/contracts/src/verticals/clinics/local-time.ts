@@ -1,7 +1,9 @@
 /**
- * Hora LOCAL da unidade ↔ instante (ADR-048 adendo 4, item 3). Função pura,
- * sem dependência nova: a base de fusos é a do runtime (`Intl`). O instante é
- * a verdade; a hora local é só leitura.
+ * Hora LOCAL da unidade ↔ instante (ADR-048 adendo 4, item 3; adendo 5, item
+ * 1). Função pura, sem dependência nova: a base de fusos é a do runtime
+ * (`Intl`). Mora nos CONTRATOS para a tela e o servidor decidirem pela mesma
+ * regra; quem decide continua sendo o servidor. O instante é a verdade; a
+ * hora local é só leitura.
  */
 
 export type ResolucaoDeHorario =

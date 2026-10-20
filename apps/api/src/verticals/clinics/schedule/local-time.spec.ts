@@ -1,4 +1,4 @@
-import { horaLocal, resolverHoraLocal, somarDias } from './local-time';
+import { horaLocal, resolverHoraLocal, somarDias } from '@veyra/contracts/verticals/clinics';
 
 /**
  * Fusos FICTÍCIOS para o produto (a clínica é no Brasil): Nova York tem

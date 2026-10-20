@@ -1739,7 +1739,7 @@ Implementa os itens 4 e 5 do adendo 2, só na API. As telas e o e2e ficam para a
    - **Violação de sobreposição** (23P01 nessa constraint): o serviço a converte em 409, "horário já ocupado para este profissional". Não há pré-checagem: o banco é a única fonte da verdade.
    - **`startsAt` e `endsAt` não vêm de relógio** (ADR-049): são o horário escolhido, convertido da hora local da unidade.
 2. **Motivo de cancelamento, por lista fechada:** `patient_request`, `clinic_request`, `professional_unavailable` e `scheduling_error`. Sem "outro" e sem texto.
-3. **Hora local, fuso e mudança de horário.** A conversão é uma função pura, sem dependência nova, que usa o `Intl` do runtime. Para uma data e hora locais no fuso da unidade, ela procura os instantes cujo horário local é exatamente aquele:
+3. **Hora local, fuso e mudança de horário.** A conversão é uma função pura, sem dependência nova, que usa o `Intl` do runtime. Desde a F2.3 ela mora em `packages/contracts`, para a tela usar a mesma regra (adendo 5, item 1). Para uma data e hora locais no fuso da unidade, ela procura os instantes cujo horário local é exatamente aquele:
    - **nenhum instante:** a hora não existe (é o "pulo" da mudança de horário). Resposta 400: "horário inexistente nesse dia por mudança de fuso";
    - **dois instantes:** a hora é ambígua (é a hora que se repete). Resposta 400, pedindo `utcOffset` (por exemplo, `-03:00`). Com ele, vale o instante desse deslocamento; um deslocamento que não corresponde a nenhum dos dois dá 400;
    - **um instante:** vale. Um `utcOffset` informado precisa bater com ele.
@@ -1842,6 +1842,117 @@ Implementa os itens 4 e 5 do adendo 2, só na API. As telas e o e2e ficam para a
       - sem a checagem de expediente;
       - recalculando a duração na remarcação sem troca de serviço;
       - lendo antes de travar na transição: a trilha volta a registrar `scheduled`.
+
+### Adendo 5 (2026-10-20) — F2.3: telas da agenda, do atendimento e dos pacientes, e o e2e
+
+Implementa o item 9 do adendo 2, a parte de telas da F2. A revisão de 2026-10-20 recomendou a F2.3 **só com dados fictícios** e **não a usa como motivo para habilitar o Clinics nem para dados reais**. O Clinics segue desativado em staging, e o B2 segue fechado (ADR-047, adendos 6 e 7).
+
+1. **Hora local compartilhada.** A conversão de hora local (adendo 4, item 3) sai da API e vai para `packages/contracts`, onde já mora `canonicalTimezone`. É uma função pura sobre o `Intl`, sem dependência nova. Com ela, a tela e o servidor decidem pela **mesma** regra:
+   - o "hoje" da unidade;
+   - os horários livres;
+   - o pulo e a hora repetida.
+
+   O servidor continua sendo quem decide; a tela só evita o pedido que ele recusaria.
+
+2. **Agenda da clínica (`/clinics/agenda`)**, com `clinics:schedule:read` **e** `clinics:catalog:read`, porque a grade lê a unidade, os profissionais e os serviços.
+   - **O item da lateral exige só `clinics:schedule:read`:** o item de navegação aceita uma chave só. Todos os papéis semeados que leem a agenda também leem o catálogo. Um papel customizado só com a agenda vê o item e, ao abrir, a mensagem de acesso; nada é consultado.
+   - **Grade simples**, sem biblioteca de calendário (o adendo 2, item 9, recomendou assim enquanto H1 não for validada): uma coluna por profissional ativo, com o expediente do dia e os agendamentos em ordem de início.
+   - **Agendamento de profissional arquivado não some:** ganha uma coluna própria, "(arquivado)", para a recepção ainda poder vê-lo, cancelá-lo ou registrá-lo. Remarcar ele não oferece, porque o drawer não teria serviços nem horários do arquivado.
+   - **Horários sempre na hora local da UNIDADE**, nunca na do navegador.
+   - **Navegação por dia:** anterior, hoje (da unidade) e próximo. O dia fica na URL; um `?dia=` que não seja uma data existente, na faixa que o servidor aceita (anos 2000 a 2100), é ignorado, e vale o hoje da unidade.
+   - **Estados da tela:** "carregando" enquanto a agenda do dia não chega, e "Nenhum agendamento" só com a resposta em mãos. Com erro, a tela mostra o alerta e **nenhum dado antigo** (classe S), inclusive quando é a recarga que falha depois de um sucesso: nem os cartões nem as colunas de arquivado ficam. Sem unidade ativa, explica e não consulta a agenda.
+   - **"Minha agenda":** um filtro opcional pelo profissional vinculado à conta. É conveniência, não restrição de acesso (D8).
+   - **O `Profissional` vê e registra o atendimento dos agendamentos de qualquer profissional**, não só os seus. É intencional, pela mesma razão de D8: na clínica pequena, um profissional cobre o outro. A API já decide assim (adendo 4). Restringir por profissional seria uma regra nova no servidor, não um filtro de tela.
+3. **Agendar e remarcar** (drawer, com `clinics:schedule:write`).
+   - **Agendar:** paciente, serviço, profissional habilitado, data e um horário **livre**, em passos de 15 minutos, calculado na tela:
+     - o paciente é escolhido por **busca** pelo nome (mínimo 2 letras, até 20 resultados); a tela nunca baixa a lista inteira (minimização, classe S). Com erro na busca, inclusive numa recarga (por exemplo, acesso revogado), a tela mostra o alerta e nada da busca anterior fica escolhível;
+     - dentro do expediente do dia local;
+     - sem sobrepor os agendamentos ativos daquele profissional;
+     - com o fim lido como no servidor.
+   - **Remarcar:** troca data e horário, e opcionalmente o serviço, entre os que o profissional faz. Sem troca de serviço, o pedido não leva `serviceId`. Se o serviço original foi arquivado, a tela explica e obriga a escolher outro, porque o servidor recusaria.
+   - **Os horários começam alinhados ao passo:** um expediente que comece às 08:07 oferece 08:15 como primeiro horário.
+   - **Mudança de horário na lista de horários:** a hora inexistente não aparece. A hora que se repete aparece **duas vezes**, "antes da mudança" e "depois da mudança", e envia o `utcOffset` correspondente.
+   - **Recusas do servidor:** o 409 de horário ocupado (outra pessoa marcou antes) aparece com o motivo do servidor, e a agenda é recarregada.
+4. **Estado e atendimento, no cartão do agendamento:**
+   - **Ações de estado**, para `clinics:schedule:write`: "Confirmar", "Registrar chegada", "Marcar falta" e "Cancelar", este com motivo da lista fechada. Só as transições válidas para o estado atual aparecem. O cancelamento abre o motivo no próprio cartão, com "Voltar", e fecha depois do sucesso.
+   - **"Registrar atendimento"**, para `clinics:care:write`, a partir de marcado, confirmado ou chegou.
+   - **Cada botão diz de quem é:** o nome acessível leva a hora, o paciente e o profissional ("Cancelar: 09:00 Ana (Dra. Bia)"), único na tela mesmo com dois pacientes de mesmo nome no mesmo horário.
+   - **A tela não decide nada:** cada ação chama a API, e a agenda é recarregada. As recusas da API chegam em português, com os estados pelo nome da tela ("Transição inválida: Marcado → Chegou"; "Agendamento com estado Faltou não aceita registro de atendimento").
+5. **Pacientes (`/clinics/patients`)**, com `clinics:schedule:read`.
+   - **Lista** com nome e data, as mais recentes primeiro, com **busca pelo nome** e **teto de 50**. No teto, a tela avisa e pede a busca. Com erro, nenhuma linha antiga. A API ganhou `search` (2 a 80 caracteres, sem distinguir maiúsculas) e `limit` (1 a 100, padrão 50) em `GET /api/clinics/patients`, em ordem `createdAt` e `id` decrescentes. A paginação por cursor ficou como dívida, com gatilho próprio (`docs/MEMORY/technical-debt.md`).
+   - **"Novo paciente"**, com `clinics:schedule:write` + `contacts:read`: busca de contato e **as consequências na tela, antes de confirmar** (adendo 2, item 1):
+     - a IA deixa de ler o contato, mesmo se ele estiver liberado, e a liberação é revogada;
+     - o contato não pode ser excluído enquanto for paciente;
+     - não há como desfazer pela tela.
+
+     Quem já é paciente aparece marcado e não pode ser escolhido. A conferência é feita **só entre os contatos da busca** (`contactIds`), sem baixar a lista de pacientes, e nenhum contato pode ser escolhido enquanto ela não volta. Se ela falhar, a tela mostra o alerta e continua sem deixar escolher.
+6. **Navegação:** o grupo "Clínica" passa a ter, nesta ordem, **Agenda da clínica** (o Core já tem a sua "Agenda", o calendário), Pacientes, Catálogo e Liberação para IA. Cada item leva a permissão da sua rota. Com o status não confirmado como ativo, nada aparece e nada é consultado (adendo 4 do ADR-047).
+7. **Testes** (dados fictícios):
+   - **Web:**
+     - nada é consultado antes do status ativo, com o status em erro, sem a chave da agenda ou sem a do catálogo, nas duas telas;
+     - itens da lateral por permissão, inclusive o caso negativo: quem só lê o catálogo não vê a agenda nem os pacientes;
+     - horários livres, inclusive o pulo, a hora repetida e o alinhamento ao passo;
+     - ações por papel: a recepção não vê "Registrar atendimento", e o `Profissional` não vê agendar nem as ações de estado;
+     - cancelamento exige motivo e fecha depois do sucesso;
+     - a coluna do profissional arquivado (sem remarcar), o `?dia=` inválido, os estados de carregando e de erro e a falta de unidade;
+     - **recarga que falha depois de um sucesso**, nas duas telas e na busca de paciente: nenhum dado antigo fica;
+     - o paciente escolhido por busca, sem a lista inteira, e a busca com erro;
+     - remarcar: os serviços do profissional, o corpo sem `serviceId` e o serviço original arquivado;
+     - corpo enviado à API e o 409 mostrado;
+     - pacientes: o teto com aviso, o erro sem linhas antigas e a conferência de "já é paciente" só entre os contatos da busca, inclusive quando ela falha.
+
+     Cada correção de "nenhum dado antigo" e de remarcar foi conferida com mutação: desfeita a correção, o teste dela falha.
+
+   - **Integração:**
+     - a busca e o teto de pacientes;
+     - o isolamento da busca: um contato com nome que casa, mas não é paciente, não volta; B, com um paciente próprio que casa o mesmo termo, recebe só o dele; `contactIds` e `search` juntos valem como E;
+     - o texto em português das recusas de transição e de atendimento.
+   - **E2E**, no workspace `clinica` do e2e, com um usuário `Profissional` novo no seed. O **dia vem do banco e vai na URL**, para que nem o relógio do navegador nem a virada do dia decidam a agenda mostrada:
+     - a recepção agenda, com o paciente escolhido por busca, e vê o conflito recusado;
+     - o `Profissional` registra o atendimento e **recebe** o vínculo com o registro (`attendanceId`);
+     - a recepção vê "Atendido", sem o vínculo e sem a ação;
+     - a criação de paciente mostra as consequências e grava o perfil;
+     - workspace sem o Clinics: as duas URLs diretas só explicam, a lateral não tem as seções, e nenhuma consulta ao vertical, fora o status, sai do navegador.
+
+     O fuso vem da unidade, no banco, e não de uma constante do teste.
+8. **Implementação (2026-10-20).**
+   - **Telas:** `AgendaPage.tsx` (grade, cartão e drawer) e `PatientsPage.tsx`. Os horários livres ficam numa função pura (`agenda/slots.ts`), testada com o pulo e a repetição de Nova York em 2025.
+   - **Testes web:** 29 das telas (`agenda.test.tsx`) e 4 dos horários livres (`agenda/slots.test.ts`).
+   - **Integração:** um teste novo da busca e do teto de pacientes; asserções novas de isolamento da busca e do texto das recusas nos testes existentes.
+   - **E2E:** `clinics-agenda.spec.ts`, com 4 testes. O seed ganhou o usuário `Profissional` (`PROF_C`), criado depois da ativação.
+   - **Achado no caminho:** o pré-bundle do Vite (`node_modules/.vite`) não é invalidado quando o `dist` dos contratos muda, porque é um pacote do workspace. Um cache velho deixou `horaLocal` indefinida no navegador, embora o Vitest passasse. O Vite do e2e agora sobe com `--force`, num **cache próprio** (`VITE_CACHE_DIR=node_modules/.vite-e2e`), para não apagar o pré-bundle de um dev server aberto ao mesmo tempo. Em desenvolvimento, apagar `apps/web/node_modules/.vite` depois de mudar os contratos resolve.
+9. **Revisão da implementação (2026-10-20).** `reviewer` e `security` aprovaram com ressalvas. As correções desta entrega são o que os itens 2 a 8 já descrevem:
+   - a coluna do arquivado;
+   - os estados da tela;
+   - o `?dia=` validado;
+   - os serviços do remarcar;
+   - o cancelamento que fecha;
+   - os nomes acessíveis únicos;
+   - os rótulos das ações;
+   - o alinhamento ao passo;
+   - a busca e o teto de pacientes;
+   - nenhum dado antigo com erro;
+   - as mensagens da API em português;
+   - os testes de casos negativos.
+
+   **Segunda rodada (delta), no mesmo dia.** As duas revisões aprovaram com ressalvas, sem nada que bloqueasse o commit. Entraram nesta entrega:
+   - o texto da recusa de atendimento ("Agendamento com estado Faltou…");
+   - o exemplo de recusa deste adendo, que era uma transição impossível;
+   - a faixa de datas do `?dia=`;
+   - nenhum dado antigo também na recarga que falha: colunas de arquivado, busca de paciente e conferência de "já é paciente";
+   - remarcar escondido para profissional arquivado e o serviço original arquivado;
+   - o erro de uma ação que some quando outra ação começa;
+   - `maxLength` nos campos de busca;
+   - os testes de isolamento da busca, os de recarga que falha e os de remarcar;
+   - o fuso da unidade e o filtro de consultas do e2e.
+
+   Ficaram como dívida, com gatilho, em `docs/MEMORY/technical-debt.md`:
+   - a paginação por cursor dos pacientes;
+   - a limpeza do cache do TanStack Query no login e na perda de sessão. É do Core e vale para todas as telas. Na mesma aba, uma busca com `staleTime` de 30 s pode servir o resultado da sessão anterior **sem recarregar**, e isso é vazamento entre sessões e entre workspaces. Por isso a dívida entrou nas dependências de dado real do ROADMAP e em `docs/SECURITY.md`, e precisa vir **antes de qualquer dado real**.
+
+   Ficaram como sugestão, sem gatilho próprio:
+   - a coluna "Desde" dos pacientes mostra a hora do navegador (`fullStamp`), como o resto do Core, e não a da unidade;
+   - os rótulos e as transições de estado estão duplicados entre API e tela (`ROTULO` e `ROTULO_DO_ESTADO`; a tabela de origens e `TRANSICOES`). Pela regra do item 1, iriam para os contratos se uma terceira cópia aparecer ou se as duas divergirem.
 
 ## ADR-049 — Relógio de agendamento: quem compara define o relógio, e filas e leases usam o do banco
 

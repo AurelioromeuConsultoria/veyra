@@ -394,7 +394,10 @@ describe('Clinics — agenda e atendimento (integração, F2.2)', () => {
 
     it('scheduled → confirmed → arrived; e as que não existem são recusadas', async () => {
       const id = (await agendar().expect(201)).body.id;
-      await status(id, { to: 'arrived' }).expect(409); // chegada só depois de confirmar
+      // chegada só depois de confirmar; o motivo vem em português, com os estados da tela
+      expect((await status(id, { to: 'arrived' }).expect(409)).body.message).toBe(
+        'Transição inválida: Marcado → Chegou',
+      );
       expect((await status(id, { to: 'confirmed' }).expect(201)).body.status).toBe('confirmed');
       expect((await status(id, { to: 'arrived' }).expect(201)).body.status).toBe('arrived');
       await status(id, { to: 'confirmed' }).expect(409);
@@ -501,7 +504,10 @@ describe('Clinics — agenda e atendimento (integração, F2.2)', () => {
       await post(`/api/clinics/appointments/${chegou}/attendance`, owner).expect(201);
       const faltou = (await agendar({ time: '11:00' }).expect(201)).body.id;
       await status(faltou, { to: 'no_show' }).expect(201);
-      await post(`/api/clinics/appointments/${faltou}/attendance`, owner).expect(409);
+      expect(
+        (await post(`/api/clinics/appointments/${faltou}/attendance`, owner).expect(409)).body
+          .message,
+      ).toBe('Agendamento com estado Faltou não aceita registro de atendimento');
     });
 
     it('cancelado não aceita atendimento (409); agendamento inexistente, 404; sem registro, 404', async () => {

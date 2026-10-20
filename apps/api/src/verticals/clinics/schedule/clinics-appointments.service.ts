@@ -13,11 +13,16 @@ import type {
   ListClinicsAppointmentsInput,
   RescheduleClinicsAppointmentInput,
 } from '@veyra/contracts/verticals/clinics';
+import {
+  deslocamentoEmMinutos,
+  horaLocal,
+  resolverHoraLocal,
+  somarDias,
+} from '@veyra/contracts/verticals/clinics'; // valores (o bloco acima é só de tipos)
 import { AuditService } from '../../../audit/audit.service';
 import type { AuthContext } from '../../../common/decorators';
 import { postgresConstraintName, postgresErrorCode } from '../../../common/prisma-exception.filter';
 import { PrismaService, type Db } from '../../../prisma/prisma.service';
-import { deslocamentoEmMinutos, horaLocal, resolverHoraLocal, somarDias } from './local-time';
 
 type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
 
@@ -48,6 +53,16 @@ const ORIGENS: Record<ChangeClinicsAppointmentStatusInput['to'], ClinicsAppointm
 };
 
 const REMARCAVEIS: ClinicsAppointmentStatus[] = ['scheduled', 'confirmed'];
+
+/** As mensagens chegam à tela: o estado em português, nunca o enum. */
+export const ROTULO: Record<ClinicsAppointmentStatus, string> = {
+  scheduled: 'Marcado',
+  confirmed: 'Confirmado',
+  arrived: 'Chegou',
+  canceled: 'Cancelado',
+  no_show: 'Faltou',
+  attended: 'Atendido',
+};
 
 /** O dia de uma unidade não passa de algumas dezenas; o teto é defesa. */
 const TETO_DO_DIA = 500;
@@ -241,7 +256,9 @@ export class ClinicsAppointmentsService {
         where: { id },
       })) as unknown as AppointmentRow;
       if (!ORIGENS[input.to].includes(atual.status)) {
-        throw new ConflictException(`Transição inválida: ${atual.status} → ${input.to}`);
+        throw new ConflictException(
+          `Transição inválida: ${ROTULO[atual.status]} → ${ROTULO[input.to]}`,
+        );
       }
       const cancelReason =
         input.to === 'canceled' ? (input.cancelReason as ClinicsCancelReason) : null;

@@ -307,6 +307,25 @@ describe('Clinics — paciente e a regra da liberação de IA (integração, F2.
       expect(comId).toEqual([expect.objectContaining({ contactId })]);
     });
 
+    it('busca pelo nome (a partir de 2 letras, sem diferenciar maiúsculas) e teto com os mais recentes primeiro', async () => {
+      for (const name of ['Ana Fictícia', 'Bruno Fictício', 'Carla Outra']) {
+        const id = (await post('/api/contacts', owner, { name }).expect(201)).body.id as string;
+        await tornarPaciente(id).expect(201);
+      }
+      const nomes = async (q: string) =>
+        (await get(`/api/clinics/patients${q}`, owner).expect(200)).body.map(
+          (p: { name: string }) => p.name,
+        );
+      // contato com nome que casa, mas que NÃO é paciente, nunca volta
+      await post('/api/contacts', owner, { name: 'Diana Fictícia' }).expect(201);
+      expect((await nomes('?search=FICT')).sort()).toEqual(['Ana Fictícia', 'Bruno Fictício']);
+      expect(await nomes('?search=xyz')).toEqual([]);
+      // os mais recentes primeiro: Carla foi a última
+      expect(await nomes('?limit=2')).toEqual(['Carla Outra', 'Bruno Fictício']);
+      await get('/api/clinics/patients?search=a', owner).expect(400);
+      await get('/api/clinics/patients?limit=101', owner).expect(400);
+    });
+
     it('filtro por contatos: só os pedidos, no máximo 50, e só ids válidos', async () => {
       const outro = (await post('/api/contacts', owner, { name: 'Outra Fictícia' }).expect(201))
         .body.id as string;
@@ -320,6 +339,16 @@ describe('Clinics — paciente e a regra da liberação de IA (integração, F2.
         200,
       );
       expect(nenhum.body).toEqual([]);
+      // com a busca, os dois filtros valem juntos (E)
+      const ambos = async (nome: string) =>
+        (
+          await get(
+            `/api/clinics/patients?contactIds=${contactId},${outro}&search=${encodeURIComponent(nome)}`,
+            owner,
+          ).expect(200)
+        ).body.map((p: { contactId: string }) => p.contactId);
+      expect(await ambos('Outra')).toEqual([outro]);
+      expect(await ambos('xyz')).toEqual([]);
       await get('/api/clinics/patients?contactIds=nao-e-uuid', owner).expect(400);
       const muitos = Array.from({ length: 51 }, () => randomUUID()).join(',');
       await get(`/api/clinics/patients?contactIds=${muitos}`, owner).expect(400);
@@ -330,6 +359,20 @@ describe('Clinics — paciente e a regra da liberação de IA (integração, F2.
       await app.get(ClinicsActivationService).enable('beta');
       const donoB = await loginAs('owner-b@veyra.test');
       expect((await get('/api/clinics/patients', donoB).expect(200)).body).toEqual([]);
+      // nem pela busca: com um paciente de B que casa o mesmo termo, só ele volta para B
+      const deB = (await post('/api/contacts', donoB, { name: 'Fornecedora de B' }).expect(201))
+        .body.id as string;
+      await tornarPaciente(deB, donoB).expect(201);
+      expect(
+        (await get('/api/clinics/patients?search=Fornecedora', donoB).expect(200)).body.map(
+          (p: { name: string }) => p.name,
+        ),
+      ).toEqual(['Fornecedora de B']);
+      expect(
+        (await get('/api/clinics/patients?search=Fornecedora', owner).expect(200)).body.map(
+          (p: { name: string }) => p.name,
+        ),
+      ).toEqual(['Fornecedora Teste']);
       await tornarPaciente(contactId, donoB).expect(404);
 
       const contatoB = await prisma.raw.contact.create({

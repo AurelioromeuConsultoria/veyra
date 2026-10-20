@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+export * from './local-time';
+
 /**
  * Contratos do vertical Veyra Clinics (ADR-048). Expostos pelo subpath
  * `@veyra/contracts/verticals/clinics`: o barrel do Core NÃO os reexporta — o
@@ -328,6 +330,13 @@ export const listClinicsPatientsSchema = z.object({
     .optional()
     .transform((value) => (value ? value.split(',') : undefined))
     .pipe(z.array(z.uuid()).min(1).max(50).optional()),
+  /**
+   * Busca pelo nome (a partir de 2 letras): quem agenda escolhe UM paciente
+   * sem baixar a lista inteira (minimização, classe S; ADR-048 adendo 5).
+   */
+  search: z.string().trim().min(2).max(80).optional(),
+  /** Os mais recentes primeiro; a tela avisa quando o teto corta a lista. */
+  limit: z.coerce.number().int().min(1).max(100).default(50),
 });
 export type ListClinicsPatientsInput = z.infer<typeof listClinicsPatientsSchema>;
 

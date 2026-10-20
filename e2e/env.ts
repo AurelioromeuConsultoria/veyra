@@ -17,6 +17,8 @@ export const OWNER_B = 'owner-b@e2e.veyra';
 /** Workspace `clinica`: o único com o Veyra Clinics ATIVO no e2e (dados fictícios). */
 export const OWNER_C = 'owner-c@e2e.veyra';
 export const MEMBER_C = 'recepcao-c@e2e.veyra';
+/** papel `Profissional` do Clinics (criado pela ativação) — lê a agenda e registra atendimento */
+export const PROF_C = 'profissional-c@e2e.veyra';
 
 export function assertIsE2eDb(url = E2E_DATABASE_URL): string {
   const dbName = new URL(url).pathname.replace(/^\//, '');

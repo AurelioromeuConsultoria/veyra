@@ -7,6 +7,7 @@ import { Prisma } from '../../../generated/prisma/client';
 import { AuditService } from '../../../audit/audit.service';
 import type { AuthContext } from '../../../common/decorators';
 import { PrismaService, type Db } from '../../../prisma/prisma.service';
+import { ROTULO } from './clinics-appointments.service';
 
 type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
 type AttendanceRow = {
@@ -53,7 +54,7 @@ export class ClinicsAttendanceService {
           })) as unknown as { status: ClinicsAppointmentStatus } | null;
           if (!agendamento) throw new NotFoundException('Agendamento não encontrado');
           throw new ConflictException(
-            `Agendamento em ${agendamento.status} não aceita registro de atendimento`,
+            `Agendamento com estado ${ROTULO[agendamento.status]} não aceita registro de atendimento`,
           );
         }
         const agendamento = (await tx.clinicsAppointment.findFirst({
