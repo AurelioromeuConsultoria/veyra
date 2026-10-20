@@ -863,7 +863,227 @@ Condição aprovada na revisão do plano da F2 (ADR-048, adendo 2, item 2). **Se
    - **(a) Geração nova:** o gateway confere a porta e chama o provedor sem trava. Uma mudança que comite durante esse único `await` deixa sair o pedido já autorizado. Uma trava não pode atravessar uma chamada de LLM, que leva segundos. O resultado fica oculto na leitura e é recusado na aprovação, mas pode sobrar sem expirar até a próxima limpeza.
    - **(b) Mudanças do workspace inteiro:** ativar e desativar não travam contatos. Uma aprovação de tarefa concorrente pode comitar depois. A mensagem é barrada no despacho e o webhook na entrega, mas a tarefa nasce.
    - **(c) Despacho de mensagem da IA:** reconfere só o contato **atual** da conversa. Se a conversa for religada a outro contato liberado entre a aprovação e o despacho, a mensagem sai. É anterior a este adendo e exige religação.
-   - Os três estão registrados como dívida.
+   - Os três estão registrados como dívida. O plano para fechá-los, com a fronteira da garantia, está no adendo 6 (proposto).
+
+### Adendo 6 (2026-10-19, PROPOSTO — em revisão; não autoriza código) — fronteira da garantia: nenhum uso externo começa depois de uma mudança de restrição
+
+**Situação:** proposta para revisão. A revisão de 2026-10-19 **não levantou o B2**, por causa dos limites do item 7 do adendo 5. Pediu que esses casos sejam fechados com garantia e testes antes de o B2 voltar para decisão. O B2 só volta para decisão depois de três coisas: este adendo aprovado e implementado, a bateria completa verde e os passes de `security` e `reviewer`. Até lá, o Clinics fica desativado em staging e sem dados reais.
+
+#### 1. O que a revisão pediu, e o que o inventário mostrou
+
+A revisão pediu:
+
+- **a fronteira da garantia:** uma mudança de restrição não pode comitar enquanto uma operação externa autorizada ainda puder começar. Timeout ou lease vencido, sozinhos, não provam que uma chamada externa incerta terminou;
+- **o tratamento de timeout e de retentativas;**
+- **a ordem das travas:** primeiro o workspace, depois os contatos, em ordem estável;
+- **o destino da reserva** quando o desfecho é incerto.
+
+O inventário do código (2026-10-19) mostrou o seguinte:
+
+- **Usos externos de conteúdo de contato.** São três: a chamada ao provedor de IA, o envio de mensagem de autoria da IA (WhatsApp) e a entrega de webhook.
+  - Os três **conferem a porta e depois chamam a rede sem nenhuma trava**. O despacho da mensagem da IA tem quatro passos entre a checagem e o envio. A entrega de webhook lê entregas anteriores e renova o lease antes do primeiro POST.
+- **Fora do escopo do E6.** A mensagem escrita por pessoa (a clínica fala com o paciente), a varredura de arquivos no ClamAV (infraestrutura própria, não um consumidor) e o download de mídia da Meta (entrada).
+- **SDK da IA.** É criado com os padrões: timeout de 600 s e `maxRetries = 2`. Cada retentativa reenvia o prompt inteiro **sem reconferir a porta**, e o pior caso passa de 30 min.
+- **Timeouts da Meta e do webhook.** São de **socket ocioso** (15 s e 5 s), não prazos absolutos, e a resolução de DNS do webhook não tem prazo nenhum.
+- **Reserva da IA.** O resultado do `settle` é ignorado. Uma chamada mais longa que o TTL da reserva (10 min) termina sem cobrança, porque a varredura já devolveu o valor.
+- **Religar conversa.** Não existe: o `contactId` da conversa só é gravado na criação, pelo contrato e pelo serviço. O limite (c) do adendo 5 não é alcançável hoje (item 9).
+- **Mudanças sem trava de contato.** A troca de contato de deal ou de tarefa não trava contato nem emite evento. A exclusão de contato usa `lockAndRead`. Ativar e desativar usam só uma trava consultiva **tentada** por workspace.
+- **Pool.** Há um único pool do Prisma (10 conexões, sem prazo para obter conexão). As transações interativas expiram em 5 s por padrão. Não existe `idle_in_transaction_session_timeout` nem keepalive configurado.
+
+#### 2. A fronteira da garantia (enunciado)
+
+> **G.** Seja M uma escrita que torna o conteúdo de um contato C restrito para um consumidor, ou que muda a qual contato um conteúdo pertence (lista no item 6). Se M comita no instante t, nenhuma operação externa que carregue conteúdo de C para esse consumidor **começa** depois de t.
+
+- **"Começar"** é o processo iniciar a requisição de rede. Cada retentativa é uma operação nova, que começa de novo.
+- **Operações começadas antes de t** podem terminar depois. O resultado delas é tratado como conteúdo restrito: fica oculto na leitura, é expirado, não vira ação, e o desfecho incerto **nunca** é retentado.
+- **Consequência direta:** M não pode comitar enquanto existir uma operação **autorizada** que ainda possa começar. A prova disso **não usa prazo**. Usa uma trava de banco mantida por uma **sessão viva** durante toda a janela em que a operação pode começar, e M precisa da trava em modo conflitante.
+
+#### 3. Mecanismo: uso externo sob trava (`ContentUseGuard`, Core)
+
+**3.1. Travas consultivas de restrição, separadas das travas de linha.** O adendo 5 travava a linha do contato com `updateMany` de `updatedAt`. Para usos que duram segundos, isso bloquearia edições comuns do contato e reescreveria o `updatedAt` a cada leitura da IA. A proposta é trocar esse mecanismo por **travas consultivas de chave única de 64 bits**. Esse espaço de chaves não colide com as travas existentes, que usam duas chaves de 32 bits. São duas famílias:
+
+- **workspace:** `hashtextextended('veyra.restriction.ws:' || workspaceId, 0)`;
+- **contato:** `hashtextextended('veyra.restriction.contact:' || contactId, 0)`.
+
+Uma colisão de hash só causa espera a mais, nunca liberação indevida. A primitiva `lockContactsForRestriction` passa a pegar essas travas em vez de tocar a linha. Ela é a única peça do Core com SQL próprio para isso, registrada como exceção ao §3.3 com a justificativa "coordenação de restrição".
+
+**3.2. Ordem global das travas (sem exceção):**
+
+1. Trava de restrição do **workspace**: compartilhada para usos, aprovações e mudanças por contato; **exclusiva** para mudanças do workspace inteiro.
+2. Travas de restrição dos **contatos**, em **ordem crescente de id**, sem repetição: compartilhadas para usos e aprovações, exclusivas para mudanças.
+3. Travas de **entidade** que determinam a quem um conteúdo pertence (deal e tarefa, item 6), em ordem crescente de id.
+4. Linhas próprias da operação (proposta, dispatch, evento do outbox).
+
+Nenhum caminho pega um nível depois de um nível posterior. A trava tentada de ativação (`clinics_activation`) fica **antes** do nível 1, porque é exclusão mútua entre CLIs.
+
+Os lotes que hoje travam contatos fora de ordem (`companies.service.ts`, remoção de empresa) passam a travar em ordem de id. Isso paga a dívida registrada.
+
+**3.3. Sessões de guarda num pool próprio.** Um uso segura a trava durante a chamada externa. Para não disputar o pool do Prisma, a guarda usa um **pool dedicado** (`pg`, `application_name = veyra-guard`), com tamanho configurável (padrão 5) e keepalive TCP ligado. Cada sessão de guarda:
+
+1. `BEGIN`.
+2. `SET LOCAL idle_in_transaction_session_timeout = 0` (a sessão fica ociosa em transação durante a chamada, e um padrão do servidor não pode derrubá-la no meio) e `SET LOCAL lock_timeout = '5s'`.
+3. Pega as travas compartilhadas dos níveis 1 a 3, na ordem.
+4. **Reconfere a porta.** É uma consulta nova, feita depois das travas, que enxerga qualquer mudança já comitada.
+5. Faz uma **prova de vida** da própria sessão (`SELECT 1` nela): as travas existem neste instante.
+6. **Inicia a operação externa**, sem I/O entre a prova de vida e o início.
+7. Espera o desfecho dentro do prazo absoluto (item 4).
+8. **Persiste o resultado ainda sob a trava**: run, proposta, desfecho do dispatch ou da entrega.
+9. `COMMIT`, que solta as travas.
+
+**Fronteira de módulos.** A IA usa a guarda por uma porta, `run(escopo, operação)`. A operação é a chamada ao provedor mais a persistência do resultado. O módulo `intelligence` continua sem tocar o Prisma, e a guarda fica no Core, ao lado da porta do E6.
+
+**3.4. Por que isso fecha G.** Uma mudança M precisa da trava exclusiva do contato (ou do workspace), que conflita com a compartilhada do uso.
+
+- **Uso autorizado antes de M:** M espera o uso soltar. Quando ele solta, já começou, terminou ou foi abortado, e o resultado está persistido. Então M comita, e a expiração depois do commit alcança esse resultado. Isso elimina o resíduo do limite (a).
+- **Uso que tenta começar depois de M pegar a trava:** espera, reconfere depois do commit de M e é recusado.
+
+O prazo nunca entra na prova: só a trava, mantida pela sessão viva.
+
+**3.5. O único caso que a trava não cobre: a sessão de guarda morrer.** Se a sessão morrer, o Postgres solta as travas; isso acontece com reinício do banco ou conexão derrubada.
+
+- **Prevenção:** a prova de vida (passo 5) fica imediatamente antes do início. Para M comitar indevidamente, a sessão teria de morrer, e M pegar a trava e comitar, dentro do intervalo, sem I/O, entre a resposta da prova de vida e o início da requisição.
+- **Detecção garantida:** se o `COMMIT` da guarda falhar, o uso é marcado `guard_lost`:
+  - o resultado da IA é descartado (não é persistido) e a reserva é cobrada;
+  - o desfecho do envio fica como está;
+  - um evento de auditoria `content_use.guard_lost`, só com ids, abre o incidente.
+- **A revisão decide** se aceita esse residual, com detecção garantida, ou se pede outra forma de prevenção.
+
+#### 4. Prazos e retentativas
+
+**Prazo absoluto por operação, imposto por nós** (`AbortSignal` mais timer que destrói o socket), além do timeout do cliente:
+
+| Operação                            | Prazo                                             | Retentativa automática dentro do uso |
+| ----------------------------------- | ------------------------------------------------- | ------------------------------------ |
+| Chamada ao provedor de IA           | 60 s; SDK com `timeout: 60_000` e `maxRetries: 0` | nenhuma                              |
+| Envio Meta (mensagem da IA)         | 20 s, incluindo conexão                           | nenhuma                              |
+| Entrega de webhook, **por destino** | 10 s, incluindo DNS                               | nenhuma                              |
+
+- **Retentativa é sempre um uso novo**, que pega as travas de novo e reconfere:
+  - **IA:** a pessoa pede de novo;
+  - **mensagem e webhook:** pelo outbox, como hoje.
+- **Desfecho incerto:**
+  - **IA:** nunca é retentado;
+  - **mensagem:** fica `unknown_after_dispatch`, sem reenvio, como hoje;
+  - **webhook:** a retentativa pelo outbox continua (entrega pelo menos uma vez; quem recebe deduplica pelo id do evento), e cada tentativa passa pela guarda.
+- **Webhook com vários destinos:** cada destino é um uso próprio, com travas pegas e soltas por destino.
+- **Uso esperando trava** (há uma mudança em andamento): `lock_timeout` de 5 s. A operação **não começa**, e cada caminho responde como hoje à porta indisponível:
+  - **IA:** 503, reserva devolvida;
+  - **mensagem:** `failed_before_send` e nova tentativa;
+  - **webhook:** `markFailed`.
+- **Mudança esperando usos:**
+
+  | Mudança                                                                                                   | `lock_timeout` | Transação interativa | Ao estourar                                                                      |
+  | --------------------------------------------------------------------------------------------------------- | -------------- | -------------------- | -------------------------------------------------------------------------------- |
+  | Interativa por contato (paciente, conceder, revogar, excluir contato, trocar o contato de deal ou tarefa) | 10 s           | 30 s                 | 409 "uso em andamento para este contato; tente de novo em instantes", sem efeito |
+  | Ativar e desativar (CLI)                                                                                  | 90 s           | 120 s                | 409 na CLI, sem efeito                                                           |
+
+  O filtro global passa a converter `55P03` (`lock_not_available`) em 409.
+
+#### 5. Reserva e desfecho incerto
+
+**Antes de começar:** recusa na reconferência, porta indisponível, guarda sem conexão disponível, trava não obtida ou prova de vida falha. Nada começou:
+
+- a **reserva volta inteira**;
+- a proposta continua pendente (503) ou é expirada (restrito).
+
+**Começou e terminou com resposta:** cobra o consumo real, como hoje.
+
+**Começou e ficou incerto** (prazo estourado, conexão caída, erro depois do início, ou `guard_lost`):
+
+- **a reserva fica e é cobrada pelo teto**: na IA, o `ai_runs` e o custo máximo reservado; na mensagem, a quota do envio;
+- nunca é retentado;
+- o run ou o dispatch registra `unknown_after_dispatch`.
+
+**Reserva expurgada antes do acerto.** O `settle` da IA passa a conferir o retorno. Se a reserva já foi expurgada, cobra pelo caminho de consumo acima do teto, como o `chargeOne` do envio. Com o prazo de 60 s, isso só acontece se a persistência travar, mas a regra não pode depender disso.
+
+#### 6. Escritas que entram no protocolo de mudança
+
+**Mudanças por contato.** Pegam a trava do workspace compartilhada e as dos contatos exclusivas:
+
+- criar paciente;
+- revogar liberação;
+- conceder liberação;
+- **excluir contato**, porque depois do commit nenhum uso do conteúdo apagado começa;
+- **trocar o contato de deal ou de tarefa**. Esta pega também a trava de entidade do deal ou da tarefa, porque muda a quem o conteúdo pertence para o webhook.
+
+Conceder liberação **reduz** a restrição. Entra no protocolo pela ordem das travas, não pela garantia.
+
+**Mudanças do workspace inteiro.** Ativar e desativar pegam a trava do workspace **exclusiva**:
+
+- esperam os usos e as aprovações em andamento no workspace;
+- a desativação passa a expirar o conteúdo de IA do workspace depois do commit, como a ativação já faz.
+
+**Aprovações** (limite (b)). `executeSendMessage` e `executeCreateTask`:
+
+- pegam a trava do workspace compartilhada e as dos contatos compartilhadas, no lugar da trava de linha do adendo 5;
+- reconferem a porta sob as travas, como hoje.
+
+Uma aprovação concorrente com a ativação espera, reconfere e recusa: a tarefa não nasce. Aprovações do mesmo contato deixam de ser seriais entre si; o claim da proposta continua impedindo dupla execução.
+
+#### 7. O que cada uso trava
+
+| Uso                              | Nível 1   | Nível 2                                            | Nível 3                                      |
+| -------------------------------- | --------- | -------------------------------------------------- | -------------------------------------------- |
+| Chamada à IA                     | workspace | contatos do escopo                                 | —                                            |
+| Envio de mensagem da IA          | workspace | contato da conversa                                | —                                            |
+| Entrega de webhook (por destino) | workspace | contatos (fotografia ∪ resolução atual, como hoje) | deal ou tarefa do evento e da raiz da cadeia |
+
+O envio de mensagem da IA guarda os passos 3.3.3 a 3.3.9 em volta do envio. Os passos de política, consentimento e reserva continuam antes da guarda.
+
+#### 8. Custos aceitos
+
+- **Uma sessão do pool de guarda por operação externa em andamento.** Com o pool cheio, a operação espera (no máximo 5 s) e depois segue o caminho de "não começou". O tamanho do pool limita as operações externas simultâneas **por instância**; é um parâmetro operacional.
+- **Uma mudança por contato pode esperar** até o fim de uma geração de IA em andamento (no máximo 60 s mais a persistência). Na prática, espera até 10 s e responde 409 para tentar de novo.
+- **Ativar e desativar** esperam os usos do workspace inteiro.
+- **Duas a quatro consultas a mais por operação externa**, numa transação curta fora do pool principal.
+- **Fim do custo do adendo 5:** o `updatedAt` do contato deixa de ser reescrito pelas travas.
+
+#### 9. Religar conversa (limite (c))
+
+Hoje a religação não existe, e o limite (c) não é alcançável. Em vez de gravar uma fotografia de contatos no despacho, a proposta é:
+
+- **um teste estático** que fixa a imutabilidade do `contactId` da conversa, no contrato e no serviço;
+- **uma regra no contrato do E6:** quem criar religação faz dela uma mudança deste protocolo, com os contatos antigo e novo nas travas de contato e a conversa como entidade.
+
+**Alternativa**, se a revisão preferir defesa em profundidade: gravar os contatos da aprovação no `MessageDispatch` (migration aditiva, validada como a fotografia do outbox) e reconferir todos eles no envio.
+
+#### 10. Testes (todos determinísticos, com dados fictícios)
+
+Para cada uso (IA, mensagem da IA e webhook) e para cada mudança (paciente, revogar, excluir contato, trocar o contato de deal, ativar e desativar), os testes cobrem estes cenários:
+
+1. **Uso primeiro.** O transporte falso segura a chamada em andamento. O teste comprova que a mudança está bloqueada (`esperarBloqueadosPor`). Ao soltar a chamada, o resultado é persistido, a mudança comita e a expiração alcança o resultado.
+2. **Mudança primeiro.** Uma conexão externa segura a trava exclusiva. O uso fica comprovadamente bloqueado, e o transporte não é chamado. Depois do commit, o uso recusa sem chamar o transporte.
+3. **Sessão de guarda morta antes da prova de vida.** O teste mata a sessão (`pg_terminate_backend`) por um ponto de teste. O uso não começa, responde 503 e devolve a reserva.
+4. **Sessão de guarda morta durante a chamada.** O `COMMIT` falha, o caso vira `guard_lost` com auditoria, e a reserva é cobrada.
+5. **Prazo estourado.** Desfecho incerto, reserva cobrada pelo teto, sem retentativa. A trava é solta, e a mudança que esperava comita.
+6. **Pool de guarda esgotado.** O uso não começa (503 ou nova tentativa), sem chamar o transporte.
+7. **Aprovação contra ativação.** A ativação primeiro faz a tarefa não nascer. A aprovação primeiro faz a ativação esperar.
+8. **Webhook contra troca de contato do deal**, com a mesma bateria.
+9. **Ordem das travas:**
+   - um teste estático garante que toda aquisição passa por uma única primitiva ordenada;
+   - um cenário com mudança por contato, ativação, aprovação e uso concorrentes termina sem deadlock.
+10. **Mutações:**
+    - sem a trava no uso, os testes do cenário 2 caem;
+    - sem a prova de vida, cai o cenário 3;
+    - persistindo o resultado fora da trava, cai a expiração do cenário 1;
+    - com retentativa do SDK ligada, cai o cenário 5;
+    - sem conferir o `settle`, cai o teste da reserva expurgada.
+11. **SDK:** um teste fixa as opções do client da IA: prazo e `maxRetries: 0`.
+
+#### 11. Alternativas consideradas
+
+- **Lease com prazo e espera pelo vencimento.** Rejeitada: o vencimento não prova que a chamada terminou nem impede que ela comece, que é a exigência da revisão.
+- **Trava de linha do contato nos usos** (o mecanismo do adendo 5). Rejeitada: bloquearia edições do contato durante cada geração e reescreveria o `updatedAt` em toda leitura da IA.
+- **Expirar depois e aceitar o risco.** Rejeitada pela revisão para o B2.
+- **Fila única de operações externas por workspace.** Rejeitada: serializa o workspace inteiro sem necessidade.
+
+#### 12. Decisões para a revisão
+
+1. Aceitar o residual do item 3.5 (sessão de guarda morta no intervalo sem I/O), com detecção garantida e incidente auditado.
+2. Prazos: 60 s para a IA (sem retentativa do SDK), 20 s para a Meta e 10 s por destino de webhook. Tamanho do pool de guarda: 5.
+3. Mudanças interativas: esperar até 10 s e responder 409, em vez de esperar o fim da geração.
+4. Religação de conversa: regra mais teste estático (recomendado), ou fotografia no dispatch.
+5. A troca de contato de deal ou de tarefa entra no protocolo como mudança de pertencimento.
 
 ## ADR-048 — Veyra Clinics para estética: domínio próprio, classificação de dados e escopo do MVP
 
@@ -1437,3 +1657,10 @@ Implementa os itens 1, 2, 3, 6 e 8 do adendo 2. A condição de concorrência do
     - a bateria completa está verde.
 
     O `security` confirma essa leitura. **O levantamento do B2 fica proposto à revisão e só vale com a decisão dela, registrada aqui.** B1, B3 e B4 seguem bloqueando dados reais e piloto, e o Clinics segue desativado em staging.
+
+16. **Decisão da revisão (2026-10-19): o B2 NÃO foi levantado.** Os limites do item 7 do adendo 5 do ADR-047 podem permitir processamento ou envio depois que a restrição deveria valer:
+    - a geração já em andamento;
+    - ativar e desativar o vertical;
+    - o despacho que confere só o contato atual.
+
+    A revisão pediu que esses casos sejam fechados com garantia e testes. O plano está no adendo 6 do ADR-047, proposto e em revisão. O B2 só volta para decisão com a garantia implementada, a bateria completa verde e os passes de segurança. Até lá, o Clinics fica desativado em staging e sem dados reais.
