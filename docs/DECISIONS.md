@@ -1172,9 +1172,18 @@ O plano da F1.c foi aprovado com as decisões abaixo. A entrega 1 traz contratos
     - **O editor só monta com serviços e unidades carregados** (achado P1 da revisão). Montado antes, os serviços marcados nasceriam de uma lista vazia, e "Salvar perfil" apagaria todos com a mensagem de sucesso. Os marcados partem do que o profissional tem; o filtro de arquivados acontece no envio, e a tela avisa quantos deixam de estar habilitados (item 19).
     - **Nome e e-mail de membros só aparecem com `members:read`**, mesmo que outra tela tenha deixado a lista no cache: a permissão decide se o dado é usado, não só se a consulta sai.
 
-### Adendo 2 (2026-10-19, PROPOSTO, em revisão) — plano da F2: paciente, agenda e atendimento
+### Adendo 2 (2026-10-19) — plano da F2: paciente, agenda e atendimento (aprovado com condições)
 
-**Situação: proposto.** Nada aqui vale como decisão aceita, nem autoriza código, antes da aprovação. O Clinics segue desativado em staging. Enquanto B1–B4 estiverem abertos, todos os testes usam **somente dados fictícios** (§10).
+**Situação: aprovado com condições (revisão de 2026-10-19).**
+
+- **Aprovados:** a divisão F2.1–F2.3; o atendimento na F2; paciente sempre explícito; exclusão de contato de paciente recusada; grade simples; medição da porta de presença.
+- **Aprovada só com prova de concorrência:** a expiração das propostas depois do commit (item 2).
+- **Acrescentados pela revisão:**
+  - duração registrada no agendamento;
+  - tratamento de horários locais inexistentes ou ambíguos (item 4);
+  - critério para levantar o B2 (tabela final).
+
+O Clinics segue desativado em staging. Enquanto B1–B4 estiverem abertos, todos os testes usam **somente dados fictícios** (§10).
 
 **Escopo.** A revisão pediu que a F2 cubra perfil de paciente, agenda, **atendimento** e a perda da liberação de IA quando o contato vira paciente. Por isso, o **registro de atendimento** sobe da F3 para a F2. Ficam na F3 os pacotes, o consumo de sessão, o retorno como `Task` e a apuração da taxa de faltas (H2, H3, H6, D1).
 
@@ -1196,7 +1205,13 @@ O plano da F1.c foi aprovado com as decisões abaixo. A entrega 1 traz contratos
    - **Regra derivada na porta do E6:** a existência de `ClinicsPatient` para o contato torna-o restrito para IA, **com ou sem** liberação. É a garantia principal. Ela vale a partir do commit, e a leitura, a aprovação e o despacho já reconferem a porta.
    - **Na mesma transação que cria o paciente,** a linha da liberação é apagada e auditada (`clinics.ai_release.revoked_by_patient`, com o id do contato).
    - **Conceder liberação a um paciente** é recusado com 409.
-   - **Desvio proposto em relação ao texto do §6.3, item 6:** a expiração de propostas e resultados acontece **depois do commit** (`expireContentFor`), como já é na ativação e na revogação, e não dentro da mesma transação. A proteção vem da regra derivada; a expiração é limpeza complementar. Pôr a escrita da IA dentro da transação do vertical acoplaria os dois módulos sem ganho de segurança. **Requer aprovação explícita.**
+   - **Expiração depois do commit, com garantia de concorrência (condição da revisão).** As propostas e os resultados são expirados **depois do commit** (`expireContentFor`), como na ativação e na revogação. A condição: **se a associação a paciente comitar, nenhuma aprovação concorrente pode converter a proposta em mensagem ou tarefa.** A garantia vem de **trava transacional**, não da limpeza:
+     1. **Quem muda a restrição de um contato trava a linha do contato** antes de escrever, e o commit solta a trava. Isso vale para criar o paciente e também para conceder ou revogar liberação. A trava é a mesma de `ContactsService.lockAndRead`, exposta pelo Core como primitiva neutra.
+     2. **A aprovação** (`executeSendMessage` e `executeCreateTask`) trava a linha de **cada contato** da proposta, em ordem de id para não haver deadlock, **dentro da sua transação e antes do claim**. Só então reconfere a porta. É uma mudança universal no Core, sem nome de vertical, com nova regra no contrato do E6 (adendo 5 do ADR-047, a escrever na F2.1).
+     3. **Associação comitada primeiro:** a aprovação, que esperava a trava, reconfere depois do commit e vê o paciente. Ela recusa (400 "restrito") e marca a proposta como expirada. Nenhuma mensagem nem tarefa nasce.
+     4. **Aprovação travada primeiro:** ela termina inteira **antes** da associação, numa ordem serial legítima. A mensagem que ela criou **não sai**, porque o despacho reconfere a porta (§6.3, item 5).
+     5. **Prova determinística:** uma conexão de teste segura a linha do contato e insere o paciente na mesma transação. A aprovação é disparada e fica comprovadamente bloqueada (helper `esperarBloqueadosPor`). Depois do commit, a aprovação recusa, e não existe mensagem, tarefa nem despacho. O teste cobre os dois tipos de proposta. **Uma mutação que remova a trava da aprovação precisa derrubar o teste.**
+     6. **Se a trava não puder ser garantida assim,** a expiração volta para a mesma transação da associação, como no texto original do §6.3, item 6, e isso é registrado aqui antes do código.
 3. **Exclusão de contato com perfil de paciente: 409 (§9.1).**
    - A FK `NO ACTION` faz o `DELETE` do Core falhar no fim da transação de exclusão. O filtro global converte em 409, e **nada** da exclusão fica (notas, deals desvinculados, auditoria, outbox, cota), com teste.
    - A mensagem é a genérica do Core ("Registro em uso por outros dados"). Uma mensagem específica exigiria uma porta nova no Core, com ADR, e não compensa enquanto só há dados fictícios.
@@ -1205,7 +1220,20 @@ O plano da F1.c foi aprovado com as decisões abaixo. A entrega 1 traz contratos
    - **Campos:** paciente, profissional, serviço, unidade, `startsAt` e `endsAt` (`timestamptz`, UTC), status e motivo de cancelamento de **lista fechada**, quem criou, datas. Sem texto livre.
    - **Status (§4):** `scheduled`, `confirmed`, `arrived`, `canceled`, `no_show` e `attended`.
    - **Sobreposição barrada pelo banco:** `EXCLUDE USING gist` por workspace e profissional sobre `tstzrange(startsAt, endsAt)`, valendo só para os estados ativos (`scheduled`, `confirmed`, `arrived`, `attended`). É o mesmo mecanismo provado na F1.c. A violação responde 409 pelo filtro global.
-   - **Duração:** `endsAt = startsAt + durationMin` do serviço no momento do agendamento (H4).
+   - **Duração registrada no agendamento (condição da revisão).**
+     - `endsAt` é **gravado** no momento do agendamento, com `startsAt + durationMin` do serviço naquele instante (H4).
+     - Mudar a duração do serviço depois **não altera** compromissos existentes. O teste muda a duração e confere os agendamentos antigos.
+     - **Remarcar preserva a duração registrada** (`endsAt − startsAt`). Só trocar o **serviço** recalcula pela duração vigente do novo serviço.
+     - O preço não é registrado no agendamento (sem financeiro, §8).
+   - **Hora local, fuso e mudanças de horário (condição da revisão).**
+     - **O instante é a verdade.** `startsAt` e `endsAt` são instantes (`timestamptz`); a hora local é só leitura, no fuso da **unidade**.
+     - **Entrada:** a API recebe **data e hora locais da unidade** (`2026-11-02`, `08:30`) e converte com o fuso da unidade. A conversão usa a base de fusos do runtime, sem dependência nova.
+     - **Hora local inexistente** (o "pulo" de uma mudança de horário): 400, "horário inexistente nesse dia por mudança de fuso". Nunca há ajuste silencioso.
+     - **Hora local ambígua** (a hora que se repete): 400, pedindo o desambiguador `offset` (por exemplo `-03:00`). Com ele, o horário é aceito. A tela mostra as duas opções ("antes" e "depois da mudança").
+     - **Expediente:** confere início e fim **locais** dentro do mesmo intervalo, no mesmo dia local. Um agendamento que atravessa a mudança e não cabe é recusado (400).
+     - **Mudar o fuso da unidade** com agendamentos ativos futuros é **recusado (409)**. Mudar o fuso moveria a leitura local de compromissos já combinados.
+     - **Atualização da base de fusos** (mudança de regra por governo): os instantes gravados não mudam, só a leitura local. Isso fica registrado como limite conhecido.
+     - **Testes com fusos fictícios com mudança de horário** (por exemplo `America/New_York`): o pulo e a repetição, o expediente atravessando a mudança e a exibição. O Brasil não tem horário de verão desde 2019, mas a regra não pode depender disso.
    - **Regras validadas no serviço:**
      - profissional **habilitado** para o serviço;
      - profissional, serviço e unidade ativos;
@@ -1282,21 +1310,21 @@ O plano da F1.c foi aprovado com as decisões abaixo. A entrega 1 traz contratos
 
 #### Decisões que dependem de validação (H1–H7) ou de bloqueio (B1–B4)
 
-| Ponto do plano                                                                         | Depende de    | Enquanto não houver validação                                                                      |
-| -------------------------------------------------------------------------------------- | ------------- | -------------------------------------------------------------------------------------------------- |
-| Estados e transições da agenda; se o atendimento exige chegada antes                   | **H1**        | Os estados do §4; atendimento aceito a partir de `scheduled`, `confirmed` ou `arrived`             |
-| Duração fixa pelo serviço; profissional habilitado obrigatório; expediente obrigatório | **H4**        | Como proposto; se H4 cair, a agenda passa a slot livre ou duração variável                         |
-| Sala na agenda                                                                         | **H5 / D2**   | Sem sala; o EXCLUDE é só por profissional                                                          |
-| Pacote, consumo de sessão, pago/em aberto                                              | **H2 / D1**   | Fora da F2 (F3)                                                                                    |
-| Retorno calculado                                                                      | **H3**        | Fora da F2 (F3)                                                                                    |
-| Faltas, conversão e recuperados como métricas                                          | **H6**        | A F2 registra `no_show`; a apuração fica na F3                                                     |
-| Nenhum texto clínico, prontuário nem foto                                              | **H7** (e §7) | Nenhum campo livre em paciente, agenda ou atendimento                                              |
-| `Profissional` vê todos os agendamentos e atendimentos                                 | **D8**        | Vê todos (§5.3); "minha agenda" é só filtro                                                        |
-| Uma pessoa que é recepção **e** profissional                                           | **D7 / B4**   | Um papel por membro; o vínculo profissional–conta não muda papel                                   |
-| Texto clínico escrito pela equipe em notas, tarefas e conversas do Core                | **B1**        | Continua bloqueando dados reais; a F2 não o resolve                                                |
-| Regra "restrito por padrão" provada                                                    | **B2**        | **Proposta:** com a bateria do §6.6 verde também com pacientes, B2 pode ser levantado ao fim da F2 |
-| Exclusão e retenção de dado S                                                          | **B3 / D5**   | Só a recusa com 409; nenhuma exclusão nem anonimização                                             |
-| Montar a equipe pela interface                                                         | **B4**        | Convites e troca de papel só pela API do Core                                                      |
+| Ponto do plano                                                                         | Depende de    | Enquanto não houver validação                                                                                                                                                                                                      |
+| -------------------------------------------------------------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Estados e transições da agenda; se o atendimento exige chegada antes                   | **H1**        | Os estados do §4; atendimento aceito a partir de `scheduled`, `confirmed` ou `arrived`                                                                                                                                             |
+| Duração fixa pelo serviço; profissional habilitado obrigatório; expediente obrigatório | **H4**        | Como proposto; se H4 cair, a agenda passa a slot livre ou duração variável                                                                                                                                                         |
+| Sala na agenda                                                                         | **H5 / D2**   | Sem sala; o EXCLUDE é só por profissional                                                                                                                                                                                          |
+| Pacote, consumo de sessão, pago/em aberto                                              | **H2 / D1**   | Fora da F2 (F3)                                                                                                                                                                                                                    |
+| Retorno calculado                                                                      | **H3**        | Fora da F2 (F3)                                                                                                                                                                                                                    |
+| Faltas, conversão e recuperados como métricas                                          | **H6**        | A F2 registra `no_show`; a apuração fica na F3                                                                                                                                                                                     |
+| Nenhum texto clínico, prontuário nem foto                                              | **H7** (e §7) | Nenhum campo livre em paciente, agenda ou atendimento                                                                                                                                                                              |
+| `Profissional` vê todos os agendamentos e atendimentos                                 | **D8**        | Vê todos (§5.3); "minha agenda" é só filtro                                                                                                                                                                                        |
+| Uma pessoa que é recepção **e** profissional                                           | **D7 / B4**   | Um papel por membro; o vínculo profissional–conta não muda papel                                                                                                                                                                   |
+| Texto clínico escrito pela equipe em notas, tarefas e conversas do Core                | **B1**        | Continua bloqueando dados reais; a F2 não o resolve                                                                                                                                                                                |
+| Regra "restrito por padrão" provada                                                    | **B2**        | **Só é levantado** depois da bateria do §6.6 verde também com pacientes, **da prova de concorrência do item 2** e dos **passes de `reviewer` e `security`** sobre essa entrega, com registro neste ADR. Testes passando não bastam |
+| Exclusão e retenção de dado S                                                          | **B3 / D5**   | Só a recusa com 409; nenhuma exclusão nem anonimização                                                                                                                                                                             |
+| Montar a equipe pela interface                                                         | **B4**        | Convites e troca de papel só pela API do Core                                                                                                                                                                                      |
 
 **O que esta proposta não muda:**
 

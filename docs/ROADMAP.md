@@ -115,7 +115,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
   - teste P0 de isolamento em cada modelo, e FK composta recusa profissional ou membership de outro workspace;
   - `reviewer` + `security` aprovaram as mudanças no Core.
 
-- **F2 — Paciente, agenda e atendimento 📝 (plano PROPOSTO, em revisão: adendo 2 do ADR-048)** `ClinicsPatient` sobre `Contact`; `ClinicsAppointment` com sobreposição impedida pelo banco; `ClinicsAttendance` (registro de atendimento, que **sobe da F3** a pedido da revisão); a liberação de IA perde efeito quando o contato vira paciente; tela mínima de liberação para IA. Entregas propostas: F2.1 (paciente, regra da liberação e tela de liberação), F2.2 (agenda e atendimento na API), F2.3 (telas e e2e). **Testes só com dados fictícios.**
+- **F2 — Paciente, agenda e atendimento 📝 (plano aprovado com condições: adendo 2 do ADR-048)** `ClinicsPatient` sobre `Contact`; `ClinicsAppointment` com sobreposição impedida pelo banco; `ClinicsAttendance` (registro de atendimento, que **sobe da F3** a pedido da revisão); a liberação de IA perde efeito quando o contato vira paciente; tela mínima de liberação para IA. Entregas propostas: F2.1 (paciente, regra da liberação e tela de liberação), F2.2 (agenda e atendimento na API), F2.3 (telas e e2e). **Testes só com dados fictícios.**
   **Pronto quando (proposto):**
   - agendar exige profissional habilitado para o serviço, item ativo e horário dentro do expediente, na hora local da unidade;
   - **N agendamentos concorrentes no mesmo horário e profissional resultam em exatamente um**, com 409 para os demais, nunca 500;
@@ -125,7 +125,9 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
   - excluir um contato com perfil de paciente é **recusado com 409**, sem efeito colateral (provisório aprovado, ADR-048 §9.1). Exclusão e anonimização definitivas só depois da decisão jurídica;
   - contato liberado para IA que ganha perfil de paciente fica restrito para IA a partir do commit, em todos os pontos de checagem; a liberação some com trilha; conceder liberação a paciente é recusado;
   - nenhum conteúdo S em entidade do Core nem na auditoria;
-  - a bateria do §6.6 roda de novo com dados do vertical. **Proposta:** com ela verde, B2 pode ser levantado ao fim da F2. B1, B3 e B4 continuam.
+  - **se a associação a paciente comitar, nenhuma aprovação concorrente converte a proposta em mensagem ou tarefa**, por trava transacional na linha do contato, com prova determinística e mutação;
+  - a duração fica gravada no agendamento (mudar o serviço não altera compromissos existentes); hora local inexistente ou ambígua por mudança de fuso é recusada com mensagem clara, com testes em fusos fictícios com horário de verão;
+  - a bateria do §6.6 roda de novo com dados do vertical. B2 **só** é levantado depois dela, da prova de concorrência e dos passes de `reviewer` e `security`. B1, B3 e B4 continuam.
 - **F3 — Continuidade 🔜** Pacote com consumo de sessão no atendimento; retorno como `Task` do Core com título neutro; taxa de faltas apurável. Depende de H2, H3, H6 e D1.
   **Pronto quando:**
   - conclusão repetida ou concorrente não consome duas sessões, e consumo além do total é recusado;
