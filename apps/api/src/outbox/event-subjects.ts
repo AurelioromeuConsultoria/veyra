@@ -25,28 +25,31 @@ export const EVENT_SUBJECT: Record<WebhookEvent, 'contact' | 'deal' | 'task'> = 
 };
 
 /**
- * Contatos de quem é o evento AGORA, resolvidos pela entidade dele. Fonte única
- * da regra, usada na entrega de webhook e na herança de evento antigo.
+ * De quem é o evento AGORA: os contatos e as ENTIDADES (`deal:<id>`,
+ * `task:<id>`) resolvidos pela entidade dele (ADR-047 adendo 7 §9, G3.3). As
+ * entidades são as travas do uso de webhook: a do evento e, na tarefa, o deal
+ * a que ela pertence — uma troca do contato desse deal precisa esperar a
+ * entrega da tarefa.
  *
- * `[]` = a entidade existe e não tem contato nenhum. `[null]` = não dá para
- * saber (tipo fora do mapa, payload sem id, entidade apagada) — e a porta trata
- * o desconhecido como restrito quando há dado sensível. Tarefa responde pelo
- * contato DELA e pelo do deal a que pertence.
+ * `contacts`: `[]` = a entidade existe e não tem contato nenhum; `[null]` = não
+ * dá para saber (tipo fora do mapa, payload sem id, entidade apagada) — e a
+ * porta trata o desconhecido como restrito quando há dado sensível. Tarefa
+ * responde pelo contato DELA e pelo do deal a que pertence.
  *
  * `workspaceId` EXPLÍCITO em toda leitura: o chamador pode estar fora do CLS
  * (worker cross-workspace, `raw`) ou dentro de uma transação protegida.
  */
-export async function resolveEventSubjects(
+export async function resolveEventScope(
   client: SubjectClient,
   workspaceId: string,
   eventType: string,
   payload: unknown,
-): Promise<EventSubject[]> {
+): Promise<{ contacts: EventSubject[]; entities: string[] }> {
   const source = EVENT_SUBJECT[eventType as WebhookEvent] as
     (typeof EVENT_SUBJECT)[WebhookEvent] | undefined;
   const id = (payload as { id?: unknown } | null)?.id;
-  if (!source || typeof id !== 'string') return [null];
-  if (source === 'contact') return [id];
+  if (!source || typeof id !== 'string') return { contacts: [null], entities: [] };
+  if (source === 'contact') return { contacts: [id], entities: [] };
   const db = client as unknown as PrismaClient;
   const dealContact = async (dealId: string): Promise<EventSubject[] | null> => {
     const deal = await db.deal.findFirst({
@@ -56,13 +59,33 @@ export async function resolveEventSubjects(
     if (!deal) return null;
     return deal.contactId ? [deal.contactId] : [];
   };
-  if (source === 'deal') return (await dealContact(id)) ?? [null];
+  if (source === 'deal') {
+    return { contacts: (await dealContact(id)) ?? [null], entities: [`deal:${id}`] };
+  }
   const task = await db.task.findFirst({
     where: { workspaceId, id },
     select: { contactId: true, dealId: true },
   });
-  if (!task) return [null];
-  const subjects: EventSubject[] = task.contactId ? [task.contactId] : [];
-  if (task.dealId) subjects.push(...((await dealContact(task.dealId)) ?? [null]));
-  return subjects;
+  if (!task) return { contacts: [null], entities: [`task:${id}`] };
+  const contacts: EventSubject[] = task.contactId ? [task.contactId] : [];
+  const entities = [`task:${id}`];
+  if (task.dealId) {
+    contacts.push(...((await dealContact(task.dealId)) ?? [null]));
+    entities.push(`deal:${task.dealId}`);
+  }
+  return { contacts, entities };
+}
+
+/**
+ * Contatos de quem é o evento AGORA (`resolveEventScope` sem as entidades).
+ * Fonte única da regra, usada na entrega de webhook e na herança de evento
+ * antigo.
+ */
+export async function resolveEventSubjects(
+  client: SubjectClient,
+  workspaceId: string,
+  eventType: string,
+  payload: unknown,
+): Promise<EventSubject[]> {
+  return (await resolveEventScope(client, workspaceId, eventType, payload)).contacts;
 }

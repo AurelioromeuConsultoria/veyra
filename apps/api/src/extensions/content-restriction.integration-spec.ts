@@ -984,9 +984,10 @@ describe('Restrição de conteúdo por contato — ADR-047 E6 (integração, lad
       await deliverAll();
       hooks.length = 0;
       const evento = await emit(wsA.workspaceId, 'contact.updated', contactId);
-      // 1ª consulta (antes do fan-out) libera; a reconferência antes do 2º destino já restringe
+      // a checagem rápida (antes do fan-out) e a reconferência do 1º destino, sob
+      // a guarda, liberam; a do 2º destino, numa guarda própria, já restringe
       probe.calls = [];
-      probe.restrictAfter = 1;
+      probe.restrictAfter = 2;
       await deliverAll();
       expect(hooks).toHaveLength(1);
       expect(await prisma.raw.webhookDelivery.count({ where: { outboxEventId: evento.id } })).toBe(
@@ -994,7 +995,7 @@ describe('Restrição de conteúdo por contato — ADR-047 E6 (integração, lad
       );
       const linha = await prisma.raw.outboxEvent.findFirst({ where: { id: evento.id } });
       expect(linha!.status).toBe('delivered');
-      expect(probe.calls.filter((c) => c.consumer === 'webhook')).toHaveLength(2);
+      expect(probe.calls.filter((c) => c.consumer === 'webhook')).toHaveLength(3);
     });
 
     it('porta INDISPONÍVEL no meio do fan-out: para, ninguém é penalizado e o retry não repete quem recebeu', async () => {
@@ -1010,7 +1011,8 @@ describe('Restrição de conteúdo por contato — ADR-047 E6 (integração, lad
       let consultas = 0;
       probe.restricted = async (...args) => {
         consultas += 1;
-        if (consultas === 2) throw new Error('porta indisponível (teste)');
+        // a 3ª consulta é a reconferência do 2º destino, sob a guarda dele
+        if (consultas === 3) throw new Error('porta indisponível (teste)');
         return original(...args);
       };
       try {

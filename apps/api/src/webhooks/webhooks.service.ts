@@ -1,9 +1,25 @@
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  type OnModuleInit,
+} from '@nestjs/common';
 import type { CreateWebhookInput, UpdateWebhookInput, WebhookDto } from '@veyra/contracts';
+import { ClsService } from 'nestjs-cls';
 import { AuditService } from '../audit/audit.service';
 import { AuthContext } from '../common/decorators';
 import { CryptoService } from '../common/crypto.service';
+import {
+  ContentUseGuard,
+  ehIncerto,
+  type DesfechoIncerto,
+  type Veredito,
+} from '../content-use/content-use.guard';
+import { OrigensDosUsos } from '../content-use/content-use.orphans';
+import { CONFIG_DA_GUARDA, type ConfigDaGuarda } from '../content-use/content-use.pools';
 import {
   ContentRestrictionService,
   type RestrictionSubject,
@@ -15,7 +31,7 @@ import {
   OutboxService,
   type ClaimedEvent,
 } from '../outbox/outbox.service';
-import { resolveEventSubjects } from '../outbox/event-subjects';
+import { resolveEventScope } from '../outbox/event-subjects';
 import { UnsafeUrlError, assertSafeWebhookUrl, type SafeFetchResult } from './safe-http';
 
 /**
@@ -29,6 +45,8 @@ export type WebhookTransport = (
   url: string,
   body: string,
   headers: Record<string, string>,
+  /** o prazo ABSOLUTO da guarda (10 s, DNS incluído): aborta a entrega */
+  signal?: AbortSignal,
 ) => Promise<SafeFetchResult>;
 
 type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
@@ -37,11 +55,44 @@ type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
 const DEAD_DELIVERIES_TO_PAUSE = 3;
 
 /**
- * Teto de destinos por workspace. O fan-out é sequencial, então ele limita a
- * pior entrega possível (20 × 5s de timeout = 100s) bem abaixo do lease de
- * 5min — junto com o heartbeat, nenhum evento perde a posse por lentidão.
+ * Teto de destinos por workspace. O fan-out é sequencial: cada destino é uma
+ * guarda (espera por sessão, travas, registro e o POST no prazo de 10 s), e o
+ * heartbeat renova a posse do evento ANTES de cada um — nenhum evento perde a
+ * posse por lentidão, e cada destino cabe com folga no lease de 5 min.
  */
 const MAX_WEBHOOKS_PER_WORKSPACE = 20;
+
+/**
+ * Teto do número da tentativa nos metadados do uso. Não é `MAX_ATTEMPTS`: um
+ * evento cuja posse venceu (worker morto) é reassumido e conta tentativa sem
+ * passar por `markFailed`, então o número pode passar dele. Formato estrito,
+ * com folga.
+ */
+const TENTATIVA_MAXIMA_NO_REGISTRO = 100;
+
+/**
+ * De quem é o evento (ADR-047 adendo 2 e adendo 7 §9, G3.3): o conjunto de
+ * travas do uso de webhook e o que vai à porta.
+ */
+type EscopoDoEvento = {
+  /** os contatos conhecidos — as travas de contato */
+  contatos: string[];
+  /** `deal:<id>` e `task:<id>` — as travas de entidade */
+  entidades: string[];
+  /** o que vai à porta: os contatos e, se houver, o desconhecido (`null`) */
+  sujeitos: RestrictionSubject[];
+};
+
+/** O que um destino deu, sob a guarda. */
+type DesfechoDoDestino =
+  /** 2xx */
+  | { tipo: 'entregue' }
+  /** falha DO DESTINO: retentativa pelo outbox e penalidade de entrega morta */
+  | { tipo: 'falhou'; erro: string }
+  /** restrição: nada sai para nenhum destino mais */
+  | { tipo: 'suprimido' }
+  /** falha DO EVENTO (não começou, em dúvida): sem penalizar o destino */
+  | { tipo: 'evento'; motivo: string };
 
 type WebhookRow = {
   id: string;
@@ -54,7 +105,7 @@ type WebhookRow = {
 };
 
 @Injectable()
-export class WebhooksService {
+export class WebhooksService implements OnModuleInit {
   private readonly logger = new Logger(WebhooksService.name);
 
   constructor(
@@ -64,7 +115,54 @@ export class WebhooksService {
     private readonly audit: AuditService,
     @Inject(WEBHOOK_TRANSPORT) private readonly transport: WebhookTransport,
     private readonly restriction: ContentRestrictionService,
+    private readonly guarda: ContentUseGuard,
+    private readonly origens: OrigensDosUsos,
+    private readonly cls: ClsService,
+    @Inject(CONFIG_DA_GUARDA) private readonly configDaGuarda: ConfigDaGuarda,
   ) {}
+
+  /**
+   * A ESPECIFICAÇÃO do uso `webhook_delivery` (ADR-047 adendo 7 §9, G3.3),
+   * registrada no Core antes de qualquer entrega sob a guarda: a origem é a
+   * entrega gerada antes da guarda, com o destino e o evento; o único metadado
+   * é o número da tentativa, que a linha da entrega exige. Em dúvida, a entrega
+   * daquela tentativa nasce como falha incerta. A transação pode ser `raw`
+   * (ativação): `workspaceId` explícito.
+   */
+  onModuleInit(): void {
+    this.origens.registrar('webhook_delivery', {
+      origem: ['deliveryId', 'webhookId', 'outboxEventId'],
+      metadados: {
+        attempt: (valor) =>
+          Number.isInteger(valor) &&
+          (valor as number) >= 1 &&
+          (valor as number) <= TENTATIVA_MAXIMA_NO_REGISTRO,
+      },
+      marcarIncerta: async (tx, uso) => {
+        const origem = (uso.origin ?? {}) as Record<string, unknown>;
+        const attempt = (uso.runMetadata as Record<string, unknown> | null)?.attempt;
+        if (
+          typeof origem.deliveryId !== 'string' ||
+          typeof origem.webhookId !== 'string' ||
+          typeof origem.outboxEventId !== 'string' ||
+          typeof attempt !== 'number'
+        ) {
+          return;
+        }
+        await this.registrarEntregaIncerta(
+          tx,
+          uso.workspaceId,
+          {
+            deliveryId: origem.deliveryId,
+            webhookId: origem.webhookId,
+            outboxEventId: origem.outboxEventId,
+            attempt,
+          },
+          'in_doubt',
+        );
+      },
+    });
+  }
 
   async list(): Promise<WebhookDto[]> {
     const rows = (await this.prisma.db.webhook.findMany({
@@ -192,38 +290,43 @@ export class WebhooksService {
   }
 
   /**
-   * Contatos de quem é o evento NA ENTREGA: a entidade dele e, quando o evento
-   * nasceu de uma cadeia de automação, também a entidade do evento RAIZ
-   * (ADR-047 adendo 2). O conteúdo derivado — `{{title}}` de uma tarefa criada
-   * a partir de `deal.created` — é do contato do deal raiz, e esse vínculo pode
-   * ter surgido DEPOIS da emissão: só a fotografia herdada não o veria.
+   * De quem é o evento NA ENTREGA: os contatos e as entidades dele e, quando o
+   * evento nasceu de uma cadeia de automação, também os do evento RAIZ (ADR-047
+   * adendo 2; adendo 7 §9, G3.3). O conteúdo derivado — `{{title}}` de uma
+   * tarefa criada a partir de `deal.created` — é do contato do deal raiz, e esse
+   * vínculo pode ter surgido DEPOIS da emissão: só a fotografia não o veria. A
+   * fotografia da emissão entra junto: só a resolução deixaria escapar um deal
+   * desligado do contato entre emitir e entregar.
    *
-   * `raw` justificado: a entrega roda fora do CLS (worker cross-workspace);
-   * `workspaceId` explícito em toda leitura, e só vínculos com contato são lidos.
+   * `client`: o `raw` na checagem rápida (fora do CLS) ou a transação da guarda
+   * na reconferência — `workspaceId` explícito em toda leitura.
    */
-  private async contactSubjects(event: ClaimedEvent): Promise<RestrictionSubject[]> {
-    const own = await resolveEventSubjects(
-      this.prisma.raw,
-      event.workspaceId,
-      event.eventType,
-      event.payload,
-    );
-    if (!event.chainId) return own;
-    const root = await this.prisma.raw.outboxEvent.findFirst({
-      where: { workspaceId: event.workspaceId, id: event.chainId },
-      select: { eventType: true, payload: true },
-    });
-    // raiz sumida: não dá para saber de quem era o conteúdo derivado
-    if (!root) return [...own, null];
-    return [
-      ...own,
-      ...(await resolveEventSubjects(
-        this.prisma.raw,
-        event.workspaceId,
-        root.eventType,
-        root.payload,
-      )),
+  private async escopoDoEvento(client: Db, event: ClaimedEvent): Promise<EscopoDoEvento> {
+    const partes = [
+      await resolveEventScope(client, event.workspaceId, event.eventType, event.payload),
     ];
+    if (event.chainId) {
+      const raiz = await client.outboxEvent.findFirst({
+        where: { workspaceId: event.workspaceId, id: event.chainId },
+        select: { eventType: true, payload: true },
+      });
+      partes.push(
+        raiz
+          ? await resolveEventScope(client, event.workspaceId, raiz.eventType, raiz.payload)
+          : // raiz sumida: não dá para saber de quem era o conteúdo derivado
+            { contacts: [null], entities: [] },
+      );
+    }
+    const todos: RestrictionSubject[] = [
+      ...(event.subjectContactIds ?? []),
+      ...partes.flatMap((parte) => parte.contacts),
+    ];
+    const contatos = [...new Set(todos.filter((id): id is string => typeof id === 'string'))];
+    return {
+      contatos,
+      entidades: [...new Set(partes.flatMap((parte) => parte.entities))],
+      sujeitos: todos.some((id) => id === null) ? [...contatos, null] : contatos,
+    };
   }
 
   /**
@@ -259,19 +362,15 @@ export class WebhooksService {
      * entregas, que o cliente vê. Automações não passam por aqui e seguem
      * funcionando.
      */
-    let subjects: RestrictionSubject[] = [];
+    // `raw` justificado: a entrega roda fora do CLS; `workspaceId` explícito
+    const escopo = await this.escopoDoEvento(this.prisma.raw as unknown as Db, event);
     if (this.restriction.active) {
       /**
-       * De quem é o evento: a FOTOGRAFIA da emissão somada à resolução de agora
-       * (ADR-047 adendo 2). Só a resolução deixaria escapar um deal desligado do
-       * contato entre emitir e entregar; só a fotografia não veria um evento
-       * antigo, sem ela. A união não deixa nenhum dos dois de fora.
+       * A checagem RÁPIDA, antes do fan-out: suprime cedo, sem abrir guarda. A
+       * garantia é a reconferência sob as travas, por destino (G3.3).
        */
-      subjects = [
-        ...new Set([...(event.subjectContactIds ?? []), ...(await this.contactSubjects(event))]),
-      ];
-      if (subjects.length > 0) {
-        const verdict = await this.restriction.check(event.workspaceId, 'webhook', subjects);
+      if (escopo.sujeitos.length > 0) {
+        const verdict = await this.restriction.check(event.workspaceId, 'webhook', escopo.sujeitos);
         if (verdict.unavailable) {
           // nada sai, mas também nada se perde: o dispatcher devolve o evento ao
           // outbox com backoff (fail-closed é "não sai", não "descarta")
@@ -316,7 +415,7 @@ export class WebhooksService {
     const succeededIds: string[] = [];
     let suppressed = false;
 
-    for (const [index, webhook] of pendingWebhooks.entries()) {
+    for (const webhook of pendingWebhooks) {
       // HEARTBEAT: fan-out longo pode ultrapassar o lease. Renovar antes de
       // cada destino mantém a posse; se já a perdemos, outro worker assumiu o
       // evento e continuar aqui duplicaria entregas — abandona sem concluir.
@@ -324,61 +423,24 @@ export class WebhooksService {
         this.logger.warn(`Lease de ${event.id} perdido durante o fan-out — entrega abandonada`);
         return;
       }
-      /**
-       * RECONFERE a restrição antes de cada destino além do primeiro: o fan-out
-       * pode levar até ~100 s (20 destinos × 5 s), e um contato que fica
-       * restrito no meio dele não sai para os destinos restantes (ADR-047 §4,
-       * "o que estava em voo não sai"). Indisponível vira falha do EVENTO —
-       * nenhum webhook é penalizado — e o retry parcial retoma de onde parou.
-       */
-      if (index > 0 && subjects.length > 0) {
-        const verdict = await this.restriction.check(event.workspaceId, 'webhook', subjects);
-        if (verdict.unavailable) {
-          failures.push('porta de restrição indisponível no meio da entrega');
-          break;
-        }
-        if (verdict.restricted.some(Boolean)) {
-          suppressed = true;
-          break;
-        }
-      }
-      const timestamp = Math.floor(Date.now() / 1000);
-      let status: number | null = null;
-      let error: string | null = null;
-      let durationMs = 0;
-      try {
-        // decrypt DENTRO do try: segredo corrompido é falha DESTE webhook, não
-        // do evento. Fora do try, um único segredo ilegível derrubava a entrega
-        // para todos os outros destinos e levava o evento a `dead`.
-        const secret = this.crypto.decrypt(webhook.secretCipher);
-        const result = await this.transport(webhook.url, body, {
-          'x-veyra-event': event.eventType,
-          'x-veyra-delivery': event.id,
-          'x-veyra-signature': this.sign(secret, timestamp, body),
-        });
-        status = result.status;
-        durationMs = result.durationMs;
-        if (status >= 400) error = `HTTP ${status}`;
-      } catch (e) {
-        error = e instanceof Error ? e.message : 'falha desconhecida';
-      }
-      await this.prisma.raw.webhookDelivery.create({
-        data: {
-          workspaceId: event.workspaceId,
-          webhookId: webhook.id,
-          outboxEventId: event.id,
-          attempt: event.attempts,
-          responseStatus: status,
-          error,
-          durationMs,
-        },
-      });
-      if (error) {
-        failures.push(`${webhook.id}: ${error}`);
-        failedIds.push(webhook.id);
-      } else {
+      const desfecho = await this.entregarAoDestino(event, webhook, body, escopo);
+      if (desfecho.tipo === 'entregue') {
         succeededIds.push(webhook.id);
+        continue;
       }
+      if (desfecho.tipo === 'falhou') {
+        failures.push(`${webhook.id}: ${desfecho.erro}`);
+        failedIds.push(webhook.id);
+        continue;
+      }
+      if (desfecho.tipo === 'suprimido') {
+        suppressed = true;
+        break;
+      }
+      // falha DO EVENTO: nenhum destino é penalizado, e o retry parcial retoma
+      // daqui com um uso novo (ADR-047 §4, "o que estava em voo não sai")
+      failures.push(`${webhook.id}: ${desfecho.motivo}`);
+      break;
     }
 
     // sucesso zera o contador de quem entregou, mesmo em lote parcialmente falho
@@ -425,6 +487,188 @@ export class WebhooksService {
         }
       }
     }
+  }
+
+  /**
+   * UM destino, numa tentativa, sob a guarda de uso externo (ADR-047 adendo 7
+   * §9, G3.3): uso novo por destino e por tentativa, com registro, travas
+   * (contatos e entidades, valendo mesmo sem contato), reconferência e o POST no
+   * prazo de 10 s, DNS incluído. A entrega roda fora do CLS; a guarda, no
+   * contexto do workspace DO EVENTO, como o client filtrado dela exige.
+   */
+  private async entregarAoDestino(
+    event: ClaimedEvent,
+    webhook: WebhookRow,
+    body: string,
+    escopo: EscopoDoEvento,
+  ): Promise<DesfechoDoDestino> {
+    const timestamp = Math.floor(Date.now() / 1000);
+    let headers: Record<string, string>;
+    try {
+      // segredo ilegível é falha DESTE destino, antes de qualquer envio: os
+      // outros seguem, e nenhuma guarda é aberta para o que não vai sair
+      const secret = this.crypto.decrypt(webhook.secretCipher);
+      headers = {
+        'x-veyra-event': event.eventType,
+        'x-veyra-delivery': event.id,
+        'x-veyra-signature': this.sign(secret, timestamp, body),
+      };
+    } catch (e) {
+      const erro = e instanceof Error ? e.message : 'falha desconhecida';
+      await this.prisma.raw.webhookDelivery.create({
+        data: {
+          workspaceId: event.workspaceId,
+          webhookId: webhook.id,
+          outboxEventId: event.id,
+          attempt: event.attempts,
+          responseStatus: null,
+          error: erro,
+          durationMs: 0,
+        },
+      });
+      return { tipo: 'falhou', erro };
+    }
+
+    // o id da entrega nasce ANTES da guarda: é a origem do uso, e o tratador o
+    // usa para criar a entrega incerta se a guarda se perder
+    const deliveryId = randomUUID();
+    const resultado = await this.cls.run(() => {
+      this.cls.set('workspaceId', event.workspaceId);
+      return this.guarda.executar<SafeFetchResult, DesfechoDoDestino>({
+        workspaceId: event.workspaceId,
+        kind: 'webhook_delivery',
+        contactIds: escopo.contatos,
+        entityKeys: escopo.entidades,
+        prazoMs: this.configDaGuarda.prazoDoWebhookMs,
+        origem: { deliveryId, webhookId: webhook.id, outboxEventId: event.id },
+        reservas: [],
+        metadadosDoRun: { attempt: event.attempts },
+        reconferir: (tx) => this.reconferir(tx, event, escopo),
+        iniciar: (signal) => this.transport(webhook.url, body, headers, signal),
+        persistir: (tx, desfecho) =>
+          this.registrarEntrega(tx, event, webhook.id, deliveryId, desfecho),
+        // a guarda voltou ao SAVEPOINT: a entrega desta tentativa fica incerta
+        persistenciaFalhou: (tx) =>
+          this.registrarEntregaIncerta(
+            tx,
+            event.workspaceId,
+            { deliveryId, webhookId: webhook.id, outboxEventId: event.id, attempt: event.attempts },
+            'persistence_failed',
+          ),
+      });
+    });
+    switch (resultado.tipo) {
+      case 'concluido':
+        return resultado.persistido && resultado.valor
+          ? resultado.valor
+          : { tipo: 'evento', motivo: 'entrega incerta (persistência)' };
+      case 'em_duvida':
+        // o tratador de origem criou (ou a reconciliação criará) a entrega
+        // incerta; a nova tentativa é um uso novo, recusado depois de uma
+        // restrição
+        return { tipo: 'evento', motivo: 'entrega em dúvida' };
+      case 'nao_comecou':
+        if (resultado.motivo === 'restrito') return { tipo: 'suprimido' };
+        return {
+          tipo: 'evento',
+          motivo:
+            resultado.motivo === 'indisponivel'
+              ? 'entrega não começou: porta de restrição indisponível ou de quem é o evento mudou'
+              : `entrega não começou (${resultado.motivo})`,
+        };
+    }
+  }
+
+  /**
+   * A reconferência SOB AS TRAVAS, na transação da guarda: resolve de novo de
+   * quem é o evento. Contato ou entidade fora do conjunto travado (o deal ganhou
+   * um contato, a tarefa trocou de deal entre a resolução e as travas) e o uso
+   * não começa — a nova tentativa resolve de novo; nunca segue sem a trava de
+   * quem o evento passou a ser.
+   */
+  private async reconferir(
+    tx: Db,
+    event: ClaimedEvent,
+    travado: EscopoDoEvento,
+  ): Promise<Veredito> {
+    const agora = await this.escopoDoEvento(tx, event);
+    const fora =
+      agora.contatos.some((id) => !travado.contatos.includes(id)) ||
+      agora.entidades.some((chave) => !travado.entidades.includes(chave));
+    if (fora) {
+      this.logger.warn(
+        `Evento ${event.id}: de quem é o evento mudou entre a resolução e as travas — nova tentativa`,
+      );
+      return 'indisponivel';
+    }
+    const veredito = await this.restriction.check(event.workspaceId, 'webhook', agora.sujeitos);
+    if (veredito.unavailable) return 'indisponivel';
+    return veredito.restricted.some(Boolean) ? 'restrito' : 'liberado';
+  }
+
+  /** NA transação da guarda: a entrega desta tentativa, com o id gerado antes. */
+  private async registrarEntrega(
+    tx: Db,
+    event: ClaimedEvent,
+    webhookId: string,
+    deliveryId: string,
+    desfecho: SafeFetchResult | DesfechoIncerto,
+  ): Promise<DesfechoDoDestino> {
+    const incerto = ehIncerto(desfecho);
+    const erro = incerto
+      ? desfecho.erro instanceof Error
+        ? desfecho.erro.message
+        : 'falha desconhecida'
+      : desfecho.status >= 400
+        ? `HTTP ${desfecho.status}`
+        : null;
+    await tx.webhookDelivery.create({
+      data: {
+        id: deliveryId,
+        workspaceId: event.workspaceId,
+        webhookId,
+        outboxEventId: event.id,
+        attempt: event.attempts,
+        responseStatus: incerto ? null : desfecho.status,
+        error: erro,
+        durationMs: incerto ? 0 : desfecho.durationMs,
+      },
+    });
+    return erro ? { tipo: 'falhou', erro } : { tipo: 'entregue' };
+  }
+
+  /**
+   * A entrega de uma tentativa como FALHA INCERTA, se ainda não existir — pelo
+   * tratador de origem (`in_doubt`) ou quando a persistência falha. Destino ou
+   * evento já apagados: não há histórico a manter (o cascade o apagaria), e a
+   * FK recusaria a linha. A transação pode ser `raw`: `workspaceId` explícito.
+   */
+  private async registrarEntregaIncerta(
+    tx: Db,
+    workspaceId: string,
+    entrega: { deliveryId: string; webhookId: string; outboxEventId: string; attempt: number },
+    erro: string,
+  ): Promise<void> {
+    const destino = await tx.webhook.count({ where: { workspaceId, id: entrega.webhookId } });
+    const evento = await tx.outboxEvent.count({
+      where: { workspaceId, id: entrega.outboxEventId },
+    });
+    if (destino === 0 || evento === 0) return;
+    await tx.webhookDelivery.createMany({
+      data: [
+        {
+          id: entrega.deliveryId,
+          workspaceId,
+          webhookId: entrega.webhookId,
+          outboxEventId: entrega.outboxEventId,
+          attempt: entrega.attempt,
+          responseStatus: null,
+          error: erro,
+          durationMs: 0,
+        },
+      ],
+      skipDuplicates: true,
+    });
   }
 
   /** DTO nunca expõe o segredo (nem cifrado). */

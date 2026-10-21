@@ -76,6 +76,10 @@ services:
       CLAMAV_PORT: '3310'
       STORAGE_ROOT: /data/storage
       WEB_ORIGIN: https://${VEYRA_HOST}
+      # kill switch dos jobs (worker do outbox, varreduras, reconciliação): o
+      # deploy da guarda sobe o código novo com `true` até as migrations
+      # (DEPLOY_STAGING §4). Fora disso, `false`.
+      DISABLE_JOBS: ${DISABLE_JOBS:-false}
     depends_on:
       db:
         condition: service_healthy

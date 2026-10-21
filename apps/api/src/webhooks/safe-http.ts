@@ -82,9 +82,38 @@ export interface SafeFetchResult {
 
 const MAX_RESPONSE_BYTES = 64 * 1024; // resposta é descartada; só o status importa
 
+/** A espera de algo que não aceita sinal (o DNS) termina no aborto. */
+function contraOSinal<T>(promessa: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promessa;
+  if (signal.aborted) {
+    // a resolução já começou: o desfecho dela é descartado, mas tratado — sem
+    // isto, a falha tardia do DNS virava rejeição sem dono no processo
+    promessa.catch(() => undefined);
+    return Promise.reject(new Error('Entrega abortada pelo prazo'));
+  }
+  return new Promise<T>((resolve, reject) => {
+    const abortar = () => reject(new Error('Entrega abortada pelo prazo'));
+    signal.addEventListener('abort', abortar, { once: true });
+    promessa.then(
+      (valor) => {
+        signal.removeEventListener('abort', abortar);
+        resolve(valor);
+      },
+      (erro: unknown) => {
+        signal.removeEventListener('abort', abortar);
+        reject(erro instanceof Error ? erro : new Error('falha na resolução'));
+      },
+    );
+  });
+}
+
 /**
  * POST com IP PINADO. Resolve o host, valida TODOS os endereços retornados (um
  * só reprovado derruba a entrega) e conecta EXATAMENTE no endereço aprovado.
+ *
+ * `signal` é o prazo ABSOLUTO da guarda de uso externo (ADR-047 adendo 7 §9,
+ * G3.3): 10 s que cobrem DNS, TCP, TLS e resposta. O DNS corre contra ele, e a
+ * requisição o leva; `timeoutMs` continua sendo o de inatividade do socket.
  *
  * Usa `https.request` (não `fetch`): o `fetch` do Node roda sobre undici, que
  * IGNORA a opção `agent` — o pinning seria silenciosamente descartado e o
@@ -97,10 +126,14 @@ export async function safePost(
   rawUrl: string,
   body: string,
   headers: Record<string, string>,
+  signal?: AbortSignal,
   timeoutMs = 5_000,
 ): Promise<SafeFetchResult> {
   const url = assertSafeWebhookUrl(rawUrl);
-  const resolved = await dnsLookup(url.hostname, { all: true, verbatim: true });
+  const resolved = await contraOSinal(
+    dnsLookup(url.hostname, { all: true, verbatim: true }),
+    signal,
+  );
   if (resolved.length === 0) throw new UnsafeUrlError('Host não resolve');
   for (const entry of resolved) assertPublicIp(entry.address);
   const pinned = resolved[0];
@@ -127,6 +160,8 @@ export async function safePost(
     },
   });
 
+  // abortado durante a resolução: nada chegou a ser enviado
+  if (signal?.aborted) throw new Error('Entrega abortada pelo prazo');
   const started = Date.now();
   return new Promise<SafeFetchResult>((resolve, reject) => {
     const request = httpsRequest(
@@ -138,6 +173,7 @@ export async function safePost(
         method: 'POST',
         agent,
         timeout: timeoutMs,
+        signal,
         headers: {
           'content-type': 'application/json',
           'content-length': Buffer.byteLength(body),

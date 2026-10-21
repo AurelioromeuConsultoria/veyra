@@ -207,7 +207,10 @@ do Postgres é 100) contra o número de instâncias e o que mais usa o mesmo
 servidor. As duas migrations da G1 (`20261020200000_content_use` e
 `20261020200100_content_use_overran_deadline`) são aditivas e rodam ANTES do
 código, como as demais. A reconciliação dos usos roda a cada minuto com os
-jobs ligados; sem consumidor ligado (G3), não há uso a reconciliar.
+jobs ligados. Desde a G3, os três usos passam pela guarda: a geração de IA, o
+envio da mensagem de origem da IA e a entrega de webhook. A entrega abre uma
+guarda por destino e por tentativa, em sequência, então cada worker usa uma
+sessão de guarda por vez. A G3.3 não traz migration.
 
 Duas condições do banco valem para a guarda (ADR-047 adendo 7 §3.5):
 
@@ -233,19 +236,34 @@ precisa de um prazo de leitura igual ou maior. Se cortar antes, a pessoa recebe
 504 com o run já gravado e cobrado, e paga de novo ao repetir.
 
 **Deploy da guarda de uso externo (da G3.2 em diante): pausar, classificar,
-migrar, retomar.** "Migration antes do código", sozinha, **não fecha** a janela
-da G3.2 (decisão de 2026-10-21, ADR-047 adendo 7 §9). Entre a migration e a
-subida do código novo, o código antigo continua no ar: aprova rascunhos da IA,
-que nascem sem a origem de IA, e envia pela regra antiga, porque não lê a
-coluna nova. A ordem obrigatória:
+subir sem jobs, migrar, retomar.** "Migration antes do código", sozinha, **não
+fecha** a janela da G3.2 (decisão de 2026-10-21, ADR-047 adendo 7 §9). Entre a
+migration e a subida do código novo, o código antigo continua no ar: aprova
+rascunhos da IA, que nascem sem a origem de IA, e envia pela regra antiga,
+porque não lê a coluna nova. A regra é que **o código antigo nunca roda com o
+schema novo**, e que nada sai antes das migrations. Use os nomes reais da §3.6.
+A ordem obrigatória:
 
-1. **Backup** (§6).
-2. **Pausar aprovações e envios.** Pare o recurso `api` no Coolify (Stop). Sem
-   ele, nenhuma aprovação chega e nenhum worker envia. Os eventos ficam
-   pendentes no outbox, que nunca se edita por SQL (§7.2). O `web` pode ficar no
-   ar: as chamadas falham até a retomada, e é janela de manutenção.
-3. **Classificar o que estava em andamento**, pelo console do banco (§7), antes
-   de qualquer migration. Anote os números:
+1. **Backup** (§5), pelo container `backup`.
+2. **Pausar aprovações e envios.** No host, pare só a API e o `web`, como na
+   restauração do §6:
+
+   ```bash
+   docker stop <container-web> <container-api>
+   ```
+
+   **Não use o Stop do recurso no painel**: ele para o compose inteiro, banco
+   incluído, e os passos seguintes precisam do banco. Sem a API, nenhuma
+   aprovação chega e nenhum worker envia. Os eventos ficam pendentes no outbox,
+   que nunca se edita por SQL (§7.2). É janela de manutenção.
+
+3. **Classificar o que estava em andamento**, pelo console do banco, antes de
+   qualquer migration. As variáveis do `psql` são lidas DENTRO do container (o
+   shell do host não as tem). Anote os números:
+
+   ```bash
+   docker exec -it <container-db> sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+   ```
 
    ```sql
    -- despachos pendentes ou em voo, por estado e marcador de despacho
@@ -265,10 +283,24 @@ coluna nova. A ordem obrigatória:
    - Uso `authorized`: a reconciliação decide pela prova depois da retomada.
      Nada se edita à mão.
 
-4. **Migrations**, num container avulso da imagem nova
-   (`run --rm --no-deps api npx prisma migrate deploy`, como no §9). Entre elas estão
-   `20261021090000_message_dispatch_ai_origin` e o preenchimento
-   `20261021090100_message_dispatch_ai_origin_backfill`. Confira o preenchimento:
+4. **Subir o código novo SEM os jobs.** No painel, defina `DISABLE_JOBS=true`
+   no recurso, aponte para o commit novo e faça o **Deploy**. A API nova sobe
+   sem worker do outbox, sem varreduras e sem reconciliação: nenhum envio e
+   nenhuma entrega de webhook. O que depende do schema novo (aprovar um
+   rascunho, enviar uma mensagem) **falha fechado** até a migration: a escrita
+   referencia colunas que ainda não existem, a transação inteira volta e nada
+   sai. O código antigo não volta a rodar. **Se o Deploy falhar**, não rode as migrations nem
+   religue o container antigo: investigue com tudo parado. Religar o código
+   antigo reabriria a regra antiga.
+5. **Migrations**, no container novo da API (como na §3.5), e a conferência do
+   preenchimento. O deploy recria o container: releia o nome dele antes
+   (`docker ps --format '{{.Names}}' | grep -i veyra`, como na §3.6). Entre as
+   migrations estão `20261021090000_message_dispatch_ai_origin` e o
+   preenchimento `20261021090100_message_dispatch_ai_origin_backfill`:
+
+   ```bash
+   docker exec -it <container-api> npx prisma migrate deploy
+   ```
 
    ```sql
    -- precisa dar 0: despacho pendente de rascunho da IA sem a origem de IA
@@ -282,11 +314,12 @@ coluna nova. A ordem obrigatória:
                      AND a."action" = 'message.created_from_ai_proposal');
    ```
 
-5. **A cadeia de proxies**: os prazos de leitura de todos os proxies à frente do
+6. **A cadeia de proxies**: os prazos de leitura de todos os proxies à frente do
    `web` (G3.1, acima). Os 120 s do proxy não mudam os 60 s do provedor.
-6. **Retomar com o código novo.** Aponte o recurso para o commit novo e faça o
-   deploy. Depois, `curl -fsS https://$VEYRA_HOST/api/health`. Só então
-   aprovações e envios voltam, já sob a regra nova.
+7. **Retomar.** No painel, volte `DISABLE_JOBS=false` e faça o **Redeploy** do
+   mesmo commit. Depois, `curl -fsS https://$VEYRA_HOST/api/health`. Só então
+   os envios e as entregas voltam, já sob a regra nova, e a reconciliação da
+   subida examina os usos `authorized`.
 
 **Cobertura limitada dos despachos antigos.** Os despachos aprovados antes da
 G3.2 têm `approvalContactIds` nulo: reconferem só o contato atual da conversa.

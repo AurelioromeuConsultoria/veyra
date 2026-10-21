@@ -1798,10 +1798,13 @@ A G2 foi publicada (`9237de8`, quatro jobs do CI verdes). A G3 liga os três uso
      - O histórico terminal não é reescrito.
      - Conferida contra quatro casos na base de teste: o editado pendente passa a `true`; o terminal, a mensagem livre e a trilha de outro workspace ficam `false`.
      - **Resíduo:** aprovações e envios processados pelo código antigo **entre** a migration e a subida do código novo seguem a regra antiga. O código antigo grava `false` e não lê a coluna. "Migration antes do código", sozinha, **não fecha** essa janela (decisão do usuário, 2026-10-21). O runbook de deploy (`docs/DEPLOY_STAGING.md` §4, "Deploy da guarda de uso externo") exige, nesta ordem:
-       1. a pausa de aprovações e envios;
-       2. a conclusão ou classificação dos trabalhos em andamento;
-       3. as migrations com o preenchimento da origem, conferido;
-       4. só depois, a retomada com o código novo.
+       1. a pausa de aprovações e envios: a API e o `web` parados no host; o banco continua no ar;
+       2. a classificação dos trabalhos em andamento;
+       3. a subida do código novo **com os jobs desligados** (`DISABLE_JOBS=true`). Nada sai, e o que depende do schema novo falha fechado, por construção: a escrita referencia colunas que ainda não existem, e a transação volta inteira;
+       4. as migrations, com o preenchimento da origem conferido;
+       5. só depois, a retomada (os jobs religados).
+
+       O código antigo nunca roda com o schema novo. A primeira versão do runbook mandava parar o recurso pelo painel, o que para também o banco, e rodar as migrations de uma imagem que só existe depois do deploy. A revisão apontou que ela não era executável (P2), e esta ordem a corrige.
 
        Em staging, o Clinics está desativado e os dados são fictícios.
 2. **A triagem distingue a mensagem comprovadamente não enviada da entrega realmente desconhecida.** A pergunta da guarda passa de "a reserva está num uso?" para **a situação da reserva** (`ContentUseGuard.situacaoDaReserva`), com três respostas:
@@ -1856,6 +1859,69 @@ A G2 foi publicada (`9237de8`, quatro jobs do CI verdes). A G3 liga os três uso
   - o tratador mantendo a referência da reserva;
   - a escrita sem validar os contatos;
   - a aprovação sem gravar os contatos.
+
+A G3.2 foi publicada em `6a79708` e `40076a5` (quatro jobs do CI verdes sobre `40076a5`, com a migration de preenchimento).
+
+**G3.3 — a entrega de webhook** (escopo aprovado em 2026-10-21: o webhook sob a guarda, incluindo o deal e a entidade raiz da tarefa, com isolamento por workspace e uma guarda nova a cada tentativa e destino).
+
+- **Um uso por destino e por tentativa** (`webhook_delivery`). Cada webhook inscrito, em cada tentativa do outbox, passa por uma guarda própria, com registro, travas, reconferência e o POST dentro do prazo. Uma retentativa nunca herda a autorização de outra, e um destino nunca herda a de outro.
+- **Ids gerados antes da guarda.** O id da entrega (`WebhookDelivery.id`) nasce antes de tudo. A origem do uso é `{deliveryId, webhookId, outboxEventId}`, todos uuids. O número da tentativa vai nos metadados, `{attempt}`, e o validador aceita só inteiro de 1 a 100. Não é `MAX_ATTEMPTS`: um evento cuja posse venceu (worker morto) é reassumido e conta tentativa sem passar por `markFailed`, então o número pode passar dele. Assim o tratador de origem consegue criar a linha, que é única por (workspace, webhook, evento, tentativa).
+- **O conjunto de travas** segue a mesma regra de "de quem é o evento" da porta (adendo 2), agora também com as entidades:
+  - **contatos:** a fotografia da emissão somada à resolução de agora. A resolução de agora cobre o evento e, em cadeia de automação, o evento raiz;
+  - **entidades:**
+    - a do evento: `deal:<id>` ou `task:<id>`;
+    - o **deal da tarefa** (`deal:<dealId>`);
+    - em cadeia, **a entidade raiz** e o deal da tarefa raiz;
+  - **com zero contatos** (deal ou tarefa sem contato), as travas do workspace e das entidades valem do mesmo jeito;
+  - **com a raiz sumida ou o evento sem id**, o desconhecido (`null`) vai à porta, que o trata como restrito quando o workspace tem dado sensível.
+- **A reconferência, sob as travas, resolve de novo** os contatos e as entidades na transação da guarda.
+  - Se apareceu contato ou entidade **fora do conjunto travado**, a guarda não começa e a resposta é "indisponível". Isso acontece, por exemplo, quando o deal ganhou um contato ou a tarefa trocou de deal entre a resolução e as travas. A nova tentativa resolve de novo, e o uso nunca segue sem a trava de quem o evento passou a ser.
+  - Senão, a porta `webhook` responde com os contatos resolvidos de novo, somados aos da fotografia.
+- **O transporte recebe o sinal da guarda.** `safePost` faz a resolução de DNS contra o sinal, e a requisição o leva. O prazo absoluto de **10 s** cobre DNS, TCP, TLS e resposta. O prazo de inatividade do socket continua o mesmo.
+- **Persistência na transação da guarda:** a linha de `WebhookDelivery` com o id gerado antes da guarda e o status ou o erro. O desfecho incerto (exceção depois de começar, aborto pelo prazo) vira erro gravado, como hoje.
+- **O tratador de origem** cria a entrega com o id gerado antes da guarda, como falha incerta (`error = 'in_doubt'`), se ela ainda não existir: `createMany` com `skipDuplicates` e `workspaceId` explícito, válido também na transação `raw` da ativação.
+- **Desfechos no fan-out:**
+  - concluído com 2xx: entregue;
+  - concluído com falha do destino: retentativa pelo outbox e penalidade de entrega morta, como hoje;
+  - não começou por restrição: o evento é suprimido para os destinos restantes, sem entrar no histórico que o cliente vê, como hoje;
+  - não começou por outro motivo (porta indisponível, conjunto desatualizado, trava, sessão, registro, prova de vida, prazo): falha **do evento**, sem penalizar o destino. O retry parcial retoma de onde parou, com um uso novo;
+  - em dúvida (guarda perdida): o tratador já criou a entrega incerta. Conta como falha do evento, sem penalizar o destino. A nova tentativa é um uso novo, e depois de uma restrição é recusada.
+- **Entrega "pelo menos uma vez".** Ao contrário da mensagem da Meta, um webhook incerto é reenviado na próxima tentativa, como hoje. O destino deduplica pelo `x-veyra-delivery` (o id do evento). O que a guarda garante é que nenhuma tentativa, nova ou repetida, sai depois de uma restrição.
+- **A checagem rápida antes do fan-out continua**: ela suprime cedo, sem abrir guarda. A garantia está na reconferência sob as travas, por destino. A reconferência entre destinos, que existia, sai do código: a guarda de cada destino a substitui.
+- **A guarda vale sempre**, com ou sem vertical. Sem o Clinics, a porta responde "liberado", e o custo é o registro e as travas por destino.
+- **Contexto e isolamento.** A entrega roda fora do contexto de requisição (worker cross-workspace). Cada guarda roda num `cls.run` com o workspace **do evento**, porque a guarda exige o contexto e usa o client filtrado. Toda leitura `raw` leva o `workspaceId` explícito.
+- **O teste da G1 de "tipo sem registro"** usava `webhook_delivery`, que agora tem registro. Ele passa a simular a ausência da especificação.
+
+**Testes da G3.3** (dados fictícios; o destino falso segura o POST num portão; a porta real do Clinics na reconferência; quem espera quem é conferido em `pg_blocking_pids`):
+
+- **Integração, `clinics-webhook-guard` (15):**
+  - caminho feliz com deal sem contato num workspace com o Clinics: o uso trava o workspace e `deal:<id>` com zero contatos, registra antes do POST (o sinal chega ao transporte) e conclui com a entrega, cujo id é o da origem do uso;
+  - uso primeiro: trocar o contato do deal espera a entrega e comita depois;
+  - mudança primeiro: o deal ganha um contato enquanto a entrega espera as travas. A reconferência o vê fora do conjunto travado: nada sai, ninguém é penalizado, e a nova tentativa é suprimida;
+  - a tarefa trava também o deal dela, e a cadeia trava a entidade raiz: nos dois casos, trocar o contato desse deal espera a entrega;
+  - uma guarda nova por destino (dois webhooks, dois usos, duas entregas) e por tentativa (`attempt` 1 e 2, dois usos);
+  - entre destinos: o deal ganha um contato depois do 1º destino, e a guarda do 2º o vê, sem POST;
+  - a guarda morre durante o POST, na última tentativa: o uso fica em dúvida, a entrega nasce incerta com o id gerado antes, e o evento morre sem penalizar o destino;
+  - o prazo aborta o POST pelo sinal (falha do destino, gravada sob a guarda); o POST que ignora o sinal vira `overran_deadline`, com a entrega incerta;
+  - workspace sem o Clinics: o evento de contato sai sob a guarda, com o contato travado; a ativação do Clinics espera a entrega em andamento, e depois dela o evento de contato é suprimido;
+  - isolamento: a entrega presa no workspace B não segura a troca de contato do deal no A;
+  - o tratador de origem numa transação `raw`, com linhas de outro workspace, só cria a entrega incerta no workspace do uso, e repetido é idempotente.
+- **Unitário (`safe-http`):** o sinal abortado encerra a entrega já na resolução de DNS. **Regra estática** (nit da revisão de segurança, no molde da G3.1): `safePost(` só aparece na própria definição; o transporte injetável só é usado pelo módulo e pelo serviço de webhooks; o serviço o chama uma única vez, dentro do `iniciar` da guarda. Uma reentrega manual ou um "testar webhook" futuro que chamasse o transporte direto quebra o teste.
+- **Suítes existentes:** a E6 (restrição no lado do Core) passou a contar a reconferência de cada destino sob a guarda. Antes eram a checagem rápida e a reconferência a partir do 2º destino; agora a restrição no meio do fan-out cai na 3ª consulta (checagem rápida, 1º destino, 2º destino). O teste da G1 de "tipo sem registro" simula a ausência da especificação.
+- **Mutação:** cada uma das 11 abaixo derruba pelo menos um teste, e todas compilam:
+  - a tarefa sem o deal dela nas travas;
+  - a cadeia sem a entidade raiz;
+  - a reconferência aceitando escopo novo;
+  - a guarda sem reconferência;
+  - o sinal que não chega ao transporte;
+  - o DNS sem o sinal;
+  - o tratador sem `workspaceId`;
+  - o tratador que não cria a entrega;
+  - a tentativa fora dos metadados;
+  - a entrega sem o id da origem;
+  - a dúvida penalizando o destino.
+
+  **Sem teste de mutação:** o sinal na própria requisição HTTPS (`signal` no `https.request`). Um teste exigiria rede e endereço público, que a defesa SSRF recusa em ambiente local. Se o sinal não chegasse, a guarda ainda limitaria o tempo: a chamada que passa do prazo vira `overran_deadline`, como prova o teste do POST que ignora o sinal.
 
 ## ADR-048 — Veyra Clinics para estética: domínio próprio, classificação de dados e escopo do MVP
 

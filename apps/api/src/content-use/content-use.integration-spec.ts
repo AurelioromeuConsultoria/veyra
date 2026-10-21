@@ -1379,9 +1379,10 @@ describe('Guarda de uso externo (ADR-047 adendos 6 e 7)', () => {
     const origemFora = falso({}).uso;
     origemFora.origem = { dealId: randomUUID() };
     await expect(noWorkspace(() => guarda.executar(origemFora))).rejects.toThrow(/origem/);
-    // tipo sem especificação registrada (o webhook liga na G3.3)
+    // tipo sem especificação registrada: desde a G3.3 os três tipos têm
+    // registro, então a ausência é simulada na consulta da guarda
     const semRegistro = falso({}).uso;
-    semRegistro.kind = 'webhook_delivery';
+    jest.spyOn(app.get(OrigensDosUsos), 'de').mockReturnValueOnce(undefined);
     await expect(noWorkspace(() => guarda.executar(semRegistro))).rejects.toThrow(
       /tipo sem registro/,
     );
