@@ -11,6 +11,8 @@
  * aqui só se sobe o contexto e se imprime.
  */
 import 'dotenv/config';
+// antes do AppModule: a CLI não abre workers nem reconciliação
+import '../../../cli/sem-jobs';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../../../app.module';
 import { ClinicsActivationService } from '../clinics-activation.service';

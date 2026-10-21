@@ -292,7 +292,8 @@ Use os nomes reais da §3.6. A ordem obrigatória:
      FROM "MessageDispatch"
     WHERE "state" IN ('reserved', 'failed_before_send', 'sending')
     GROUP BY 1, 2;
-   -- usos de conteúdo ainda autorizados (só existem com a G1 em diante no ar)
+   -- usos de conteúdo ainda autorizados. SÓ se a G1 já estiver aplicada: antes
+   -- dela a tabela não existe, e esta consulta falha
    SELECT "kind", count(*) FROM "ContentUse" WHERE "status" = 'authorized' GROUP BY 1;
    ```
 
@@ -303,6 +304,9 @@ Use os nomes reais da §3.6. A ordem obrigatória:
      depois da retomada, já pela regra nova.
    - Uso `authorized`: a reconciliação decide pela prova depois da retomada.
      Nada se edita à mão.
+   - As consultas deste passo só usam colunas anteriores à G3.2. A contagem
+     dos despachos de **cobertura limitada** vem no passo 5, depois das
+     migrations: antes delas, as colunas da G3.2 não existem.
 
 4. **Subir o código novo SEM os jobs.** No painel, defina `DISABLE_JOBS=true`
    no recurso, aponte para o commit novo e faça o **Deploy**, ainda **sem o
@@ -362,6 +366,23 @@ Use os nomes reais da §3.6. A ordem obrigatória:
                      AND a."entityId" = d."messageId"
                      AND a."action" = 'message.created_from_ai_proposal');
    ```
+
+   Em seguida, a contagem da transição (G4), que só funciona com as colunas da
+   G3.2 já criadas e a origem já preenchida:
+
+   ```sql
+   -- despachos pendentes de origem da IA ANTERIORES à G3.2: cobertura limitada
+   -- (sem a fotografia da aprovação; reconferem só o contato da conversa).
+   -- Conte-os à parte; a mensagem livre de pessoa não entra
+   SELECT count(*) FROM "MessageDispatch" d
+     JOIN "Message" m ON m."workspaceId" = d."workspaceId" AND m."id" = d."messageId"
+    WHERE d."state" IN ('reserved', 'failed_before_send', 'sending')
+      AND d."approvalContactIds" IS NULL
+      AND (m."authorType" = 'ai' OR d."fromAiProposal");
+   ```
+
+   Esses despachos não são tratados como conferidos com a fotografia da
+   aprovação; a verificação de transição da G4 os conta à parte.
 
 6. **A cadeia de proxies**: os prazos de leitura de todos os proxies à frente do
    `web` (G3.1, acima). Os 120 s do proxy não mudam os 60 s do provedor.

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { ClsService } from 'nestjs-cls';
 import { Prisma } from '../generated/prisma/client';
 import { AuditService } from '../audit/audit.service';
+import { postgresErrorCode } from '../common/prisma-exception.filter';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { TasksService } from '../tasks/tasks.service';
 import { MudancasDeRestricao, type OpcoesDaTransacao } from '../content-use/restriction-changes';
@@ -84,7 +85,36 @@ export class PrismaAiRunRepository implements AiRunRepository {
 
   async create(workspaceId: string, run: AiRunRecord): Promise<string> {
     const id = randomUUID();
-    await this.gravar(this.prisma.db, workspaceId, { ...run, id });
+    try {
+      await this.gravar(this.prisma.db, workspaceId, { ...run, id });
+    } catch (erro) {
+      /**
+       * A recusa e o erro podem chegar DEPOIS de o alvo sumir (ADR-047 adendo 7
+       * §10, achado da G4): o contato excluído enquanto o uso esperava as
+       * travas, e a conversa dele, em cascata. A FK recusava a linha, a pessoa
+       * recebia 409 e a recusa ficava sem registro (CLAUDE.md §3.10). O run
+       * fica, sem a referência que não existe mais — como o run incerto
+       * (`criarRunIncerto`). Só recusa e erro: o run `ok` persiste na transação
+       * da guarda, sob as travas, e o alvo não some no meio.
+       */
+      const fkRecusada =
+        (erro instanceof Prisma.PrismaClientKnownRequestError && erro.code === 'P2003') ||
+        postgresErrorCode(erro) === '23503';
+      if (!fkRecusada || (run.status !== 'refused' && run.status !== 'error')) throw erro;
+      const existe = async (modelo: 'contact' | 'conversation', alvo?: string | null) =>
+        typeof alvo === 'string' &&
+        (await (
+          this.prisma.db[modelo] as unknown as { count: (a: object) => Promise<number> }
+        ).count({ where: { workspaceId, id: alvo } })) > 0;
+      await this.gravar(this.prisma.db, workspaceId, {
+        ...run,
+        id,
+        contactId: (await existe('contact', run.contactId)) ? run.contactId : null,
+        conversationId: (await existe('conversation', run.conversationId))
+          ? run.conversationId
+          : null,
+      });
+    }
     return id;
   }
 

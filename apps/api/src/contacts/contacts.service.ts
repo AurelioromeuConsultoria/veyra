@@ -280,10 +280,14 @@ export class ContactsService {
       this.prisma.db as unknown as TxRunner,
       async (tx) => {
         /**
-         * A exclusão MUDA A RESTRIÇÃO (ADR-047 adendo 6 §6): depois do commit,
-         * nenhum uso do conteúdo apagado começa. As travas de restrição vêm
-         * antes de qualquer linha, esperam os usos e as aprovações em andamento
-         * e marcam os órfãos deste contato.
+         * A exclusão MUDA A RESTRIÇÃO (ADR-047 adendo 6 §6). As travas de
+         * restrição vêm antes de qualquer linha, esperam os usos e as
+         * aprovações em andamento e marcam os órfãos deste contato. Quem
+         * recusa, depois do commit, o uso que esperava é a PORTA: com o
+         * Clinics, contato apagado é restrito, e o uso não começa. SEM vertical
+         * composto, a porta não restringe nada, e a exclusão só espera os usos
+         * em andamento — o que já tinha sido montado antes dela ainda pode sair
+         * (pendência registrada, ADR-047 adendo 7 §10).
          */
         await this.restricao.porContato(tx, {
           workspaceId: auth.workspaceId as string,

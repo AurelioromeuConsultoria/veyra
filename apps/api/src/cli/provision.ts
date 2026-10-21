@@ -16,6 +16,8 @@
  * token em log de aplicação.
  */
 import 'dotenv/config';
+// antes do AppModule: a CLI não abre workers nem reconciliação
+import './sem-jobs';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../app.module';
 import { ProvisioningService } from '../workspaces/provisioning.service';

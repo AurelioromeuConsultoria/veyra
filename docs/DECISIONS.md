@@ -1923,6 +1923,105 @@ A G3.2 foi publicada em `6a79708` e `40076a5` (quatro jobs do CI verdes sobre `4
 
   **Sem teste de mutação:** o sinal na própria requisição HTTPS (`signal` no `https.request`). Um teste exigiria rede e endereço público, que a defesa SSRF recusa em ambiente local. Se o sinal não chegasse, a guarda ainda limitaria o tempo: a chamada que passa do prazo vira `overran_deadline`, como prova o teste do POST que ignora o sinal.
 
+A G3.3 foi publicada em `09b1a76` e `f1315b2` (quatro jobs do CI verdes sobre `f1315b2`).
+
+#### 10. G4 — validação do conjunto (2026-10-21)
+
+Escopo aprovado: matriz uso × mudança, recuperação de falhas, isolamento, transição dos despachos antigos e revisão final de segurança. **A conclusão da G4 não levanta o B2:** ela produz um relatório para decisão. A contagem dupla da G3.2 continua pendente antes do piloto.
+
+**Como:** uma suíte própria (`clinics-guard-matrix`) com os **três consumidores reais** no mesmo app: a geração de IA (G3.1), o envio da mensagem de origem da IA (G3.2) e a entrega de webhook (G3.3). Ela usa o provedor de IA, a Meta e o destino falsos, segurando a chamada num portão, e a porta real do Clinics. Quem espera quem é conferido em `pg_blocking_pids`, nunca por sono.
+
+1. **Matriz uso × mudança.** Cada consumidor contra cada mudança da G2 que o alcança, nas duas ordens:
+   - **uso primeiro:** a mudança comprovadamente espera, o uso conclui, e a mudança comita depois;
+   - **mudança primeiro:** o uso espera e, depois do commit, recusa sem chamar.
+
+   Os pares:
+   - geração de IA, com o contato liberado: revogar a liberação, tornar paciente, excluir o contato e desativar o Clinics (o workspace inteiro);
+   - envio da IA, com o contato da conversa liberado: revogar a liberação, tornar paciente e desativar o Clinics. Excluir o contato fica fora do envio: ela apaga a conversa em cascata, e com ela a mensagem e o despacho;
+   - webhook de deal ou tarefa sem contato: trocar o contato do deal, trocar o contato da tarefa e trocar o deal da tarefa;
+   - webhook de contato num workspace sem o Clinics: ativar o Clinics (o workspace inteiro).
+
+2. **Recuperação de falhas, com os tratadores reais.** Um uso órfão de cada tipo, com o registro de origem no estado em que o processo morto o deixou, é marcado pelos detectores:
+   - pela **mudança** que segura as travas;
+   - pela **reconciliação**;
+   - pela **ativação** (o workspace inteiro).
+
+   O esperado, por tipo:
+   - o run fica `unknown_after_dispatch`;
+   - o despacho fica `unknown_after_dispatch`, sem reenvio;
+   - a entrega de webhook nasce incerta;
+   - as reservas são cobradas pelo teto **uma vez**, e o incidente é auditado.
+
+3. **Isolamento.**
+   - Um uso de cada consumidor, preso no workspace B, não segura mudança no A.
+   - A ativação no A não marca órfão do B.
+4. **Transição dos despachos antigos** (exigida na aprovação da G3.2). O despacho anterior à G3.2 tem **cobertura limitada** e é verificado à parte, nunca como se tivesse a fotografia completa da aprovação:
+   - o rascunho sem edição (`authorType = 'ai'`) continua sob a guarda, mas reconfere só o contato atual da conversa. O teste fixa esse limite;
+   - o rascunho editado com trilha recebe a origem pelo preenchimento e passa a sair sob a guarda;
+   - o editado sem trilha segue a regra antiga.
+
+   O runbook ganha a contagem desses despachos, depois das migrations (antes delas, as colunas da G3.2 não existem).
+
+5. **Mutações-chave contra a matriz:** a retirada da guarda ou da reconferência de cada consumidor derruba testes da matriz, não só da suíte de origem.
+6. **Revisão final de segurança** do conjunto G1–G4 contra o critério G′ (adendos 6 e 7), pelo `security` e pelo `reviewer`.
+
+**Saída:** o relatório da G4, com o que ficou provado, os resíduos declarados e as pendências antes do piloto. O B2 continua bloqueado até a decisão do usuário.
+
+**Resultados da G4** (`clinics-guard-matrix`, 39 testes, todos passando; dados fictícios):
+
+- **Matriz (24):**
+  - geração de IA × 4 mudanças, nas duas ordens;
+  - envio da IA × 3 mudanças, nas duas ordens;
+  - envio × excluir o contato da conversa, nas duas ordens. A cascata apaga a conversa, a mensagem e o despacho. Em "mudança primeiro", o worker já tinha o corpo e o endereço em memória: quem barra é a porta do Clinics (contato apagado é restrito), e nada sai;
+  - webhook × 4 mudanças (contato do deal, contato da tarefa, deal da tarefa, ativação), nas duas ordens.
+
+  Em "uso primeiro", a mudança comprovadamente espera, o uso conclui e a mudança comita sem erro. Em "mudança primeiro", o uso espera e recusa sem chamar:
+  - na IA, a pessoa recebe `content_restricted`, a recusa fica registrada (sem a referência ao contato, se ele foi excluído) e nada é contado;
+  - no envio, `content_restricted`, sem Meta nem cobrança;
+  - no webhook, sem POST nem entrega gravada.
+
+  Depois de "uso primeiro" com exclusão, o run some em cascata com o contato: a conferência olha o desfecho devolvido (`proposed`).
+
+- **Recuperação (9):** o órfão de cada tipo, com o registro de origem como o processo morto o deixou, marcado por cada detector: a mudança que segura as travas, a reconciliação e a desativação do workspace. Com os tratadores reais:
+  - o run fica `unknown_after_dispatch`, com o teto como custo;
+  - o despacho fica `unknown_after_dispatch` e `in_doubt`, sem Meta;
+  - a entrega de webhook nasce `in_doubt`.
+
+  As reservas são cobradas pelo teto uma vez (nenhuma sobra; os contadores fecham), e o incidente é auditado uma vez.
+
+- **Isolamento (3):** a geração e o envio presos no workspace B não seguram a revogação no A (o webhook está na G3.3); a desativação no A marca só os órfãos do A.
+- **Transição (3):**
+  - o despacho antigo sem edição continua sob a guarda, mas **reconfere só o contato da conversa**. Com o contato só da aprovação revogado, a mensagem sai. É o limite, fixado em teste;
+  - a contagem do runbook, feita depois das migrations, conta esse despacho e não conta a mensagem livre de pessoa;
+  - o contato da conversa revogado continua barrando;
+  - o editado antigo com trilha recebe a origem pela migration de preenchimento, executada como está, e não sai para contato restrito.
+- **Mutações-chave contra a matriz (7):** cada uma derruba testes da **matriz**, e todas compilam:
+  - a geração sem reconferência;
+  - o envio sem guarda;
+  - o webhook sem reconferência;
+  - a mudança sem travas;
+  - a mudança que não marca órfãos;
+  - o workspace que não marca órfãos;
+  - a recusa que se perde quando o contato sumiu.
+
+**Revisão final de segurança e do `reviewer` (2026-10-21).** Os dois concluíram que **o critério G′ está implementado e provado** para o escopo do B2 (workspaces com o Clinics), sem P0 nem P1, e varreram o código inteiro:
+
+- nenhum uso externo fora da guarda;
+- nenhuma mudança de restrição ou de titularidade fora da primitiva;
+- isolamento correto nas travas, nos detectores, nos tratadores e nas varreduras.
+
+Achados e o que se fez:
+
+- **P2 (`reviewer`): a geração recusada para um contato excluído durante a espera** respondia 409 e não registrava a recusa. A FK do run recusava o contato apagado. Agora o run recusado ou de erro é gravado sem a referência que não existe mais, como o run incerto. A matriz passou a conferir o desfecho devolvido e o run recusado, e uma mutação o prova.
+- **P2 (`reviewer`, docs):** o plano prometia o isolamento dos três consumidores, mas os resultados só tinham a geração. O caso do envio entrou.
+- **P2 (`security`, fora do escopo do B2): exclusão de contato num workspace só com o Core.** A porta sem vertical não restringe nada. A exclusão espera os usos em andamento, mas o que já estava montado ainda pode sair depois do commit. Tratar contato apagado como restrito no Core quebraria o webhook `contact.deleted`. O comentário do serviço foi corrigido, e a decisão fica registrada como pendência antes de dado real em qualquer workspace sem o Clinics (`docs/MEMORY/technical-debt.md`).
+- **Nits:**
+  - o par envio × excluir o contato entrou, com a justificativa certa;
+  - a consulta de transição do runbook conta só a origem de IA;
+  - as CLIs administrativas sobem com `DISABLE_JOBS=true` (`cli/sem-jobs.ts`, importado antes do `AppModule`), sem abrir workers nem a reconciliação no processo da CLI;
+  - os pares "geração × trocar o contato de um deal do contato" e "envio × excluir um contato só da aprovação" ficam cobertos por construção (a trava do contato do pedido), sem teste próprio.
+- **Observação:** o contexto da IA é lido **antes** das travas. A reconferência sob as travas confere a restrição dos contatos do pedido, não a titularidade do que foi lido. Um deal que troca de titular nesse intervalo leva ao provedor o que era do contato liberado no momento da leitura, e isso não viola o G′ (o conteúdo era do contato liberado), mas fica registrado.
+
 ## ADR-048 — Veyra Clinics para estética: domínio próprio, classificação de dados e escopo do MVP
 
 **Status:** aceito · **Data:** 2026-10-19 · Aprovação da F0 (documental): aprova o desenho e as decisões marcadas como aprovadas, não código nem migrations. **Seguem pendentes:** validação operacional das hipóteses H1–H7, avaliação jurídica (§9.2) e bloqueios B1–B4 — sem eles, nenhum dado real de paciente e nenhum piloto clínico
