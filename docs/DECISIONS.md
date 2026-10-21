@@ -1443,7 +1443,7 @@ A implementação foi dividida em quatro subentregas, cada uma com commit, bater
 - **G1:** a fundação da guarda, sem consumidor ligado;
 - **G2:** as mudanças e as aprovações;
 - **G3:** os três usos;
-- **G4:** a bateria de cenários uso × mudança e a revisão final de segurança.
+- **G4:** a bateria de cenários uso × mudança, a verificação de transição (despachos anteriores à G3.2, com cobertura limitada) e a revisão final de segurança.
 
 O B2 só volta para decisão depois da G4.
 
@@ -1783,7 +1783,7 @@ A G2 foi publicada (`9237de8`, quatro jobs do CI verdes). A G3 liga os três uso
 - **A recusa pela restrição limpa o marcador.** O marcador da IA é gravado antes da guarda; quando ela não começa por restrição (`failed_permanent`, `content_restricted`), a mensagem comprovadamente não saiu, e o marcador sai junto.
 - **O wamid conhecido não se perde** (achado P2 da revisão). Quando a Meta devolve o wamid e a persistência falha, ele vai para o despacho incerto, na mesma transação. Quando a guarda cai depois do envio (desfecho em dúvida), ele vai para o despacho (só se o `externalId` estiver vazio) e, só quando gravou, para a trilha (`message.dispatch_in_doubt`): sem linha atualizada, a guarda comitou `sent` antes de cair, e a trilha não pode dizer "em dúvida". Quando o envio passa do prazo (`overran_deadline`) e a Meta responde depois, o wamid tardio segue o mesmo caminho, pelo próprio envio. É o que permite a quem triar achar a mensagem no provedor e aos recibos de entrega chegarem a ela; o estado continua `unknown_after_dispatch`.
 - **Resíduos declarados:**
-  - **Registro incerto seguido de retentativa.** Se o registro falha e a lápide também, o registro pode ter comitado `authorized`: a reconciliação cobra a reserva pelo teto, e a nova tentativa do outbox cobra a sua. São duas cobranças para uma mensagem enviada uma vez. É o falso positivo conservador da G1, ampliado pela retentativa; nunca duplica o envio.
+  - **Registro incerto seguido de retentativa.** Se o registro falha e a lápide também, o registro pode ter comitado `authorized`: a reconciliação cobra a reserva pelo teto, e a nova tentativa do outbox cobra a sua. São duas contabilizações para uma mensagem enviada uma vez. É o falso positivo conservador da G1, ampliado pela retentativa; nunca duplica o envio. **Aceito só nesta etapa, com dados fictícios. NÃO está aprovado como comportamento financeiro para clientes reais** (decisão do usuário, 2026-10-21). É pendência explícita antes do piloto: separar o **consumo interno de quota** (o teto do plano, que pode continuar conservador) da **cobrança monetária** (no máximo uma vez por mensagem enviada). A solução não pode comprometer a prevenção de envio duplicado (`docs/MEMORY/technical-debt.md`, `docs/ROADMAP.md`).
   - **Não começou, e o processo morreu antes de encerrar o despacho** (limite operacional **aceito pelo usuário** em 2026-10-21). A guarda abortou (prazo, prova de vida ou lápide), com o uso `aborted` e a reserva devolvida, e o processo morreu antes do `finish`. Vencida a posse, a varredura marca o despacho `unknown_after_dispatch` e, pela regra acima, não cobra. A mensagem comprovadamente não saiu, mas fica "incerta" e não é retentada. Ela vai para a triagem humana, que **a distingue** de uma entrega realmente desconhecida (ver as decisões abaixo).
   - **Transição.** Despachos da IA aprovados antes do deploy (`approvalContactIds` nulo, ainda `reserved` ou `failed_before_send`) reconferem só o contato atual da conversa. Em staging o Clinics está desativado e os dados são fictícios; a migration vem antes do código.
   - **Rascunho editado:** decidido pelo usuário em 2026-10-21 (abaixo). Deixou de ser resíduo.
@@ -1797,7 +1797,13 @@ A G2 foi publicada (`9237de8`, quatro jobs do CI verdes). A G3 liga os três uso
    - **Transição, fechada por preenchimento** (sugestão da revisão). Uma segunda migration, só de dados (`20261021090100_message_dispatch_ai_origin_backfill`), liga `fromAiProposal` nos despachos **pendentes** (`reserved`, `failed_before_send`, `sending`). O critério é a trilha registrar a mensagem como criada de proposta da IA: `message.created_from_ai_proposal`, com `entityId = messageId`, no mesmo workspace.
      - O histórico terminal não é reescrito.
      - Conferida contra quatro casos na base de teste: o editado pendente passa a `true`; o terminal, a mensagem livre e a trilha de outro workspace ficam `false`.
-     - **Resíduo:** aprovações e envios processados pelo código antigo **entre** a migration e a subida do código novo seguem a regra antiga. O código antigo grava `false` e não lê a coluna. O deploy fecha esse caso se for feito sem aprovações nem envios em curso. Em staging, o Clinics está desativado e os dados são fictícios.
+     - **Resíduo:** aprovações e envios processados pelo código antigo **entre** a migration e a subida do código novo seguem a regra antiga. O código antigo grava `false` e não lê a coluna. "Migration antes do código", sozinha, **não fecha** essa janela (decisão do usuário, 2026-10-21). O runbook de deploy (`docs/DEPLOY_STAGING.md` §4, "Deploy da guarda de uso externo") exige, nesta ordem:
+       1. a pausa de aprovações e envios;
+       2. a conclusão ou classificação dos trabalhos em andamento;
+       3. as migrations com o preenchimento da origem, conferido;
+       4. só depois, a retomada com o código novo.
+
+       Em staging, o Clinics está desativado e os dados são fictícios.
 2. **A triagem distingue a mensagem comprovadamente não enviada da entrega realmente desconhecida.** A pergunta da guarda passa de "a reserva está num uso?" para **a situação da reserva** (`ContentUseGuard.situacaoDaReserva`), com três respostas:
    - **sem uso:** caminho antigo, cobra acima do teto se a reserva sumiu;
    - **decidida:** o uso concluiu ou ficou em dúvida, e não se cobra de novo;
@@ -1806,6 +1812,8 @@ A G2 foi publicada (`9237de8`, quatro jobs do CI verdes). A G3 liga os três uso
    No terceiro caso, a varredura reescreve o despacho que acabou de marcar como incerto: código `not_sent_guard_aborted` e marcador limpo, sem cobrança e sem reenvio. O estado continua `unknown_after_dispatch`, como no limite aceito. A reescrita só toca o despacho com um dos códigos das varreduras (`abandoned_in_flight`, `lease_expired_in_flight`, `retries_exhausted_in_flight`).
 
    Na caixa de entrada, esse código aparece como **"Não saiu"**, com o motivo "a guarda interrompeu antes do envio, sem cobrança", e não como "Entrega não confirmada". É o que separa o caso, para quem tria, de uma entrega cujo resultado ninguém conhece.
+
+**Exigido para a G4 (aprovação da G3.2, 2026-10-21) — verificação de transição.** Os despachos aprovados antes da G3.2 têm **cobertura limitada**: `approvalContactIds` nulo, e por isso reconferem só o contato atual da conversa. O preenchimento lhes dá a origem de IA, mas não a fotografia da aprovação. A G4 os verifica à parte (contagem no deploy, cenário com a coluna nula na bateria), e nenhum relatório, consulta ou teste os trata como conferidos com a fotografia completa da aprovação.
 
 - **`check:fk`:** a fotografia de `MessageDispatch.approvalContactIds` identifica a linha por `messageId` (o despacho não tem `id`). A bateria pegou a consulta com `e."id"`; a correção foi conferida contra uma linha com contato de outro workspace, que o check acusou.
 

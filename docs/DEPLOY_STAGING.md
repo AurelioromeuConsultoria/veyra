@@ -232,6 +232,68 @@ provedor, a desistência e a persistência. O nginx do `web` usa
 precisa de um prazo de leitura igual ou maior. Se cortar antes, a pessoa recebe
 504 com o run já gravado e cobrado, e paga de novo ao repetir.
 
+**Deploy da guarda de uso externo (da G3.2 em diante): pausar, classificar,
+migrar, retomar.** "Migration antes do código", sozinha, **não fecha** a janela
+da G3.2 (decisão de 2026-10-21, ADR-047 adendo 7 §9). Entre a migration e a
+subida do código novo, o código antigo continua no ar: aprova rascunhos da IA,
+que nascem sem a origem de IA, e envia pela regra antiga, porque não lê a
+coluna nova. A ordem obrigatória:
+
+1. **Backup** (§6).
+2. **Pausar aprovações e envios.** Pare o recurso `api` no Coolify (Stop). Sem
+   ele, nenhuma aprovação chega e nenhum worker envia. Os eventos ficam
+   pendentes no outbox, que nunca se edita por SQL (§7.2). O `web` pode ficar no
+   ar: as chamadas falham até a retomada, e é janela de manutenção.
+3. **Classificar o que estava em andamento**, pelo console do banco (§7), antes
+   de qualquer migration. Anote os números:
+
+   ```sql
+   -- despachos pendentes ou em voo, por estado e marcador de despacho
+   SELECT "state", ("dispatchedAt" IS NOT NULL) AS marcado, count(*)
+     FROM "MessageDispatch"
+    WHERE "state" IN ('reserved', 'failed_before_send', 'sending')
+    GROUP BY 1, 2;
+   -- usos de conteúdo ainda autorizados (só existem com a G1 em diante no ar)
+   SELECT "kind", count(*) FROM "ContentUse" WHERE "status" = 'authorized' GROUP BY 1;
+   ```
+
+   - `sending` **com** marcador: o envio pode ter saído. Depois da retomada,
+     a varredura o marca `unknown_after_dispatch` e nunca o reenvia. A
+     triagem decide; se a guarda provou que ele não saiu, aparece "Não saiu".
+   - `reserved`, `failed_before_send` e `sending` **sem** marcador: saem
+     depois da retomada, já pela regra nova.
+   - Uso `authorized`: a reconciliação decide pela prova depois da retomada.
+     Nada se edita à mão.
+
+4. **Migrations**, num container avulso da imagem nova
+   (`run --rm --no-deps api npx prisma migrate deploy`, como no §9). Entre elas estão
+   `20261021090000_message_dispatch_ai_origin` e o preenchimento
+   `20261021090100_message_dispatch_ai_origin_backfill`. Confira o preenchimento:
+
+   ```sql
+   -- precisa dar 0: despacho pendente de rascunho da IA sem a origem de IA
+   SELECT count(*) FROM "MessageDispatch" d
+    WHERE d."state" IN ('reserved', 'failed_before_send', 'sending')
+      AND d."fromAiProposal" = false
+      AND EXISTS (SELECT 1 FROM "AuditLog" a
+                   WHERE a."workspaceId" = d."workspaceId"
+                     AND a."entityType" = 'message'
+                     AND a."entityId" = d."messageId"
+                     AND a."action" = 'message.created_from_ai_proposal');
+   ```
+
+5. **A cadeia de proxies**: os prazos de leitura de todos os proxies à frente do
+   `web` (G3.1, acima). Os 120 s do proxy não mudam os 60 s do provedor.
+6. **Retomar com o código novo.** Aponte o recurso para o commit novo e faça o
+   deploy. Depois, `curl -fsS https://$VEYRA_HOST/api/health`. Só então
+   aprovações e envios voltam, já sob a regra nova.
+
+**Cobertura limitada dos despachos antigos.** Os despachos aprovados antes da
+G3.2 têm `approvalContactIds` nulo: reconferem só o contato atual da conversa.
+O preenchimento lhes dá a origem de IA, mas não a fotografia da aprovação. Não
+os trate como conferidos com ela; a verificação de transição da G4 os conta à
+parte.
+
 ## 5. Rollback
 
 No painel, o Coolify guarda os deploys anteriores: **Redeploy** do commit
