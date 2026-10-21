@@ -2876,19 +2876,26 @@ O que mudou desde então foi o critério e a implementação: o G′, os adendos
 - Nenhum deploy nem ativação está autorizado.
 - O próximo passo funcional é o plano da F3, para revisão, sem código.
 
-### Adendo 7 (2026-10-21) — plano da F3: pacotes, consumo de sessão, retorno e taxa de faltas (PROPOSTO)
+### Adendo 7 (2026-10-21) — plano da F3: pacotes, consumo de sessão, retorno e taxa de faltas (PROPOSTO, revisão 1)
 
-**Situação: proposto para revisão. Nenhum código foi escrito.** Sem deploy, com o Clinics desativado em staging e **somente dados fictícios**.
+**Situação: PROPOSTO, revisão 1. Nenhum código está autorizado.**
 
-O plano se apoia em hipóteses **não validadas**:
+A primeira versão está no `f00e873`. A leitura do usuário em 2026-10-21 aprovou a divisão F3.1–F3.3 e pediu os ajustes abaixo, que voltam para aprovação. Sem deploy, com o Clinics desativado em staging e **somente dados fictícios**.
 
-- H2, pacotes centrais na venda;
-- H3, retorno com intervalo previsível por serviço;
-- H6, faltas como métrica que a clínica acompanha.
+**H2, H3 e H6 continuam não validadas.** A aprovação técnica deste plano não equivale à validação operacional. A D1 (pago ou em aberto) continua em aberto. Se a validação desmentir uma hipótese, a parte correspondente muda ou sai antes do código.
 
-A D1 (pago ou em aberto) continua em aberto. Se a validação desmentir uma hipótese, a parte correspondente muda ou sai antes do código.
+**Delta da revisão 1** (o que mudou desde o `f00e873`):
 
-**Escopo** (o "pronto quando" da F3 no roadmap):
+| #   | Ponto               | Situação                          | O que mudou                                                                                                                                                                                                                                                              |
+| --- | ------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | Contador de sessões | aprovado, com precisão            | O `CHECK` garante só o intervalo. A igualdade "consumidas = atendimentos vinculados" depende da transação única e dos caminhos de escrita. Entraram a atomicidade exigida, os testes de rollback e de cancelamento concorrente e a imutabilidade do total e dos vínculos |
+| 2   | Consumo explícito   | aprovado                          | A tela mostra qual pacote será consumido antes da confirmação. Repetir **com pacote diferente**, inclusive de avulso para pacote e de pacote para avulso, responde 409                                                                                                   |
+| 3   | Preço do pacote     | revisto                           | Preço **total** explícito, digitado e confirmado na criação, e congelado. Não é mais cópia do preço do serviço                                                                                                                                                           |
+| 4   | Retorno             | revisto                           | **Fica no Clinics**, com permissões do domínio, **sem `Task` do Core e sem ponte para o CRM**. Criação, conclusão, cancelamento e responsável são explícitos                                                                                                             |
+| 5   | Taxa de faltas      | aprovada como hipótese de produto | Período e denominador explícitos. Sem atendidos nem faltas, a taxa é "sem dados". Os agendamentos passados sem desfecho aparecem junto                                                                                                                                   |
+| 6   | Correção de consumo | fora do protótipo                 | Passa a ser **decisão obrigatória antes do piloto**. Uma correção futura preserva o histórico e audita o ajuste                                                                                                                                                          |
+
+**Escopo** (o "pronto quando" da F3):
 
 - conclusão repetida ou concorrente não consome duas sessões, e consumo além do total é recusado;
 - sessões restantes e retornos pendentes corretos;
@@ -2896,10 +2903,10 @@ A D1 (pago ou em aberto) continua em aberto. Se a validação desmentir uma hip�
 - nenhum conteúdo S em entidade do Core nem na auditoria;
 - a taxa de faltas apurável.
 
-**Entregas propostas.** Cada uma tem ADR antes do código, `reviewer` e `security`, bateria completa e parada para revisão:
+**Entregas** (divisão aprovada). Cada uma tem ADR antes do código, `reviewer` e `security`, bateria completa e parada para revisão:
 
 - **F3.1:** pacote e consumo de sessão no registro de atendimento, na API;
-- **F3.2:** retorno, com o intervalo no serviço, a `Task` do Core e a lista de retornos pendentes, na API;
+- **F3.2:** retorno no Clinics, na API;
 - **F3.3:** a taxa de faltas na API, as telas de pacote, saldo, retornos e faltas, e o e2e.
 
 #### Decisões propostas
@@ -2907,91 +2914,123 @@ A D1 (pago ou em aberto) continua em aberto. Se a validação desmentir uma hip�
 1. **Pacote (`ClinicsPackage`, classe S).** Campos:
    - paciente e serviço, com FKs compostas `NO ACTION`;
    - total de sessões (`CHECK` de 1 a 100);
-   - **sessões consumidas**, com `CHECK 0 ≤ consumidas ≤ total`;
-   - preço **congelado** em centavos e moeda, copiados do serviço na criação (possibilidade do §8, nada financeiro);
+   - sessões consumidas (`CHECK 0 ≤ consumidas ≤ total`);
+   - **preço total** opcional em centavos, com a moeda do serviço;
    - `dealId` opcional (FK composta), só como vínculo, sem copiar dado do deal;
    - estado (`active`, `completed`, `canceled`), `closedAt` e quem criou.
 
    Nenhum campo de texto (H7).
 
-2. **Saldo: contador no banco, e não saldo derivado** (desvio declarado do §4, que dizia "saldo derivado").
-   - **O contador:** o consumo é **um único `UPDATE` condicional** (`consumidas = consumidas + 1` onde o pacote é do workspace, está `active` e `consumidas < total`), na mesma transação do registro de atendimento. Ao chegar ao total, a mesma instrução passa o estado a `completed`.
-   - **Por que o banco garante:** a trava de linha do `UPDATE` serializa os consumos concorrentes, e o `CHECK` impede passar do total mesmo com defeito no código. Com zero linhas afetadas, a resposta é 409 e nada muda.
-   - **Saldo:** é `total − consumidas`. Um teste confere a invariante `consumidas = atendimentos ligados ao pacote`.
-   - **Alternativa considerada:** saldo derivado, com a linha do pacote travada e a contagem dos atendimentos. Funciona, mas põe a invariante no serviço, sob trava, e o projeto prefere invariantes no banco (§4).
-3. **Consumo explícito no registro de atendimento.**
-   - **Pedido:** o registro (`POST /api/clinics/appointments/:id/attendance`) ganha um `packageId` **opcional**. Sem ele, o atendimento é avulso e nada é consumido. **O servidor não escolhe pacote sozinho**, porque um consumo escondido seria difícil de perceber e não tem desfazer. A tela sugere o pacote ativo, quando há um só.
-   - **Validação:** o pacote precisa ser do **mesmo paciente** e do **mesmo serviço** do agendamento, e estar ativo e com saldo. Senão, o pedido é recusado sem efeito nenhum (uma transação só).
-   - **Repetição:** a chamada repetida devolve o registro existente, como hoje, e **não consome de novo**. O consumo só acontece no caminho que cria o registro, sob a trava da transição para `attended` (adendo 4).
+2. **Preço total explícito e congelado.** O preço do serviço é por sessão e não define o total de um pacote. O total é **digitado por quem cria**, aparece na confirmação e fica **congelado** (o total não muda depois da criação). Não se infere desconto, pagamento nem quitação: isso não é gestão financeira, e a D1 segue aberta. O campo é opcional, como no §8: sem total, o pacote não tem preço registrado.
+3. **Contador de sessões, com a garantia exata.**
+   - **O que o banco garante sozinho:** o `CHECK` mantém as consumidas no intervalo permitido. O consumo é **um único `UPDATE` condicional** (`consumidas = consumidas + 1` onde o pacote é do workspace, está `active` e `consumidas < total`). A trava de linha desse `UPDATE` serializa os consumos concorrentes, e com zero linhas afetadas a resposta é 409. Ao chegar ao total, a mesma instrução passa o estado a `completed`.
+   - **O que depende da transação e dos caminhos de escrita: a igualdade "consumidas = atendimentos vinculados".** Ela vale porque:
+     - **um caminho só escreve as duas coisas:** o registro de atendimento cria o atendimento com o vínculo, faz o incremento e grava a auditoria **na mesma transação**. Qualquer falha desfaz as quatro coisas, inclusive a transição para `attended`. Não existe recuo silencioso para "avulso";
+     - **o total e os vínculos não mudam por edição genérica:** não há rota que altere o total, as consumidas ou o vínculo do atendimento. Um trigger no banco recusa mudar o total, mudar as consumidas por outra coisa que não `+1` com o pacote ativo, e mudar o `packageId` de um atendimento depois de criado. O único outro caminho de escrita no pacote é o cancelamento, que só muda o estado.
+
+     Uma correção futura (item 9) muda essa regra com ADR próprio.
+
+   - **Testes exigidos:**
+     - concorrência no último saldo (um consumo, um 409);
+     - registro repetido e concorrente no mesmo agendamento (um consumo);
+     - **rollback**, com uma falha injetada depois do incremento: nada fica, nem o atendimento, nem o vínculo, nem o incremento, nem a auditoria;
+     - **cancelamento concorrente com consumo**, nas duas ordens: se o cancelamento vem primeiro, o consumo é recusado e o atendimento não é registrado; se o consumo vem primeiro, o cancelamento comita depois, com as consumidas mantidas;
+     - a tentativa de editar o total ou o vínculo recusada pelo banco;
+     - a igualdade conferida ao fim de cada cenário;
+     - mutação de cada garantia.
+
+     Uma consulta de conferência da igualdade entra no runbook.
+4. **Consumo explícito.**
+   - **Pedido:** o registro de atendimento ganha `packageId` **opcional**. Sem ele, o atendimento é avulso. O servidor não escolhe pacote.
+   - **Tela:** pode sugerir o pacote ativo, mas mostra com clareza **qual pacote será consumido**, com o saldo antes e depois, **antes da confirmação**.
+   - **Validação:** o pacote precisa ser do mesmo paciente e do mesmo serviço do agendamento, e estar ativo e com saldo. Senão, o pedido é recusado sem efeito.
+   - **Repetição:**
+     - **o mesmo pedido** (mesmo agendamento, mesma escolha) devolve o atendimento existente, **sem novo consumo**;
+     - **com escolha diferente** (outro pacote, de avulso para pacote ou de pacote para avulso) responde **409**, sem aplicar a nova escolha e sem fingir que aplicou.
    - **Vínculo:** `ClinicsAttendance.packageId` passa a existir, anulável, com FK composta `NO ACTION`.
-4. **Encerramento.** `completed` vem automaticamente com a última sessão. `canceled` é manual (`clinics:care:write`) e recusa os consumos seguintes sem mudar as consumidas. A reabertura fica fora da F3.
-5. **Retorno (F3.2).**
-   - **Intervalo:** `ClinicsService.returnIntervalDays`, anulável, com `CHECK` de 1 a 365 (H3), editado com `clinics:catalog:manage`.
-   - **A tarefa:** ao registrar o atendimento de um serviço com intervalo, a mesma transação cria uma `Task` do Core ligada ao contato do paciente, com vencimento em `completedAt + intervalo`.
-   - **Título:** o título é **fixo e neutro** (§4). A proposta é "Retornar contato", indistinguível de um acompanhamento comercial do CRM, sem descrição, sem nome de serviço e sem campo que aponte para o vertical.
-   - **Responsável:** quem registrou o atendimento.
-   - **O vínculo `ClinicsReturn` (classe S):** fica com o atendimento (1:1), a tarefa (FK composta, `ON DELETE SET NULL ("taskId")`) e o vencimento, e só é visível com `clinics:care:read`.
-   - **"Retorno pendente"** é o vínculo cuja tarefa está aberta.
-   - **Regras do Core:** a tarefa segue todas elas. No Clinics, o webhook `task.created` com contato é suprimido, e a IA não usa contato restrito.
-   - **Consequência a confirmar:** quem tem `tasks:read` no Core vê uma tarefa "Retornar contato" no contato. O título não revela tratamento, mas a tarefa existe na superfície do Core.
-6. **Taxa de faltas (H6, F3.3).**
-   - **Definição proposta:** `faltas / (faltas + atendidos)`, sobre os agendamentos cujo início cai no período, no fuso da unidade.
-     - Os cancelados ficam fora, e os futuros também.
-     - O `arrived` sem conclusão não conta, e a tela mostra quantos são.
-   - **Endpoint:** `GET /api/clinics/metrics/no-show?from&to&unitId`, com recorte opcional por profissional ou serviço. Ele devolve **só agregados**: atendidos, faltas, taxa e chegados sem conclusão, sem nenhuma pessoa.
-   - **Permissão:** `clinics:schedule:read`, porque o estado é dado de agenda e a resposta não identifica ninguém.
-   - **Persistência:** nenhuma. O cálculo é feito na leitura, pelo índice `(workspaceId, unitId, startsAt)`, que já existe.
-7. **Permissões.**
+5. **Encerramento.** `completed` vem automaticamente com a última sessão. `canceled` é manual (`clinics:care:write`): recusa os consumos seguintes e mantém as consumidas. A reabertura fica fora da F3.
+6. **Retorno no Clinics (`ClinicsReturn`, classe S), sem `Task` do Core.** Um título neutro não elimina o que o contato, o responsável, o vencimento e o momento da criação revelam. Além disso, o `Profissional` não tem `tasks:*`. O retorno fica no domínio do Clinics, sem ampliar acesso ao CRM, e **a ponte para `Task` não é implementada nesta etapa.**
+   - **Campos:**
+     - paciente, serviço e unidade (FKs compostas `NO ACTION`);
+     - o atendimento de origem (opcional, único);
+     - a **data de vencimento**, local da unidade;
+     - o estado (`pending`, `done`, `canceled`);
+     - o **responsável** (membership, FK composta, opcional);
+     - o agendamento que o cumpriu (opcional);
+     - o motivo do cancelamento, por lista fechada (`patient_declined`, `not_needed`, `other`), sem texto livre;
+     - quem e quando criou, concluiu ou cancelou.
+   - **Criação, explícita nos dois caminhos:**
+     - **automática** no registro de atendimento de um serviço com intervalo (`ClinicsService.returnIntervalDays`, anulável, `CHECK` de 1 a 365, H3), na mesma transação;
+     - **manual**, por quem tem `clinics:care:write`.
 
-   | O quê                   | Permissão                                      |
-   | ----------------------- | ---------------------------------------------- |
-   | Criar e cancelar pacote | `clinics:care:write` e `clinics:schedule:read` |
-   | Ver pacote e saldo      | `clinics:care:read`                            |
-   | Ver retornos            | `clinics:care:read`                            |
-   | Taxa de faltas          | `clinics:schedule:read`                        |
+     O vencimento é a data local de conclusão mais o intervalo.
 
-   A resposta da agenda continua **omitindo no servidor**, para quem só tem agenda, o vínculo com atendimento e pacote (§5). Nenhuma chave nova.
+   - **Conclusão:** manual, com o agendamento que cumpriu o retorno, quando houver.
+   - **Cancelamento:** manual, com o motivo da lista.
+   - **Reatribuição:** manual.
+   - **Permissões, sem chave nova:**
+     - **ver** a lista de retornos (paciente, serviço, vencimento, estado, responsável): `clinics:schedule:read`. Quem marca o retorno é a recepção, e a agenda já mostra paciente, serviço e estado de agenda. A lista **não** mostra o atendimento de origem nem pacote;
+     - **criar manualmente**: `clinics:care:write`;
+     - **concluir, cancelar e reatribuir**: `clinics:schedule:write` (recepção) **ou** `clinics:care:write` (profissional).
+   - **Responsável explícito e capaz de operar.** Na atribuição, o servidor confere que o responsável tem `clinics:schedule:write` ou `clinics:care:write`. Na lista, um responsável que perdeu o acesso aparece como "sem acesso", para reatribuição. Sem responsável, o retorno fica "sem responsável", e nunca é atribuído a quem não consegue operá-lo.
+   - **Vencido:** calculado pelo relógio do banco, no fuso da unidade (ADR-049).
+   - **Fora do Core:** nenhum evento de outbox, nenhum webhook e nenhum uso pela IA.
+7. **Taxa de faltas (hipótese de produto, H6).**
+   - **Período:** datas locais `[de, até)` no fuso da unidade, convertidas no banco, pelo **início** do agendamento.
+   - **Denominador explícito:** `atendidos + faltas`.
+   - **Taxa:** `faltas / (atendidos + faltas)`. **Sem atendidos nem faltas, a taxa é "sem dados", nunca 0 %.**
+   - **Mostrados junto**, para a taxa não parecer completa:
+     - os **agendamentos passados ainda sem desfecho** (marcados, confirmados e chegados com início antes de agora, pelo relógio do banco);
+     - os cancelados, à parte e fora da conta.
+   - **Endpoint:** `GET /api/clinics/metrics/no-show?de&ate&unitId`, com recorte opcional por profissional ou serviço. Ele devolve **só agregados**, sem nenhuma pessoa.
+   - **Permissão:** `clinics:schedule:read`.
+   - **Persistência:** nenhuma. O cálculo usa o índice `(workspaceId, unitId, startsAt)`.
+8. **Permissões** (resumo, sem chave nova):
 
-8. **Auditoria por allowlist, sem conteúdo S textual:**
-   - pacote criado ou encerrado (ids, total, consumidas, estado);
-   - atendimento registrado (mais o `packageId`);
-   - retorno criado (ids, vencimento).
-9. **Retenção e LGPD (§9.2, B3).** Nenhuma exclusão definitiva antes da decisão jurídica. As FKs para o paciente ficam `NO ACTION`, e excluir o contato de um paciente já é recusado.
-10. **Integrar ou construir.** Não há ferramenta madura que dispense as invariantes no banco, então a opção é construir. A métrica é uma consulta agregada, sem ferramenta de BI.
-11. **Migration aditiva** (por entrega):
+   | O quê                                    | Permissão                                        |
+   | ---------------------------------------- | ------------------------------------------------ |
+   | Pacote: criar                            | `clinics:care:write` e `clinics:schedule:read`   |
+   | Pacote: cancelar                         | `clinics:care:write`                             |
+   | Pacote: ver e saldo                      | `clinics:care:read`                              |
+   | Retorno: ver                             | `clinics:schedule:read`                          |
+   | Retorno: criar manualmente               | `clinics:care:write`                             |
+   | Retorno: concluir, cancelar e reatribuir | `clinics:schedule:write` ou `clinics:care:write` |
+   | Taxa de faltas                           | `clinics:schedule:read`                          |
+
+   A resposta da agenda continua omitindo no servidor, para quem só tem agenda, o vínculo com atendimento e pacote (§5).
+
+9. **Correção de consumo: fora do protótipo, decisão obrigatória antes do piloto.** Com dados fictícios, a F3 não tem correção de um consumo errado. Isso **não** presume que a operação dispense a correção: a decisão é **obrigatória antes do piloto**. Se houver correção, ela **preserva o histórico e audita o ajuste**. O atendimento original nunca é apagado, e o ajuste é um lançamento próprio, com quem, quando e o motivo por lista fechada.
+10. **Auditoria por allowlist, sem conteúdo S textual:**
+    - pacote criado ou cancelado (ids, total de sessões, consumidas, estado, se há preço);
+    - atendimento registrado (mais o `packageId`);
+    - retorno criado, concluído, cancelado ou reatribuído (ids, vencimento, estado, motivo).
+11. **Retenção e LGPD (§9.2, B3).** Nenhuma exclusão definitiva antes da decisão jurídica. As FKs para o paciente ficam `NO ACTION`, e excluir o contato de um paciente já é recusado.
+12. **Integrar ou construir.** Não há ferramenta madura que dispense as invariantes no banco, então a opção é construir. A métrica é uma consulta agregada.
+13. **Migration aditiva** (por entrega):
     - os modelos `ClinicsPackage` e `ClinicsReturn`;
-    - as colunas `ClinicsAttendance.packageId` e `ClinicsService.returnIntervalDays`.
+    - as colunas `ClinicsAttendance.packageId` e `ClinicsService.returnIntervalDays`;
+    - os triggers do item 3.
 
-    Os modelos entram no registro do vertical (`WORKSPACE_MODELS`) e no `check:fk`. Eles entram também na checagem de presença da porta E6, que passa a ter mais consultas. A dívida já registrada do tamanho do fan-out dessa checagem será medida na F3.1.
+    Os modelos entram no registro do vertical (`WORKSPACE_MODELS`), no `check:fk` e na checagem de presença da porta E6. A dívida do tamanho dessa checagem será medida na F3.1.
 
 **Fica fora da F3:**
 
-- a D1 (pago ou em aberto), em aberto até a revisão do fluxo;
+- a D1;
 - a validade do pacote;
 - a reabertura;
+- a ponte do retorno para `Task` do Core;
 - a interface multiunidade;
 - as notificações, que ficam para a F4;
-- o **estorno ou a correção de um consumo**. O atendimento é terminal e sem desfazer, então um pacote escolhido errado não tem correção na F3. Uma correção, se a operação precisar, entra com ADR próprio e auditoria.
+- a correção de consumo (item 9, obrigatória antes do piloto).
 
-**Decisões para a revisão**, com a recomendação:
+**Decisões para a aprovação desta revisão:**
 
-1. contador no banco em vez de saldo derivado: **recomendado**;
-2. consumo explícito, sem escolha automática no servidor: **recomendado**;
-3. o título neutro da tarefa ("Retornar contato") e o responsável (quem registrou), com a consequência do item 5;
-4. a definição da taxa de faltas, incluindo `arrived` sem conclusão fora da conta;
-5. o estorno de consumo fora da F3: **recomendado**;
-6. a D1 fora da F3.
-
-**Testes previstos:**
-
-- **concorrência:** dois registros em agendamentos diferentes no último saldo resultam em um só consumo e um 409; o registro repetido ou concorrente no mesmo agendamento consome uma vez;
-- **validação:** pacote de outro paciente ou serviço é recusado, e pacote cancelado também;
-- **invariante** do contador;
-- **RBAC:** quem tem só agenda não vê pacote nem saldo, nem pela API nem na resposta da agenda;
-- **nada de S no Core:** o título fixo da tarefa e a allowlist da auditoria;
-- **métrica:** limites de fuso e período;
-- **isolamento entre workspaces;**
-- **mutação** de cada garantia.
+1. a garantia e os testes do contador (item 3), com o trigger de imutabilidade;
+2. o 409 para a repetição com escolha diferente (item 4);
+3. o preço total explícito (item 2);
+4. o retorno no Clinics, com as permissões e o responsável capaz de operar (item 6). Em especial: a **lista de retornos visível com `clinics:schedule:read`**, para a recepção marcar o retorno, sem o atendimento de origem nem pacote;
+5. a definição da taxa de faltas (item 7);
+6. a correção de consumo como decisão obrigatória antes do piloto (item 9).
 
 ## ADR-049 — Relógio de agendamento: quem compara define o relógio, e filas e leases usam o do banco
 
