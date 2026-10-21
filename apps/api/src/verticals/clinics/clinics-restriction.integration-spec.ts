@@ -601,6 +601,29 @@ describe('Clinics — restrição de conteúdo com a porta real e API de libera�
           },
         });
       },
+      // o pacote passa pelo paciente e pelo serviço, que vêm junto (F3.1)
+      ClinicsPackage: async () => {
+        const workspaceId = wsA.workspaceId;
+        const dono = await prisma.raw.membership.findFirst({
+          where: { workspaceId, role: { systemKey: 'owner' } },
+        });
+        const paciente = await prisma.raw.clinicsPatient.create({
+          data: { workspaceId, contactId, createdByMembershipId: dono!.id },
+        });
+        const serv = await prisma.raw.clinicsService.create({
+          data: { workspaceId, name: 'S', durationMin: 30 },
+        });
+        return prisma.raw.clinicsPackage.create({
+          data: {
+            workspaceId,
+            patientId: paciente.id,
+            serviceId: serv.id,
+            totalSessions: 3,
+            currency: 'BRL',
+            createdByMembershipId: dono!.id,
+          },
+        });
+      },
     };
 
     /** Agendamento fictício com os pais (paciente, profissional, serviço, unidade). */

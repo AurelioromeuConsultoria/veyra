@@ -78,13 +78,16 @@ describe('Clinics — agenda e atendimento (integração, F2.2)', () => {
     const cookieHeader = cookies.map((c) => c.split(';')[0]).join('; ');
     return { cookieHeader, csrf: /veyra_csrf=([^;]+)/.exec(cookieHeader)?.[1] ?? '' };
   };
-  const send = (method: 'post' | 'patch' | 'put', path: string, s: Session, body?: unknown) =>
-    request(http)
+  // sem `body`, a requisição vai SEM corpo, como o `api.post(path)` da tela: um
+  // helper que sempre manda `{}` esconderia a rota que recusa a ausência
+  const send = (method: 'post' | 'patch' | 'put', path: string, s: Session, body?: unknown) => {
+    const r = request(http)
       [method](path)
       .set('Origin', ORIGIN)
       .set('Cookie', s.cookieHeader)
-      .set('x-csrf-token', s.csrf)
-      .send((body ?? {}) as object);
+      .set('x-csrf-token', s.csrf);
+    return body === undefined ? r : r.send(body as object);
+  };
   const post = (path: string, s: Session, body?: unknown) => send('post', path, s, body);
   const patch = (path: string, s: Session, body?: unknown) => send('patch', path, s, body);
   const put = (path: string, s: Session, body?: unknown) => send('put', path, s, body);

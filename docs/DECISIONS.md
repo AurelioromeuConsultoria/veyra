@@ -760,7 +760,7 @@ O plano da F1.b foi aprovado com as decisões abaixo. A entrega 1 (fotografia no
    - **Retenção (LGPD).** A fotografia é zerada (NULL) quando o evento chega a `delivered` ou `dead`, porque só tem uso enquanto o evento ainda pode ser entregue. O resíduo fica limitado ao tempo pendente (no pior caso, cerca de 13 h de backoff). O payload do outbox (por exemplo, o nome em `contact.created`) já não tinha retenção antes desta entrega, e isso fica registrado como dívida com gatilho.
    - **Tipagem.** O tipo do `enqueue` exige `subjectContactIds` em evento público e não o aceita em evento interno, de forma **não distributiva**: um emissor genérico, com o tipo da união inteira, também é cobrado. Evento novo que esquecer de declarar os contatos não compila. A checagem em runtime continua, para quem burlar o tipo.
    - **`check:fk`.** A heurística passa a pegar colunas `*Ids`, e uma checagem de dados (`unnest`) recusa elemento da fotografia que aponte para contato de outro workspace.
-   - **Migration.** Usa `lock_timeout` de 5 s: o `ADD COLUMN` só mexe em metadados, mas pede lock exclusivo na tabela mais escrita do sistema. Se estourar, o runbook (DEPLOY_STAGING §4) manda `prisma migrate resolve --rolled-back` antes de repetir.
+   - **Migration.** Usa `lock_timeout` de 5 s: o `ADD COLUMN` só mexe em metadados, mas pede lock exclusivo na tabela mais escrita do sistema. Se estourar, o runbook (DEPLOY_STAGING §4) manda `prisma migrate resolve --rolled-back` antes de repetir. _(Procedimento corrigido em 2026-10-21: o `migrate deploy` não aplica a migration numa transação, e o runbook passou a exigir a prova do estado, pelo inventário, antes do `resolve`. Ver ADR-048 adendo 7, "Ajustes pedidos antes da liberação".)_
    - **Exclusão e arquivamento concorrentes de contato.** Os dois travam a linha no início da transação e **releem** o estado antes de decidir a cota e a auditoria. Duas exclusões, ou um arquivamento e uma exclusão, viram operações seriais: a perdedora responde 404 ou age sobre o estado de agora, e a cota cai uma vez só. Antes, caía duas vezes.
    - **Contrato da porta para a entrega 2.** A fotografia leva à porta ids de contatos já excluídos. A porta real do Clinics trata "id sem linha de contato no workspace" como **restrito**, com teste.
 7. **Permissões depois do registro global.** Quando a CLI de um vertical grava as chaves dele no catálogo `Permission`, provisionar um workspace novo ainda concede **zero** delas: o Owner recebe exatamente o template do Core. Na entrega 1 isso é provado com uma extensão de teste; na entrega 2, com a CLI real e as chaves `clinics:*`.
@@ -2882,7 +2882,239 @@ O que mudou desde então foi o critério e a implementação: o G′, os adendos
 
 A primeira versão está no `f00e873`. A leitura do usuário em 2026-10-21 aprovou a divisão F3.1–F3.3 e pediu os ajustes abaixo, que voltam para aprovação. Sem deploy, com o Clinics desativado em staging e **somente dados fictícios**.
 
-**H2, H3 e H6 continuam não validadas.** A aprovação técnica deste plano não equivale à validação operacional. A D1 (pago ou em aberto) continua em aberto. Se a validação desmentir uma hipótese, a parte correspondente muda ou sai antes do código.
+**Aprovação da F3.1 (decisão do usuário, 2026-10-21).** Ela autoriza um **protótipo com dados fictícios**. A F3.1 está aprovada com estes critérios, que valem como parte da decisão:
+
+- **Itens aprovados:** o contador, o consumo explícito, a transação única, o 409 para a repetição com escolha diferente e o preço total congelado.
+- **Preço ausente significa "não informado"**, não zero nem gratuito. O zero só existe quando digitado.
+- **O pacote nasce com zero sessões consumidas.** Paciente, serviço, total, preço e moeda ficam **imutáveis** nesta etapa.
+- **A repetição idêntica funciona mesmo com o pacote `completed` ou `canceled`.** O registro consulta o atendimento existente **antes** de tentar um novo consumo.
+- **A corrida com a última sessão:**
+  - se o consumo conclui o pacote primeiro, o cancelamento **não** o transforma em `canceled` e responde 409;
+  - se o cancelamento vem primeiro, o consumo falha **sem registrar atendimento**.
+- **Os triggers não impedem os dois caminhos legítimos:**
+  - a última sessão, que muda `active` para `completed` **na mesma instrução**;
+  - o cancelamento sem incremento.
+
+  Os dois caminhos e as recusas são cobertos por teste.
+
+- **A exclusão em cascata do workspace** continua conforme o contrato existente.
+
+**Retornos: a lista operacional com `clinics:schedule:read` está aprovada.**
+
+- **O que a recepção vê:** paciente, serviço, vencimento, estado e responsável. Isso revela a necessidade de acompanhamento, e a visibilidade é aceita para a função operacional.
+- **O que ela não vê:** o atendimento de origem, o pacote, o saldo e o conteúdo clínico.
+- **A barreira é a API:** ela **projeta** só os campos permitidos, e esconder na tela não basta. Filtros, ordenações e respostas de erro também não podem permitir consultar indiretamente os vínculos ocultos.
+
+**A detalhar antes da F3.2:**
+
+1. **O que "concluir o retorno" significa:** encerrar o acompanhamento operacional ou comprovar um atendimento realizado. Marcar uma consulta não pode declarar que ela aconteceu. O vínculo com o agendamento precisa validar o workspace, o paciente e as demais regras.
+2. **Quem pode registrar o quê:**
+   - a recepção pode registrar a recusa do paciente e as ações administrativas;
+   - "não necessário", como decisão clínica, exige `clinics:care:write`;
+   - a atribuição exige membro ativo, a permissão de leitura e a permissão da ação pertinente;
+   - o responsável sem acesso continua visível para reatribuição, sem ampliar permissões.
+
+A taxa de faltas e a decisão sobre a correção de consumo seguem como aprovadas.
+
+**H2, H3 e H6 continuam não validadas.** A aprovação técnica deste plano não equivale à validação operacional.
+
+**Implementação da F3.1 (notas, 2026-10-21).**
+
+- **O `dealId` do pacote fica fora da F3.1.** Uma FK composta para o `Deal` do Core travaria a exclusão de deals. A alternativa seria `SET NULL` só na coluna (`ON DELETE SET NULL ("dealId")`), que o Prisma não modela sem drift. Como o vínculo só serve ao fluxo comercial, ele volta com a F4, por ADR.
+- **Os triggers do banco:**
+  - **`ClinicsPackage_guard`** recusa:
+    - nascer com consumo ou fora de `active`;
+    - mudar paciente, serviço, total, preço, moeda, autoria ou criação;
+    - consumir por outra coisa que não `+1`;
+    - mudar o estado num consumo;
+    - concluir sem consumo;
+    - qualquer mudança num pacote encerrado.
+
+    Na **última sessão**, ele mesmo passa o pacote a `completed` e escreve o `closedAt` pelo relógio do banco, **na mesma instrução** do consumo. No **cancelamento**, sem incremento, escreve o `closedAt`.
+
+  - **`ClinicsAttendance_package_is_final`** recusa trocar, tirar ou pôr o pacote de um atendimento depois do registro.
+  - **Um `CHECK` de estado** amarra: `active` com saldo, `completed` exatamente no total e encerramento só nos estados finais.
+- **O consumo** é um `updateMany` condicional (`+1` com o pacote ativo, do mesmo paciente e do mesmo serviço), na transação do registro de atendimento. O estado ativo já implica saldo, porque a última sessão o conclui. Com zero linhas, o motivo é lido e a transação inteira volta, sem atendimento.
+- **A repetição** é conferida antes da transição e também nos dois caminhos de corrida (a transição perdida e o unique por agendamento). Em todos, a mesma escolha devolve o registro, e uma escolha diferente é 409.
+- **O cancelamento** repetido sobre um pacote cancelado devolve o estado atual. Sobre um pacote concluído, é 409.
+- **A checagem de presença da porta E6** passa a doze consultas (a de ativação e as dos onze modelos, em paralelo). A medição local deu p50 de 0,83–0,88 ms e p95 de 0,93–1,05 ms, no patamar dos dez modelos. A dívida segue registrada.
+- **A exclusão do workspace** leva pacotes e atendimentos vinculados em cascata, passando pelas FKs `NO ACTION`, com teste.
+- **O runbook** ganhou a consulta de conferência da igualdade (§7.1).
+- **Correções da revisão (`reviewer` e `security`, sem P0, P1 nem P2):**
+  - **`care:write` pressupõe `care:read`.** As recusas do consumo dizem o estado do pacote, e a resposta da criação e do cancelamento é o próprio pacote. Por isso, consumir pacote no registro de atendimento, criar e cancelar exigem também `clinics:care:read`. Um teste estático fixa que, na matriz, todo papel com `care:write` tem `care:read`, e um papel customizado só com `care:write` registra apenas o avulso. A mensagem do 409 da repetição ficou neutra ("outra escolha"), sem citar pacote;
+  - **a conclusão do pacote entra na trilha** (`clinics.package.completed`), na mesma transação do consumo da última sessão;
+  - **regra estática:** só o serviço de pacotes e o registro de atendimento escrevem `ClinicsPackage`, e só o registro de atendimento escreve `ClinicsAttendance`. Um `INSERT` ou `DELETE` futuro de atendimento vinculado, fora desse caminho, quebra o teste, já que o banco só protege o `UPDATE`;
+  - o teste da FK composta usa um agendamento real de A com o pacote de B, e isola a FK do pacote;
+  - a migration termina com `RESET lock_timeout`, como as demais. _(Superado nos ajustes da liberação: a migration passou a ser transacional explícita, com `SET LOCAL` e `COMMIT`.)_
+- **As baterias b48 e b49 falharam. O que foi comprovado e o que segue hipótese:**
+  - **Comprovado, produto (regressão da F3.1):** a tela registra o atendimento **sem corpo** (`AgendaPage`), e o `ZodPipe` recusava o `undefined` com 400 "Dados inválidos". O e2e "`Profissional` registra o atendimento" falhou por isso nas duas baterias, com a mesma mensagem na tela. **Na b48, essa falha foi atribuída ao ambiente sem conferir a mensagem: erro de diagnóstico.** A lacuna escapou da integração porque o helper da suíte sempre mandava `{}`.
+    - **A correção:** a rota aceita a ausência de corpo como avulso, e um corpo JSON passa pelo contrato estrito. Um corpo que o servidor não interpreta, como texto, formulário ou `chunked` sem JSON, é recusado com **415**. Antes ele chegaria como `undefined` e viraria avulso em silêncio, quando talvez escolhesse um pacote; o vínculo não se corrige depois. "Traz corpo" quer dizer `Content-Length > 0`, ou `Transfer-Encoding` acompanhado de `Content-Type`.
+      - **O `Transfer-Encoding` sozinho não conta,** porque um proxy pode reenviar em `chunked` o POST vazio da tela, que não tem `Content-Type`. É um risco apontado pela conferência do `security`, não observado; o e2e local não passa pela cadeia de proxies do staging.
+      - **O `type-is.hasBody` não serve,** porque responde sim para o `Content-Length: 0` que o navegador manda.
+      - **Resíduo aceito:** um corpo `chunked` sem `Content-Type` vira avulso. Quase nenhum cliente manda isso. _(Recusado pelo usuário e superado pelos "Ajustes pedidos antes da liberação", abaixo: a ausência de corpo passou a ser decidida pelos bytes, não pelos cabeçalhos.)_
+    - **Os testes novos:**
+      - sem corpo nenhum, como a tela, e com um pacote elegível presente, o atendimento é avulso e nada é consumido;
+      - um campo a mais continua 400;
+      - texto e formulário dão 415, sem consumo, sem atendimento e com o agendamento intacto;
+      - em `chunked`, por um POST cru: vazio e sem tipo é avulso, e `text/plain` dá 415.
+    - **Os helpers** das suítes de pacotes e da agenda só mandam corpo quando o teste passa um, como o `api.post(path)` da tela. Com isso, a próxima rota que recuse a ausência de corpo aparece na integração.
+  - **Ajustes da revisão do delta (`reviewer` e `security`, sem P0 nem P1):**
+    - **O 415 acima** era o P2 dos dois.
+    - **A exigência de `care:read` para consumir pacote** saiu da rota e passou ao serviço do registro, para valer a qualquer chamador futuro, como uma tool ou um job (princípio 10 do `CLAUDE.md`). O 403 continua antes de qualquer consulta.
+    - **O id do pacote vai em minúsculas,** como o banco o devolve. Sem isso, repetir o mesmo pedido com o UUID em maiúsculas dava 409.
+    - **O teste de isolamento agora tenta o consumo:** B registra um agendamento real de B com o pacote de A e recebe 404, sem consumo, sem atendimento e com o agendamento de B intacto.
+    - **Resíduo aceito:** um papel com `care:write` e `schedule:read`, sem `care:read`, que repetisse sem corpo um registro feito com pacote receberia 409 em vez de 201, e assim saberia que a sessão saiu de um pacote. Esse papel não existe pelo produto: a matriz e o teste estático garantem que quem escreve atendimento também o lê, e não há API para compor papéis. Quando houver editor de papéis, a composição deve impor `care:write ⇒ care:read`.
+  - **Comprovado, mecanismo do harness:** neste macOS, um servidor Node em `::` aceita uma porta que outro processo já ocupa em `127.0.0.1`, e a conexão a `127.0.0.1`, onde o supertest conecta, vai para o outro processo. A reprodução usou dois servidores Node e porta explícita.
+    - Que a porta efêmera do `listen(0)` caia numa porta assim é plausível pela mesma regra, mas não foi reproduzido.
+    - **Inferência, não observação direta:** é a causa provável das 25 falhas da b49-r1. Todos os testes da suíte de pacotes caíram no primeiro pedido, o login do owner, com 404, embora a rota exista e a mesma suíte tenha passado na r2 e isolada. Não foram capturados a porta, o corpo da resposta nem o processo dono.
+    - **A correção:** o harness escuta em `127.0.0.1` (`test/integration/app.ts`), e assim a porta que o sistema escolhe está livre nesse endereço. Nenhum outro servidor de teste usa porta efêmera. O e2e sobe a API e o Vite em portas fixas, e com `reuseExistingServer: false` o Playwright falha de forma visível se a porta já responde.
+  - **Comprovado, lentidão na b48:**
+    - o e2e levou 9,8 min, contra 1,1 min na b49;
+    - quatro telas sem relação entre si estouraram o tempo: contatos, sugestão de resposta, sinais e uso;
+    - um teste da G3.3 também estourou, e uma reprodução isolada dessa suíte falhou por tempo em 2 testes;
+    - com o mesmo código, o teste da G3.3 passou na r2 da b48, em 8 rodadas isoladas e nas duas rodadas da b49, e as quatro telas passaram no e2e da b49, que rodou uma vez;
+    - o desvio de relógio estava normal (≤ 1,5 ms).
+  - **Comprovado, banco:** o número de arquivos que cada checkpoint sincroniza acompanha as janelas de integração, com picos nelas e valores baixos fora. Ele vai de 18.230 a 613.733 e não cresce de forma contínua. O pico da b49 (613.733) superou o da b48 (541.695). Isso é coerente com os `TRUNCATE` do `resetDb`, que criam arquivos novos a cada teste, mas a causa não foi medida.
+  - **Hipótese enfraquecida:** que esses checkpoints causaram a lentidão. O registro anterior afirmava isso como causa, sem prova. Contra ela:
+    - o `total=150 s` é quase todo fase de escrita espaçada (`checkpoint_completion_target=0,9` de 300 s), comportamento normal; a sincronização em si durou 14,8 s;
+    - durante o e2e da b48 não havia checkpoint em curso;
+    - a b49 teve uma sincronização maior (17,8 s, 613.733 arquivos) sem falha atribuível a ela;
+    - a b50 passou inteira com uma sincronização de 18,2 s e 590.250 arquivos no meio da integração, e o relógio de parede, num processo separado, não registrou lacuna.
+  - **Indícios de outra hipótese,** a de a VM do Docker ou a máquina travarem por períodos:
+    - com o banco ativo, o checkpoint por tempo esperado por volta de 17:15 UTC só começou às 17:34;
+    - esse mesmo checkpoint levou 558 s para escrever 2.777 buffers (cerca de 22 MB);
+    - a reprodução isolada que falhou caiu dentro dele.
+  - **A causa da lentidão da b48 não foi identificada.** O número "~100 s parados" do registro anterior não tem origem verificável nos logs guardados e foi retirado.
+
+  A lentidão e o `resetDb` são infraestrutura de teste, não produto, e estão registrados em `docs/MEMORY/technical-debt.md`; a mitigação é decidida em separado.
+
+**Testes da F3.1** (dados fictícios; as corridas com a ordem forçada: a primeira transação pausa segurando a linha do pacote, e a segunda é vista esperando a trava em `pg_stat_activity`):
+
+- **Integração, `clinics-packages` (31):**
+  - **criação:**
+    - o pacote nasce ativo com zero consumidas, e o preço ausente é `null`, não zero;
+    - o zero só existe quando digitado, e a trilha registra só `hasPrice`;
+    - as regras da criação: total de 1 a 100, sem campo a mais, serviço arquivado recusado;
+  - **consumo:**
+    - uma sessão por atendimento, com vínculo e trilha, e o avulso sem consumo;
+  - **o transporte do corpo, por HTTP real** (`node:http`, com os cabeçalhos exatos), depois dos ajustes da liberação:
+    - vazio de verdade, por `Content-Length: 0` (a tela) ou por `chunked` sem nenhum byte (um proxy): avulso, sem consumo, com um pacote elegível presente;
+    - `chunked` com bytes e sem `Content-Type`, inclusive a escolha de um pacote ou um byte só: 415 com `Connection: close`, sem atendimento, transição, consumo nem trilha de sucesso;
+    - a conexão que cai depois dos cabeçalhos `chunked`, sem byte nenhum: nada é registrado, e o mesmo agendamento segue aceitando o pedido vazio;
+    - JSON válido com o pacote, com `Content-Length` ou `chunked`: consumo explícito;
+    - JSON inválido ou fora do contrato (400) e tipo que ninguém interpreta (texto, formulário, XML ou bytes sem tipo: 415), sem efeito nenhum; depois, o pedido válido passa;
+    - a última sessão conclui na mesma instrução;
+    - o pacote de outro paciente ou serviço é recusado (400), o inexistente dá 404 e o cancelado dá 409, todos sem atendimento;
+    - **rollback** depois do incremento, sem sobrar nada;
+  - **repetição:**
+    - a idêntica funciona com o pacote concluído e com o cancelado;
+    - o id em maiúsculas é o mesmo pedido;
+    - a escolha diferente é 409 nos três sentidos;
+    - os registros simultâneos resultam em um consumo;
+  - **corridas:**
+    - o último saldo disputado: um 201 e um 409;
+    - o consumo primeiro na última sessão: o cancelamento dá 409 e o pacote fica `completed`;
+    - o consumo primeiro com saldo: o cancelamento comita depois;
+    - o cancelamento primeiro: o consumo dá 409, sem atendimento e com o agendamento intacto;
+    - o cancelamento repetido;
+  - **banco:**
+    - cada mudança proibida é recusada mesmo junto de um caminho legítimo (o `+1` ou o cancelamento);
+    - os dois caminhos legítimos passam;
+    - o vínculo do atendimento é imutável;
+    - a cascata do workspace funciona;
+  - **permissões e isolamento:**
+    - a recepção não vê nem cria pacote, e a agenda não traz vínculo;
+    - um papel que escreve atendimento sem lê-lo não consome, não cria nem cancela pacote, e registra só o avulso;
+    - o `Profissional` opera o pacote;
+    - o workspace B não vê, não cancela nem consome pacote de A, este último por um agendamento real de B;
+    - a FK composta recusa o vínculo cruzado.
+
+  A igualdade "consumidas = atendimentos vinculados" é conferida ao fim de cada cenário.
+
+- **Suíte de restrição:** a presença pelo pacote restringe os dois consumidores.
+- **Mutação:** cada uma das 11 abaixo derruba pelo menos um teste. As 8 de código compilam, e as 3 de banco trocam a função do trigger na base de teste e a restauram a partir da migration:
+  - a escolha diferente aceita;
+  - o consumo de outro paciente ou serviço;
+  - o consumo sem exigir o pacote ativo;
+  - o cancelamento de um concluído;
+  - o atendimento sem o vínculo;
+  - a recepção lendo pacote;
+  - o consumo sem exigir a leitura do atendimento;
+  - a conclusão sem trilha;
+  - a última sessão sem concluir;
+  - o total mutável;
+  - o vínculo do atendimento mutável.
+
+  **Mais 6 do delta,** todas mortas e cada uma pelo teste esperado (as três do critério por cabeçalhos ficaram sem objeto: esse código saiu nos ajustes da liberação):
+  - sem o 415;
+  - o "traz corpo" pelo critério do `hasBody`, que derruba o registro sem corpo da tela;
+  - o `Transfer-Encoding` sozinho como corpo, que derruba o `chunked` vazio;
+  - o `Transfer-Encoding` ignorado, que deixa passar o `chunked` em `text/plain`;
+  - o serviço sem exigir `care:read`;
+  - o id sem minúsculas.
+
+  **Mais 4 dos ajustes da liberação,** todas mortas:
+  - **a leitura aceitando bytes como vazio,** o fallback silencioso: derruba o `chunked` com bytes e o tipo não suportado;
+  - **o fallback silencioso inteiro,** sem a camada e com o controller aceitando `undefined`: derruba os mesmos dois;
+  - **sem a camada,** com o controller exigindo a prova: falha fechada; o pedido vazio da tela é recusado e derruba o teste do vazio;
+  - **o limite em 1 byte:** derruba o `chunked` de um byte só.
+
+  **Mais 4 da revisão do delta:**
+  - **mortas:**
+    - a queda da conexão aceita como vazio no `error`, que é o evento que chega primeiro: derruba o teste da conexão que cai;
+    - sem o `Connection: close`: derruba o `chunked` com bytes;
+  - **equivalentes em efeito, mantidas como defesa:**
+    - a queda aceita no `close`: o Node emite `error` antes, e o `close` não decide;
+    - sem checar a requisição já destruída: nenhum evento viria e nada seria registrado; a checagem evita a promessa pendurada. Isso não se provoca por HTTP de forma determinística.
+
+  A primeira versão do teste de imutabilidade não derrubava "total mutável": a mudança isolada já era recusada pela regra "sem consumo, só cancelamento". O teste passou a juntar cada mudança proibida a um caminho legítimo.
+
+**Ajustes pedidos antes da liberação do `395eca6` (decisão do usuário, 2026-10-21).** O push foi negado até dois ajustes delimitados; o desenho da F3.1 não muda.
+
+1. **Corpo não interpretado nunca vira avulso.** O usuário recusou o resíduo "corpo `chunked` sem `Content-Type` vira avulso". A frequência desse cliente não muda o contrato: um pedido que contém a escolha de um pacote poderia terminar como atendimento avulso, sem correção possível nesta etapa. E a ausência de `Content-Type` não prova que vieram zero bytes.
+   - **Decisão:** a ausência de corpo passa a ser decidida pelos **bytes**, na camada de leitura.
+     - Um middleware (`common/corpo-opcional.middleware.ts`), aplicado só à rota do registro de atendimento, roda depois do parser JSON global.
+     - Quando o parser não leu nada, o middleware lê o que sobrou do corpo com **limite de zero bytes**. Chegar ao fim sem nenhum byte é o pedido vazio, inclusive em `chunked`. O primeiro byte é conteúdo que ninguém interpretou: a resposta é 415, sem guardar o conteúdo e antes de qualquer efeito.
+     - O middleware marca a requisição quando prova o vazio, e o controller só trata a ausência como avulso com essa marca. Se a rota mudar e o middleware deixar de valer, o pedido vazio é recusado (falha fechada), em vez de aceito às cegas.
+   - **O parser global não muda:** o `json()` com o `verify` do corpo bruto continua igual, e a assinatura dos webhooks da Meta não passa por essa camada.
+   - **Alternativas descartadas:**
+     - **inferir pelos cabeçalhos** (`Content-Length`, `Transfer-Encoding`, `Content-Type`), como na versão anterior: os cabeçalhos não provam quantos bytes vieram;
+     - **recusar todo corpo não interpretado em todas as rotas:** alcançaria uploads e webhooks, fora do escopo delimitado. Fica como possibilidade futura, com ADR próprio;
+     - **um interceptor no handler:** também leria os bytes, mas a leitura do corpo é papel da camada de parsing, que roda antes dos guards, como o próprio `json()`.
+   - **Consequência:** um corpo que não é JSON e traz bytes recebe 415 antes da autenticação, do mesmo jeito que um JSON malformado já recebe 400 do parser. Em nenhum dos dois casos algo é gravado.
+   - **Detalhes da revisão do delta (`reviewer` e `security`, sem P0 nem P1):**
+     - **Na recusa, o resto do corpo não é lido** (nada é guardado), e a resposta leva `Connection: close`. A conexão não serve para outro pedido; sem isso, ela ficava parada até o `keepAliveTimeout`, como os dois revisores mediram.
+     - **Quando o cliente cai antes do fim,** o vazio não foi provado. O Node emite `error` (`ECONNRESET`) antes do `close`, e os dois respondem com a mesma recusa, em vez de um 500 no log.
+     - **Uma requisição que já chega destruída,** ou cujo corpo já foi consumido, é recusada na hora: nenhum evento viria, e a promessa ficaria pendurada.
+     - **Um `resume()`** garante a leitura mesmo depois de um `pause()` anterior.
+
+2. **A recuperação da migration foi ensaiada, e o ensaio desmentiu o runbook.**
+   - **Como:**
+     - num banco descartável, com todas as migrations anteriores aplicadas, rodou-se o mesmo `prisma migrate deploy`, com uma config apontando para uma cópia das migrations;
+     - a falha foi realista: outra sessão segurava `ROW EXCLUSIVE` em `Membership`, e o `ADD FOREIGN KEY` para `Membership` estourou o `lock_timeout` no meio da migration;
+     - o estado foi conferido pelo `pg_dump --schema-only` inteiro, antes e depois, e por um inventário dos 23 objetos da migration (DEPLOY_STAGING §4).
+   - **Comprovado:**
+     - o Prisma 7.9.1 executa a migration **instrução por instrução, sem transação**, como mostra o `log_statement = all`;
+     - a migration do `395eca6` falhou deixando **14 dos 23 objetos**: o enum, a tabela, a coluna do atendimento, 6 índices e 5 restrições. O registro ficou como falho;
+     - o procedimento do runbook, `resolve --rolled-back` e repetir, **não recupera**: a repetição falha com `type "ClinicsPackageStatus" already exists` e deixa um segundo registro de falha.
+   - **Decisão:** a migration passa a ser **transacional explícita**: `BEGIN`, `SET LOCAL lock_timeout = '5s'`, as instruções e `COMMIT`. Todas as instruções são compatíveis com transação; não há `CREATE INDEX CONCURRENTLY` nem `ALTER TYPE ... ADD VALUE`.
+   - **Comprovado com a transação:**
+     - a mesma falha no meio e uma falha forçada depois de todas as instruções deixam o schema **idêntico** ao de antes, pelo `pg_dump` inteiro, e o inventário em zero;
+     - a recuperação (inventário zerado, `resolve --rolled-back`, `migrate deploy`) termina num schema idêntico ao da aplicação direta, e o `migrate diff` contra o schema do Prisma não acusa diferença.
+   - **Efeito colateral, documentado no runbook:** com a transação abortada, o Prisma não consegue gravar o log da falha e mostra só "current transaction is aborted"; a coluna `logs` fica vazia. A causa real fica no log do Postgres. O registro da migration continua como falho, e o próximo deploy para com P3009, como deve.
+   - **Os locks se acumulam até o `COMMIT`:** o `lock_timeout` vale por lock, e o pior caso soma as esperas, até cerca de 20 s com `ClinicsAttendance` bloqueada desde o `ADD COLUMN`. Sem acesso externo e com os jobs desligados, como manda o runbook, ninguém espera. Reordenar as instruções encurtaria esse tempo, mas exigiria refazer o ensaio; não foi feito.
+   - **O ramo "inventário completo com registro falho" também foi ensaiado,** apontado pelo P2 do `reviewer`. É o caso em que o `COMMIT` passou e o processo morreu antes de o Prisma gravar o fim; foi simulado zerando o `finished_at` de uma aplicação bem-sucedida.
+     - Com o inventário em 23 e o `migrate diff` vazio, o `resolve --applied` deixa o status em dia, e o deploy seguinte não tem nada a aplicar.
+     - Pelo caminho às cegas (`--rolled-back` e repetir), a repetição falha, também ensaiada: `type "ClinicsPackageStatus" already exists` no log do Postgres, mais um registro de falha e nada duplicado.
+   - **O inventário filtra `contype <> 'n'`:** no Postgres 18, cada NOT NULL também vira restrição, e a contagem de 23 deixaria de valer. O local e o staging usam o 17.
+   - **O runbook** (§4) deixa de afirmar que nada foi aplicado. Nunca se marca `rolled-back` sem provar o estado.
+     - Na migration transacional, o inventário tem de dar zero.
+     - Numa migration sem transação, o que inclui **todas as anteriores**, a falha pode deixar estado parcial. A recuperação então exige um plano revisado, feito em manutenção.
+   - **Recomendação, ainda não adotada como regra:** que as migrations novas sejam transacionais explícitas sempre que as instruções permitirem, com a skill `create-migration` atualizada. Fica para decisão do usuário.
+   - **Bases locais:** o arquivo mudou depois de aplicado em `veyra`, `veyra_test` e `veyra_e2e`, e o checksum foi atualizado nelas, como na correção anterior. A versão anterior e a transacional dão o mesmo schema (`pg_dump` inteiro). Nenhum outro ambiente tem esta migration, e a bateria a aplica do zero numa base nova.
+   - **O histórico:** o commit local da F3.1 foi refeito com estes ajustes, para que nenhum commit publicado carregue duas versões da mesma migration.
+
+- **Equivalente, sem mutação própria:** a repetição conferida antes da transição. Sem ela, a mesma repetição cai no caminho da transição perdida, que também devolve o registro sem consumir. A D1 (pago ou em aberto) continua em aberto. Se a validação desmentir uma hipótese, a parte correspondente muda ou sai antes do código.
 
 **Delta da revisão 1** (o que mudou desde o `f00e873`):
 

@@ -1,7 +1,10 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/common';
 import { AuthModule } from '../../auth/auth.module';
+import { CorpoOpcionalMiddleware } from '../../common/corpo-opcional.middleware';
 import { ContactsModule } from '../../contacts/contacts.module';
 import { IntelligenceModule } from '../../intelligence/intelligence.module';
+import { ClinicsPackagesController } from './care/clinics-packages.controller';
+import { ClinicsPackagesService } from './care/clinics-packages.service';
 import { ClinicsCatalogController } from './catalog/clinics-catalog.controller';
 import { ClinicsProfessionalsService } from './catalog/clinics-professionals.service';
 import { ClinicsServiceCatalog } from './catalog/clinics-service-catalog.service';
@@ -27,6 +30,7 @@ import { ClinicsAttendanceService } from './schedule/clinics-attendance.service'
     ClinicsCatalogController,
     ClinicsPatientsController,
     ClinicsAppointmentsController,
+    ClinicsPackagesController,
   ],
   providers: [
     ClinicsActivationService,
@@ -38,7 +42,17 @@ import { ClinicsAttendanceService } from './schedule/clinics-attendance.service'
     ClinicsPatientsService,
     ClinicsAppointmentsService,
     ClinicsAttendanceService,
+    ClinicsPackagesService,
   ],
   exports: [ClinicsActivationService],
 })
-export class ClinicsModule {}
+export class ClinicsModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    // o registro de atendimento aceita corpo AUSENTE (a tela registra sem
+    // corpo): a ausência é provada pelos bytes, antes do controller, e o
+    // controller não aceita a ausência sem essa prova (ADR-048 adendo 7)
+    consumer
+      .apply(CorpoOpcionalMiddleware)
+      .forRoutes({ path: 'clinics/appointments/:id/attendance', method: RequestMethod.POST });
+  }
+}

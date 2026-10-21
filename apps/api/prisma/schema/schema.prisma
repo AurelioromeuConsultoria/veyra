@@ -128,6 +128,7 @@ model Workspace {
   clinicsPatients             ClinicsPatient[]
   clinicsAppointments         ClinicsAppointment[]
   clinicsAttendances          ClinicsAttendance[]
+  clinicsPackages             ClinicsPackage[]
 }
 
 /// Catálogo GLOBAL de permissões (ADR-004): chaves estáveis do sistema —
@@ -224,6 +225,7 @@ model Membership {
   clinicsPatientsCreated     ClinicsPatient[]        @relation("ClinicsPatientCreatedBy")
   clinicsAppointmentsCreated ClinicsAppointment[]    @relation("ClinicsAppointmentCreatedBy")
   clinicsAttendancesRecorded ClinicsAttendance[]     @relation("ClinicsAttendanceRecordedBy")
+  clinicsPackagesCreated     ClinicsPackage[]        @relation("ClinicsPackageCreatedBy")
 
   // Alvo de FK composta para Team/ownership futuros
   @@unique([workspaceId, id])

@@ -18,6 +18,7 @@ export const CLINICS_MODELS = [
   'ClinicsPatient',
   'ClinicsAppointment',
   'ClinicsAttendance',
+  'ClinicsPackage',
 ] as const;
 
 export const clinicsExtension: CoreExtension = {
@@ -35,6 +36,7 @@ export const clinicsExtension: CoreExtension = {
         workspace: 'Workspace',
         professionals: 'ClinicsProfessionalService',
         appointments: 'ClinicsAppointment',
+        packages: 'ClinicsPackage',
       },
       ClinicsProfessional: {
         workspace: 'Workspace',
@@ -59,6 +61,7 @@ export const clinicsExtension: CoreExtension = {
         contact: 'Contact',
         createdBy: 'Membership',
         appointments: 'ClinicsAppointment',
+        packages: 'ClinicsPackage',
       },
       ClinicsAppointment: {
         workspace: 'Workspace',
@@ -74,6 +77,14 @@ export const clinicsExtension: CoreExtension = {
         appointment: 'ClinicsAppointment',
         professional: 'ClinicsProfessional',
         recordedBy: 'Membership',
+        package: 'ClinicsPackage',
+      },
+      ClinicsPackage: {
+        workspace: 'Workspace',
+        patient: 'ClinicsPatient',
+        service: 'ClinicsService',
+        createdBy: 'Membership',
+        attendances: 'ClinicsAttendance',
       },
       ClinicsContactRelease: {
         workspace: 'Workspace',
@@ -91,6 +102,7 @@ export const clinicsExtension: CoreExtension = {
         clinicsPatientsCreated: 'ClinicsPatient',
         clinicsAppointmentsCreated: 'ClinicsAppointment',
         clinicsAttendancesRecorded: 'ClinicsAttendance',
+        clinicsPackagesCreated: 'ClinicsPackage',
       },
     },
   },
@@ -122,6 +134,16 @@ export const clinicsExtension: CoreExtension = {
       'status',
       'cancelReason',
     ],
-    clinicsAttendance: ['appointmentId', 'professionalId', 'completedAt'],
+    clinicsAttendance: ['appointmentId', 'professionalId', 'completedAt', 'packageId'],
+    // classe S (ADR-048 adendo 7, F3.1): ids, contagens e estado. O PREÇO entra
+    // só como o fato de existir (`hasPrice`): o valor não é necessário à trilha
+    clinicsPackage: [
+      'patientId',
+      'serviceId',
+      'totalSessions',
+      'consumedSessions',
+      'status',
+      'hasPrice',
+    ],
   },
 };

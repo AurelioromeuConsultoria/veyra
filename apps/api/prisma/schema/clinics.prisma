@@ -80,6 +80,7 @@ model ClinicsService {
   workspace     Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   professionals ClinicsProfessionalService[]
   appointments  ClinicsAppointment[]
+  packages      ClinicsPackage[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, archivedAt])
@@ -188,6 +189,7 @@ model ClinicsPatient {
   contact      Contact              @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
   createdBy    Membership           @relation("ClinicsPatientCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
   appointments ClinicsAppointment[]
+  packages     ClinicsPackage[]
 
   @@unique([workspaceId, contactId])
   @@unique([workspaceId, id])
@@ -261,15 +263,62 @@ model ClinicsAttendance {
   professionalId         String   @db.Uuid
   completedAt            DateTime @db.Timestamptz(3)
   recordedByMembershipId String   @db.Uuid
+  /// o pacote consumido por este atendimento (ADR-048 adendo 7, F3.1); `null` =
+  /// avulso. IMUTÁVEL depois de criado: um trigger do banco recusa a troca
+  packageId              String?  @db.Uuid
   createdAt              DateTime @default(now())
 
   workspace    Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   appointment  ClinicsAppointment  @relation(fields: [workspaceId, appointmentId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
   professional ClinicsProfessional @relation(fields: [workspaceId, professionalId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
   recordedBy   Membership          @relation("ClinicsAttendanceRecordedBy", fields: [workspaceId, recordedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  package      ClinicsPackage?     @relation(fields: [workspaceId, packageId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
 
   @@unique([workspaceId, appointmentId])
   @@unique([workspaceId, id])
   @@index([workspaceId, professionalId])
   @@index([workspaceId, recordedByMembershipId])
+  @@index([workspaceId, packageId])
+}
+
+/// Estado do pacote (ADR-048 adendo 7, F3.1). `completed` só pela ÚLTIMA sessão
+/// (na mesma instrução do consumo); `canceled` só manual, sem incremento.
+enum ClinicsPackageStatus {
+  active
+  completed
+  canceled
+}
+
+/// Pacote de sessões (ADR-048 §4 e adendo 7, F3.1). Classe S: liga o paciente a
+/// um serviço contratado. Nasce com zero consumidas; paciente, serviço, total,
+/// preço e moeda são IMUTÁVEIS (trigger do banco). O CHECK mantém as consumidas
+/// no intervalo; a igualdade "consumidas = atendimentos vinculados" vem do
+/// caminho ÚNICO de escrita (o registro de atendimento, numa transação) e dos
+/// triggers que recusam qualquer outra mudança. Sem texto livre (H7).
+model ClinicsPackage {
+  id                    String               @id @default(uuid()) @db.Uuid
+  workspaceId           String               @db.Uuid
+  patientId             String               @db.Uuid
+  serviceId             String               @db.Uuid
+  totalSessions         Int
+  consumedSessions      Int                  @default(0)
+  /// preço TOTAL do pacote, digitado e confirmado; `null` = não informado
+  totalPriceCents       Int?
+  currency              String
+  status                ClinicsPackageStatus @default(active)
+  createdByMembershipId String               @db.Uuid
+  createdAt             DateTime             @default(now())
+  /// escrito pelo BANCO (trigger), na conclusão ou no cancelamento (ADR-049)
+  closedAt              DateTime?            @db.Timestamptz(3)
+
+  workspace   Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  patient     ClinicsPatient      @relation(fields: [workspaceId, patientId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  service     ClinicsService      @relation(fields: [workspaceId, serviceId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  createdBy   Membership          @relation("ClinicsPackageCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  attendances ClinicsAttendance[]
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, patientId])
+  @@index([workspaceId, serviceId])
+  @@index([workspaceId, createdByMembershipId])
 }

@@ -38,6 +38,13 @@ export async function createTestApp(
   // request e, com requests em Promise.all (testes de concorrência), dois
   // listen simultâneos corrompem a conexão — a suíte falhava de forma
   // intermitente com "Parse Error"/"socket hang up"/404 em pontos aleatórios.
-  await app.listen(0);
+  //
+  // E escuta em 127.0.0.1, onde o supertest CONECTA (ele monta a URL com
+  // 127.0.0.1:<porta>). Em `::`, o macOS aceita o app numa porta que outro
+  // processo já ocupa em 127.0.0.1, e a conexão vai para o outro (mecanismo
+  // reproduzido com porta explícita). Sintoma compatível: a b49 da F3.1, com
+  // os 25 testes de uma suíte em 404 no primeiro login, sem observação direta
+  // da porta nem do processo (ADR-048 adendo 7).
+  await app.listen(0, '127.0.0.1');
   return app;
 }

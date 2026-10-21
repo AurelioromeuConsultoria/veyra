@@ -181,17 +181,116 @@ alcançável no boot, recusa subir se a sessão não estiver em UTC.
 FK para tabela muito escrita (`20261019220000_clinics_foundation`, que trava
 `Contact`, `Membership` e `Workspace`, e `20261019230000_clinics_catalog`, que
 trava `Membership` e `Workspace`, durante o `ADD FOREIGN KEY`) fixam
-`lock_timeout = 5s`. Se uma transação longa estiver segurando a tabela, a
-migration falha em vez de travar todas as escritas da aplicação. Nesse caso o
-Prisma a registra como falha, e o próximo `migrate deploy` para com **P3009**.
-O `ALTER` não chegou a ser aplicado, então marque como desfeita e repita:
+`lock_timeout = 5s`, assim como a `20261021120000_clinics_packages`, que trava
+`Membership` e `Workspace`. Se uma transação longa estiver segurando a tabela, a
+migration falha em vez de travar todas as escritas da aplicação. O Prisma a
+registra como falha, e o próximo `migrate deploy` para com **P3009**. No
+próprio deploy, uma migration sem transação mostra **P3018** com a causa; a
+transacional mostra só "current transaction is aborted" (abaixo). Na
+transacional, o `lock_timeout` vale **por lock**, e os locks obtidos ficam
+presos até o `COMMIT`. O pior caso soma as esperas: na `clinics_packages`, até
+cerca de 20 s com `ClinicsAttendance` bloqueada. Por isso o deploy é feito em
+manutenção, sem acesso externo e com os jobs desligados. Qualquer outra falha
+de migration segue o mesmo procedimento, abaixo.
 
-```bash
-npx prisma migrate resolve --rolled-back 20261019200000_outbox_subject_contacts
-npx prisma migrate deploy
-```
+**Falha de migration: o que fica no banco.** O `prisma migrate deploy` executa
+cada migration **instrução por instrução, sem transação**. Isso foi ensaiado em
+2026-10-21 (ADR-048 adendo 7). Por isso:
 
-Troque o nome pela migration que falhou: o `migrate deploy` mostra qual foi.
+- **Migration sem transação explícita** (todas até
+  `20261021090100_message_dispatch_ai_origin_backfill`): uma falha no meio
+  **deixa aplicado o que veio antes**. No ensaio, a primeira versão da
+  `20261021120000_clinics_packages` falhou deixando 14 dos seus 23 objetos.
+  Repetir depois do `resolve --rolled-back` falhou com
+  `type "ClinicsPackageStatus" already exists`. Uma migration de instrução única
+  não fica pela metade, mas confira o estado mesmo assim.
+- **Migration transacional**, com `BEGIN` e `COMMIT` no arquivo (hoje, a
+  `20261021120000_clinics_packages`): a falha desfaz tudo, como o ensaio
+  comprovou. O Prisma mostra só "current transaction is aborted" e não grava o
+  log; **a causa real está no log do Postgres**.
+
+**Procedimento. Nunca marque `rolled-back` às cegas:** o `migrate resolve` só
+muda o registro da migration e não desfaz nenhum objeto.
+
+1. **Permaneça em manutenção**, com o acesso bloqueado. Não religue o código
+   antigo (§5).
+2. **Leia a causa** na saída do Prisma e no log do Postgres. A instrução que
+   falhou vem nas linhas seguintes ao `ERROR`:
+
+   ```bash
+   docker logs --since 30m <container-db> 2>&1 | grep -A4 ERROR | tail -40
+   ```
+
+   Num `lock_timeout`, ache a transação longa que segurava a tabela, pelo
+   console do banco (como no passo 3 do deploy da guarda):
+
+   ```sql
+   SELECT pid, now() - xact_start AS duracao, state, left(query, 80) AS consulta
+     FROM pg_stat_activity
+    WHERE xact_start < now() - interval '5 seconds'
+    ORDER BY xact_start;
+   ```
+
+3. **Prove o estado** da migration que falhou, que o
+   `npx prisma migrate status` aponta, pelo inventário dos objetos dela. Para a
+   `20261021120000_clinics_packages`:
+
+   ```sql
+   -- inventário da 20261021120000_clinics_packages: 0 linhas = nada ficou;
+   -- 23 = inteira; qualquer outro número = estado parcial
+   SELECT 'tipo' AS k, t.typname::text AS nome FROM pg_type t
+     WHERE t.typname = 'ClinicsPackageStatus'
+   UNION ALL SELECT 'tabela', c.relname::text FROM pg_class c
+     WHERE c.relname = 'ClinicsPackage' AND c.relkind = 'r'
+   UNION ALL SELECT 'coluna', 'ClinicsAttendance.packageId' FROM pg_attribute a
+     JOIN pg_class c ON c.oid = a.attrelid
+     WHERE c.relname = 'ClinicsAttendance' AND a.attname = 'packageId' AND NOT a.attisdropped
+   UNION ALL SELECT 'indice', c.relname::text FROM pg_class c
+     WHERE c.relkind = 'i' AND (c.relname LIKE 'ClinicsPackage\_%' OR c.relname = 'ClinicsAttendance_workspaceId_packageId_idx')
+   UNION ALL SELECT 'restricao', co.conname::text FROM pg_constraint co
+     WHERE (co.conname LIKE 'ClinicsPackage\_%' OR co.conname = 'ClinicsAttendance_workspaceId_packageId_fkey')
+       AND co.contype <> 'n'  -- no Postgres 18, cada NOT NULL também vira restrição
+   UNION ALL SELECT 'funcao', p.proname::text FROM pg_proc p
+     WHERE p.proname IN ('clinics_package_guard', 'clinics_attendance_package_is_final')
+   UNION ALL SELECT 'gatilho', tg.tgname::text FROM pg_trigger tg
+     WHERE tg.tgname IN ('ClinicsPackage_guard', 'ClinicsAttendance_package_is_final')
+   ORDER BY 1, 2;
+   ```
+
+   Para outra migration, monte o inventário do mesmo jeito, a partir das
+   instruções do arquivo: cada `CREATE` e cada `ADD CONSTRAINT`.
+
+4. **Inventário zerado (nada ficou):** remova a causa (por exemplo, espere ou
+   encerre a transação longa que segurava a tabela) e então, no container da
+   API:
+
+   ```bash
+   docker exec -it <container-api> npx prisma migrate resolve --rolled-back 20261021120000_clinics_packages
+   docker exec -it <container-api> npx prisma migrate deploy
+   ```
+
+   Depois, o inventário precisa dar 23 linhas, e o `migrate status` não pode
+   ter pendências.
+
+5. **Inventário completo (23) com o registro falho:** o `COMMIT` passou, mas o
+   processo morreu antes de o Prisma gravar o fim, por exemplo porque a sessão
+   do `docker exec` caiu. **Nunca** `--rolled-back`: repetir falha, porque os
+   objetos já existem (ensaiado). Confirme que o banco bate com o schema e
+   marque como aplicada:
+
+   ```bash
+   docker exec -it <container-api> npx prisma migrate diff --from-config-datasource --to-schema prisma/schema --exit-code
+   docker exec -it <container-api> npx prisma migrate resolve --applied 20261021120000_clinics_packages
+   ```
+
+   O `diff` precisa sair com código 0 ("No difference detected"). Esse ramo
+   também foi ensaiado.
+
+6. **Estado parcial**, numa migration sem transação que falhou no meio: **não**
+   marque `rolled-back` nem repita. O caminho é um plano revisado, ainda em
+   manutenção. Ou se desfaz exatamente o que foi aplicado e só então se marca
+   `rolled-back`, ou se completa o que faltou e se marca `--applied`. Os dois
+   exigem revisão antes de executar.
 
 **Extensão `btree_gist`.** A `20261019230000_clinics_catalog` cria a extensão
 (`CREATE EXTENSION IF NOT EXISTS`), usada pela regra de horários sem
@@ -361,8 +460,13 @@ Use os nomes reais da §3.6. A ordem obrigatória:
    preenchimento `20261021090100_message_dispatch_ai_origin_backfill`:
 
    ```bash
+   docker exec -it <container-api> npx prisma migrate status
    docker exec -it <container-api> npx prisma migrate deploy
    ```
+
+   O `status` lista as pendentes antes. **Se o `deploy` falhar**, siga "Falha
+   de migration" (acima), ainda em manutenção: nada de marcar `rolled-back` e
+   repetir às cegas.
 
    ```sql
    -- precisa dar 0: despacho pendente de rascunho da IA sem a origem de IA
@@ -560,6 +664,18 @@ docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
 ```
 
 O resultado esperado é `0`.
+
+**Conferência do contador de sessões dos pacotes (ADR-048 adendo 7, F3.1).** O
+`CHECK` do banco garante só o intervalo das consumidas. A igualdade com os
+atendimentos vinculados vem do caminho único de escrita e dos triggers. Esta
+consulta precisa dar 0; outro valor é incidente:
+
+```sql
+SELECT count(*) FROM "ClinicsPackage" p
+ WHERE p."consumedSessions" <> (SELECT count(*) FROM "ClinicsAttendance" a
+                                 WHERE a."workspaceId" = p."workspaceId"
+                                   AND a."packageId" = p."id");
+```
 
 ### 7.2 Outbox: nunca editar, reabrir nem copiar evento por SQL
 

@@ -476,4 +476,58 @@ export interface ClinicsAttendanceDto {
   appointmentId: string;
   professionalId: string;
   completedAt: string;
+  /** o pacote consumido por ESTE atendimento; `null` = avulso (ADR-048 adendo 7) */
+  packageId: string | null;
+}
+
+/**
+ * Registro de atendimento (ADR-048 adendo 7, F3.1). O consumo de pacote é
+ * EXPLÍCITO: sem `packageId` (ou com `null`), o atendimento é avulso. O corpo
+ * inteiro também pode faltar (a tela registra sem corpo): é o avulso. Um corpo
+ * que não seja JSON é recusado (415), nunca lido como avulso. Repetir o mesmo
+ * pedido devolve o registro existente; repetir com escolha diferente é 409.
+ */
+export const recordClinicsAttendanceSchema = z
+  .object({
+    packageId: z.uuid().nullable().optional(),
+  })
+  .strict();
+export type RecordClinicsAttendanceInput = z.infer<typeof recordClinicsAttendanceSchema>;
+
+export const CLINICS_PACKAGE_STATUSES = ['active', 'completed', 'canceled'] as const;
+export type ClinicsPackageStatus = (typeof CLINICS_PACKAGE_STATUSES)[number];
+
+/**
+ * Pacote de sessões (ADR-048 adendo 7, F3.1). Classe S. O PREÇO é o TOTAL do
+ * pacote, digitado e confirmado por quem cria, e congelado; ausente significa
+ * "não informado" — nunca zero nem gratuito. Nada disto é gestão financeira
+ * (D1 em aberto): não há desconto, pagamento nem quitação.
+ */
+export const createClinicsPackageSchema = z
+  .object({
+    patientId: z.uuid(),
+    serviceId: z.uuid(),
+    totalSessions: z.number().int().min(1).max(100),
+    totalPriceCents: z.number().int().min(0).max(100_000_000).nullable().optional(),
+  })
+  .strict();
+export type CreateClinicsPackageInput = z.infer<typeof createClinicsPackageSchema>;
+
+export const listClinicsPackagesSchema = z.object({ patientId: z.uuid() });
+export type ListClinicsPackagesInput = z.infer<typeof listClinicsPackagesSchema>;
+
+export interface ClinicsPackageDto {
+  id: string;
+  patientId: string;
+  serviceId: string;
+  totalSessions: number;
+  consumedSessions: number;
+  /** derivado: `totalSessions − consumedSessions` */
+  remainingSessions: number;
+  /** `null` = não informado (nunca zero implícito) */
+  totalPriceCents: number | null;
+  currency: string;
+  status: ClinicsPackageStatus;
+  createdAt: string;
+  closedAt: string | null;
 }

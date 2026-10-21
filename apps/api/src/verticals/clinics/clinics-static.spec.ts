@@ -106,4 +106,32 @@ describe('Clinics — garantias estáticas (ADR-047, ADR-048)', () => {
       'clinics:schedule:write',
     );
   });
+
+  it('na matriz, quem ESCREVE atendimento também o LÊ (care:write pressupõe care:read, ADR-048 adendo 7)', () => {
+    for (const keys of Object.values(CLINICS_ROLE_GRANTS)) {
+      if (keys.includes('clinics:care:write')) expect(keys).toContain('clinics:care:read');
+    }
+  });
+
+  it('o CONTADOR do pacote só tem os dois escritores: o registro de atendimento (consumo e vínculo) e o serviço de pacotes (criação e cancelamento)', () => {
+    // escritas no pacote e no atendimento (o vínculo nasce com o atendimento)
+    const ESCREVE_PACOTE = [
+      /clinicsPackage\s*\.\s*(create|createMany|createManyAndReturn|update|updateMany|upsert|delete|deleteMany)\b/,
+      /(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"?ClinicsPackage"?/i,
+    ];
+    const ESCREVE_ATENDIMENTO = [
+      /clinicsAttendance\s*\.\s*(create|createMany|createManyAndReturn|update|updateMany|upsert|delete|deleteMany)\b/,
+      /(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"?ClinicsAttendance"?/i,
+    ];
+    const quem = (padroes: RegExp[]) =>
+      walk(ROOT)
+        .filter((file) => padroes.some((p) => p.test(readFileSync(file, 'utf8'))))
+        .map((file) => relative(ROOT, file))
+        .sort();
+    expect(quem(ESCREVE_PACOTE)).toEqual([
+      'care/clinics-packages.service.ts',
+      'schedule/clinics-attendance.service.ts',
+    ]);
+    expect(quem(ESCREVE_ATENDIMENTO)).toEqual(['schedule/clinics-attendance.service.ts']);
+  });
 });
