@@ -240,22 +240,43 @@ subir sem jobs, migrar, retomar.** "Migration antes do código", sozinha, **não
 fecha** a janela da G3.2 (decisão de 2026-10-21, ADR-047 adendo 7 §9). Entre a
 migration e a subida do código novo, o código antigo continua no ar: aprova
 rascunhos da IA, que nascem sem a origem de IA, e envia pela regra antiga,
-porque não lê a coluna nova. A regra é que **o código antigo nunca roda com o
-schema novo**, e que nada sai antes das migrations. Use os nomes reais da §3.6.
-A ordem obrigatória:
+porque não lê a coluna nova. Três regras:
+
+- **o acesso externo fica bloqueado durante toda a manutenção**, inclusive
+  depois de a API e o `web` novos subirem. `DISABLE_JOBS` desliga os workers,
+  mas **não bloqueia requisições nem a geração de IA pela API**. Uma falha de
+  schema também não é barreira de manutenção. A barreira é o bloqueio do acesso,
+  conferido de fora;
+- **o código antigo nunca roda com o schema novo**;
+- **nada sai antes das migrations**.
+
+Use os nomes reais da §3.6. A ordem obrigatória:
 
 1. **Backup** (§5), pelo container `backup`.
-2. **Pausar aprovações e envios.** No host, pare só a API e o `web`, como na
-   restauração do §6:
+2. **Bloquear o acesso externo e pausar aprovações e envios.**
+   1. No painel, **retire o domínio do serviço `web`** (a variável
+      `SERVICE_FQDN_WEB_8080` da §3.2). Sem domínio, nenhum deploy desta
+      manutenção gera rota no Traefik para o Veyra.
+   2. No host, pare só a API e o `web`, como na restauração do §6. **Não use o
+      Stop do recurso no painel**: ele para o compose inteiro, banco incluído, e
+      os passos seguintes precisam do banco.
 
-   ```bash
-   docker stop <container-web> <container-api>
-   ```
+      ```bash
+      docker stop <container-web> <container-api>
+      ```
 
-   **Não use o Stop do recurso no painel**: ele para o compose inteiro, banco
-   incluído, e os passos seguintes precisam do banco. Sem a API, nenhuma
-   aprovação chega e nenhum worker envia. Os eventos ficam pendentes no outbox,
-   que nunca se edita por SQL (§7.2). É janela de manutenção.
+   3. **Confira de fora** (de outra máquina) que o Veyra não responde:
+
+      ```bash
+      curl -sS -o /dev/null -w '%{http_code}\n' https://veyra-staging.malachdigital.com.br/api/health
+      ```
+
+      **Qualquer 2xx interrompe a manutenção:** ela não começa sem o bloqueio
+      conferido.
+
+   Com isso nenhuma requisição chega, nenhuma aprovação é feita e nenhum worker
+   envia. Os eventos ficam pendentes no outbox, que nunca se edita por SQL
+   (§7.2).
 
 3. **Classificar o que estava em andamento**, pelo console do banco, antes de
    qualquer migration. As variáveis do `psql` são lidas DENTRO do container (o
@@ -284,14 +305,42 @@ A ordem obrigatória:
      Nada se edita à mão.
 
 4. **Subir o código novo SEM os jobs.** No painel, defina `DISABLE_JOBS=true`
-   no recurso, aponte para o commit novo e faça o **Deploy**. A API nova sobe
-   sem worker do outbox, sem varreduras e sem reconciliação: nenhum envio e
-   nenhuma entrega de webhook. O que depende do schema novo (aprovar um
-   rascunho, enviar uma mensagem) **falha fechado** até a migration: a escrita
-   referencia colunas que ainda não existem, a transação inteira volta e nada
-   sai. O código antigo não volta a rodar. **Se o Deploy falhar**, não rode as migrations nem
-   religue o container antigo: investigue com tudo parado. Religar o código
-   antigo reabriria a regra antiga.
+   no recurso, aponte para o commit novo e faça o **Deploy**, ainda **sem o
+   domínio do `web`**. A API nova sobe sem worker do outbox, sem varreduras e
+   sem reconciliação: nenhum envio e nenhuma entrega de webhook. O deploy
+   recria os containers; releia os nomes (§3.6). Em seguida:
+   1. **Pare o `web` de novo**, assim que o deploy terminar. Ele não é preciso
+      até a retomada, e sem ele não há entrada nenhuma, qualquer que seja a
+      rota que o painel tenha gerado:
+
+      ```bash
+      docker stop <container-web>
+      ```
+
+   2. **Confira as labels** dos containers recriados. Nenhum pode ter regra
+      `traefik.http.routers`, porque o Coolify pode gerar um domínio padrão
+      quando o do serviço está vazio:
+
+      ```bash
+      docker inspect <container-web> <container-api> --format '{{.Name}} {{json .Config.Labels}}' | grep -i 'traefik.http.routers' && echo 'ROTA ENCONTRADA'
+      ```
+
+      **Rota encontrada é incidente:** o Veyra pode ter ficado alcançável entre
+      o fim do deploy e o novo stop do `web`. **Pare imediatamente o container
+      que tiver a rota**, inclusive a `api`, e só então registre e investigue,
+      antes de seguir.
+
+   3. **Confira de fora outra vez** (o mesmo `curl` do passo 2: nada de 2xx).
+   4. A saúde se confere por dentro:
+
+      ```bash
+      docker exec <container-api> curl -fsS http://127.0.0.1:3001/api/health
+      ```
+
+   O código antigo não volta a rodar. **Se o Deploy falhar**, não rode as
+   migrations nem religue o container antigo: **permaneça em manutenção**, com
+   o acesso bloqueado, até definir uma recuperação compatível (§5).
+
 5. **Migrations**, no container novo da API (como na §3.5), e a conferência do
    preenchimento. O deploy recria o container: releia o nome dele antes
    (`docker ps --format '{{.Names}}' | grep -i veyra`, como na §3.6). Entre as
@@ -316,10 +365,19 @@ A ordem obrigatória:
 
 6. **A cadeia de proxies**: os prazos de leitura de todos os proxies à frente do
    `web` (G3.1, acima). Os 120 s do proxy não mudam os 60 s do provedor.
-7. **Retomar.** No painel, volte `DISABLE_JOBS=false` e faça o **Redeploy** do
-   mesmo commit. Depois, `curl -fsS https://$VEYRA_HOST/api/health`. Só então
-   os envios e as entregas voltam, já sob a regra nova, e a reconciliação da
-   subida examina os usos `authorized`.
+7. **Retomar.** No painel, volte `DISABLE_JOBS=false`, **devolva o domínio do
+   `web`** e faça o **Redeploy** do mesmo commit, que sobe o `web` de novo. Depois,
+   `curl -fsS https://$VEYRA_HOST/api/health`. Só então o acesso, os envios e
+   as entregas voltam, já sob a regra nova, e a reconciliação da subida examina
+   os usos `authorized`.
+
+**Resíduo da barreira de acesso.** Entre o fim do deploy do passo 4 e o novo
+stop do `web`, se o Coolify tiver gerado uma rota padrão, o `web` fica
+alcançável por segundos. A conferência das labels detecta o caso, mas não o
+evita. **Recomendação, ainda não implementada:** um modo de manutenção na
+própria aplicação, que recuse toda requisição externa enquanto ligado, como
+`DISABLE_JOBS` faz com os workers. Isso tira a barreira da dependência do
+painel. Fica como pendência antes de qualquer deploy com dado real.
 
 **Cobertura limitada dos despachos antigos.** Os despachos aprovados antes da
 G3.2 têm `approvalContactIds` nulo: reconferem só o contato atual da conversa.
@@ -329,14 +387,35 @@ parte.
 
 ## 5. Rollback
 
-No painel, o Coolify guarda os deploys anteriores: **Redeploy** do commit
-anterior devolve o código. É o caminho mais curto e o motivo pelo qual o
-recurso deve apontar para tag/commit, não para `main`.
+**Voltar a um commit anterior não é rollback seguro desde a guarda de uso
+externo** (ADR-047 adendo 7 §9; decisão do usuário, 2026-10-21). Um código
+anterior às proteções novas faz o que a guarda passou a impedir:
+
+- gera com IA, envia mensagem e entrega webhook sem registro, sem travas e sem
+  reconferência;
+- deixa o rascunho editado sair sem a origem de IA;
+- grava despachos sem a origem nem os contatos da aprovação.
+
+O Coolify guarda os deploys anteriores, mas o **Redeploy** de um commit anterior
+só vale para um commit que tenha **as mesmas proteções** e seja compatível com o
+schema aplicado. Por isso o recurso aponta para tag/commit, nunca para `main`.
+
+**Em falha, permaneça em manutenção**: acesso externo bloqueado e conferido de
+fora, e `DISABLE_JOBS=true` (§4, "Deploy da guarda de uso externo", passos 2 e
+4). Só saia dela quando a recuperação compatível estiver definida:
+
+- uma correção para frente, num commit novo com as proteções;
+- ou a restauração do banco (§6), seguida de um código com as proteções que
+  seja compatível com ele.
+
+Religar o container antigo para "voltar ao ar" reabre a regra antiga e não é
+recuperação.
 
 **Migration não tem rollback automático, e isto é deliberado**: `migrate deploy`
-não desfaz. Se a migration nova for incompatível com o código antigo, a volta é
-por restauração de banco (§6.2) — por isso o backup roda ANTES de todo deploy
-com migration:
+não desfaz. Se uma migration falhar ou deixar o banco num estado que o código
+com as proteções não aceita, a volta é pela restauração de banco (§6), sempre
+em manutenção e seguida de um código com as proteções. Por isso o backup roda
+ANTES de todo deploy com migration:
 
 ```bash
 # pelo terminal do Coolify, no container `backup`
@@ -357,27 +436,41 @@ Pelo terminal do Coolify, no container `backup`:
 ```
 
 Restauração do banco. **Pare a API antes**: restaurar com escrita em curso
-produz estado que nenhum dos dois lados reconhece. No host, com os nomes reais
+produz estado que nenhum dos dois lados reconhece. **Restaurar é manutenção**:
+o acesso externo fica bloqueado e conferido de fora do começo ao fim (§4,
+"Deploy da guarda de uso externo", passo 2). A API que sobe é sempre a do
+código com as proteções, nunca a de um commit anterior (§5). No host, com os nomes reais
 que você anotou na §3.6:
 
-```bash
-docker stop <container-api> <container-web>
-docker exec -it <container-backup> /usr/local/bin/restore.sh banco <snapshot-id>
-docker start <container-api>
-docker exec -it <container-api> npx prisma migrate deploy
-docker start <container-web>
-```
+1. **Manutenção:** o passo 2 do "Deploy da guarda de uso externo" (§4). O
+   domínio do `web` sai, o `web` e a API param, e o bloqueio é conferido de
+   fora.
+2. **Restaure:**
+
+   ```bash
+   docker exec -it <container-backup> /usr/local/bin/restore.sh banco <snapshot-id>
+   ```
+
+3. **Volte pelos passos 4 a 7 do §4**: deploy do commit com as proteções, sem
+   domínio e com `DISABLE_JOBS=true`; o `web` parado de novo e as labels
+   conferidas; a conferência de fora; `migrate deploy` no container novo; e só
+   então a retomada.
+
+**Nunca `docker start` nos containers antigos.** O `web` antigo ainda carrega
+as labels do Traefik com o domínio, e religá-lo reabre a rota no meio da
+manutenção. A API antiga sobe com os jobs que tinha ao ser criada, antes de
+qualquer migration, e pode ser de um commit sem as proteções (§5).
 
 Restauração do storage: o volume é montado somente-leitura no `backup`, então
 a cópia de volta vai por um container temporário com o volume real montado
-para escrita — os nomes saem da §3.6.
+para escrita — os nomes saem da §3.6. A mesma regra de manutenção vale aqui:
+comece pelo passo 2 do §4, sem `docker start` de container antigo no fim, e
+volte pelos passos 4 a 7.
 
 ```bash
-docker stop <container-api>
 docker run --rm -v <volume-storage>:/destino -v <volume-restic-cache>:/cache \
   -e RESTIC_REPOSITORY -e RESTIC_PASSWORD <imagem-backup> \
   /usr/local/bin/restore.sh storage <snapshot-id> /destino
-docker start <container-api>
 ```
 
 **Teste a restauração antes de precisar dela.** Um ensaio trimestral em banco

@@ -1798,13 +1798,13 @@ A G2 foi publicada (`9237de8`, quatro jobs do CI verdes). A G3 liga os três uso
      - O histórico terminal não é reescrito.
      - Conferida contra quatro casos na base de teste: o editado pendente passa a `true`; o terminal, a mensagem livre e a trilha de outro workspace ficam `false`.
      - **Resíduo:** aprovações e envios processados pelo código antigo **entre** a migration e a subida do código novo seguem a regra antiga. O código antigo grava `false` e não lê a coluna. "Migration antes do código", sozinha, **não fecha** essa janela (decisão do usuário, 2026-10-21). O runbook de deploy (`docs/DEPLOY_STAGING.md` §4, "Deploy da guarda de uso externo") exige, nesta ordem:
-       1. a pausa de aprovações e envios: a API e o `web` parados no host; o banco continua no ar;
+       1. o **acesso externo bloqueado durante toda a manutenção**, conferido de fora: o domínio do `web` sai, e a API e o `web` param no host, mas o banco continua no ar. `DISABLE_JOBS` não bloqueia requisições nem a geração de IA pela API, e falha de schema não é barreira de manutenção (decisão do usuário, 2026-10-21);
        2. a classificação dos trabalhos em andamento;
-       3. a subida do código novo **com os jobs desligados** (`DISABLE_JOBS=true`). Nada sai, e o que depende do schema novo falha fechado, por construção: a escrita referencia colunas que ainda não existem, e a transação volta inteira;
+       3. a subida do código novo **com os jobs desligados** (`DISABLE_JOBS=true`) e **ainda sem acesso externo**, conferido de novo de fora;
        4. as migrations, com o preenchimento da origem conferido;
-       5. só depois, a retomada (os jobs religados).
+       5. só depois, a retomada: os jobs religados e o domínio devolvido.
 
-       O código antigo nunca roda com o schema novo. A primeira versão do runbook mandava parar o recurso pelo painel, o que para também o banco, e rodar as migrations de uma imagem que só existe depois do deploy. A revisão apontou que ela não era executável (P2), e esta ordem a corrige.
+       O código antigo nunca roda com o schema novo. A primeira versão do runbook mandava parar o recurso pelo painel, o que para também o banco, e rodar as migrations de uma imagem que só existe depois do deploy. A revisão apontou que ela não era executável (P2), e esta ordem a corrige. **Rollback:** voltar a um código sem as proteções não é recuperação. Em falha, a operação permanece em manutenção até definir uma recuperação compatível (`docs/DEPLOY_STAGING.md` §5).
 
        Em staging, o Clinics está desativado e os dados são fictícios.
 2. **A triagem distingue a mensagem comprovadamente não enviada da entrega realmente desconhecida.** A pergunta da guarda passa de "a reserva está num uso?" para **a situação da reserva** (`ContentUseGuard.situacaoDaReserva`), com três respostas:

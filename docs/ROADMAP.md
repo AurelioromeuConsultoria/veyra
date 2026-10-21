@@ -91,6 +91,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
   **Pendente de engenharia antes do piloto:**
   - a contabilização dupla possível da G3.2 (ADR-047 adendo 7 §9): separar o consumo interno de quota da cobrança monetária, sem comprometer a prevenção de envio duplicado (`docs/MEMORY/technical-debt.md`). Não está aprovada como comportamento financeiro para clientes reais;
   - o deploy da guarda pelo runbook de pausa, classificação, migrations e retomada (`docs/DEPLOY_STAGING.md` §4); a verificação de transição da G4.
+  - um modo de manutenção na própria aplicação, antes de qualquer deploy com dado real: a barreira de acesso da manutenção não pode depender do painel (`docs/MEMORY/technical-debt.md`).
 
 - **F1 — Fundação do vertical ✅ (concluída em 2026-10-19, CI verde)** Dividida em três entregas, cada uma com revisão própria. Só o item que depende de paciente (a liberação de IA que perde efeito) passa para a F2.
   - **F1.a — pontos de extensão no Core ✅ (publicada):** E1, E2 (checagem de boot e teste de concessão), E4 e E6, com o schema em `prisma/schema/`, a barreira de lint e o teste de fronteira, sem vertical composto. Decisões de implementação no adendo 1 do ADR-047; a pendência sobre o lado oposto da relação no schema do Core foi decidida no adendo 2, item 1.
