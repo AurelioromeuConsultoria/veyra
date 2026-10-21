@@ -86,12 +86,17 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
   - validação operacional de H1–H7 com alguém de uma clínica (a revisão do PO não conta);
   - avaliação jurídica do ADR-048 §9.2;
   - D1 (pago/em aberto), D2 (salas), D7 (um papel por membro) e D8 (profissional vê todos os atendimentos);
-  - os bloqueios B1–B4. Sem eles, **nenhum dado real de paciente e nenhum piloto clínico**.
+  - os bloqueios B1, B3 e B4 (o B2 foi levantado tecnicamente em 2026-10-21, ADR-048 adendo 6). Sem eles, **nenhum dado real de paciente e nenhum piloto clínico**.
 
-  **Pendente de engenharia antes do piloto:**
-  - a contabilização dupla possível da G3.2 (ADR-047 adendo 7 §9): separar o consumo interno de quota da cobrança monetária, sem comprometer a prevenção de envio duplicado (`docs/MEMORY/technical-debt.md`). Não está aprovada como comportamento financeiro para clientes reais;
-  - o deploy da guarda pelo runbook de pausa, classificação, migrations e retomada (`docs/DEPLOY_STAGING.md` §4); a verificação de transição da G4.
-  - um modo de manutenção na própria aplicação, antes de qualquer deploy com dado real: a barreira de acesso da manutenção não pode depender do painel (`docs/MEMORY/technical-debt.md`).
+  **Bloqueios por marco** (decisão do usuário, 2026-10-21; ADR-048 adendo 6). Não fazem parte do B2, mas bloqueiam os marcos:
+  - **antes de qualquer deploy desta atualização:** a barreira contínua de manutenção, com modo na aplicação ou barreira externa independente e comprovada. Detectar uma rota aberta depois do deploy não basta, e o proxy compartilhado não muda sem diagnóstico e autorização (`docs/DEPLOY_STAGING.md` §4; `docs/MEMORY/technical-debt.md`);
+  - **antes do piloto:**
+    - a contagem dupla (separar a quota interna da cobrança monetária, sem comprometer a prevenção de envio duplicado);
+    - alertas e triagem dos usos em dúvida;
+    - pools validados sob carga;
+    - os despachos antigos tratados sem reenviar entregas incertas;
+  - **antes de dados reais no Core sem o Clinics:** a política de exclusão e de uso do conteúdo já carregado;
+  - **continuam bloqueando dados reais e o piloto:** B1, B3, B4, a validação operacional e a avaliação jurídica.
 
 - **F1 — Fundação do vertical ✅ (concluída em 2026-10-19, CI verde)** Dividida em três entregas, cada uma com revisão própria. Só o item que depende de paciente (a liberação de IA que perde efeito) passa para a F2.
   - **F1.a — pontos de extensão no Core ✅ (publicada):** E1, E2 (checagem de boot e teste de concessão), E4 e E6, com o schema em `prisma/schema/`, a barreira de lint e o teste de fronteira, sem vertical composto. Decisões de implementação no adendo 1 do ADR-047; a pendência sobre o lado oposto da relação no schema do Core foi decidida no adendo 2, item 1.
@@ -136,7 +141,14 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
     **Andamento:**
   - **F2.1 — paciente, regra da liberação e tela de liberação 🔍 (implementada, aguardando revisão; adendo 3 do ADR-048):** `ClinicsPatient` pela API; a porta restringe paciente com ou sem liberação; criar paciente revoga as liberações dele; quem muda a restrição e a aprovação de propostas se serializam pela linha do contato (ADR-047 adendo 5), com prova determinística e mutação; tela "Liberação para IA" com lista paginada. A revisão **não levantou o B2**: antes, é preciso fechar com garantia os usos externos em andamento, ativar e desativar, e o despacho (plano no adendo 6 do ADR-047, proposto). Publicada com o Clinics desativado.
   - **F2.2 — agenda e registro de atendimento na API 🔍 (implementada, aguardando revisão; adendo 4 do ADR-048):** agendar, remarcar (com a duração registrada) e mudar de estado; sobreposição barrada pelo banco; hora local da unidade com recusa do horário inexistente ou ambíguo por mudança de fuso; registro de atendimento 1:1 na mesma transação; RBAC com autorização de campo. Só dados fictícios. As telas e o e2e ficam para a F2.3.
-  - **Garantia do B2 (ADR-047, adendos 6 e 7) 🚧 — G1 (fundação da guarda) publicada; G2 (mudanças e aprovações na mesma primitiva) implementada; G3 (usos) e G4 (validação) a seguir:** o critério G′ foi aprovado em 2026-10-20 e a implementação está autorizada. O B2 **continua fechado** até a implementação validada: registro confirmado antes da chamada; reconciliação por prova de encerramento da guarda; resultados, auditoria e reservas consistentes com reinício, conclusão tardia e detectores concorrentes; testes determinísticos; revisão final de segurança.
+  - **Garantia do B2 (ADR-047, adendos 6 e 7) ✅ — ciclo G1–G4 encerrado em 2026-10-21, CI verde sobre `4ff55e0`:**
+    - a guarda de uso externo foi entregue pela G1;
+    - as mudanças e as aprovações na mesma primitiva, pela G2;
+    - os três consumidores (geração de IA, envio de origem da IA, webhook), pela G3;
+    - a validação do conjunto, pela G4.
+
+    O **B2 foi levantado tecnicamente** para workspaces com o Clinics, sob o G′ (ADR-048 adendo 6). Isso não promete impedir toda chamada física posterior à restrição, depende das condições do banco e da reconciliação, e não muda a cobertura limitada dos despachos antigos. O Clinics segue desativado em staging, sem deploy.
+
   - **F2.3 — telas da agenda, do atendimento e dos pacientes, e e2e 🔍 (implementada, aguardando revisão; adendo 5 do ADR-048):** agenda da clínica em grade por profissional, na hora local da unidade; agendar e remarcar só em horário livre, inclusive na mudança de horário; ações de estado e registro de atendimento conforme o papel; pacientes com as consequências antes de confirmar. Só dados fictícios; não habilita o Clinics nem abre o B2.
 - **F3 — Continuidade 🔜** Pacote com consumo de sessão no atendimento; retorno como `Task` do Core com título neutro; taxa de faltas apurável. Depende de H2, H3, H6 e D1.
   **Pronto quando:**

@@ -1967,6 +1967,8 @@ Escopo aprovado: matriz uso × mudança, recuperação de falhas, isolamento, tr
 
 **Saída:** o relatório da G4, com o que ficou provado, os resíduos declarados e as pendências antes do piloto. O B2 continua bloqueado até a decisão do usuário.
 
+**Decisão do usuário (2026-10-21):** o B2 foi levantado tecnicamente para workspaces com o Clinics, sob o G′, com eficácia depois do CI verde sobre `4ff55e0`. O registro completo, com o que o levantamento afirma e não afirma e os bloqueios por marco, está no ADR-048, adendo 6. O ciclo G1–G4 está encerrado.
+
 **Resultados da G4** (`clinics-guard-matrix`, 39 testes, todos passando; dados fictícios):
 
 - **Matriz (24):**
@@ -2276,6 +2278,8 @@ _Liberação e falha_
 | B2  | A regra "restrito por padrão" (§6.4) ainda não está implementada nem provada                                               | E6 e liberação implementados, com a bateria do §6.6 verde                                                                                           |
 | B3  | Política definitiva de exclusão e retenção de registros S sem decisão (§9.2)                                               | Avaliação jurídica respondida e política implementada                                                                                               |
 | B4  | Equipe não consegue ser montada pela interface (convite e troca de papel só por API), e cada membro tem um só papel (§5.4) | Telas de gestão de equipe no Core, e D7 decidida para os papéis que o piloto precisar. Não é condição de segurança, mas de operação real com equipe |
+
+> **Situação em 2026-10-21:** o **B2 foi levantado tecnicamente** para workspaces com o Clinics, sob o critério G′ (adendo 6, com o que ele afirma e o que não afirma). B1, B3 e B4 seguem abertos, e os bloqueios por marco do adendo 6 continuam valendo.
 
 **11. Dependência da WABA.** A validação contra WABA real (`docs/WABA_VALIDATION.md`) **não bloqueia** a F0 nem as fases operacionais (F1–F3). Ela é dependência apenas da parte do fluxo comercial que **envia confirmações pelo WhatsApp** (F4).
 
@@ -2829,6 +2833,48 @@ Implementa o item 9 do adendo 2, a parte de telas da F2. A revisão de 2026-10-2
    Ficaram como sugestão, sem gatilho próprio:
    - a coluna "Desde" dos pacientes mostra a hora do navegador (`fullStamp`), como o resto do Core, e não a da unidade;
    - os rótulos e as transições de estado estão duplicados entre API e tela (`ROTULO` e `ROTULO_DO_ESTADO`; a tabela de origens e `TRANSICOES`). Pela regra do item 1, iriam para os contratos se uma terceira cópia aparecer ou se as duas divergirem.
+
+### Adendo 6 (2026-10-21) — levantamento técnico do B2 (decisão do usuário)
+
+**Decisão.** O usuário aprovou o **levantamento técnico do B2** para **workspaces com o Clinics**, sob o critério G′ aprovado (ADR-047 adendo 7). A eficácia ficou condicionada aos quatro jobs do CI verdes sobre o commit da G4, `4ff55e0`, o que aconteceu na execução `39626339726`. Os registros anteriores **ficam como estão**, como histórico:
+
+- a decisão de 2026-10-19 que manteve o B2 fechado (adendo 3, item 16);
+- a revisão do adendo 6 do ADR-047, que não aceitou o residual da sessão de guarda como prova.
+
+O que mudou desde então foi o critério e a implementação: o G′, os adendos 6 e 7 do ADR-047 e as entregas G1–G4.
+
+**O que o levantamento afirma, e o que não afirma.** O registro distingue, por exigência do usuário:
+
+1. **O G′ coordena a autorização e as mudanças de restrição, com detecção e recuperação da perda da guarda.** Ele **não promete impedir toda chamada física posterior à restrição.** Se a guarda se perde (processo congelado, partição, banco fora), uma chamada autorizada antes da restrição pode começar depois dela. O caso é detectado e recuperado: o uso fica `in_doubt`, o registro de origem fica incerto, a cobrança vai pelo teto e o incidente é auditado. Essa é a diferença declarada entre G′ e G (ADR-047 adendo 7).
+2. **A garantia depende das condições documentadas** do banco e da reconciliação (ADR-047 adendo 7 §3.5; `docs/DEPLOY_STAGING.md` §4):
+   - durabilidade dos commits confirmados (Postgres único, ou failover só para réplica síncrona);
+   - conexão direta ou pooler em modo sessão;
+   - os jobs no ar para a reconciliação.
+3. **Os despachos anteriores à G3.2 têm cobertura limitada.** Eles reconferem só o contato atual da conversa. O preenchimento da origem (`fromAiProposal`) **não recria a fotografia da aprovação**. Eles são contados à parte e não são tratados como conferidos com ela.
+4. **A leitura do contexto anterior às travas não garante a titularidade atualizada no instante do envio.** A reconferência sob as travas confere a restrição dos contatos do pedido, não a titularidade do que foi lido antes. Um deal que troca de titular nesse intervalo leva ao provedor o que era do contato liberado no momento da leitura.
+
+**Escopo.** O levantamento vale para a regra "restrito por padrão" (§6.4) em workspaces com o Clinics, com a bateria do §6.6, a prova de concorrência e os passes de `reviewer` e `security` (critério da tabela do adendo 2), sob o G′. Ele **não incorpora** as pendências operacionais. Elas continuam como **bloqueios explícitos dos respectivos marcos**:
+
+1. **Antes de qualquer deploy desta atualização:** fechar a **barreira contínua de manutenção**. Detectar uma rota aberta depois do deploy **não cumpre** a exigência de impedir o acesso durante toda a janela. As opções:
+   - um modo de manutenção na própria aplicação;
+   - uma barreira externa independente e comprovada.
+
+   O proxy compartilhado não é alterado sem diagnóstico e autorização.
+
+2. **Antes do piloto:**
+   - resolver a contagem dupla, separando a quota interna da cobrança monetária;
+   - preparar os alertas e a triagem dos usos em dúvida;
+   - validar os pools sob carga;
+   - tratar os despachos antigos **sem reenviar entregas incertas**.
+3. **Antes de dados reais no Core sem o Clinics:** resolver a política de exclusão e de uso do conteúdo já carregado (`docs/MEMORY/technical-debt.md`).
+4. **Continuam bloqueando dados reais e o piloto:** B1, B3 e B4, a validação operacional (H1–H7) e a avaliação jurídica (§9.2).
+
+**Situação.**
+
+- O ciclo G1–G4 da guarda está encerrado.
+- O Clinics segue desativado em staging, com **somente dados fictícios**.
+- Nenhum deploy nem ativação está autorizado.
+- O próximo passo funcional é o plano da F3, para revisão, sem código.
 
 ## ADR-049 — Relógio de agendamento: quem compara define o relógio, e filas e leases usam o do banco
 

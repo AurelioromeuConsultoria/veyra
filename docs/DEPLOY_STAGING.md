@@ -235,6 +235,15 @@ provedor, a desistência e a persistência. O nginx do `web` usa
 precisa de um prazo de leitura igual ou maior. Se cortar antes, a pessoa recebe
 504 com o run já gravado e cobrado, e paga de novo ao repetir.
 
+> **BLOQUEIO antes de qualquer deploy desta atualização** (decisão do usuário,
+> 2026-10-21; ADR-048 adendo 6). A **barreira contínua de manutenção** ainda não
+> existe. O procedimento abaixo **detecta** uma rota aberta depois do deploy, mas
+> não **impede** o acesso durante toda a janela, e detectar não cumpre a
+> exigência. Não use este procedimento num deploy até a barreira estar
+> implementada e comprovada: um modo de manutenção na aplicação, ou uma
+> barreira externa independente. O proxy compartilhado não é alterado sem
+> diagnóstico e autorização.
+
 **Deploy da guarda de uso externo (da G3.2 em diante): pausar, classificar,
 subir sem jobs, migrar, retomar.** "Migration antes do código", sozinha, **não
 fecha** a janela da G3.2 (decisão de 2026-10-21, ADR-047 adendo 7 §9). Entre a
@@ -395,10 +404,11 @@ Use os nomes reais da §3.6. A ordem obrigatória:
 **Resíduo da barreira de acesso.** Entre o fim do deploy do passo 4 e o novo
 stop do `web`, se o Coolify tiver gerado uma rota padrão, o `web` fica
 alcançável por segundos. A conferência das labels detecta o caso, mas não o
-evita. **Recomendação, ainda não implementada:** um modo de manutenção na
-própria aplicação, que recuse toda requisição externa enquanto ligado, como
-`DISABLE_JOBS` faz com os workers. Isso tira a barreira da dependência do
-painel. Fica como pendência antes de qualquer deploy com dado real.
+evita. **Por isso o deploy está bloqueado** (aviso no início desta seção) até a
+barreira contínua existir. As opções são um modo de manutenção na própria
+aplicação, que recuse toda requisição externa enquanto ligado, como
+`DISABLE_JOBS` faz com os workers, ou uma barreira externa independente e
+comprovada.
 
 **Cobertura limitada dos despachos antigos.** Os despachos aprovados antes da
 G3.2 têm `approvalContactIds` nulo: reconferem só o contato atual da conversa.
