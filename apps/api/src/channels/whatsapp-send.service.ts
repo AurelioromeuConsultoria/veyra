@@ -1,14 +1,29 @@
-import { BadRequestException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+  type OnModuleInit,
+} from '@nestjs/common';
 import { ClsService } from 'nestjs-cls';
 import { AuditService } from '../audit/audit.service';
 import { CryptoService } from '../common/crypto.service';
+import {
+  ContentUseGuard,
+  ehIncerto,
+  type DesfechoIncerto,
+  type ResultadoDoUso,
+} from '../content-use/content-use.guard';
+import { OrigensDosUsos } from '../content-use/content-use.orphans';
+import { CONFIG_DA_GUARDA, type ConfigDaGuarda } from '../content-use/content-use.pools';
 import { ContentRestrictionService } from '../extensions/content-restriction';
 import type { ClaimedEvent } from '../outbox/outbox.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { UsageService } from '../usage/usage.service';
 import { classifyFailure } from './meta-errors';
-import { META_TRANSPORT, type MetaTransport } from './meta.transport';
+import { META_TRANSPORT, type MetaTransport, type SendOutcome } from './meta.transport';
 import { decideSend, type SendDecision } from './send-policy';
 
 type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
@@ -72,7 +87,7 @@ export interface OutboundAuthor {
  * plataforma justamente no caso que ela existe para impedir.
  */
 @Injectable()
-export class WhatsappSendService {
+export class WhatsappSendService implements OnModuleInit {
   private readonly logger = new Logger(WhatsappSendService.name);
 
   constructor(
@@ -84,6 +99,9 @@ export class WhatsappSendService {
     private readonly cls: ClsService,
     @Inject(META_TRANSPORT) private readonly transport: MetaTransport,
     private readonly restriction: ContentRestrictionService,
+    private readonly guarda: ContentUseGuard,
+    private readonly origens: OrigensDosUsos,
+    @Inject(CONFIG_DA_GUARDA) private readonly configDaGuarda: ConfigDaGuarda,
   ) {}
 
   /** Chamado pelo caminho HTTP (atendente). Roda com CLS da request. */
@@ -155,7 +173,22 @@ export class WhatsappSendService {
     workspaceId: string,
     prepared: PreparedOutbound,
     author: OutboundAuthor,
+    /**
+     * os contatos conferidos na APROVAÇÃO do rascunho da IA (ADR-047 adendo 7
+     * §9, G3.2): o envio trava e reconfere todos eles, somados ao contato atual
+     * da conversa. Validados aqui, como a fotografia do outbox.
+     */
+    aprovacao?: { contactIds: readonly string[] },
   ): Promise<{ messageId: string }> {
+    const contatosDaAprovacao = [...new Set(aprovacao?.contactIds ?? [])];
+    if (contatosDaAprovacao.length > 0) {
+      // contatos DESTE workspace (o client filtrado confere): a aprovação os
+      // segura em trava compartilhada, então nenhuma exclusão os apaga no meio
+      const existentes = await tx.contact.count({ where: { id: { in: contatosDaAprovacao } } });
+      if (existentes !== contatosDaAprovacao.length) {
+        throw new Error('Contatos da aprovação inexistentes ou de outro workspace.');
+      }
+    }
     const message = await tx.message.create({
       data: {
         conversationId: prepared.conversationId,
@@ -177,6 +210,7 @@ export class WhatsappSendService {
         templateName: prepared.template?.name ?? null,
         templateLanguage: prepared.template?.language ?? null,
         templateParams: prepared.template ? (prepared.template.params as object) : undefined,
+        approvalContactIds: contatosDaAprovacao,
       },
     } as never);
     await tx.conversation.updateMany({
@@ -245,6 +279,7 @@ export class WhatsappSendService {
         templateLanguage: string | null;
         templateParams: unknown;
         claimToken: string;
+        approvalContactIds: string[] | null;
       }[]
     >(
       `UPDATE "MessageDispatch"
@@ -262,7 +297,8 @@ export class WhatsappSendService {
             "state" IN ('reserved', 'failed_before_send')
             OR ("state" = 'sending' AND "leaseExpiresAt" < now() AND "dispatchedAt" IS NULL)
           )
-      RETURNING "reservationId", "templateName", "templateLanguage", "templateParams", "claimToken"`,
+      RETURNING "reservationId", "templateName", "templateLanguage", "templateParams", "claimToken",
+                "approvalContactIds"`,
       workspaceId,
       messageId,
       DISPATCH_LEASE_MS,
@@ -299,9 +335,22 @@ export class WhatsappSendService {
      * contato restrito não sai (ADR-048 §6.3, item 5): o contato pode ter
      * ficado restrito entre a aprovação e este worker. Mensagem escrita por
      * pessoa não passa por aqui — a clínica continua falando com o paciente.
+     *
+     * Os contatos são os conferidos NA APROVAÇÃO somados ao contato atual da
+     * conversa (ADR-047 adendo 7 §9, G3.2). Esta checagem é a RÁPIDA, antes de
+     * reservar; a garantia é a reconferência sob a guarda, no envio.
      */
+    const contatosDoEnvio = [
+      ...new Set(
+        [...(dispatch.approvalContactIds ?? []), conversation.contactId].filter(
+          (id): id is string => typeof id === 'string',
+        ),
+      ),
+    ];
+    // conversa sem contato: o desconhecido vai à porta como tal (`null`)
+    const sujeitosDoEnvio = contatosDoEnvio.length > 0 ? contatosDoEnvio : [null];
     if (message.authorType === 'ai') {
-      const verdict = await this.restriction.check(workspaceId, 'ai', [conversation.contactId]);
+      const verdict = await this.restriction.check(workspaceId, 'ai', sujeitosDoEnvio);
       if (verdict.unavailable) {
         // porta fora do ar: não envia AGORA, mas a mensagem já aprovada não é
         // perdida — mesmo caminho de uma falha transitória do provedor
@@ -401,19 +450,34 @@ export class WhatsappSendService {
     }
 
     const token = this.crypto.decrypt(credential.tokenCipher);
-    const outcome =
+    const enviar = (signal?: AbortSignal): Promise<SendOutcome> =>
       decision.kind === 'template' && template
-        ? await this.transport.sendTemplate(
+        ? this.transport.sendTemplate(
             { phoneNumberId: credential.phoneNumberId, token },
             conversation.externalAddress as string,
             { name: template.name, language: template.language },
             template.params,
+            signal,
           )
-        : await this.transport.sendText(
+        : this.transport.sendText(
             { phoneNumberId: credential.phoneNumberId, token },
             conversation.externalAddress as string,
             message.body,
+            signal,
           );
+
+    // a mensagem da IA é USO de conteúdo do contato: sai sob a guarda
+    if (message.authorType === 'ai') {
+      return this.enviarSobGuarda(
+        workspaceId,
+        messageId,
+        dispatch.claimToken,
+        reservationId,
+        { contatos: contatosDoEnvio, sujeitos: sujeitosDoEnvio },
+        enviar,
+      );
+    }
+    const outcome = await enviar();
 
     if (outcome.ok) {
       /**
@@ -470,21 +534,298 @@ export class WhatsappSendService {
   }
 
   /**
+   * A ESPECIFICAÇÃO do uso `ai_message_dispatch` (ADR-047 adendo 7 §9, G3.2),
+   * registrada no Core antes de qualquer envio da IA existir: a origem é o
+   * despacho daquela tentativa (`messageId` + `claimToken`), sem metadados. Em
+   * dúvida, o despacho daquele `claimToken`, ainda `sending`, vai para
+   * `unknown_after_dispatch` e NUNCA é reenviado. A reserva, o detector cobra
+   * pelo teto; a referência dela sai do despacho para nenhuma varredura cobrar
+   * de novo. A transação pode ser `raw` (ativação): `workspaceId` explícito.
+   */
+  onModuleInit(): void {
+    this.origens.registrar('ai_message_dispatch', {
+      origem: ['messageId', 'claimToken'],
+      metadados: {},
+      marcarIncerta: async (tx, uso) => {
+        const origem = (uso.origin ?? {}) as Record<string, unknown>;
+        if (typeof origem.messageId !== 'string' || typeof origem.claimToken !== 'string') return;
+        await tx.messageDispatch.updateMany({
+          where: {
+            workspaceId: uso.workspaceId,
+            messageId: origem.messageId,
+            claimToken: origem.claimToken,
+            state: 'sending',
+          },
+          data: {
+            state: 'unknown_after_dispatch',
+            errorCode: 'in_doubt',
+            claimToken: null,
+            leaseExpiresAt: null,
+            reservationId: null,
+          },
+        });
+      },
+    });
+  }
+
+  /**
+   * O envio da mensagem da IA SOB A GUARDA de uso externo (ADR-047 adendo 7 §9,
+   * G3.2). O marcador de despacho já foi gravado (antes da guarda: entre a
+   * prova de vida e o início não pode haver I/O). A guarda trava e reconfere os
+   * contatos da APROVAÇÃO somados ao da conversa, registra o uso antes do
+   * envio e conclui o despacho na transação dela. A reserva é entregue à
+   * guarda: daqui em diante só ela e os detectores a acertam.
+   */
+  private async enviarSobGuarda(
+    workspaceId: string,
+    messageId: string,
+    claimToken: string,
+    reservationId: string,
+    escopo: { contatos: string[]; sujeitos: (string | null)[] },
+    enviar: (signal: AbortSignal) => Promise<SendOutcome>,
+  ): Promise<'done' | 'retry'> {
+    // o desfecho que a Meta devolveu, guardado fora da guarda: se ela cair
+    // depois do envio, o wamid ainda vai para o despacho incerto
+    const visto: { iniciou: boolean; emDuvida: boolean; desfecho?: SendOutcome } = {
+      iniciou: false,
+      emDuvida: false,
+    };
+    let resultado: ResultadoDoUso<'done' | 'retry'>;
+    try {
+      // a linha do período precisa existir ANTES: a cobrança acima do teto, dentro
+      // da transação da guarda, não pode criá-la
+      await this.usage.ensureCounterRow(workspaceId, 'messages_sent');
+      resultado = await this.guarda.executar<SendOutcome, 'done' | 'retry'>({
+        workspaceId,
+        kind: 'ai_message_dispatch',
+        contactIds: escopo.contatos,
+        prazoMs: this.configDaGuarda.prazoDaMetaMs,
+        origem: { messageId, claimToken },
+        reservas: [reservationId],
+        reconferir: async () => {
+          const veredito = await this.restriction.check(workspaceId, 'ai', escopo.sujeitos);
+          if (veredito.unavailable) return 'indisponivel';
+          return veredito.restricted.some(Boolean) ? 'restrito' : 'liberado';
+        },
+        iniciar: async (signal) => {
+          visto.iniciou = true;
+          const desfecho = await enviar(signal);
+          visto.desfecho = desfecho;
+          // a guarda já respondeu "em dúvida" com o envio pendente (passou do
+          // prazo): a resposta tardia não muda o desfecho, mas o wamid ainda
+          // vai para o despacho incerto e para a trilha
+          if (visto.emDuvida && desfecho.ok) {
+            void this.guardarWamidIncerto(workspaceId, messageId, desfecho.externalId);
+          }
+          return desfecho;
+        },
+        persistir: (tx, desfecho) =>
+          this.concluirSobGuarda(tx, workspaceId, messageId, claimToken, reservationId, desfecho),
+        // a guarda voltou ao SAVEPOINT e cobrou a reserva pelo teto: o despacho
+        // fica incerto, nunca reenviado — com o wamid, se a Meta o devolveu
+        persistenciaFalhou: async (tx, desfecho) => {
+          await this.finish(
+            messageId,
+            claimToken,
+            'unknown_after_dispatch',
+            {
+              errorCode: 'persistence_failed',
+              ...(!ehIncerto(desfecho) && desfecho.ok ? { externalId: desfecho.externalId } : {}),
+            },
+            tx,
+          );
+        },
+      });
+    } catch (erro) {
+      /**
+       * A guarda só lança ANTES de começar (depois do registro, a recuperação
+       * nunca lança), e a linha do período falha antes dela. Nada saiu: o
+       * marcador é limpo e a reserva volta já — sem isto, a varredura acharia o
+       * despacho `sending` com marcador e o cobraria como incerto.
+       */
+      if (visto.iniciou) throw erro;
+      await this.usage.release(reservationId);
+      await this.finish(messageId, claimToken, 'failed_before_send', { errorCode: 'not_started' });
+      throw erro;
+    }
+    switch (resultado.tipo) {
+      case 'concluido':
+        return resultado.persistido ? (resultado.valor ?? 'done') : 'done';
+      case 'em_duvida':
+        // o tratador de origem levou (ou a reconciliação levará) o despacho a
+        // `unknown_after_dispatch`; o wamid conhecido fica nele e na trilha (o
+        // que chegar depois, pelo próprio envio, acima)
+        visto.emDuvida = true;
+        if (visto.desfecho?.ok) {
+          await this.guardarWamidIncerto(workspaceId, messageId, visto.desfecho.externalId);
+        }
+        return 'done';
+      case 'nao_comecou':
+        // nada saiu e a guarda devolveu a reserva
+        if (resultado.motivo === 'restrito') {
+          // o marcador sai: a mensagem comprovadamente não foi despachada
+          await this.finish(messageId, claimToken, 'failed_permanent', {
+            errorCode: 'content_restricted',
+            naoSaiu: true,
+          });
+          return 'done';
+        }
+        // porta indisponível, trava, sessão, registro, prova de vida, prazo: a
+        // chamada não começou — a nova tentativa é do OUTBOX, um uso novo que
+        // passa pela guarda e reconfere
+        await this.finish(messageId, claimToken, 'failed_before_send', {
+          errorCode:
+            resultado.motivo === 'indisponivel' ? 'restriction_unavailable' : 'not_started',
+        });
+        return 'retry';
+    }
+  }
+
+  /**
+   * A Meta devolveu o wamid, mas a guarda caiu antes de concluir: o despacho
+   * fica incerto (nunca reenviado), e o wamid vai para ele e para a trilha — é
+   * o que permite a quem triar achar a mensagem no provedor, e aos recibos de
+   * entrega chegarem a ela. Só preenche um `externalId` vazio, e só então
+   * audita: sem linha atualizada, a guarda comitou `sent` com o wamid antes de
+   * cair, e a trilha não pode dizer "em dúvida". Uma falha aqui não muda o
+   * desfecho, que já é `done`.
+   */
+  private async guardarWamidIncerto(
+    workspaceId: string,
+    messageId: string,
+    externalId: string,
+  ): Promise<void> {
+    try {
+      const { count } = await this.prisma.db.messageDispatch.updateMany({
+        where: {
+          messageId,
+          externalId: null,
+          state: { in: ['sending', 'unknown_after_dispatch'] },
+        },
+        data: { externalId },
+      });
+      if (count === 0) return;
+      await this.audit.record(this.prisma.db as Db, workspaceId, 'message.dispatch_in_doubt', {
+        entityType: 'message',
+        entityId: messageId,
+        actor: { type: 'system', id: 'whatsapp-dispatcher' },
+        after: { externalId, direction: 'outbound' },
+      });
+    } catch (erro) {
+      this.logger.error(
+        `Wamid do envio incerto ${messageId} não registrado (${erro instanceof Error ? erro.name : 'erro'})`,
+      );
+    }
+  }
+
+  /**
+   * NA transação da guarda: o desfecho do envio vira estado do despacho, com
+   * fencing pelo `claimToken`, e a reserva é acertada junto. Ambíguo,
+   * abortado pelo prazo ou exceção depois de começar: `unknown_after_dispatch`,
+   * cobrado, e nunca reenviado.
+   */
+  private async concluirSobGuarda(
+    tx: Db,
+    workspaceId: string,
+    messageId: string,
+    claimToken: string,
+    reservationId: string,
+    desfecho: SendOutcome | DesfechoIncerto,
+  ): Promise<'done' | 'retry'> {
+    const cobrar = async () => {
+      if (await this.usage.settleWithin(tx, workspaceId, reservationId, 1)) return;
+      // a reserva sumiu (adendo 6 §5): o gasto aconteceu, cobra acima do teto
+      await this.usage.consumeOverLimit(tx, workspaceId, 'messages_sent', 1);
+    };
+    if (ehIncerto(desfecho)) {
+      const posse = await this.finish(
+        messageId,
+        claimToken,
+        'unknown_after_dispatch',
+        { errorCode: 'uncertain' },
+        tx,
+      );
+      if (posse) await cobrar();
+      return 'done';
+    }
+    if (desfecho.ok) {
+      const posse = await this.finish(
+        messageId,
+        claimToken,
+        'sent',
+        { externalId: desfecho.externalId },
+        tx,
+      );
+      if (posse) {
+        await cobrar();
+      } else {
+        // perdemos a posse DEPOIS de enviar: não sobrescreve quem assumiu; o
+        // fato vai para a trilha (o wamid permite achar a mensagem no provedor)
+        this.logger.error(
+          `Lease de envio ${messageId} perdido após despacho bem-sucedido (${desfecho.externalId})`,
+        );
+        await this.audit.record(tx, workspaceId, 'message.dispatch_lease_lost', {
+          entityType: 'message',
+          entityId: messageId,
+          actor: { type: 'system', id: 'whatsapp-dispatcher' },
+          after: { externalId: desfecho.externalId, direction: 'outbound' },
+        });
+      }
+      return 'done';
+    }
+    const classe = classifyFailure(desfecho.failure);
+    const errorCode = String(desfecho.failure.metaCode ?? desfecho.failure.status ?? 'network');
+    if (classe === 'ambiguous') {
+      const posse = await this.finish(
+        messageId,
+        claimToken,
+        'unknown_after_dispatch',
+        { errorCode },
+        tx,
+      );
+      if (posse) await cobrar();
+      this.logger.warn(`Envio ${messageId} incerto (${errorCode}) — aguardando resolução humana`);
+      return 'done';
+    }
+    // comprovadamente ANTES do envio: a reserva volta
+    await this.usage.releaseWithin(tx, workspaceId, reservationId);
+    if (classe === 'permanent') {
+      await this.finish(messageId, claimToken, 'failed_permanent', { errorCode }, tx);
+      return 'done';
+    }
+    await this.finish(messageId, claimToken, 'failed_before_send', { errorCode }, tx);
+    return 'retry';
+  }
+
+  /**
    * Cobra UMA mensagem. Se a reserva já foi expurgada por TTL, o gasto ainda
    * aconteceu — cobra direto, sem barrar. Confiar no `settle` silencioso deixava
    * envio sem cobrança e o teto sem valer para retentativa.
    */
   private async chargeOne(workspaceId: string, reservationId: string): Promise<void> {
     const liquidada = await this.usage.settle(workspaceId, reservationId, 'messages_sent', 1);
-    if (!liquidada) {
-      // a linha do PERÍODO pode não existir (reserva de 31/08 liquidada em
-      // 01/09): sem isto o `applyDelta` lançaria DEPOIS do efeito externo
-      await this.usage.ensureCounterRow(workspaceId, 'messages_sent');
-      const db = this.prisma.db as unknown as TxRunner;
-      await db.$transaction((tx) =>
-        this.usage.consumeOverLimit(tx, workspaceId, 'messages_sent', 1),
+    if (liquidada) return;
+    /**
+     * A reserva de um envio da IA, depois do registro do uso, é da GUARDA
+     * (ADR-047 adendo 7 §9, G3.2): ela a acerta na própria transação, e um
+     * detector a cobra pelo teto ao marcar o uso em dúvida. A varredura de
+     * reservas não a devolve enquanto o uso está `authorized`. Sumida e listada
+     * num uso, já foi decidida por eles: cobrar aqui seria a SEGUNDA cobrança
+     * da mesma mensagem (a varredura comitou o despacho incerto, o detector
+     * cobrou pelo teto, e esta liquidação chegou depois). A pergunta é da
+     * guarda: fora de `content-use/`, ninguém lê `ContentUse`.
+     */
+    if (await this.guarda.reservaDeUmUso(workspaceId, reservationId)) {
+      this.logger.warn(
+        `Reserva ${reservationId} já acertada pela guarda de uso — sem nova cobrança`,
       );
+      return;
     }
+    // a linha do PERÍODO pode não existir (reserva de 31/08 liquidada em
+    // 01/09): sem isto o `applyDelta` lançaria DEPOIS do efeito externo
+    await this.usage.ensureCounterRow(workspaceId, 'messages_sent');
+    const db = this.prisma.db as unknown as TxRunner;
+    await db.$transaction((tx) => this.usage.consumeOverLimit(tx, workspaceId, 'messages_sent', 1));
   }
 
   /**
@@ -787,9 +1128,11 @@ export class WhatsappSendService {
     messageId: string,
     claimToken: string,
     state: string,
-    extra: { errorCode?: string; externalId?: string } = {},
+    extra: { errorCode?: string; externalId?: string; naoSaiu?: boolean } = {},
+    // a transação da guarda, no envio da IA; senão, o client protegido
+    db: Db = this.prisma.db,
   ): Promise<boolean> {
-    const { count } = await this.prisma.db.messageDispatch.updateMany({
+    const { count } = await db.messageDispatch.updateMany({
       where: { messageId, claimToken, state: 'sending' },
       data: {
         state: state as never,
@@ -803,9 +1146,11 @@ export class WhatsappSendService {
          * cobrança de mensagem que provadamente nunca saiu.
          *
          * Nos estados terminais o marcador FICA: é o instante do despacho, e é
-         * dele que depende quem for triar a fila de casos incertos depois.
+         * dele que depende quem for triar a fila de casos incertos depois. A
+         * exceção é `naoSaiu`: a guarda provou que o envio não começou (o
+         * marcador da IA vem antes dela), e manter o marcador mentiria.
          */
-        ...(state === 'failed_before_send' ? { dispatchedAt: null } : {}),
+        ...(state === 'failed_before_send' || extra.naoSaiu ? { dispatchedAt: null } : {}),
         ...(extra.errorCode !== undefined ? { errorCode: extra.errorCode } : {}),
         ...(extra.externalId !== undefined ? { externalId: extra.externalId } : {}),
       },

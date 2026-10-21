@@ -22,12 +22,23 @@ export type FetchOutcome =
   { ok: true; bytes: Buffer; mimeType: string } | { ok: false; failure: TransportFailure };
 
 export interface MetaTransport {
-  sendText(credential: SendCredential, to: string, body: string): Promise<SendOutcome>;
+  /**
+   * `signal`: o prazo ABSOLUTO da guarda de uso externo, com a conexão
+   * incluída (ADR-047 adendo 6 §4, envio da IA). Abortado, a requisição cai e o
+   * desfecho é ambíguo: nunca reenviado.
+   */
+  sendText(
+    credential: SendCredential,
+    to: string,
+    body: string,
+    signal?: AbortSignal,
+  ): Promise<SendOutcome>;
   sendTemplate(
     credential: SendCredential,
     to: string,
     template: { name: string; language: string },
     params: string[],
+    signal?: AbortSignal,
   ): Promise<SendOutcome>;
   fetchMedia(credential: SendCredential, mediaId: string): Promise<FetchOutcome>;
 }
@@ -62,7 +73,13 @@ const providerAddress = (to: string): string => to.replace(/\D/g, '');
 /** HTTPS com host allowlistado, sem redirect e com teto de corpo. */
 function call(
   url: string,
-  options: { method: string; token: string; json?: unknown; maxBytes?: number },
+  options: {
+    method: string;
+    token: string;
+    json?: unknown;
+    maxBytes?: number;
+    signal?: AbortSignal;
+  },
 ): Promise<RawResponse> {
   const target = new URL(url);
   if (target.protocol !== 'https:' || !hostAllowed(target.hostname)) {
@@ -82,6 +99,8 @@ function call(
             : {}),
         },
         timeout: TIMEOUT_MS,
+        // o prazo absoluto de quem chama, além do de socket ocioso
+        ...(options.signal ? { signal: options.signal } : {}),
       },
       (res) => {
         // sem seguir redirect: um 3xx levaria a busca para fora da allowlist
@@ -120,8 +139,13 @@ export class GraphApiTransport implements MetaTransport {
     this.version = config.get<string>('META_GRAPH_VERSION') ?? 'v21.0';
   }
 
-  async sendText(credential: SendCredential, to: string, body: string): Promise<SendOutcome> {
-    return this.send(credential, {
+  async sendText(
+    credential: SendCredential,
+    to: string,
+    body: string,
+    signal?: AbortSignal,
+  ): Promise<SendOutcome> {
+    return this.send(credential, signal, {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
       to: providerAddress(to),
@@ -135,8 +159,9 @@ export class GraphApiTransport implements MetaTransport {
     to: string,
     template: { name: string; language: string },
     params: string[],
+    signal?: AbortSignal,
   ): Promise<SendOutcome> {
-    return this.send(credential, {
+    return this.send(credential, signal, {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
       to: providerAddress(to),
@@ -151,11 +176,20 @@ export class GraphApiTransport implements MetaTransport {
     });
   }
 
-  private async send(credential: SendCredential, payload: unknown): Promise<SendOutcome> {
+  private async send(
+    credential: SendCredential,
+    signal: AbortSignal | undefined,
+    payload: unknown,
+  ): Promise<SendOutcome> {
     const url = `https://graph.facebook.com/${this.version}/${credential.phoneNumberId}/messages`;
     let response: RawResponse;
     try {
-      response = await call(url, { method: 'POST', token: credential.token, json: payload });
+      response = await call(url, {
+        method: 'POST',
+        token: credential.token,
+        json: payload,
+        signal,
+      });
     } catch {
       // sem resposta: pode ter chegado. A classificação decide, não este ponto.
       return { ok: false, failure: { networkFailure: true } };

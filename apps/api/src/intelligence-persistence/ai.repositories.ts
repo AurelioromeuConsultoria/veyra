@@ -525,6 +525,11 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
             authorType,
             authorMembershipId: approver.membershipId,
           },
+          // os contatos que ESTA aprovação conferiu sob as travas: o envio
+          // reconfere todos eles, não só o contato atual da conversa
+          {
+            contactIds: guard.contactIds.filter((id): id is string => typeof id === 'string'),
+          },
         );
 
         await this.audit.record(tx, approver.workspaceId, 'message.created_from_ai_proposal', {

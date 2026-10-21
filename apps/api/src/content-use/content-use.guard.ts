@@ -479,6 +479,20 @@ export class ContentUseGuard {
     return { tipo: 'concluido', valor, persistido };
   }
 
+  /**
+   * A reserva está listada num uso registrado? Depois do registro ela é da
+   * guarda (acerto na transação dela, ou devolução se não começou) e dos
+   * detectores (pelo teto). Quem a liquida por fora — as varreduras de
+   * despacho — e a acha sumida não cobra de novo (adendo 7 §9, G3.2). Pelo
+   * client filtrado, no contexto do workspace de quem pergunta.
+   */
+  async reservaDeUmUso(workspaceId: string, reservationId: string): Promise<boolean> {
+    const usos = await this.prisma.db.contentUse.count({
+      where: { workspaceId, reservationIds: { has: reservationId } },
+    });
+    return usos > 0;
+  }
+
   /** Depois de uma falha: o destino depende de até onde a guarda chegou. */
   private async recuperar<D, R>(
     erro: unknown,

@@ -1761,6 +1761,67 @@ A G2 foi publicada (`9237de8`, quatro jobs do CI verdes). A G3 liga os três uso
 
 - **Prazo de leitura do proxy:** o nginx de staging passa a 120 s (o orçamento da geração sob a guarda passa de 98 s); registrado no `DEPLOY_STAGING.md`.
 
+**G3.2 — o envio da mensagem escrita pela IA** (rascunho aprovado sem edição, `authorType = 'ai'`; a mensagem escrita por pessoa não é uso de conteúdo e não muda).
+
+- **Os contatos da aprovação ficam no despacho.** Uma migration aditiva cria `MessageDispatch.approvalContactIds` (uuid[]). A aprovação grava ali os contatos que conferiu: o da proposta e o da conversa naquele instante. Eles são validados na escrita, como a fotografia do outbox: precisam ser contatos do workspace. As travas e a reconferência do envio usam esses contatos **somados** ao contato atual da conversa, e não só ao atual (pedido da aprovação da G3.1). É a alternativa de defesa em profundidade do adendo 6 §9, somada à regra da conversa imutável da G2. A coluna não tem FK, como `ContentUse.contactIds`, e entra na conferência de dados do `check:fk`.
+- **A ordem do envio da IA:**
+  1. o claim com posse (lease) de 2 min, que cobre a janela inteira da guarda (cerca de 58 s com o prazo de 20 s);
+  2. a política, a credencial e a reserva, como hoje;
+  3. o **marcador de despacho**, gravado antes da guarda (ver abaixo);
+  4. a guarda, com o tipo `ai_message_dispatch`;
+  5. dentro dela, o envio pela Meta, com o sinal de aborto da guarda (prazo absoluto de 20 s, conexão incluída).
+- **O marcador vem antes da guarda,** e não entre a prova de vida e o início, onde não pode haver I/O. A janela entre o marcador e o envio cresce pela espera das travas e pelo registro. Se o processo morrer nela, o despacho termina `unknown_after_dispatch` sem ter saído: um falso positivo conservador, que nunca duplica a mensagem. Se a guarda não começar, o marcador é limpo (`failed_before_send`), como hoje.
+- **Na transação da guarda:** a conclusão do despacho, com fencing pelo `claimToken`, e o acerto da reserva (pelo real, ou acima do teto se ela sumiu).
+  - entregue: `sent`;
+  - falha comprovadamente antes do envio e transitória: `failed_before_send` e a reserva devolvida;
+  - falha definitiva: `failed_permanent` e a reserva devolvida;
+  - ambígua, aborto pelo prazo ou exceção depois de começar: `unknown_after_dispatch`, cobrada e **nunca reenviada**.
+- **Retentativa só pelo protocolo.** A única nova tentativa é a do outbox, quando a guarda não começou ou a falha foi comprovadamente antes do envio. Cada nova tentativa é um uso novo, que passa pela guarda e reconfere.
+- **A especificação `ai_message_dispatch`:** origem `messageId` e `claimToken`; nenhum metadado. O tratador de origem leva o despacho daquele `claimToken`, ainda `sending`, a `unknown_after_dispatch` (`errorCode = 'in_doubt'`), com `workspaceId` explícito. A cobrança fica com o detector (a reserva pelo teto) e a auditoria com o incidente `content_use.in_doubt`.
+- **A reserva de um uso registrado é da guarda, e quem chega depois não cobra** (achado P1 da revisão). As varreduras de despachos (`resolveAbandonedInFlight`, `markExhausted`, `reapStaleDispatches`) liquidam a reserva e, se ela sumiu, cobravam acima do teto. Mas ela pode ter sumido porque um detector já a cobrou pelo teto: a varredura comita o despacho incerto, o detector marca o uso e cobra, e a liquidação da varredura chega depois. Eram duas cobranças por uma mensagem. Agora a varredura, achando a reserva sumida **e listada num `ContentUse`**, não cobra: quem a decidiu foi a guarda (acerto na transação dela, ou devolução se não começou) ou o detector (pelo teto). É o mesmo critério da varredura de reservas, que não devolve a reserva de um uso `authorized`. A pergunta é da guarda (`ContentUseGuard.reservaDeUmUso`): fora de `content-use/`, ninguém lê `ContentUse`. A regra estática da G1 pegou a primeira versão desta correção, que lia a tabela direto no serviço de envio. Na ordem inversa, o detector acha a reserva já liquidada e o despacho fora de `sending`: só avisa no log.
+- **Exceção antes do início** (achado da revisão de segurança). A guarda só lança antes de começar; a linha do período, antes dela. Nesses casos, o despacho volta a `failed_before_send` com o marcador limpo, a reserva é devolvida e o erro sobe ao outbox, que tenta de novo como um uso novo. Sem isso, a varredura acharia o despacho `sending` com marcador e o cobraria como incerto sem nada ter saído.
+- **A recusa pela restrição limpa o marcador.** O marcador da IA é gravado antes da guarda; quando ela não começa por restrição (`failed_permanent`, `content_restricted`), a mensagem comprovadamente não saiu, e o marcador sai junto.
+- **O wamid conhecido não se perde** (achado P2 da revisão). Quando a Meta devolve o wamid e a persistência falha, ele vai para o despacho incerto, na mesma transação. Quando a guarda cai depois do envio (desfecho em dúvida), ele vai para o despacho (só se o `externalId` estiver vazio) e, só quando gravou, para a trilha (`message.dispatch_in_doubt`): sem linha atualizada, a guarda comitou `sent` antes de cair, e a trilha não pode dizer "em dúvida". Quando o envio passa do prazo (`overran_deadline`) e a Meta responde depois, o wamid tardio segue o mesmo caminho, pelo próprio envio. É o que permite a quem triar achar a mensagem no provedor e aos recibos de entrega chegarem a ela; o estado continua `unknown_after_dispatch`.
+- **Resíduos declarados:**
+  - **Registro incerto seguido de retentativa.** Se o registro falha e a lápide também, o registro pode ter comitado `authorized`: a reconciliação cobra a reserva pelo teto, e a nova tentativa do outbox cobra a sua. São duas cobranças para uma mensagem enviada uma vez. É o falso positivo conservador da G1, ampliado pela retentativa; nunca duplica o envio.
+  - **Não começou, e o processo morreu antes de encerrar o despacho.** A guarda abortou (prazo ou prova de vida), com o uso `aborted` e a reserva devolvida, e o processo morreu antes do `finish`. Vencida a posse, a varredura marca o despacho `unknown_after_dispatch` e, pela regra acima, não cobra. O dinheiro fica certo, mas uma mensagem que comprovadamente não saiu fica "incerta" e não é retentada: vai para a triagem humana, que é a direção segura.
+  - **Transição.** Despachos da IA aprovados antes do deploy (`approvalContactIds` nulo, ainda `reserved` ou `failed_before_send`) reconferem só o contato atual da conversa. Em staging o Clinics está desativado e os dados são fictícios; a migration vem antes do código.
+  - **Rascunho editado — decisão pendente do usuário.** Um rascunho com qualquer edição vira `authorType = 'user'` (ADR-044.8) e, pela regra aprovada (ADR-048, critérios de "IA, em toda a superfície": "mensagem escrita por pessoa é despachada normalmente"), sai sem a guarda do envio. A aprovação dele trava e reconfere como a do rascunho sem edição, mas entre a aprovação e o envio (o backoff do outbox chega a horas) o contato pode virar restrito. A recomendação é guardar todo envio nascido de uma aprovação, editado ou não, pelo critério "tem `approvalContactIds`" e não pela autoria, que continua `user` para exibição e auditoria. Essa mudança de escopo não entra sem aprovação.
+- **`check:fk`:** a fotografia de `MessageDispatch.approvalContactIds` identifica a linha por `messageId` (o despacho não tem `id`). A bateria pegou a consulta com `e."id"`; a correção foi conferida contra uma linha com contato de outro workspace, que o check acusou.
+
+**Testes da G3.2** (dados fictícios; o transporte falso segura o envio num portão; a porta real do Clinics na reconferência):
+
+- **Integração, `clinics-ai-dispatch-guard` (15):**
+  - caminho feliz: os contatos da aprovação ficam no despacho; o uso `ai_message_dispatch` é registrado antes do envio e conclui junto com o despacho;
+  - o envio reconfere os contatos da aprovação: revogado um deles, a mensagem não sai, mesmo com o contato da conversa liberado;
+  - mudança primeiro: o envio espera a revogação e recusa sem chamar a Meta, com a reserva devolvida e o marcador limpo;
+  - uso primeiro: a revogação espera o envio em andamento, que termina `sent`;
+  - a guarda morre durante o envio: `unknown_after_dispatch` com o wamid e a trilha, cobrado uma vez, e a reentrega não reenvia;
+  - o prazo aborta pelo sinal, e a falha de rede é ambígua; o transporte que lança depois de começar é incerto; nos dois casos `unknown_after_dispatch`, cobrado e sem reenvio;
+  - o envio que ignora o sinal vira `overran_deadline`, e o wamid da resposta tardia chega ao despacho incerto e à trilha;
+  - a persistência que falha deixa o despacho incerto, com o wamid e a reserva pelo teto;
+  - a falha comprovadamente antes do envio e transitória devolve a reserva, e a nova tentativa do outbox é um uso novo, pela guarda;
+  - a guarda que lança antes de começar: nada sai, o marcador é limpo, a reserva volta e a nova tentativa do outbox envia;
+  - a varredura de despachos comita o despacho incerto e, antes da liquidação dela, a reconciliação marca o uso órfão e cobra pelo teto: a mensagem é cobrada uma vez só (interleaving forçado, determinístico);
+  - a escrita recusa contatos da aprovação de outro workspace; a aprovação real grava os contatos que conferiu;
+  - o tratador de origem numa transação `raw`, com linhas de outro workspace, só toca o despacho do workspace do uso.
+- **Suítes existentes:** envio, rascunho de resposta, restrição e paciente do Clinics passam inteiras com o envio da IA sob a guarda.
+- **Mutação:** cada uma das 17 abaixo derruba pelo menos um teste, e todas compilam:
+  - a varredura cobrando de novo a reserva que a guarda ou o detector decidiu;
+  - a exceção antes do início sem limpar o despacho; e sem devolver a reserva;
+  - a recusa pela restrição mantendo o marcador;
+  - o wamid perdido na persistência que falha; no desfecho em dúvida; e na resposta tardia;
+  - só o contato da conversa nas travas;
+  - a mensagem da IA sem guarda;
+  - o sinal que não chega ao transporte;
+  - o ambíguo virando retentativa;
+  - o incerto virando retentativa;
+  - a persistência que falha com retentativa;
+  - o tratador sem `workspaceId`;
+  - o tratador mantendo a referência da reserva;
+  - a escrita sem validar os contatos;
+  - a aprovação sem gravar os contatos.
+
 ## ADR-048 — Veyra Clinics para estética: domínio próprio, classificação de dados e escopo do MVP
 
 **Status:** aceito · **Data:** 2026-10-19 · Aprovação da F0 (documental): aprova o desenho e as decisões marcadas como aprovadas, não código nem migrations. **Seguem pendentes:** validação operacional das hipóteses H1–H7, avaliação jurídica (§9.2) e bloqueios B1–B4 — sem eles, nenhum dado real de paciente e nenhum piloto clínico

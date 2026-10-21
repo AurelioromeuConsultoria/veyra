@@ -85,17 +85,24 @@ const DOCUMENTED_LOOSE_COLUMNS = new Set([
   'ContentUse.reservationIds',
   // identificador do PROCESSO que registrou o uso (host:pid:boot), não entidade
   'ContentUse.instanceId',
+  // ADR-047 adendo 7 §9 (G3.2): os contatos conferidos na aprovação do rascunho
+  // da IA — histórico do que foi conferido, sem FK; validados na escrita e
+  // conferidos pela fotografia abaixo
+  'MessageDispatch.approvalContactIds',
 ]);
 
 /**
  * Colunas de LISTA de ids sem FK (fotografias). O Postgres não declara FK
  * para elementos de array, então a checagem de dados é explícita: nenhum id
  * pode apontar para linha de OUTRO workspace. Id que não existe mais é
- * permitido (o contato foi excluído depois da emissão).
+ * permitido (o contato foi excluído depois da emissão). `key` é a chave
+ * primária da tabela, que identifica a linha no relatório.
  */
 const SNAPSHOT_COLUMNS = [
-  { table: 'OutboxEvent', column: 'subjectContactIds', target: 'Contact' },
-  { table: 'ContentUse', column: 'contactIds', target: 'Contact' },
+  { table: 'OutboxEvent', column: 'subjectContactIds', target: 'Contact', key: 'id' },
+  { table: 'ContentUse', column: 'contactIds', target: 'Contact', key: 'id' },
+  // o despacho é 1:1 com a mensagem: a chave é `messageId`, não há `id`
+  { table: 'MessageDispatch', column: 'approvalContactIds', target: 'Contact', key: 'messageId' },
 ];
 
 interface FkRow {
@@ -214,7 +221,7 @@ async function main(): Promise<void> {
     // (4) — fotografias em lista: elemento apontando para OUTRO workspace
     for (const snap of SNAPSHOT_COLUMNS) {
       const { rows } = await client.query<{ child_id: string }>(
-        `SELECT DISTINCT e."id" AS child_id
+        `SELECT DISTINCT e.${q(snap.key)}::text AS child_id
            FROM ${q(snap.table)} e
            CROSS JOIN LATERAL unnest(e.${q(snap.column)}) AS s(ref_id)
            JOIN ${q(snap.target)} t ON t."id" = s.ref_id
@@ -223,7 +230,9 @@ async function main(): Promise<void> {
       );
       for (const row of rows) {
         dirty = true;
-        console.error(`  DADO cross-workspace: ${snap.table}.${snap.column} em id=${row.child_id}`);
+        console.error(
+          `  DADO cross-workspace: ${snap.table}.${snap.column} em ${snap.key}=${row.child_id}`,
+        );
       }
     }
   } finally {
