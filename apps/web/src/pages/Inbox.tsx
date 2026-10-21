@@ -110,12 +110,29 @@ const DISPATCH_ERROR_LABEL: Record<string, string> = {
   abandoned_in_flight: 'envio interrompido em andamento',
   no_retrier: 'envio interrompido sem nova tentativa',
   lease_expired_in_flight: 'resultado não confirmado pelo provedor',
-  content_restricted: 'mensagem da IA bloqueada: o conteúdo deste contato é restrito',
+  content_restricted: 'mensagem de origem da IA bloqueada: o conteúdo deste contato é restrito',
   restriction_unavailable: 'conferência de restrição indisponível — nova tentativa agendada',
+  not_sent_guard_aborted: 'a guarda interrompeu antes do envio, sem cobrança',
 };
 
-function DispatchBadge({ state, error }: { state: MessageDispatchState; error: string | null }) {
-  const rotulo = DISPATCH_LABEL[state];
+/**
+ * O incerto que a guarda PROVOU não ter saído (ADR-047 adendo 7 §9, G3.2): o
+ * estado continua `unknown_after_dispatch` — sem reenvio automático, limite
+ * aceito —, mas quem tria não pode confundi-lo com uma entrega desconhecida.
+ */
+const NAO_SAIU = { texto: 'Não saiu', tom: 'text-negative' };
+
+export function DispatchBadge({
+  state,
+  error,
+}: {
+  state: MessageDispatchState;
+  error: string | null;
+}) {
+  const rotulo =
+    state === 'unknown_after_dispatch' && error === 'not_sent_guard_aborted'
+      ? NAO_SAIU
+      : DISPATCH_LABEL[state];
   if (!rotulo) return null;
   // código desconhecido não vira texto na cara do usuário: some em silêncio
   const motivo = error ? DISPATCH_ERROR_LABEL[error] : undefined;

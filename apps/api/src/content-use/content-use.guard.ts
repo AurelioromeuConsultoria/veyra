@@ -480,17 +480,26 @@ export class ContentUseGuard {
   }
 
   /**
-   * A reserva está listada num uso registrado? Depois do registro ela é da
-   * guarda (acerto na transação dela, ou devolução se não começou) e dos
-   * detectores (pelo teto). Quem a liquida por fora — as varreduras de
-   * despacho — e a acha sumida não cobra de novo (adendo 7 §9, G3.2). Pelo
-   * client filtrado, no contexto do workspace de quem pergunta.
+   * A situação de uma reserva diante dos usos registrados (adendo 7 §9, G3.2).
+   * Depois do registro, ela é da guarda (acerto na transação dela, ou
+   * devolução se não começou) e dos detectores (pelo teto). Quem a liquida por
+   * fora — as varreduras de despacho — e a acha sumida não cobra de novo:
+   *  - `sem_uso`: nenhum uso a lista; o dono é quem a reservou;
+   *  - `nao_comecou`: todo uso que a lista foi `aborted` — a guarda provou que
+   *    a chamada não começou e a devolveu;
+   *  - `decidida`: concluída ou em dúvida — a guarda ou um detector a acertou.
+   * Pelo client filtrado, no contexto do workspace de quem pergunta.
    */
-  async reservaDeUmUso(workspaceId: string, reservationId: string): Promise<boolean> {
-    const usos = await this.prisma.db.contentUse.count({
+  async situacaoDaReserva(
+    workspaceId: string,
+    reservationId: string,
+  ): Promise<'sem_uso' | 'nao_comecou' | 'decidida'> {
+    const usos = await this.prisma.db.contentUse.findMany({
       where: { workspaceId, reservationIds: { has: reservationId } },
+      select: { status: true },
     });
-    return usos > 0;
+    if (usos.length === 0) return 'sem_uso';
+    return usos.every((uso) => uso.status === 'aborted') ? 'nao_comecou' : 'decidida';
   }
 
   /** Depois de uma falha: o destino depende de até onde a guarda chegou. */

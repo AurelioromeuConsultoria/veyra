@@ -1565,6 +1565,11 @@ model MessageDispatch {
   /// conversa. Vazio para mensagem escrita por pessoa. Sem FK (histórico do
   /// que foi conferido), validado na escrita e conferido pelo `check:fk`.
   approvalContactIds String[]      @db.Uuid
+  /// ORIGEM DE IA: o despacho nasceu da aprovação de uma proposta da IA, editada
+  /// ou não (decisão de 2026-10-21, ADR-047 adendo 7 §9, G3.2). Editar não
+  /// remove a origem: o envio passa pela restrição e pela guarda como o da IA.
+  /// A autoria (`Message.authorType`) é outro fato e não muda.
+  fromAiProposal     Boolean       @default(false)
   /// id no provedor (wamid), conhecido só depois do envio bem-sucedido
   externalId         String?
   /// código curto do provedor — nunca corpo de resposta nem stack trace

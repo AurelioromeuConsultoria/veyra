@@ -39,6 +39,17 @@ const DISPATCH_LEASE_MS = 2 * 60_000;
  */
 const REAP_AFTER_MINUTES = 15;
 
+/**
+ * Os códigos com que as varreduras marcam incerto um despacho em voo. Só eles
+ * podem ser reescritos para "não saiu" quando a guarda provou que a chamada
+ * não começou (ADR-047 adendo 7 §9, G3.2).
+ */
+const CODIGOS_EM_VOO_DAS_VARREDURAS = [
+  'abandoned_in_flight',
+  'lease_expired_in_flight',
+  'retries_exhausted_in_flight',
+] as const;
+
 export interface OutboundRequest {
   conversationId: string;
   body: string;
@@ -211,6 +222,9 @@ export class WhatsappSendService implements OnModuleInit {
         templateLanguage: prepared.template?.language ?? null,
         templateParams: prepared.template ? (prepared.template.params as object) : undefined,
         approvalContactIds: contatosDaAprovacao,
+        // a ORIGEM DE IA, editada ou não (decisão de 2026-10-21): só a
+        // aprovação de uma proposta da IA passa `aprovacao`
+        fromAiProposal: aprovacao !== undefined,
       },
     } as never);
     await tx.conversation.updateMany({
@@ -280,6 +294,7 @@ export class WhatsappSendService implements OnModuleInit {
         templateParams: unknown;
         claimToken: string;
         approvalContactIds: string[] | null;
+        fromAiProposal: boolean;
       }[]
     >(
       `UPDATE "MessageDispatch"
@@ -298,7 +313,7 @@ export class WhatsappSendService implements OnModuleInit {
             OR ("state" = 'sending' AND "leaseExpiresAt" < now() AND "dispatchedAt" IS NULL)
           )
       RETURNING "reservationId", "templateName", "templateLanguage", "templateParams", "claimToken",
-                "approvalContactIds"`,
+                "approvalContactIds", "fromAiProposal"`,
       workspaceId,
       messageId,
       DISPATCH_LEASE_MS,
@@ -331,10 +346,13 @@ export class WhatsappSendService implements OnModuleInit {
       return 'done';
     }
     /**
-     * Mensagem ESCRITA PELA IA (rascunho aprovado sem edição, ADR-044.8) para
-     * contato restrito não sai (ADR-048 §6.3, item 5): o contato pode ter
-     * ficado restrito entre a aprovação e este worker. Mensagem escrita por
-     * pessoa não passa por aqui — a clínica continua falando com o paciente.
+     * Mensagem de ORIGEM DA IA para contato restrito não sai (ADR-048 §6.3,
+     * item 5): o contato pode ter ficado restrito entre a aprovação e este
+     * worker. A origem é a autoria `ai` (rascunho sem edição, ADR-044.8) OU a
+     * aprovação de uma proposta da IA, editada ou não — editar não remove a
+     * origem nem a guarda (decisão de 2026-10-21, ADR-047 adendo 7 §9). A
+     * mensagem LIVRE escrita por pessoa não passa por aqui: a clínica continua
+     * falando com o paciente.
      *
      * Os contatos são os conferidos NA APROVAÇÃO somados ao contato atual da
      * conversa (ADR-047 adendo 7 §9, G3.2). Esta checagem é a RÁPIDA, antes de
@@ -349,7 +367,8 @@ export class WhatsappSendService implements OnModuleInit {
     ];
     // conversa sem contato: o desconhecido vai à porta como tal (`null`)
     const sujeitosDoEnvio = contatosDoEnvio.length > 0 ? contatosDoEnvio : [null];
-    if (message.authorType === 'ai') {
+    const origemDaIa = message.authorType === 'ai' || dispatch.fromAiProposal === true;
+    if (origemDaIa) {
       const verdict = await this.restriction.check(workspaceId, 'ai', sujeitosDoEnvio);
       if (verdict.unavailable) {
         // porta fora do ar: não envia AGORA, mas a mensagem já aprovada não é
@@ -466,8 +485,9 @@ export class WhatsappSendService implements OnModuleInit {
             signal,
           );
 
-    // a mensagem da IA é USO de conteúdo do contato: sai sob a guarda
-    if (message.authorType === 'ai') {
+    // a mensagem de origem da IA (editada ou não) é USO de conteúdo do
+    // contato: sai sob a guarda
+    if (origemDaIa) {
       return this.enviarSobGuarda(
         workspaceId,
         messageId,
@@ -802,7 +822,12 @@ export class WhatsappSendService implements OnModuleInit {
    * aconteceu — cobra direto, sem barrar. Confiar no `settle` silencioso deixava
    * envio sem cobrança e o teto sem valer para retentativa.
    */
-  private async chargeOne(workspaceId: string, reservationId: string): Promise<void> {
+  private async chargeOne(
+    workspaceId: string,
+    reservationId: string,
+    // o despacho que uma VARREDURA acabou de marcar incerto (para a triagem)
+    messageId?: string,
+  ): Promise<void> {
     const liquidada = await this.usage.settle(workspaceId, reservationId, 'messages_sent', 1);
     if (liquidada) return;
     /**
@@ -815,7 +840,19 @@ export class WhatsappSendService implements OnModuleInit {
      * cobrou pelo teto, e esta liquidação chegou depois). A pergunta é da
      * guarda: fora de `content-use/`, ninguém lê `ContentUse`.
      */
-    if (await this.guarda.reservaDeUmUso(workspaceId, reservationId)) {
+    const situacao = await this.guarda.situacaoDaReserva(workspaceId, reservationId);
+    if (situacao === 'nao_comecou') {
+      /**
+       * Todo uso que lista a reserva foi `aborted`: a guarda PROVOU que a
+       * chamada não começou e devolveu a reserva. Nada a cobrar; e o despacho
+       * que a varredura acabou de marcar incerto é reescrito para a triagem
+       * distinguir "não saiu" de "entrega desconhecida" (limite aceito em
+       * 2026-10-21): o estado fica, sem reenvio automático.
+       */
+      if (messageId) await this.marcarNaoSaiu(messageId);
+      return;
+    }
+    if (situacao === 'decidida') {
       this.logger.warn(
         `Reserva ${reservationId} já acertada pela guarda de uso — sem nova cobrança`,
       );
@@ -826,6 +863,30 @@ export class WhatsappSendService implements OnModuleInit {
     await this.usage.ensureCounterRow(workspaceId, 'messages_sent');
     const db = this.prisma.db as unknown as TxRunner;
     await db.$transaction((tx) => this.usage.consumeOverLimit(tx, workspaceId, 'messages_sent', 1));
+  }
+
+  /**
+   * O despacho que uma varredura marcou incerto, mas que a guarda provou NÃO
+   * ter saído (uso `aborted`): código próprio e marcador limpo, para a triagem
+   * não confundi-lo com uma entrega desconhecida. Só reescreve o que as
+   * varreduras escreveram — nunca um incerto decidido pela guarda ou pelo
+   * provedor. `unknown_after_dispatch` não é elegível ao claim, com ou sem
+   * marcador: nada é reenviado.
+   */
+  private async marcarNaoSaiu(messageId: string): Promise<void> {
+    const { count } = await this.prisma.db.messageDispatch.updateMany({
+      where: {
+        messageId,
+        state: 'unknown_after_dispatch',
+        errorCode: { in: [...CODIGOS_EM_VOO_DAS_VARREDURAS] },
+      },
+      data: { errorCode: 'not_sent_guard_aborted', dispatchedAt: null },
+    });
+    if (count > 0) {
+      this.logger.warn(
+        `Envio ${messageId} não saiu (a guarda abortou antes) — incerto para triagem, sem cobrança`,
+      );
+    }
   }
 
   /**
@@ -863,7 +924,7 @@ export class WhatsappSendService implements OnModuleInit {
      * reserva já ocupava no contador e cobrando duas vezes.
      */
     if (abandonada.reservationId) {
-      await this.chargeOne(workspaceId, abandonada.reservationId);
+      await this.chargeOne(workspaceId, abandonada.reservationId, messageId);
     } else {
       await this.usage.ensureCounterRow(workspaceId, 'messages_sent');
       const db = this.prisma.db as unknown as TxRunner;
@@ -946,7 +1007,7 @@ export class WhatsappSendService implements OnModuleInit {
 
     await this.cls.run(async () => {
       this.cls.set('workspaceId', workspaceId);
-      await this.settleQuotaFor(workspaceId, linha.reservationId, linha.despachou);
+      await this.settleQuotaFor(workspaceId, messageId, linha.reservationId, linha.despachou);
     });
     if (linha.despachou) {
       this.logger.error(`Envio ${messageId} esgotou tentativas em voo — marcado incerto`);
@@ -960,11 +1021,12 @@ export class WhatsappSendService implements OnModuleInit {
    */
   private async settleQuotaFor(
     workspaceId: string,
+    messageId: string,
     reservationId: string | null,
     despachou: boolean,
   ): Promise<void> {
     if (!reservationId) return;
-    if (despachou) await this.chargeOne(workspaceId, reservationId);
+    if (despachou) await this.chargeOne(workspaceId, reservationId, messageId);
     else await this.usage.release(reservationId);
   }
 
@@ -1042,7 +1104,12 @@ export class WhatsappSendService implements OnModuleInit {
       // worker que morreu
       await this.cls.run(async () => {
         this.cls.set('workspaceId', linha.workspaceId);
-        await this.settleQuotaFor(linha.workspaceId, linha.reservationId, linha.despachou);
+        await this.settleQuotaFor(
+          linha.workspaceId,
+          linha.messageId,
+          linha.reservationId,
+          linha.despachou,
+        );
         await this.prisma.db.messageDispatch.updateMany({
           // SÓ a reserva que liquidamos: entre o UPDATE e este laço, um worker
           // legítimo pode ter reivindicado a linha e escrito uma reserva NOVA —
@@ -1109,7 +1176,7 @@ export class WhatsappSendService implements OnModuleInit {
       await this.cls.run(async () => {
         this.cls.set('workspaceId', linha.workspaceId);
         // nada foi despachado neste estado: a quota volta
-        await this.settleQuotaFor(linha.workspaceId, linha.reservationId, false);
+        await this.settleQuotaFor(linha.workspaceId, linha.messageId, linha.reservationId, false);
         await this.prisma.db.messageDispatch.updateMany({
           where: { messageId: linha.messageId, reservationId: linha.reservationId },
           data: { reservationId: null },

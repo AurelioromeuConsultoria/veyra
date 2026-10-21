@@ -1761,7 +1761,7 @@ A G2 foi publicada (`9237de8`, quatro jobs do CI verdes). A G3 liga os três uso
 
 - **Prazo de leitura do proxy:** o nginx de staging passa a 120 s (o orçamento da geração sob a guarda passa de 98 s); registrado no `DEPLOY_STAGING.md`.
 
-**G3.2 — o envio da mensagem escrita pela IA** (rascunho aprovado sem edição, `authorType = 'ai'`; a mensagem escrita por pessoa não é uso de conteúdo e não muda).
+**G3.2 — o envio da mensagem de origem da IA** (o rascunho aprovado, **editado ou não**, pela decisão de 2026-10-21 abaixo; a mensagem livre escrita por pessoa não é uso de conteúdo e não muda).
 
 - **Os contatos da aprovação ficam no despacho.** Uma migration aditiva cria `MessageDispatch.approvalContactIds` (uuid[]). A aprovação grava ali os contatos que conferiu: o da proposta e o da conversa naquele instante. Eles são validados na escrita, como a fotografia do outbox: precisam ser contatos do workspace. As travas e a reconferência do envio usam esses contatos **somados** ao contato atual da conversa, e não só ao atual (pedido da aprovação da G3.1). É a alternativa de defesa em profundidade do adendo 6 §9, somada à regra da conversa imutável da G2. A coluna não tem FK, como `ContentUse.contactIds`, e entra na conferência de dados do `check:fk`.
 - **A ordem do envio da IA:**
@@ -1784,14 +1784,34 @@ A G2 foi publicada (`9237de8`, quatro jobs do CI verdes). A G3 liga os três uso
 - **O wamid conhecido não se perde** (achado P2 da revisão). Quando a Meta devolve o wamid e a persistência falha, ele vai para o despacho incerto, na mesma transação. Quando a guarda cai depois do envio (desfecho em dúvida), ele vai para o despacho (só se o `externalId` estiver vazio) e, só quando gravou, para a trilha (`message.dispatch_in_doubt`): sem linha atualizada, a guarda comitou `sent` antes de cair, e a trilha não pode dizer "em dúvida". Quando o envio passa do prazo (`overran_deadline`) e a Meta responde depois, o wamid tardio segue o mesmo caminho, pelo próprio envio. É o que permite a quem triar achar a mensagem no provedor e aos recibos de entrega chegarem a ela; o estado continua `unknown_after_dispatch`.
 - **Resíduos declarados:**
   - **Registro incerto seguido de retentativa.** Se o registro falha e a lápide também, o registro pode ter comitado `authorized`: a reconciliação cobra a reserva pelo teto, e a nova tentativa do outbox cobra a sua. São duas cobranças para uma mensagem enviada uma vez. É o falso positivo conservador da G1, ampliado pela retentativa; nunca duplica o envio.
-  - **Não começou, e o processo morreu antes de encerrar o despacho.** A guarda abortou (prazo ou prova de vida), com o uso `aborted` e a reserva devolvida, e o processo morreu antes do `finish`. Vencida a posse, a varredura marca o despacho `unknown_after_dispatch` e, pela regra acima, não cobra. O dinheiro fica certo, mas uma mensagem que comprovadamente não saiu fica "incerta" e não é retentada: vai para a triagem humana, que é a direção segura.
+  - **Não começou, e o processo morreu antes de encerrar o despacho** (limite operacional **aceito pelo usuário** em 2026-10-21). A guarda abortou (prazo, prova de vida ou lápide), com o uso `aborted` e a reserva devolvida, e o processo morreu antes do `finish`. Vencida a posse, a varredura marca o despacho `unknown_after_dispatch` e, pela regra acima, não cobra. A mensagem comprovadamente não saiu, mas fica "incerta" e não é retentada. Ela vai para a triagem humana, que **a distingue** de uma entrega realmente desconhecida (ver as decisões abaixo).
   - **Transição.** Despachos da IA aprovados antes do deploy (`approvalContactIds` nulo, ainda `reserved` ou `failed_before_send`) reconferem só o contato atual da conversa. Em staging o Clinics está desativado e os dados são fictícios; a migration vem antes do código.
-  - **Rascunho editado — decisão pendente do usuário.** Um rascunho com qualquer edição vira `authorType = 'user'` (ADR-044.8) e, pela regra aprovada (ADR-048, critérios de "IA, em toda a superfície": "mensagem escrita por pessoa é despachada normalmente"), sai sem a guarda do envio. A aprovação dele trava e reconfere como a do rascunho sem edição, mas entre a aprovação e o envio (o backoff do outbox chega a horas) o contato pode virar restrito. A recomendação é guardar todo envio nascido de uma aprovação, editado ou não, pelo critério "tem `approvalContactIds`" e não pela autoria, que continua `user` para exibição e auditoria. Essa mudança de escopo não entra sem aprovação.
+  - **Rascunho editado:** decidido pelo usuário em 2026-10-21 (abaixo). Deixou de ser resíduo.
+
+**Decisões do usuário sobre a G3.2 (2026-10-21):**
+
+1. **Editar ou aprovar uma sugestão da IA não remove a origem de IA nem a proteção da guarda.** Antes, a revisão de segurança tinha mostrado o problema: um rascunho com qualquer edição, até de um caractere, virava `authorType = 'user'` (ADR-044.8) e saía sem a guarda do envio. Entre a aprovação e o envio (o backoff do outbox chega a horas), o contato podia virar restrito, e um texto quase todo da IA saía mesmo assim. **Regra:** a mensagem nascida da aprovação de uma proposta da IA, editada ou não, continua sujeita às mesmas restrições no despacho, ou seja, à checagem rápida e à guarda `ai_message_dispatch`.
+   - **Implementação:** coluna explícita `MessageDispatch.fromAiProposal` (boolean, `false` por padrão), migration aditiva. A aprovação (`executeSendMessage`, pela `writeOutboundWithin` com os contatos da aprovação) a liga nos dois casos. O critério do envio é `authorType = 'ai'` **ou** `fromAiProposal`. O primeiro termo continua valendo para os rascunhos sem edição aprovados antes do deploy.
+   - **Por que uma coluna, e não a presença dos contatos da aprovação:** `writeOutboundWithin` grava a lista vazia também na mensagem livre. "Tem fotografia" não distinguiria a aprovação de uma mensagem de pessoa, e a regra ficaria dependente da diferença entre `NULL` e lista vazia.
+   - **A autoria não muda:** `authorType` continua `user` no rascunho editado, para exibição, métricas e auditoria (ADR-044.8). A origem é outro fato, e é ela que decide a restrição. O critério do ADR-048 ("mensagem escrita por pessoa é despachada normalmente") vale para a mensagem **livre**, não para o rascunho da IA editado.
+   - **Transição, fechada por preenchimento** (sugestão da revisão). Uma segunda migration, só de dados (`20261021090100_message_dispatch_ai_origin_backfill`), liga `fromAiProposal` nos despachos **pendentes** (`reserved`, `failed_before_send`, `sending`). O critério é a trilha registrar a mensagem como criada de proposta da IA: `message.created_from_ai_proposal`, com `entityId = messageId`, no mesmo workspace.
+     - O histórico terminal não é reescrito.
+     - Conferida contra quatro casos na base de teste: o editado pendente passa a `true`; o terminal, a mensagem livre e a trilha de outro workspace ficam `false`.
+     - **Resíduo:** aprovações e envios processados pelo código antigo **entre** a migration e a subida do código novo seguem a regra antiga. O código antigo grava `false` e não lê a coluna. O deploy fecha esse caso se for feito sem aprovações nem envios em curso. Em staging, o Clinics está desativado e os dados são fictícios.
+2. **A triagem distingue a mensagem comprovadamente não enviada da entrega realmente desconhecida.** A pergunta da guarda passa de "a reserva está num uso?" para **a situação da reserva** (`ContentUseGuard.situacaoDaReserva`), com três respostas:
+   - **sem uso:** caminho antigo, cobra acima do teto se a reserva sumiu;
+   - **decidida:** o uso concluiu ou ficou em dúvida, e não se cobra de novo;
+   - **não começou:** todo uso que a lista está `aborted`, e a guarda provou que a chamada não começou.
+
+   No terceiro caso, a varredura reescreve o despacho que acabou de marcar como incerto: código `not_sent_guard_aborted` e marcador limpo, sem cobrança e sem reenvio. O estado continua `unknown_after_dispatch`, como no limite aceito. A reescrita só toca o despacho com um dos códigos das varreduras (`abandoned_in_flight`, `lease_expired_in_flight`, `retries_exhausted_in_flight`).
+
+   Na caixa de entrada, esse código aparece como **"Não saiu"**, com o motivo "a guarda interrompeu antes do envio, sem cobrança", e não como "Entrega não confirmada". É o que separa o caso, para quem tria, de uma entrega cujo resultado ninguém conhece.
+
 - **`check:fk`:** a fotografia de `MessageDispatch.approvalContactIds` identifica a linha por `messageId` (o despacho não tem `id`). A bateria pegou a consulta com `e."id"`; a correção foi conferida contra uma linha com contato de outro workspace, que o check acusou.
 
 **Testes da G3.2** (dados fictícios; o transporte falso segura o envio num portão; a porta real do Clinics na reconferência):
 
-- **Integração, `clinics-ai-dispatch-guard` (15):**
+- **Integração, `clinics-ai-dispatch-guard` (21):**
   - caminho feliz: os contatos da aprovação ficam no despacho; o uso `ai_message_dispatch` é registrado antes do envio e conclui junto com o despacho;
   - o envio reconfere os contatos da aprovação: revogado um deles, a mensagem não sai, mesmo com o contato da conversa liberado;
   - mudança primeiro: o envio espera a revogação e recusa sem chamar a Meta, com a reserva devolvida e o marcador limpo;
@@ -1803,10 +1823,17 @@ A G2 foi publicada (`9237de8`, quatro jobs do CI verdes). A G3 liga os três uso
   - a falha comprovadamente antes do envio e transitória devolve a reserva, e a nova tentativa do outbox é um uso novo, pela guarda;
   - a guarda que lança antes de começar: nada sai, o marcador é limpo, a reserva volta e a nova tentativa do outbox envia;
   - a varredura de despachos comita o despacho incerto e, antes da liquidação dela, a reconciliação marca o uso órfão e cobra pelo teto: a mensagem é cobrada uma vez só (interleaving forçado, determinístico);
-  - a escrita recusa contatos da aprovação de outro workspace; a aprovação real grava os contatos que conferiu;
+  - a escrita recusa contatos da aprovação de outro workspace; a aprovação real grava os contatos que conferiu e a origem de IA;
+  - **o rascunho editado mantém a origem de IA** (decisão de 2026-10-21): a autoria é `user`, mas o envio sai sob a guarda; e não sai para um contato que ficou restrito depois da aprovação;
+  - a mensagem livre escrita por pessoa continua fora da guarda e sai para contato restrito (ADR-048);
+  - **triagem**, pelos três caminhos de varredura (periódica, reentrega do evento, tentativas esgotadas): com o uso `aborted` e o processo morto antes do `finish`, o despacho fica `not_sent_guard_aborted`, sem marcador, sem cobrança e sem envio;
   - o tratador de origem numa transação `raw`, com linhas de outro workspace, só toca o despacho do workspace do uso.
 - **Suítes existentes:** envio, rascunho de resposta, restrição e paciente do Clinics passam inteiras com o envio da IA sob a guarda.
-- **Mutação:** cada uma das 17 abaixo derruba pelo menos um teste, e todas compilam:
+- **Web (`dispatch-badge.test.tsx`, 3):** o incerto `not_sent_guard_aborted` aparece como "Não saiu", e não como "Entrega não confirmada"; a entrega desconhecida continua "Entrega não confirmada"; o código só muda o selo do incerto.
+- **Mutação:** cada uma das 24 abaixo derruba pelo menos um teste, e todas compilam:
+  - a aprovação sem gravar a origem de IA; a origem ligada também na mensagem livre;
+  - a restrição e a guarda decididas só pela autoria;
+  - o uso `aborted` tratado como decidido; a triagem sem reescrever o despacho; o "não saiu" cobrado; a reentrega sem passar a mensagem à triagem;
   - a varredura cobrando de novo a reserva que a guarda ou o detector decidiu;
   - a exceção antes do início sem limpar o despacho; e sem devolver a reserva;
   - a recusa pela restrição mantendo o marcador;
@@ -2014,7 +2041,7 @@ _IA, em toda a superfície_
 - Chamada ao cliente de LLM **sem** a declaração de contatos é recusada. Isso garante que uma capacidade futura não escape da regra.
 - Resultado persistido e proposta pendente de contato restrito **não são devolvidos** por nenhum endpoint de leitura, inclusive o que foi gerado antes da ativação.
 - Aprovar proposta de contato que ficou restrito depois da geração é recusado.
-- Mensagem de autoria da IA para contato restrito não é despachada; mensagem escrita por pessoa é despachada normalmente.
+- Mensagem de autoria da IA para contato restrito não é despachada; mensagem escrita por pessoa é despachada normalmente. _Nota de 2026-10-21 (decisão do usuário, ADR-047 adendo 7 §9, G3.2): o rascunho da IA aprovado **com edição** não é "mensagem escrita por pessoa" para esta regra. A origem de IA continua, e ele também não é despachado para contato restrito. A regra da pessoa vale para a mensagem livre._
 - Contato liberado para IA que ganha perfil de paciente volta a ser recusado em todos os pontos acima, e suas propostas pendentes ficam expiradas.
 
 _Webhooks_

@@ -576,7 +576,8 @@ describe('G3.2 — o envio da mensagem da IA sob a guarda de uso externo (ADR-04
     expect(await prisma.raw.usageReservation.count({ where: { workspaceId: ws } })).toBe(0);
   });
 
-  it('a APROVAÇÃO grava no despacho os contatos que conferiu sob as travas', async () => {
+  /** A aprovação REAL de uma proposta da IA (`executeSendMessage`), editada ou não. */
+  const aprovarRascunho = async (editado: boolean) => {
     const run = await prisma.raw.aiRun.create({
       data: {
         workspaceId: ws,
@@ -599,19 +600,115 @@ describe('G3.2 — o envio da mensagem da IA sob a guarda de uso externo (ADR-04
         pendingReplyMark: true,
       },
     });
-    const resultado = (await noWorkspace(() =>
+    const body = editado ? 'Temos horário amanhã, às 10h.' : 'Temos horário.';
+    return (await noWorkspace(() =>
       app
         .get<AiProposalRepository>(AI_PROPOSAL_REPOSITORY)
         .executeSendMessage(
           proposta.id,
           run.id,
-          { conversationId, body: 'Temos horário.', edited: false },
+          { conversationId, body, edited: editado },
           { workspaceId: ws, membershipId: auth.membershipId as string },
           { workspaceId: ws, contactIds: [contato, null], recheck: async () => 'allowed' },
         ),
     )) as { messageId: string };
-    expect((await despacho(resultado.messageId))?.approvalContactIds).toEqual([contato]);
+  };
+  const autoria = async (messageId: string) =>
+    (await prisma.raw.message.findFirst({ where: { id: messageId } }))?.authorType;
+
+  it('a APROVAÇÃO grava no despacho os contatos que conferiu sob as travas e a origem de IA', async () => {
+    const { messageId } = await aprovarRascunho(false);
+    expect(await despacho(messageId)).toMatchObject({
+      approvalContactIds: [contato],
+      fromAiProposal: true,
+    });
+    expect(await autoria(messageId)).toBe('ai');
   });
+
+  it('o rascunho EDITADO mantém a origem de IA: a autoria é da pessoa, mas o envio sai sob a guarda (decisão de 2026-10-21)', async () => {
+    const { messageId } = await aprovarRascunho(true);
+    expect(await autoria(messageId)).toBe('user');
+    expect(await despacho(messageId)).toMatchObject({ fromAiProposal: true });
+    await drain();
+    expect(meta.envios).toHaveLength(1);
+    const [uso] = await usos();
+    expect([uso?.kind, uso?.status]).toEqual(['ai_message_dispatch', 'concluded']);
+    expect(await despacho(messageId)).toMatchObject({ state: 'sent' });
+    expect(await contador()).toBe(1);
+  });
+
+  it('o rascunho EDITADO para contato que ficou restrito depois da aprovação NÃO sai', async () => {
+    const { messageId } = await aprovarRascunho(true);
+    await revogar(contato);
+    await drain();
+    expect(meta.envios).toEqual([]);
+    expect(await despacho(messageId)).toMatchObject({
+      state: 'failed_permanent',
+      errorCode: 'content_restricted',
+    });
+    expect(await contador()).toBe(0);
+  });
+
+  it('a mensagem LIVRE escrita por pessoa continua fora da guarda e sai para contato restrito (ADR-048)', async () => {
+    await revogar(contato);
+    const { messageId } = await noWorkspace(() =>
+      app.get(WhatsappSendService).enqueueOutbound(ws, {
+        conversationId,
+        body: 'Oi, aqui é da clínica.',
+        actorMembershipId: auth.membershipId as string,
+      }),
+    );
+    expect(await despacho(messageId)).toMatchObject({ fromAiProposal: false });
+    await drain();
+    expect(meta.envios).toHaveLength(1);
+    expect(await usos()).toEqual([]);
+    expect(await despacho(messageId)).toMatchObject({ state: 'sent' });
+  });
+
+  it.each([
+    ['a varredura periódica', 'abandoned_in_flight'],
+    ['a reentrega do evento', 'lease_expired_in_flight'],
+    ['as tentativas esgotadas', 'retries_exhausted_in_flight'],
+  ])(
+    'TRIAGEM, por %s: a guarda abortou e o processo morreu antes de encerrar o despacho — "não saiu", sem cobrança, distinto da entrega desconhecida',
+    async (_nome, caminho) => {
+      const { messageId } = await mensagemDaIa([contato]);
+      const reserva = (await despacho(messageId))?.reservationId as string;
+      const claimToken = randomUUID();
+      // o estado de um processo que morreu DEPOIS de a guarda abortar (o uso
+      // `aborted`, a reserva devolvida) e ANTES do `finish`: o despacho em voo,
+      // com marcador e posse vencida
+      await noWorkspace(() => app.get(UsageService).release(reserva));
+      await prisma.raw.$executeRaw`
+        UPDATE "MessageDispatch"
+           SET "state" = 'sending', "claimToken" = ${claimToken}::uuid,
+               "dispatchedAt" = now(), "leaseExpiresAt" = now() - interval '20 minutes'
+         WHERE "messageId" = ${messageId}::uuid`;
+      await prisma.raw.$executeRaw`
+        INSERT INTO "ContentUse" ("id", "workspaceId", "kind", "status", "contactIds", "entityKeys",
+                                  "origin", "reservationIds", "instanceId", "deadlineAt", "finishedAt")
+        VALUES (${randomUUID()}::uuid, ${ws}::uuid, 'ai_message_dispatch', 'aborted',
+                ARRAY[${contato}::uuid], ARRAY[]::text[],
+                ${JSON.stringify({ messageId, claimToken })}::jsonb, ARRAY[${reserva}::uuid],
+                'teste:morto', now(), now())`;
+      const envio = app.get(WhatsappSendService);
+      if (caminho === 'abandoned_in_flight') await envio.reapStaleDispatches();
+      if (caminho === 'lease_expired_in_flight') {
+        await noWorkspace(() =>
+          envio.dispatch({ workspaceId: ws, payload: { messageId } } as never),
+        );
+      }
+      if (caminho === 'retries_exhausted_in_flight') await envio.markExhausted(ws, messageId);
+      expect(await despacho(messageId)).toMatchObject({
+        state: 'unknown_after_dispatch',
+        errorCode: 'not_sent_guard_aborted',
+        dispatchedAt: null,
+        reservationId: null,
+      });
+      expect(meta.envios).toEqual([]);
+      expect(await contador()).toBe(0);
+    },
+  );
 
   it('a escrita recusa contatos da aprovação de OUTRO workspace', async () => {
     const outro = await createWorkspaceFixture(prisma, 'outro');
