@@ -3107,6 +3107,24 @@ A taxa de faltas e a decisão sobre a correção de consumo seguem como aprovada
      - Com o inventário em 23 e o `migrate diff` vazio, o `resolve --applied` deixa o status em dia, e o deploy seguinte não tem nada a aplicar.
      - Pelo caminho às cegas (`--rolled-back` e repetir), a repetição falha, também ensaiada: `type "ClinicsPackageStatus" already exists` no log do Postgres, mais um registro de falha e nada duplicado.
    - **O inventário filtra `contype <> 'n'`:** no Postgres 18, cada NOT NULL também vira restrição, e a contagem de 23 deixaria de valer. O local e o staging usam o 17.
+   - **Precisões pedidas pelo usuário na liberação do `f0783e2` (só no runbook; a migration publicada não muda):**
+     - **Os "~20 s" são estimativa das esperas por lock, não limite da migration.** O `lock_timeout` só limita a espera para obter cada lock, e não o tempo de execução das instruções. A conta completa do pior caso dá cerca de 25 s de espera:
+       - até 5 s na fila pelo lock exclusivo de `ClinicsAttendance`, porque um pedido na fila já bloqueia os seguintes;
+       - até 5 s em cada uma das quatro FKs para tabelas existentes;
+       - mais o tempo de execução, que nada limita.
+
+       O comentário da migration publicada fica como está: "~20 s".
+
+     - **Inventário completo e `migrate diff` vazio não bastam para marcar `--applied`.** O inventário confere só nomes, e o Prisma não modela funções, gatilhos nem CHECKs. No ensaio, uma base com o corpo de uma função, um CHECK e os eventos de um gatilho adulterados passou nos dois.
+       - **O runbook passou a exigir a comparação do schema `public` inteiro** (`pg_dump --schema=public --schema-only`, sem dono nem privilégios) com uma base de referência montada no mesmo Postgres pelas migrations **até a que falhou**. A comparação acusou as três adulterações e deu igual na base íntegra.
+       - **A comparação é um bloco único com falha fechada** (subshell com `set -euo pipefail`), depois da revisão do `reviewer` e do `security`. Ele só imprime "SCHEMA IGUAL" com os dois containers existentes, os dois dumps contendo a sentinela da migration e o `diff` vazio. Também recria a referência do zero e sempre a apaga.
+       - **Ensaio do bloco, como está escrito no runbook**, com um Postgres 17 isolado e a imagem da API fazendo o papel dos containers:
+         - placeholders sem trocar: interrompe;
+         - base íntegra: "IGUAL", depois `--applied` e status em dia;
+         - migration que falhou não sendo a última: interrompe;
+         - CHECK adulterado: interrompe;
+         - em nenhum caso a referência sobrou.
+       - **Achado ao rodar os comandos exatos:** o dump sem `--schema=public` traz o schema `pgboss`, que a aplicação cria em tempo de execução, fora das migrations. Ele acusaria diferença em toda base em uso. Por isso a comparação se restringe ao `public`. Um objeto criado no `public` fora das migrations continua aparecendo, como uma tabela solta de experimento na base local de desenvolvimento.
    - **O runbook** (§4) deixa de afirmar que nada foi aplicado. Nunca se marca `rolled-back` sem provar o estado.
      - Na migration transacional, o inventário tem de dar zero.
      - Numa migration sem transação, o que inclui **todas as anteriores**, a falha pode deixar estado parcial. A recuperação então exige um plano revisado, feito em manutenção.

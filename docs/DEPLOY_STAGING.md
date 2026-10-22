@@ -186,10 +186,24 @@ trava `Membership` e `Workspace`, durante o `ADD FOREIGN KEY`) fixam
 migration falha em vez de travar todas as escritas da aplicação. O Prisma a
 registra como falha, e o próximo `migrate deploy` para com **P3009**. No
 próprio deploy, uma migration sem transação mostra **P3018** com a causa; a
-transacional mostra só "current transaction is aborted" (abaixo). Na
-transacional, o `lock_timeout` vale **por lock**, e os locks obtidos ficam
-presos até o `COMMIT`. O pior caso soma as esperas: na `clinics_packages`, até
-cerca de 20 s com `ClinicsAttendance` bloqueada. Por isso o deploy é feito em
+transacional mostra só "current transaction is aborted" (abaixo).
+
+O `lock_timeout` **só limita a espera para obter cada lock**, não o tempo de
+execução das instruções, que nada nesta migration limita. Na transacional, os
+locks obtidos ficam presos até o `COMMIT`, e as esperas se somam. Na
+`clinics_packages`, a **estimativa** das esperas por lock no pior caso é de
+cerca de 25 s:
+
+- até 5 s na fila pelo lock exclusivo de `ClinicsAttendance`. Um pedido na
+  fila já bloqueia os pedidos seguintes;
+- até 5 s em cada uma das quatro FKs para tabelas existentes (`Workspace`,
+  `ClinicsPatient`, `ClinicsService` e `Membership`), com `ClinicsAttendance`
+  já bloqueada.
+
+A esse total soma-se o tempo de execução, que aqui é curto (tabela nova vazia,
+índice sobre as linhas de `ClinicsAttendance`), mas sem limite. O comentário da
+migration fala em "~20 s"; o número acima é a conta completa. **Não é limite da
+migration:** é estimativa das esperas. Por isso o deploy é feito em
 manutenção, sem acesso externo e com os jobs desligados. Qualquer outra falha
 de migration segue o mesmo procedimento, abaixo.
 
@@ -275,16 +289,104 @@ muda o registro da migration e não desfaz nenhum objeto.
 5. **Inventário completo (23) com o registro falho:** o `COMMIT` passou, mas o
    processo morreu antes de o Prisma gravar o fim, por exemplo porque a sessão
    do `docker exec` caiu. **Nunca** `--rolled-back`: repetir falha, porque os
-   objetos já existem (ensaiado). Confirme que o banco bate com o schema e
-   marque como aplicada:
+   objetos já existem (ensaiado).
+
+   **A contagem e o `migrate diff` não bastam para marcar `--applied`.** O
+   inventário confere só os nomes. O Prisma não modela funções, gatilhos nem
+   CHECKs, então o `migrate diff` não os vê. No ensaio, uma base com o corpo
+   de uma função, um CHECK e os eventos de um gatilho adulterados deu
+   inventário 23 e `migrate diff` vazio. Antes de marcar, **compare o schema
+   `public` inteiro com uma base de referência** montada no mesmo Postgres
+   pelas migrations da imagem nova **até a que falhou**. O dump só de
+   schema (`pg_dump --schema-only`) traz as definições completas: corpo das
+   funções, gatilhos com eventos e momento, CHECKs, defaults, índices e FKs.
+
+   O bloco abaixo roda no host, colado inteiro no terminal. Ele roda num
+   subshell com `set -euo pipefail`: uma falha interrompe o bloco sem fechar a
+   sessão.
+   Troque os dois nomes antes de rodar. Ele **só imprime "SCHEMA IGUAL"** se:
+
+   - os dois containers existem;
+   - a referência foi montada até a migration certa;
+   - os dois dumps saíram e contêm a sentinela da migration;
+   - o `diff` é vazio.
+
+   Placeholder não trocado, container errado, dump vazio, referência sem a
+   migration ou qualquer diferença interrompem o bloco **sem** essa linha. Ele
+   sempre recria a referência do zero e a apaga depois dos dumps.
 
    ```bash
-   docker exec -it <container-api> npx prisma migrate diff --from-config-datasource --to-schema prisma/schema --exit-code
-   docker exec -it <container-api> npx prisma migrate resolve --applied 20261021120000_clinics_packages
+   (
+   set -euo pipefail
+   DB_CT='<container-db>'                                 # os nomes da §3.6
+   API_CT='<container-api>'
+   NOME=20261021120000_clinics_packages                    # a migration que falhou
+   SENTINELA='TABLE public."ClinicsPackage"'              # um objeto que ela cria
+   D=$(mktemp -d); trap 'rm -rf "$D"' EXIT
+   docker inspect "$DB_CT" "$API_CT" > /dev/null
+
+   # 1. a referência: banco novo, com as migrations da imagem nova ATÉ a que falhou
+   docker exec "$DB_CT" sh -euc 'dropdb --if-exists -U "$POSTGRES_USER" veyra_referencia; createdb -U "$POSTGRES_USER" veyra_referencia'
+   docker exec -e NOME="$NOME" "$API_CT" sh -euc '
+     rm -rf /tmp/ref; mkdir -p /tmp/ref/migrations
+     cp prisma/migrations/migration_lock.toml /tmp/ref/migrations/
+     for m in prisma/migrations/*/; do m=${m%/}; cp -R "$m" /tmp/ref/migrations/; [ "${m##*/}" = "$NOME" ] && break; done
+     [ -d "/tmp/ref/migrations/$NOME" ]
+     printf "export default { schema: \"%s/prisma/schema\", migrations: { path: \"/tmp/ref/migrations\" }, datasource: { url: process.env.DATABASE_URL } };\n" "$PWD" > /tmp/ref/prisma.config.ts
+     U=$(printf %s "$DATABASE_URL" | sed -E "s#/[^/?]*([?].*)?\$#/veyra_referencia\1#")
+     case "$U" in */veyra_referencia|*/veyra_referencia\?*) ;; *) echo "URL da referência inválida" >&2; exit 1 ;; esac
+     DATABASE_URL="$U" npx prisma migrate deploy --config /tmp/ref/prisma.config.ts
+     rm -rf /tmp/ref'
+
+   # 2. o schema `public` dos dois (as extensões e o `pgboss`, que a aplicação cria, ficam fora)
+   docker exec "$DB_CT" sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --schema=public --schema-only --no-owner --no-privileges' \
+     | grep -vE '^--|^\\(un)?restrict' | sed '/^$/d' > "$D/alvo.sql"
+   docker exec "$DB_CT" sh -c 'pg_dump -U "$POSTGRES_USER" -d veyra_referencia --schema=public --schema-only --no-owner --no-privileges' \
+     | grep -vE '^--|^\\(un)?restrict' | sed '/^$/d' > "$D/referencia.sql"
+   docker exec "$DB_CT" sh -c 'dropdb -U "$POSTGRES_USER" veyra_referencia'
+
+   # 3. os dois dumps existem, têm a migration, e são iguais
+   grep -qF "$SENTINELA" "$D/alvo.sql"
+   grep -qF "$SENTINELA" "$D/referencia.sql"
+   diff "$D/alvo.sql" "$D/referencia.sql"
+   echo 'SCHEMA IGUAL À REFERÊNCIA'
+   )
    ```
 
-   O `diff` precisa sair com código 0 ("No difference detected"). Esse ramo
-   também foi ensaiado.
+   - **"SCHEMA IGUAL À REFERÊNCIA":** marque como aplicada, ainda em
+     manutenção:
+
+     ```bash
+     docker exec -it <container-api> npx prisma migrate resolve --applied 20261021120000_clinics_packages
+     ```
+
+   - **Qualquer outro desfecho:** **não** marque. É estado a investigar com
+     plano revisado, como o do passo 6.
+     - Um objeto criado no `public` fora das migrations também aparece aqui;
+       na base local de desenvolvimento, uma tabela solta de experimento
+       apareceu assim.
+     - As extensões e o schema `pgboss`, que a aplicação cria em tempo de
+       execução, ficam fora da comparação. A falta de uma extensão aparece
+       nos objetos que dependem dela, como o EXCLUDE que usa o `btree_gist`.
+     - Se a referência ficar para trás numa interrupção, o próximo uso do
+       bloco a apaga.
+
+   **Esse ramo foi ensaiado inteiro,** com um Postgres 17 isolado e a imagem
+   da API fazendo o papel dos dois containers:
+
+   - a recuperação com `--applied`, o caminho às cegas e as adulterações que só
+     a comparação viu;
+   - o **bloco acima, extraído deste arquivo** e só com os nomes trocados:
+     - placeholders sem trocar: interrompe;
+     - base íntegra, colada com o recuo do arquivo: "IGUAL", seguido de
+       `--applied` e status em dia;
+     - migration que falhou não sendo a última: a referência para nela, sem
+       a sentinela, e o bloco interrompe;
+     - CHECK adulterado: o `diff` mostra e o bloco interrompe;
+   - uma versão anterior do bloco também cobriu container errado e referência
+     velha de uma tentativa anterior.
+
+   Em nenhum caso a referência sobrou.
 
 6. **Estado parcial**, numa migration sem transação que falhou no meio: **não**
    marque `rolled-back` nem repita. O caminho é um plano revisado, ainda em
