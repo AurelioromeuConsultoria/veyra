@@ -218,8 +218,9 @@ cada migration **instrução por instrução, sem transação**. Isso foi ensaia
   Repetir depois do `resolve --rolled-back` falhou com
   `type "ClinicsPackageStatus" already exists`. Uma migration de instrução única
   não fica pela metade, mas confira o estado mesmo assim.
-- **Migration transacional**, com `BEGIN` e `COMMIT` no arquivo (hoje, a
-  `20261021120000_clinics_packages`): a falha desfaz tudo, como o ensaio
+- **Migration transacional**, com `BEGIN` e `COMMIT` no arquivo (a
+  `20261021120000_clinics_packages` e, pelo ADR-051, toda migration nova; cada
+  uma traz o seu inventário nesta seção): a falha desfaz tudo, como o ensaio
   comprovou. O Prisma mostra só "current transaction is aborted" e não grava o
   log; **a causa real está no log do Postgres**.
 

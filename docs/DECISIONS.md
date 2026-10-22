@@ -3128,7 +3128,7 @@ A taxa de faltas e a decisão sobre a correção de consumo seguem como aprovada
    - **O runbook** (§4) deixa de afirmar que nada foi aplicado. Nunca se marca `rolled-back` sem provar o estado.
      - Na migration transacional, o inventário tem de dar zero.
      - Numa migration sem transação, o que inclui **todas as anteriores**, a falha pode deixar estado parcial. A recuperação então exige um plano revisado, feito em manutenção.
-   - **Recomendação, ainda não adotada como regra:** que as migrations novas sejam transacionais explícitas sempre que as instruções permitirem, com a skill `create-migration` atualizada. Fica para decisão do usuário.
+   - **Recomendação, ainda não adotada como regra:** que as migrations novas sejam transacionais explícitas sempre que as instruções permitirem, com a skill `create-migration` atualizada. Fica para decisão do usuário. _(Adotada como regra no ADR-051, decisão do usuário de 2026-10-21.)_
    - **Bases locais:** o arquivo mudou depois de aplicado em `veyra`, `veyra_test` e `veyra_e2e`, e o checksum foi atualizado nelas, como na correção anterior. A versão anterior e a transacional dão o mesmo schema (`pg_dump` inteiro). Nenhum outro ambiente tem esta migration, e a bateria a aplica do zero numa base nova.
    - **O histórico:** o commit local da F3.1 foi refeito com estes ajustes, para que nenhum commit publicado carregue duas versões da mesma migration.
 
@@ -3510,3 +3510,39 @@ O inventário de todas as colunas de data e hora (2026-10-19) mostrou o seguinte
   - **Causa:** `useReactTable` recebia um `[]` novo a cada render. O TanStack Table via "dados novos" e agendava em microtarefa a volta à página 0, num laço que não deixava a resposta da rede ser processada.
   - **Não tinha relação com a sessão:** reproduz com o código anterior a este ADR, e só aparecia com a rede ou a máquina lentas.
   - **Correção em commit próprio:** um vazio estável, com teste de regressão que não trava o runner se o defeito voltar.
+
+## ADR-051 — Migrations novas: transação explícita, exceções justificadas e recuperação verificável
+
+**Status:** aceito (decisão do usuário, 2026-10-21) · **Data:** 2026-10-21
+
+**Contexto.** O ensaio da F3.1 (ADR-048 adendo 7, "Ajustes pedidos antes da liberação") mostrou que o `prisma migrate deploy` (Prisma 7.9.1) executa cada migration **instrução por instrução, sem transação**. Uma falha no meio deixa aplicado o que veio antes. O procedimento que o runbook ensinava, `resolve --rolled-back` e repetir, não recupera: a repetição falha nos objetos que já existem. A `20261021120000_clinics_packages` já saiu transacional, com a falha e a recuperação ensaiadas. As anteriores continuam como foram publicadas.
+
+**Decisão.**
+
+1. **Transação explícita por padrão.** Toda migration nova começa com `BEGIN;` e termina com `COMMIT;`. As configurações de sessão vão com `SET LOCAL` (por exemplo, `SET LOCAL lock_timeout = '5s'`), que vale só até o fim da transação; nada de `RESET`. O `prisma migrate dev` gera o SQL sem transação, por isso a migration é gerada com `--create-only`, editada e só então aplicada. Editar depois de aplicada muda o checksum.
+2. **Exceções justificadas.** O critério: fica fora da transação só o que o Postgres recusa num bloco de transação ("cannot run inside a transaction block").
+   - **Exemplos que cabem numa migration:** `CREATE INDEX CONCURRENTLY`, `DROP INDEX CONCURRENTLY`, `REINDEX CONCURRENTLY` e `ALTER TABLE ... DETACH PARTITION ... CONCURRENTLY`.
+   - **Também recusados, mas sem lugar numa migration:** `VACUUM`, `CREATE/DROP DATABASE` e `ALTER SYSTEM`.
+   - **Isolamento:** a exceção vai **isolada numa migration própria**, sem nada que dependa dela.
+   - **Cabeçalho:** diz qual instrução é, por que não pode ir em transação e como se recupera a falha dela. Exemplo: um `CREATE INDEX CONCURRENTLY` que falha deixa um índice `INVALID`, que precisa ser removido antes de repetir.
+   - **Valor novo de enum não é exceção.** O `ALTER TYPE ... ADD VALUE` roda em transação, mas o valor novo só pode ser usado depois do `COMMIT`. Quem precisa usá-lo divide o trabalho em duas migrations transacionais, a do valor antes da que o usa.
+   - **Backfill longo** vai numa migration transacional própria, separada do DDL que trava tabela. A separação já existia na `20261021090100_message_dispatch_ai_origin_backfill`, que é anterior à regra e não tem `BEGIN` (é um `UPDATE` único, atômico por si).
+3. **Recuperação verificável, antes do commit:**
+   - **Inventário.** Uma consulta que lista os objetos que a migration cria (tipo, tabela, coluna, índice, restrição com `contype <> 'n'`, função e gatilho), com a contagem esperada. Ela vai para o `DEPLOY_STAGING` §4, em "Falha de migration".
+   - **Falha forçada, ensaiada.** Numa cópia da migration, entra `DO $$ BEGIN RAISE EXCEPTION 'falha forçada'; END $$;` antes do `COMMIT`. Ela é aplicada pelo mesmo `prisma migrate deploy`, num banco descartável **com o prefixo `veyra_ensaio_`**, com as migrations anteriores. O `DATABASE_URL` e a config do ensaio vão explícitos em todo comando. A skill traz o bloco ensaiado, com essas travas. O deploy precisa falhar, o `pg_dump --schema=public --schema-only` precisa sair igual ao de antes, e o inventário precisa dar zero. Sem a falha forçada, o inventário precisa dar a contagem esperada e o `migrate diff` precisa sair vazio. Numa exceção do item 2, ensaia-se a falha da própria instrução isolada e a recuperação descrita no cabeçalho.
+   - **Cabeçalho.** Diz o que a migration faz, que locks pede e a estimativa das esperas por lock. O `lock_timeout` limita cada espera, não a soma nem a execução. O cabeçalho remete ao §4 para a falha: nunca `rolled-back` às cegas.
+4. **Migrations publicadas não mudam.** Nenhuma é reescrita para entrar na regra, e nenhum checksum é ajustado. As antigas pendentes num deploy seguem o runbook: estado parcial exige plano revisado.
+
+**Alternativas descartadas.**
+
+- **Seguir sem transação** e tratar o estado parcial caso a caso, com um plano manual a cada falha, sob pressão e em manutenção. O ensaio mostrou que o caminho padrão trava.
+- **Um bloco `DO $$ ... $$` por migration.** É atômico como instrução única, e o Prisma registraria o erro real. Mas põe DDL dentro de plpgsql, com aspas aninhadas, é difícil de revisar e obriga a reescrever à mão o SQL que o Prisma gera.
+- **Reescrever as migrations já publicadas.** Mudaria checksums em ambientes que já as aplicaram; o usuário vetou.
+
+**Consequências.**
+
+- **Falha sem estado parcial:** uma migration nova que falha não deixa nada aplicado. A recuperação é ler a causa, conferir o inventário zerado, rodar `resolve --rolled-back` e o deploy (§4, ensaiado).
+- **Erro real fora do Prisma:** na falha, o Prisma mostra só "current transaction is aborted" e não grava o log. A causa fica no log do Postgres.
+- **Locks até o `COMMIT`:** a migration segura os locks até o fim, e as esperas se somam. Migration em tabela muito escrita roda em manutenção, como manda o runbook.
+- **Mais trabalho por migration:** o ensaio da falha forçada e o inventário entram no checklist da skill `create-migration` e no do agente `database`. O Definition of Done do `CLAUDE.md` (§6) não muda sem decisão do usuário. Se ele quiser, a linha seria "migration nova transacional, com inventário e falha forçada ensaiada (ADR-051)".
+- **Futuro, não decidido:** um hook que pergunte quando uma migration nova não tem `BEGIN`. Hoje a regra vale pela skill e pela revisão.

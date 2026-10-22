@@ -32,4 +32,5 @@ Manter o schema íntegro e tenant-safe: toda entidade de domínio com `workspace
 - [ ] `workspaceId` + `WORKSPACE_MODELS` + índices compostos em toda tabela nova.
 - [ ] FKs compostas onde a relação é entre entidades de workspace.
 - [ ] Migration nomeada, não-destrutiva (ou com plano aprovado), comitada junto do código.
+- [ ] Migration nova em transação explícita (`BEGIN`/`SET LOCAL`/`COMMIT`) ou exceção justificada e isolada; inventário no `DEPLOY_STAGING` §4 e falha forçada ensaiada pelo `migrate deploy` (ADR-051, skill `create-migration`). Migration publicada nunca é editada nem tem o checksum ajustado.
 - [ ] Teste de isolamento P0 e `check:fk` passam.
