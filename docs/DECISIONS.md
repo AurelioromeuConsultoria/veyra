@@ -3165,7 +3165,10 @@ O resto do item 6 continua valendo: campos, criação automática e manual, venc
    - **Fica:** a exigência de atendimento registrado DEPOIS da criação, com o `recordedAt` imposto pelo banco; a recusa do atendimento de origem; e nenhuma conclusão sem registro.
    - **Consequência registrada:** um agendamento iniciado antes da criação do retorno poderá cumpri-lo se o atendimento for registrado depois. O sistema comprova a ordem dos registros, e não que a visita física ocorreu depois. A regra permanece **hipótese do protótipo, sujeita à validação operacional**.
    - **O critério "a remarcação não pode violar a regra temporal do vínculo"** passa a valer sem gatilho: a regra temporal agora é sobre o instante do registro, que a remarcação não muda. Trocar o serviço, a unidade ou o paciente de um agendamento vinculado continua esbarrando na FK do vínculo, com 409.
-   - **O que o vínculo ainda responde:** vincular um agendamento JÁ ATENDIDO e LIVRE diz se o registro dele é anterior à criação (409) ou posterior (conclui). Não é uma sonda por tentativas: o `recordedAt` não é escolhido por ninguém (o banco o impõe), não é projetado, e cada resposta positiva conclui o retorno, de forma irreversível e auditada. Os candidatos são só os atendimentos do mesmo paciente, serviço e unidade.
+   - **O que o vínculo ainda responde (inferência residual aceita para o protótipo):** vincular um agendamento JÁ ATENDIDO e LIVRE diz se o registro dele é anterior à criação (409) ou posterior (conclui). As respostas revelam essa relação temporal, e isso é sondagem possível. O texto anterior dizia "não é uma sonda por tentativas", e estava errado (correção pedida pelo usuário). O que limita a informação, sem eliminá-la:
+     - o `recordedAt` não é escolhido por ninguém (o banco o impõe) e não é projetado;
+     - cada resposta positiva conclui o retorno, de forma irreversível e auditada, o que limita as tentativas positivas;
+     - os candidatos são só os atendimentos do mesmo paciente, serviço e unidade.
    - **Corrigido na revisão delta do `security` (P2):** um agendamento atendido que JÁ cumpre outro retorno não concluía nada, e a resposta mudava conforme o registro dele (o 409 neutro ou o do índice único "já vinculado"). Era uma sonda repetível, sem trilha. Agora o vínculo alheio é conferido antes do estado e da prova, com uma consulta sob a trava do agendamento, e a resposta é sempre "já está vinculado a outro retorno", um fato visível na lista. O índice único fica como rede.
    - **Inferência passiva e exata, aceita no item acima:** na cadeia automática, o registro que conclui um retorno cria o seguinte na mesma transação, e o `closedAt` do primeiro (projetado à agenda) é igual ao `createdAt` do segundo. Esconder o `createdAt` de quem só tem a agenda reduz ruído; não garante sigilo.
    - **Testes:** variar apenas o início de um agendamento elegível (antes e depois da criação, perto e longe) dá a mesma resposta no vínculo e na remarcação, sem sondar `createdAt`. Continuam as provas: o atendimento anterior é recusado, a origem é recusada e nada conclui sem registro.
@@ -3204,6 +3207,19 @@ O resto do item 6 continua valendo: campos, criação automática e manual, venc
   - **`security`:** o comentário da trava sem efeito foi corrigido. Em REPEATABLE READ, ela falharia com erro de serialização (falha fechada), e não leria a versão velha.
   - **Resíduo aceito, do `security`:** a regra estática do relógio não pega toda forma de ler o relógio por SQL cru noutro arquivo, como `Prisma.sql` aninhado, `statement_timestamp()` ou `now()` no meio da lista do SELECT. Ampliar o padrão pegaria os usos legítimos de `now()` em cláusulas de outras consultas, como as do outbox. Não há risco de tenant, porque ler o relógio não expõe dado. Quem barra um `raw` novo continua sendo a revisão, pelo passo 2 da skill `review-tenant-isolation`.
 - **Os ensaios da migration foram refeitos sobre o texto final** (o comentário mudou, e o checksum com ele): os dados deram `3|0|-|md5` antes e depois da falha e `3|3|true|md5` depois da aplicação, com inventário 37 e diff vazio. No passo 5, o inventário deu 37, o caso íntegro chegou a "IGUAL" e ao `--applied`, e o gatilho adulterado fez o bloco interromper.
+
+**Decisão do usuário sobre a F3.2 (2026-10-22), com o push autorizado:**
+
+- **Os quatro ajustes estão aprovados.**
+- **A exceção do `agoraDoBanco` é aceita estritamente como implementada:** consulta fixa, sem parâmetros, sem tabelas e sem dados de workspace, usada fora de transação. **Não autoriza ampliar o acesso por `raw`.**
+- **As inferências temporais ficam para o protótipo com dados fictícios:**
+  - a data de encerramento continua visível à recepção;
+  - a inferência passiva da cadeia automática (o `closedAt` de um retorno igual ao `createdAt` do seguinte) fica como está documentada;
+  - a resposta do vínculo a um agendamento atendido e livre fica registrada como inferência residual aceita, sem afirmar ausência de sondagem.
+
+  São aceitas para o protótipo; um piloto com dados reais exige revisitá-las.
+
+- **Esta correção de texto** vai em documentação separada, sem alterar a migration nem reabrir o código aprovado.
 
 **Testes da F3.2** (dados fictícios):
 
