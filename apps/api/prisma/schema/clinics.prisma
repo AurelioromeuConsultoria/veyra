@@ -58,6 +58,7 @@ model ClinicsUnit {
   workspace    Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   workingHours ClinicsWorkingHours[]
   appointments ClinicsAppointment[]
+  returns      ClinicsReturn[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, archivedAt])
@@ -66,21 +67,24 @@ model ClinicsUnit {
 /// Serviço do catálogo. Classe C (ADR-048 adendo 1, item 1). Arquivado, nunca
 /// apagado: a agenda da F2 vai referenciá-lo. Dinheiro em centavos (`Int`).
 model ClinicsService {
-  id          String    @id @default(uuid()) @db.Uuid
-  workspaceId String    @db.Uuid
-  name        String
-  durationMin Int
+  id                 String    @id @default(uuid()) @db.Uuid
+  workspaceId        String    @db.Uuid
+  name               String
+  durationMin        Int
   /// opcional: possibilidade preservada (ADR-048 §8), sem nada financeiro
-  priceCents  Int?
-  currency    String    @default("BRL")
-  archivedAt  DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  priceCents         Int?
+  currency           String    @default("BRL")
+  /// dias até o retorno automático, da data local do atendimento; `null` = sem retorno (F3.2)
+  returnIntervalDays Int?
+  archivedAt         DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   workspace     Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   professionals ClinicsProfessionalService[]
   appointments  ClinicsAppointment[]
   packages      ClinicsPackage[]
+  returns       ClinicsReturn[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, archivedAt])
@@ -190,6 +194,7 @@ model ClinicsPatient {
   createdBy    Membership           @relation("ClinicsPatientCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
   appointments ClinicsAppointment[]
   packages     ClinicsPackage[]
+  returns      ClinicsReturn[]
 
   @@unique([workspaceId, contactId])
   @@unique([workspaceId, id])
@@ -244,8 +249,11 @@ model ClinicsAppointment {
   unit         ClinicsUnit         @relation(fields: [workspaceId, unitId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
   createdBy    Membership          @relation("ClinicsAppointmentCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
   attendance   ClinicsAttendance?
+  returns      ClinicsReturn[]
 
   @@unique([workspaceId, id])
+  /// apoio da FK do vínculo do retorno: mesmo paciente, serviço e unidade (F3.2)
+  @@unique([workspaceId, id, patientId, serviceId, unitId], map: "ClinicsAppointment_return_link_key")
   @@index([workspaceId, unitId, startsAt])
   @@index([workspaceId, professionalId, startsAt])
   @@index([workspaceId, patientId])
@@ -267,15 +275,24 @@ model ClinicsAttendance {
   /// avulso. IMUTÁVEL depois de criado: um trigger do banco recusa a troca
   packageId              String?  @db.Uuid
   createdAt              DateTime @default(now())
+  /// o instante do registro pelo RELÓGIO DO BANCO: a conclusão de um retorno
+  /// exige uma prova registrada DEPOIS da criação dele (F3.2). É a exceção ao
+  /// ADR-049: `clock_timestamp()`, e não o início da transação, porque o registro
+  /// pode esperar a trava do agendamento. Nunca escrito pelo Prisma
+  recordedAt             DateTime @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(3)
 
-  workspace    Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  appointment  ClinicsAppointment  @relation(fields: [workspaceId, appointmentId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  professional ClinicsProfessional @relation(fields: [workspaceId, professionalId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  recordedBy   Membership          @relation("ClinicsAttendanceRecordedBy", fields: [workspaceId, recordedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  package      ClinicsPackage?     @relation(fields: [workspaceId, packageId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  workspace         Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  appointment       ClinicsAppointment  @relation(fields: [workspaceId, appointmentId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  professional      ClinicsProfessional @relation(fields: [workspaceId, professionalId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  recordedBy        Membership          @relation("ClinicsAttendanceRecordedBy", fields: [workspaceId, recordedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  package           ClinicsPackage?     @relation(fields: [workspaceId, packageId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  returnsOriginated ClinicsReturn[]     @relation("ClinicsReturnOrigin")
+  returnsFulfilled  ClinicsReturn[]     @relation("ClinicsReturnFulfilledBy")
 
   @@unique([workspaceId, appointmentId])
   @@unique([workspaceId, id])
+  /// apoio da FK da prova de conclusão do retorno: o registro DESTE agendamento (F3.2)
+  @@unique([workspaceId, appointmentId, id], map: "ClinicsAttendance_return_proof_key")
   @@index([workspaceId, professionalId])
   @@index([workspaceId, recordedByMembershipId])
   @@index([workspaceId, packageId])
@@ -321,4 +338,70 @@ model ClinicsPackage {
   @@index([workspaceId, patientId])
   @@index([workspaceId, serviceId])
   @@index([workspaceId, createdByMembershipId])
+}
+
+/// Retorno (ADR-048 adendo 7, F3.2). Classe S. Concluir é COMPROVAR um
+/// atendimento: `done` só com o registro de atendimento do agendamento
+/// vinculado (FK composta da prova). Encerrar sem atendimento é cancelar.
+enum ClinicsReturnStatus {
+  pending
+  done
+  canceled
+}
+
+enum ClinicsReturnCancelReason {
+  patient_declined
+  patient_unreachable
+  not_needed
+  created_in_error
+}
+
+model ClinicsReturn {
+  id                      String                     @id @default(uuid()) @db.Uuid
+  workspaceId             String                     @db.Uuid
+  patientId               String                     @db.Uuid
+  serviceId               String                     @db.Uuid
+  unitId                  String                     @db.Uuid
+  /// o atendimento que gerou o retorno automático; `null` = criado à mão
+  originAttendanceId      String?                    @db.Uuid
+  /// data local da unidade
+  dueDate                 DateTime                   @db.Date
+  status                  ClinicsReturnStatus        @default(pending)
+  assigneeMembershipId    String?                    @db.Uuid
+  /// o agendamento que vai cumprir (ou cumpriu) o retorno
+  appointmentId           String?                    @db.Uuid
+  /// a PROVA da conclusão: o registro de atendimento do agendamento vinculado
+  fulfilledByAttendanceId String?                    @db.Uuid
+  cancelReason            ClinicsReturnCancelReason?
+  createdByMembershipId   String                     @db.Uuid
+  closedByMembershipId    String?                    @db.Uuid
+  /// escrito pelo BANCO: a conclusão exige a prova registrada depois dele (ADR-049)
+  createdAt               DateTime                   @default(dbgenerated("transaction_timestamp()")) @db.Timestamptz(3)
+  /// escrito pelo BANCO (trigger), na conclusão ou no cancelamento
+  closedAt                DateTime?                  @db.Timestamptz(3)
+
+  workspace        Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  patient          ClinicsPatient      @relation(fields: [workspaceId, patientId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  service          ClinicsService      @relation(fields: [workspaceId, serviceId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  unit             ClinicsUnit         @relation(fields: [workspaceId, unitId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  originAttendance ClinicsAttendance?  @relation("ClinicsReturnOrigin", fields: [workspaceId, originAttendanceId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsReturn_originAttendance_fkey")
+  /// mesmo paciente, serviço e unidade, garantidos pelo banco
+  appointment      ClinicsAppointment? @relation(fields: [workspaceId, appointmentId, patientId, serviceId, unitId], references: [workspaceId, id, patientId, serviceId, unitId], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsReturn_appointment_fkey")
+  fulfilledBy      ClinicsAttendance?  @relation("ClinicsReturnFulfilledBy", fields: [workspaceId, appointmentId, fulfilledByAttendanceId], references: [workspaceId, appointmentId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsReturn_fulfilledBy_fkey")
+  assignee         Membership?         @relation("ClinicsReturnAssignee", fields: [workspaceId, assigneeMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsReturn_assignee_fkey")
+  createdBy        Membership          @relation("ClinicsReturnCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsReturn_createdBy_fkey")
+  closedBy         Membership?         @relation("ClinicsReturnClosedBy", fields: [workspaceId, closedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsReturn_closedBy_fkey")
+
+  @@unique([workspaceId, id])
+  /// um retorno automático por atendimento
+  @@unique([workspaceId, originAttendanceId])
+  /// um agendamento cumpre no máximo um retorno (o cancelado libera o vínculo)
+  @@unique([workspaceId, appointmentId])
+  @@index([workspaceId, status, dueDate])
+  @@index([workspaceId, patientId])
+  @@index([workspaceId, serviceId])
+  @@index([workspaceId, unitId])
+  @@index([workspaceId, assigneeMembershipId])
+  @@index([workspaceId, createdByMembershipId])
+  @@index([workspaceId, closedByMembershipId])
 }

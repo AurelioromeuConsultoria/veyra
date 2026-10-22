@@ -15,6 +15,7 @@ type ServiceRow = {
   durationMin: number;
   priceCents: number | null;
   currency: string;
+  returnIntervalDays: number | null;
   archivedAt: Date | null;
 };
 
@@ -48,6 +49,7 @@ export class ClinicsServiceCatalog {
           durationMin: input.durationMin,
           priceCents: input.priceCents,
           currency: input.currency,
+          returnIntervalDays: input.returnIntervalDays,
         },
       } as never)) as unknown as ServiceRow;
       await this.audit.record(tx, workspaceId, 'clinics.service.created', {
@@ -59,6 +61,7 @@ export class ClinicsServiceCatalog {
           durationMin: row.durationMin,
           priceCents: row.priceCents,
           currency: row.currency,
+          returnIntervalDays: row.returnIntervalDays,
         },
       });
       return toDto(row);
@@ -81,8 +84,15 @@ export class ClinicsServiceCatalog {
       const before = await this.find(tx, id);
       await tx.clinicsService.updateMany({
         where: { id },
-        data: { name: input.name, durationMin: input.durationMin, priceCents: input.priceCents },
-      });
+        data: {
+          name: input.name,
+          durationMin: input.durationMin,
+          priceCents: input.priceCents,
+          // o intervalo vale para os atendimentos SEGUINTES: os retornos já
+          // criados guardam o vencimento que tinham
+          returnIntervalDays: input.returnIntervalDays,
+        },
+      } as never);
       const changed = (key: keyof UpdateClinicsServiceInput) =>
         input[key] === undefined ? undefined : before[key];
       await this.audit.record(tx, workspaceId, 'clinics.service.updated', {
@@ -93,8 +103,14 @@ export class ClinicsServiceCatalog {
           name: changed('name'),
           durationMin: changed('durationMin'),
           priceCents: changed('priceCents'),
+          returnIntervalDays: changed('returnIntervalDays'),
         },
-        after: { name: input.name, durationMin: input.durationMin, priceCents: input.priceCents },
+        after: {
+          name: input.name,
+          durationMin: input.durationMin,
+          priceCents: input.priceCents,
+          returnIntervalDays: input.returnIntervalDays,
+        },
       });
       return toDto(await this.find(tx, id));
     });
@@ -142,6 +158,7 @@ function toDto(row: ServiceRow): ClinicsServiceDto {
     durationMin: row.durationMin,
     priceCents: row.priceCents,
     currency: row.currency,
+    returnIntervalDays: row.returnIntervalDays,
     archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
   };
 }

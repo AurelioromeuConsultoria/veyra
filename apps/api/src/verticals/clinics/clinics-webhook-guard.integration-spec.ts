@@ -207,6 +207,39 @@ describe('G3.3 — a entrega de webhook sob a guarda de uso externo (ADR-047 ade
       return rows.length === 0;
     }, `a sessão ${pid} cair`);
   };
+  /**
+   * Uma espera SEM prazo próprio, com diagnóstico: se não terminar em `ms`, a
+   * falha diz QUAL etapa travou e o estado do destino, da guarda e do banco.
+   * O teste em cadeia falhou por timeout de 30 s, de forma intermitente (b48 da
+   * F3.1 e duas vezes na F3.2), sem dizer onde (ADR-048 adendo 7).
+   */
+  const etapa = async <T>(rotulo: string, promessa: Promise<T>, ms = 20_000): Promise<T> => {
+    let relogio: NodeJS.Timeout | undefined;
+    const prazo = new Promise<never>((_, rejeitar) => {
+      relogio = setTimeout(() => {
+        void observador
+          .query(
+            `SELECT pid, state, coalesce(wait_event_type, '-') AS espera,
+                    pg_blocking_pids(pid) AS bloqueado_por, left(query, 120) AS consulta
+               FROM pg_stat_activity
+              WHERE datname = current_database() AND pid <> pg_backend_pid() AND state <> 'idle'`,
+          )
+          .then(({ rows }) =>
+            rejeitar(
+              new Error(
+                `etapa travada: ${rotulo} — destino com ${destino.chamadas.length} POST(s), ` +
+                  `guarda ${pidDaGuarda}, sessões: ${JSON.stringify(rows)}`,
+              ),
+            ),
+          );
+      }, ms);
+    });
+    try {
+      return await Promise.race([promessa, prazo]);
+    } finally {
+      clearTimeout(relogio);
+    }
+  };
   const capturar = <T>(promessa: Promise<T>) => {
     const estado = { terminou: false, erro: null as unknown };
     const p = promessa.then(
@@ -423,15 +456,15 @@ describe('G3.3 — a entrega de webhook sob a guarda de uso externo (ADR-047 ade
     const entrega = entregar();
     let troca: ReturnType<typeof capturar> | undefined;
     try {
-      await destino.entrou.aberto;
+      await etapa('a entrega chegar ao destino', destino.entrou.aberto);
       troca = capturar(trocarContatoDoDeal(raizDeal, c));
       await alguemEspera(pidDaGuarda);
       expect(troca.estado.terminou).toBe(false);
     } finally {
       solta.abrir();
     }
-    await entrega;
-    await troca?.p;
+    await etapa('a entrega terminar', entrega);
+    await etapa('a troca do contato terminar', troca?.p ?? Promise.resolve());
     const [uso] = await usos();
     expect([...uso.entityKeys].sort()).toEqual([`deal:${raizDeal}`, `task:${t}`].sort());
   });

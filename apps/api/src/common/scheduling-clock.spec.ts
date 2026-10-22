@@ -14,6 +14,10 @@ const SCHEMA = join(__dirname, '../../prisma/schema/schema.prisma');
 const DO_BANCO: Record<string, string> = {
   outboxEvent: 'nextRetryAt',
   messageDispatch: 'updatedAt',
+  // a conclusão do retorno exige a prova registrada depois dele (F3.2)
+  clinicsReturn: 'createdAt',
+  // e a conclusão compara a prova (o registro de atendimento) com a criação
+  clinicsAttendance: 'recordedAt',
 };
 
 function arquivosDeProducao(dir: string): string[] {
@@ -93,5 +97,25 @@ describe('relógio de agendamento (ADR-049)', () => {
     );
     // atributo de campo, não a palavra no comentário
     expect(modelo('MessageDispatch')).not.toMatch(/^\s*\w+\s+DateTime\b[^\n]*@updatedAt/m);
+  });
+
+  it('a leitura do relógio do banco é uma exceção do `raw` num arquivo só, com texto fixo, sem tabela nem parâmetro', () => {
+    // §3.3 do CLAUDE.md e §2 do SECURITY.md (ADR-048 adendo 7, ajustes da F3.2)
+    const UNICO = join(SRC, 'prisma/relogio-do-banco.ts');
+    const texto = readFileSync(UNICO, 'utf8');
+    // exatamente um acesso ao `raw` e exatamente um SQL cru, e ele é o texto fixo
+    expect(texto.match(/\.raw\b/g)).toHaveLength(1);
+    expect(texto.match(/\$(query|execute)Raw(Unsafe)?\b/g)).toEqual(['$queryRaw']);
+    expect([...texto.matchAll(/\$queryRaw\s*(<[^>]*>)?\s*`([^`]*)`/g)].map((m) => m[2])).toEqual([
+      'SELECT now() AS agora',
+    ]);
+    // e nenhum outro arquivo de produção lê o relógio do banco por SQL cru solto,
+    // em template literal ou em string
+    const relogioCru =
+      /\$(query|execute)Raw(Unsafe)?\s*(<[^>]*>)?\s*[(`]\s*['"`]?\s*SELECT\s+(now|clock_timestamp|transaction_timestamp|current_timestamp|localtimestamp)\b/i;
+    const outros = arquivosDeProducao(SRC).filter(
+      (f) => f !== UNICO && relogioCru.test(readFileSync(f, 'utf8')),
+    );
+    expect(outros.map((f) => relative(SRC, f))).toEqual([]);
   });
 });

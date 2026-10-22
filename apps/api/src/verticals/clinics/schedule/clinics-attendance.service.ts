@@ -20,6 +20,7 @@ import type { AuthContext } from '../../../common/decorators';
 import { PrismaService, type Db } from '../../../prisma/prisma.service';
 import { trilha, type PackageRow } from '../care/clinics-packages.service';
 import { ROTULO } from './clinics-appointments.service';
+import { criarRetornoAutomatico, cumprirRetornoDoAgendamento } from './clinics-returns.service';
 
 type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
 type AttendanceRow = {
@@ -27,6 +28,8 @@ type AttendanceRow = {
   appointmentId: string;
   professionalId: string;
   completedAt: Date;
+  /** do relógio do BANCO, forçado pelo gatilho e devolvido pelo INSERT */
+  recordedAt: Date;
   packageId: string | null;
 };
 
@@ -96,8 +99,13 @@ export class ClinicsAttendanceService {
         }
         const agendamento = (await tx.clinicsAppointment.findFirst({
           where: { id: appointmentId },
-          select: { professionalId: true, patientId: true, serviceId: true },
-        })) as unknown as { professionalId: string; patientId: string; serviceId: string };
+          select: { professionalId: true, patientId: true, serviceId: true, unitId: true },
+        })) as unknown as {
+          professionalId: string;
+          patientId: string;
+          serviceId: string;
+          unitId: string;
+        };
         const consumido = escolha ? await consumir(tx, escolha, agendamento) : null;
         const criado = (await tx.clinicsAttendance.create({
           data: {
@@ -130,6 +138,12 @@ export class ClinicsAttendanceService {
             after: trilha(consumido),
           });
         }
+        // F3.2, na MESMA transação e só no caminho que cria o registro (a
+        // repetição não chega aqui): o retorno vinculado a este agendamento é
+        // cumprido por este registro, e o serviço com intervalo gera o próximo.
+        // Ordem das travas: agendamento → pacote → retorno
+        await cumprirRetornoDoAgendamento(tx, this.audit, auth, appointmentId, criado.id);
+        await criarRetornoAutomatico(tx, this.audit, auth, criado, agendamento);
         return criado;
       });
       return toDto(row);

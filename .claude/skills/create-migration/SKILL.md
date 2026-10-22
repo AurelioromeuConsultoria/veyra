@@ -27,7 +27,7 @@ Referências: `docs/DOMAIN_MODEL.md §1`, `docs/SECURITY.md §2`, `docs/DECISION
 6. **Recuperação verificável, antes do commit** (ADR-051 §3 e adendo 1). A evidência corresponde ao que a migration muda:
    - **objetos novos:** o inventário (zero depois da falha, completo depois da aplicação);
    - **objetos existentes alterados:** as definições anteriores e finais. O bloco abaixo imprime a diferença entre os dois dumps, e ela precisa conter só o que a migration declara;
-   - **migration de dados:** a conferência dos dados, com a base semeada e uma consulta cujo resultado esperado é escrito antes do ensaio (`SEMEIA`, `DADOS` e `DADOS_ESPERADO` no bloco). O dump só de schema não prova o rollback de um backfill. "Inventário zero" só vale para objetos novos; sem objeto novo, `ESPERADO` é 0 e o inventário pode ser uma consulta vazia.
+   - **migration de dados:** a conferência dos dados, com a base semeada e uma consulta cujo resultado esperado é escrito antes do ensaio (`SEMEIA`, `DADOS` e `DADOS_ESPERADO` no bloco). O dump só de schema não prova o rollback de um backfill. Coluna nova que a migration preenche entra também aqui: a consulta lê `to_jsonb(linha) ->> 'coluna'`, que vale antes e depois de a coluna existir, e a mesma consulta prova a falha (nada preenchido) e a aplicação (tudo preenchido). Foi assim na `20261022120000_clinics_returns`, com o `recordedAt`. "Inventário zero" só vale para objetos novos; sem objeto novo, `ESPERADO` é 0 e o inventário pode ser uma consulta vazia.
 
    - **Inventário:** escreva a consulta que lista cada objeto criado pela migration (tipo, tabela, coluna, índice, restrição com `contype <> 'n'`, função, gatilho), com a contagem esperada. Ela vai para o `DEPLOY_STAGING` §4, em "Falha de migration", como a da `20261021120000_clinics_packages`.
    - **Ensaie a falha forçada pelo mesmo `prisma migrate deploy`**, com o bloco abaixo, rodado da raiz do repositório depois de trocar os três valores. Ele tem travas:
@@ -91,7 +91,7 @@ Referências: `docs/DOMAIN_MODEL.md §1`, `docs/SECURITY.md §2`, `docs/DECISION
      deploy > "$E/base.log" 2>&1
      semeia
      esquema > "$E/antes.sql"
-     [ -z "$DADOS" ] || dados > "$E/dados-antes.txt"
+     [ -z "$DADOS" ] || { dados > "$E/dados-antes.txt"; echo "dados antes: $(tr '\n' ' ' < "$E/dados-antes.txt")"; }
      n=$(inventario); [ "$n" = 0 ] || pare "antes da migration, o inventário deu $n (esperado 0)"
      # 2. a falha forçada antes do COMMIT: o deploy falha e NADA muda
      mkdir "$E/migrations/$NOVA"
@@ -100,7 +100,7 @@ Referências: `docs/DOMAIN_MODEL.md §1`, `docs/SECURITY.md §2`, `docs/DECISION
      esquema > "$E/depois.sql"
      diff "$E/antes.sql" "$E/depois.sql" || pare "a falha deixou o schema diferente do de antes"
      n=$(inventario); [ "$n" = 0 ] || pare "depois da falha, o inventário deu $n (esperado 0)"
-     if [ -n "$DADOS" ]; then dados > "$E/dados-falha.txt"; diff "$E/dados-antes.txt" "$E/dados-falha.txt" || pare "a falha mudou os dados"; fi
+     if [ -n "$DADOS" ]; then dados > "$E/dados-falha.txt"; echo "dados depois da falha: $(tr '\n' ' ' < "$E/dados-falha.txt")"; diff "$E/dados-antes.txt" "$E/dados-falha.txt" || pare "a falha mudou os dados"; fi
      echo "falha forçada: schema intacto, inventário 0$([ -z "$DADOS" ] || echo ', dados intactos')"
      # 3. a aplicação limpa, num banco novo: a base (semeada), depois a nova
      docker exec veyra-postgres dropdb -U veyra "$BASE"; docker exec veyra-postgres createdb -U veyra "$BASE"
@@ -108,7 +108,7 @@ Referências: `docs/DOMAIN_MODEL.md §1`, `docs/SECURITY.md §2`, `docs/DECISION
      mkdir "$E/migrations/$NOVA"; cp "$M" "$E/migrations/$NOVA/migration.sql"
      deploy > "$E/limpa.log" 2>&1
      n=$(inventario); [ "$n" = "$ESPERADO" ] || pare "aplicada, o inventário deu $n (esperado $ESPERADO)"
-     if [ -n "$DADOS" ]; then dados > "$E/dados-depois.txt"; diff "$DADOS_ESPERADO" "$E/dados-depois.txt" || pare "aplicada, os dados não deram o esperado"; fi
+     if [ -n "$DADOS" ]; then dados > "$E/dados-depois.txt"; echo "dados depois da aplicação: $(tr '\n' ' ' < "$E/dados-depois.txt")"; diff "$DADOS_ESPERADO" "$E/dados-depois.txt" || pare "aplicada, os dados não deram o esperado"; fi
      # as definições que mudaram: o efeito INTEIRO da migration no schema, para conferir
      # que são só as declaradas (objetos existentes alterados aparecem aqui)
      esquema > "$E/aplicada.sql"

@@ -19,6 +19,7 @@ export const CLINICS_MODELS = [
   'ClinicsAppointment',
   'ClinicsAttendance',
   'ClinicsPackage',
+  'ClinicsReturn',
 ] as const;
 
 export const clinicsExtension: CoreExtension = {
@@ -31,12 +32,14 @@ export const clinicsExtension: CoreExtension = {
         workspace: 'Workspace',
         workingHours: 'ClinicsWorkingHours',
         appointments: 'ClinicsAppointment',
+        returns: 'ClinicsReturn',
       },
       ClinicsService: {
         workspace: 'Workspace',
         professionals: 'ClinicsProfessionalService',
         appointments: 'ClinicsAppointment',
         packages: 'ClinicsPackage',
+        returns: 'ClinicsReturn',
       },
       ClinicsProfessional: {
         workspace: 'Workspace',
@@ -62,6 +65,7 @@ export const clinicsExtension: CoreExtension = {
         createdBy: 'Membership',
         appointments: 'ClinicsAppointment',
         packages: 'ClinicsPackage',
+        returns: 'ClinicsReturn',
       },
       ClinicsAppointment: {
         workspace: 'Workspace',
@@ -71,6 +75,7 @@ export const clinicsExtension: CoreExtension = {
         unit: 'ClinicsUnit',
         createdBy: 'Membership',
         attendance: 'ClinicsAttendance',
+        returns: 'ClinicsReturn',
       },
       ClinicsAttendance: {
         workspace: 'Workspace',
@@ -78,6 +83,8 @@ export const clinicsExtension: CoreExtension = {
         professional: 'ClinicsProfessional',
         recordedBy: 'Membership',
         package: 'ClinicsPackage',
+        returnsOriginated: 'ClinicsReturn',
+        returnsFulfilled: 'ClinicsReturn',
       },
       ClinicsPackage: {
         workspace: 'Workspace',
@@ -85,6 +92,18 @@ export const clinicsExtension: CoreExtension = {
         service: 'ClinicsService',
         createdBy: 'Membership',
         attendances: 'ClinicsAttendance',
+      },
+      ClinicsReturn: {
+        workspace: 'Workspace',
+        patient: 'ClinicsPatient',
+        service: 'ClinicsService',
+        unit: 'ClinicsUnit',
+        originAttendance: 'ClinicsAttendance',
+        appointment: 'ClinicsAppointment',
+        fulfilledBy: 'ClinicsAttendance',
+        assignee: 'Membership',
+        createdBy: 'Membership',
+        closedBy: 'Membership',
       },
       ClinicsContactRelease: {
         workspace: 'Workspace',
@@ -103,6 +122,9 @@ export const clinicsExtension: CoreExtension = {
         clinicsAppointmentsCreated: 'ClinicsAppointment',
         clinicsAttendancesRecorded: 'ClinicsAttendance',
         clinicsPackagesCreated: 'ClinicsPackage',
+        clinicsReturnsAssigned: 'ClinicsReturn',
+        clinicsReturnsCreated: 'ClinicsReturn',
+        clinicsReturnsClosed: 'ClinicsReturn',
       },
     },
   },
@@ -115,7 +137,14 @@ export const clinicsExtension: CoreExtension = {
     // apaga a linha) ou a exclusão do contato deixariam a trilha sem titular
     clinicsContactRelease: ['contactId', 'consumer', 'reason'],
     // catálogo (ADR-048 adendo 1, item 8). Classe C: allowlist ampla
-    clinicsService: ['name', 'durationMin', 'priceCents', 'currency', 'archivedAt'],
+    clinicsService: [
+      'name',
+      'durationMin',
+      'priceCents',
+      'currency',
+      'returnIntervalDays',
+      'archivedAt',
+    ],
     clinicsUnit: ['name', 'timezone'],
     // classe P: ids, vínculo e arquivamento; o NOME vira [changed]. Horários e
     // serviços habilitados entram como o fato e os ids (quantidade, lista)
@@ -144,6 +173,20 @@ export const clinicsExtension: CoreExtension = {
       'consumedSessions',
       'status',
       'hasPrice',
+    ],
+    // classe S (ADR-048 adendo 7, F3.2): ids, vencimento, estado, origem e
+    // motivo de lista fechada. Nada clínico existe no retorno
+    clinicsReturn: [
+      'patientId',
+      'serviceId',
+      'unitId',
+      'dueDate',
+      'status',
+      'origin',
+      'appointmentId',
+      'fulfilledByAttendanceId',
+      'assigneeMembershipId',
+      'cancelReason',
     ],
   },
 };

@@ -6,10 +6,14 @@ import {
   clinicsAiReleaseReasonSchema,
   clinicsAppointmentStatusSchema,
   clinicsCancelReasonSchema,
+  CLINICS_RETURN_CANCEL_REASONS,
+  CLINICS_RETURN_STATUSES,
 } from '@veyra/contracts/verticals/clinics';
 import {
   ClinicsAppointmentStatus,
   ClinicsCancelReason,
+  ClinicsReturnCancelReason,
+  ClinicsReturnStatus,
   ClinicsReleaseConsumer,
   ClinicsReleaseReason,
 } from '../../generated/prisma/enums';
@@ -73,6 +77,13 @@ describe('Clinics — garantias estáticas (ADR-047, ADR-048)', () => {
     );
   });
 
+  it('estados e motivos de encerramento do RETORNO: contrato e banco (enum) são a MESMA lista (F3.2)', () => {
+    expect([...CLINICS_RETURN_STATUSES].sort()).toEqual(Object.values(ClinicsReturnStatus).sort());
+    expect([...CLINICS_RETURN_CANCEL_REASONS].sort()).toEqual(
+      Object.values(ClinicsReturnCancelReason).sort(),
+    );
+  });
+
   // Garantia PARCIAL nos imports: o `ContactsService` (que publica no outbox) é
   // importado legitimamente desde a F2.1, para ler e travar contatos. Para a
   // agenda, quem prova a fronteira é o teste de integração que conta os eventos.
@@ -133,5 +144,17 @@ describe('Clinics — garantias estáticas (ADR-047, ADR-048)', () => {
       'schedule/clinics-attendance.service.ts',
     ]);
     expect(quem(ESCREVE_ATENDIMENTO)).toEqual(['schedule/clinics-attendance.service.ts']);
+  });
+
+  it('o RETORNO só tem um arquivo escritor: o serviço de retornos (o registro de atendimento chama as funções dele, na sua transação) — F3.2', () => {
+    const ESCREVE_RETORNO = [
+      /clinicsReturn\s*\.\s*(create|createMany|createManyAndReturn|update|updateMany|upsert|delete|deleteMany)\b/,
+      /(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"?ClinicsReturn"?/i,
+    ];
+    const quem = walk(ROOT)
+      .filter((file) => ESCREVE_RETORNO.some((p) => p.test(readFileSync(file, 'utf8'))))
+      .map((file) => relative(ROOT, file))
+      .sort();
+    expect(quem).toEqual(['schedule/clinics-returns.service.ts']);
   });
 });

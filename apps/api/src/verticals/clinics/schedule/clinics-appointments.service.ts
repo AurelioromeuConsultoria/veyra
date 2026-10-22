@@ -19,6 +19,7 @@ import {
   resolverHoraLocal,
   somarDias,
 } from '@veyra/contracts/verticals/clinics'; // valores (o bloco acima é só de tipos)
+import { Prisma } from '../../../generated/prisma/client';
 import { AuditService } from '../../../audit/audit.service';
 import type { AuthContext } from '../../../common/decorators';
 import { postgresConstraintName, postgresErrorCode } from '../../../common/prisma-exception.filter';
@@ -379,9 +380,27 @@ export class ClinicsAppointmentsService {
       ) {
         throw new ConflictException('Horário já ocupado para este profissional');
       }
+      // o vínculo com um retorno (F3.2): trocar o serviço, a unidade ou o
+      // paciente esbarra na FK do vínculo. O horário é livre: a regra temporal
+      // é sobre o registro do atendimento, que a remarcação não muda
+      if (vinculoDoRetorno(error)) {
+        throw new ConflictException(
+          'Este agendamento está vinculado a um retorno: desvincule-o antes de trocar o serviço',
+        );
+      }
       throw error;
     }
   }
+}
+
+/** A remarcação esbarrou na FK do vínculo de um retorno. */
+function vinculoDoRetorno(error: unknown): boolean {
+  if (postgresConstraintName(error) === 'ClinicsReturn_appointment_fkey') return true;
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === 'P2003' &&
+    JSON.stringify(error.meta ?? {}).includes('ClinicsReturn_appointment_fkey')
+  );
 }
 
 /**

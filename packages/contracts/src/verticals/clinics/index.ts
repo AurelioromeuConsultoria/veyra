@@ -120,6 +120,11 @@ const catalogName = z
 const durationMin = z.number().int().min(5).max(480).multipleOf(5);
 /** centavos, nunca float; teto de R$ 1.000.000,00 por sanidade */
 const priceCents = z.number().int().min(0).max(100_000_000);
+/**
+ * Intervalo do retorno automático, em dias, contado da data local do registro
+ * de atendimento (ADR-048 adendo 7, F3.2). `null` = o serviço não gera retorno.
+ */
+const returnIntervalDays = z.number().int().min(1).max(365);
 
 export const createClinicsServiceSchema = z
   .object({
@@ -127,6 +132,7 @@ export const createClinicsServiceSchema = z
     durationMin,
     priceCents: priceCents.nullable().default(null),
     currency: z.literal('BRL').default('BRL'),
+    returnIntervalDays: returnIntervalDays.nullable().default(null),
   })
   .strict();
 export type CreateClinicsServiceInput = z.infer<typeof createClinicsServiceSchema>;
@@ -137,6 +143,7 @@ export const updateClinicsServiceSchema = z
     name: catalogName.optional(),
     durationMin: durationMin.optional(),
     priceCents: priceCents.nullable().optional(),
+    returnIntervalDays: returnIntervalDays.nullable().optional(),
   })
   .strict()
   .refine((value) => Object.keys(value).length > 0, { message: 'Nada a alterar' });
@@ -284,6 +291,8 @@ export interface ClinicsServiceDto {
   durationMin: number;
   priceCents: number | null;
   currency: string;
+  /** dias até o retorno automático; `null` = sem retorno (F3.2) */
+  returnIntervalDays: number | null;
   archivedAt: string | null;
 }
 
@@ -530,4 +539,105 @@ export interface ClinicsPackageDto {
   status: ClinicsPackageStatus;
   createdAt: string;
   closedAt: string | null;
+}
+
+// ── Retornos (ADR-048 adendo 7, F3.2) ─────────────────────────────────────
+
+export const CLINICS_RETURN_STATUSES = ['pending', 'done', 'canceled'] as const;
+export type ClinicsReturnStatus = (typeof CLINICS_RETURN_STATUSES)[number];
+
+/**
+ * Encerramento SEM atendimento, por lista fechada (sem "outro" e sem texto):
+ * - `patient_declined` e `patient_unreachable`: recepção ou profissional;
+ * - `not_needed`: decisão clínica, só `clinics:care:write`;
+ * - `created_in_error`: só `clinics:care:write`, e só no retorno criado à mão.
+ */
+export const CLINICS_RETURN_CANCEL_REASONS = [
+  'patient_declined',
+  'patient_unreachable',
+  'not_needed',
+  'created_in_error',
+] as const;
+export type ClinicsReturnCancelReason = (typeof CLINICS_RETURN_CANCEL_REASONS)[number];
+
+/** Criação manual (`clinics:care:write`). O automático nasce do atendimento. */
+export const createClinicsReturnSchema = z
+  .object({
+    patientId: z.uuid(),
+    serviceId: z.uuid(),
+    /** omitida: a única unidade ativa (MVP) */
+    unitId: z.uuid().optional(),
+    /** data local da unidade */
+    dueDate: localDate,
+    assigneeMembershipId: z.uuid().nullable().optional(),
+  })
+  .strict();
+export type CreateClinicsReturnInput = z.infer<typeof createClinicsReturnSchema>;
+
+/** Vincular (ou trocar) o agendamento que vai cumprir o retorno. */
+export const linkClinicsReturnSchema = z.object({ appointmentId: z.uuid() }).strict();
+export type LinkClinicsReturnInput = z.infer<typeof linkClinicsReturnSchema>;
+
+export const cancelClinicsReturnSchema = z
+  .object({ reason: z.enum(CLINICS_RETURN_CANCEL_REASONS) })
+  .strict();
+export type CancelClinicsReturnInput = z.infer<typeof cancelClinicsReturnSchema>;
+
+/** `null` tira o responsável. */
+export const assignClinicsReturnSchema = z.object({ membershipId: z.uuid().nullable() }).strict();
+export type AssignClinicsReturnInput = z.infer<typeof assignClinicsReturnSchema>;
+
+/**
+ * Filtros PERMITIDOS da lista. Estrito: filtro ou ordenação por origem,
+ * criador, atendimento de origem ou pacote não existem, para a lista não virar
+ * consulta indireta de vínculos ocultos. A ordem é sempre vencimento, depois id.
+ */
+export const listClinicsReturnsSchema = z
+  .object({
+    status: z.enum(CLINICS_RETURN_STATUSES).optional(),
+    overdue: z.enum(['true', 'false']).optional(),
+    unitId: z.uuid().optional(),
+    dueFrom: localDate.optional(),
+    dueTo: localDate.optional(),
+    /** um membro, ou `none` para os sem responsável */
+    assignee: z.union([z.uuid(), z.literal('none')]).optional(),
+    patientId: z.uuid().optional(),
+    limit: z.coerce.number().int().min(1).max(200).default(100),
+  })
+  .strict();
+export type ListClinicsReturnsInput = z.infer<typeof listClinicsReturnsSchema>;
+
+export interface ClinicsReturnDto {
+  id: string;
+  patientId: string;
+  patientName: string;
+  serviceId: string;
+  serviceName: string;
+  unitId: string;
+  /** data local da unidade, `AAAA-MM-DD` */
+  dueDate: string;
+  status: ClinicsReturnStatus;
+  /** pendente com vencimento antes de hoje, na data local da unidade */
+  overdue: boolean;
+  /** `hasAccess: false`: o responsável perdeu o acesso e precisa ser trocado */
+  assignee: { membershipId: string; name: string; hasAccess: boolean } | null;
+  /** o agendamento vinculado (o que cumpriu, se `done`) */
+  appointment: { id: string; startsAt: string; status: ClinicsAppointmentStatus } | null;
+  closedAt: string | null;
+  /**
+   * Autorização de CAMPO: os itens abaixo só vêm para quem tem
+   * `clinics:care:read`. Para quem tem só a agenda, o cancelado aparece sem o
+   * motivo, e a origem e a criação não aparecem (aproximariam o atendimento de
+   * origem).
+   */
+  origin?: 'automatic' | 'manual';
+  originAttendanceId?: string | null;
+  cancelReason?: ClinicsReturnCancelReason | null;
+  createdAt?: string;
+}
+
+/** Candidato a responsável: só o necessário para escolher, sem a lista de membros. */
+export interface ClinicsReturnAssigneeDto {
+  membershipId: string;
+  name: string;
 }

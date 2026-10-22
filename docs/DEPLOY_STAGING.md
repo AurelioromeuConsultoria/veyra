@@ -182,7 +182,11 @@ FK para tabela muito escrita (`20261019220000_clinics_foundation`, que trava
 `Contact`, `Membership` e `Workspace`, e `20261019230000_clinics_catalog`, que
 trava `Membership` e `Workspace`, durante o `ADD FOREIGN KEY`) fixam
 `lock_timeout = 5s`, assim como a `20261021120000_clinics_packages`, que trava
-`Membership` e `Workspace`. Se uma transação longa estiver segurando a tabela, a
+`Membership` e `Workspace`, e a `20261022120000_clinics_returns` (F3.2), que
+trava também `ClinicsAppointment`, `ClinicsAttendance`, `ClinicsService`,
+`ClinicsPatient` e `ClinicsUnit`. Esta última estima no cabeçalho até cerca de
+55 s de espera por locks (onze esperas possíveis de 5 s), mais a execução: é
+estimativa, não limite. Os dois locks exclusivos dela ficam por último. Se uma transação longa estiver segurando a tabela, a
 migration falha em vez de travar todas as escritas da aplicação. O Prisma a
 registra como falha, e o próximo `migrate deploy` para com **P3009**. No
 próprio deploy, uma migration sem transação mostra **P3018** com a causa; a
@@ -272,8 +276,40 @@ muda o registro da migration e não desfaz nenhum objeto.
    ORDER BY 1, 2;
    ```
 
+   Para a `20261022120000_clinics_returns` (F3.2):
+
+   ```sql
+   -- inventário da 20261022120000_clinics_returns: 0 linhas = nada ficou;
+   -- 37 = inteira; qualquer outro número = estado parcial
+   SELECT 'tipo' AS k, t.typname::text AS nome FROM pg_type t
+     WHERE t.typname IN ('ClinicsReturnStatus', 'ClinicsReturnCancelReason')
+   UNION ALL SELECT 'tabela', c.relname::text FROM pg_class c
+     WHERE c.relname = 'ClinicsReturn' AND c.relkind = 'r'
+   UNION ALL SELECT 'coluna', c.relname || '.' || a.attname FROM pg_attribute a
+     JOIN pg_class c ON c.oid = a.attrelid
+     WHERE NOT a.attisdropped
+       AND ((c.relname = 'ClinicsService' AND a.attname = 'returnIntervalDays')
+         OR (c.relname = 'ClinicsAttendance' AND a.attname = 'recordedAt'))
+   UNION ALL SELECT 'indice', c.relname::text FROM pg_class c
+     WHERE c.relkind = 'i' AND (c.relname LIKE 'ClinicsReturn\_%'
+       OR c.relname IN ('ClinicsAppointment_return_link_key', 'ClinicsAttendance_return_proof_key'))
+   UNION ALL SELECT 'restricao', co.conname::text FROM pg_constraint co
+     WHERE (co.conname LIKE 'ClinicsReturn\_%' OR co.conname = 'ClinicsService_returnIntervalDays_check')
+       AND co.contype <> 'n'  -- no Postgres 18, cada NOT NULL também vira restrição
+   UNION ALL SELECT 'funcao', p.proname::text FROM pg_proc p
+     WHERE p.proname IN ('clinics_return_guard', 'clinics_attendance_recorded_at')
+   UNION ALL SELECT 'gatilho', tg.tgname::text FROM pg_trigger tg
+     WHERE tg.tgname IN ('ClinicsReturn_guard', 'ClinicsAttendance_recorded_at')
+   ORDER BY 1, 2;
+   ```
+
    Para outra migration, monte o inventário do mesmo jeito, a partir das
    instruções do arquivo: cada `CREATE` e cada `ADD CONSTRAINT`.
+
+   **Os passos 4 e 5 usam a `clinics_packages` como exemplo** (23 objetos).
+   Para a `clinics_returns`, troque pelo nome dela e por 37 objetos. No bloco do
+   passo 5, use `NOME=20261022120000_clinics_returns` e
+   `SENTINELA='TABLE public."ClinicsReturn"'`.
 
 4. **Inventário zerado (nada ficou):** remova a causa (por exemplo, espere ou
    encerre a transação longa que segurava a tabela) e então, no container da

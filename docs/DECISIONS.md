@@ -3027,6 +3027,291 @@ O resto do item 6 continua valendo: campos, criação automática e manual, venc
 - (4) o vínculo com o mesmo paciente e serviço garantidos por FK, o que recusa trocar o serviço de um agendamento vinculado, e com o início depois da criação;
 - (5) a projeção e os filtros.
 
+**Aprovação da F3.2 (decisão do usuário, 2026-10-22).** O detalhamento acima está aprovado com os critérios abaixo, que valem como parte da decisão. Ele **substitui** os pontos do item 6 e da tabela do item 8 que o detalhamento indicou.
+
+1. **Conclusão pelo atendimento: aprovada.**
+   - Vincular uma consulta futura não conclui.
+   - Vincular uma consulta **já atendida** conclui na mesma transação, com auditoria.
+   - A condição **comprova o registro de atendimento correspondente**, e não confia só no rótulo `attended`.
+   - Repetições não duplicam a conclusão nem o retorno automático.
+2. **Cancelamento e projeção: aprovados com correção.**
+   - **O motivo revela a origem.** As permissões por motivo estão corretas, mas `created_in_error` revela a origem manual, que a projeção operacional promete esconder.
+   - **O que cada papel vê:** quem tem só `clinics:schedule:read` vê o estado cancelado com uma apresentação genérica, sem o motivo. O motivo detalhado exige `clinics:care:read`.
+   - **A ordem das conferências:** a permissão específica do motivo é conferida no servidor **antes** de consultar a condição de origem oculta.
+   - **Repetição:** repetir o cancelamento com o mesmo motivo é idempotente. Tentar outro motivo responde 409 neutro, sem alterar o registro.
+3. **Atribuição: aprovada.**
+   - Ser responsável não concede acesso.
+   - A conferência de membro ativo e de permissões vivas fica como proposta.
+   - A lista geral de membros não se abre a quem não tem `members:read`. Um seletor próprio fica limitado aos candidatos operacionais e aos campos necessários.
+4. **Vínculo e concorrência.**
+   - **O vínculo:** estão aprovados o mesmo paciente e serviço, o início posterior à criação e um agendamento por retorno. **A unidade também é validada**, porque o retorno tem unidade e vencimento local próprios. **Substituído:** o início posterior à criação saiu (item 3 dos ajustes, abaixo).
+   - **A ordem das travas:** "agendamento → pacote → retorno" cobre também a **troca entre dois agendamentos**. Os agendamentos envolvidos são travados em ordem determinística, e o vínculo é relido antes de escrever.
+   - **Os desfechos fixados:**
+     - atendimento primeiro: o retorno é concluído e o cancelamento, recusado;
+     - cancelamento primeiro: o retorno permanece cancelado; o atendimento pode acontecer, mas não o conclui;
+     - a remarcação não pode violar a regra temporal do vínculo.
+5. **ADR-051 e Definition of Done:** registrados no adendo 1 do ADR-051.
+
+**Notas de implementação da F3.2, decididas antes do código:**
+
+- **A prova da conclusão é estrutural:**
+  - `ClinicsReturn.fulfilledByAttendanceId` tem uma FK composta `(workspaceId, appointmentId, fulfilledByAttendanceId)` para `ClinicsAttendance (workspaceId, appointmentId, id)`. O registro de atendimento precisa existir e ser **do mesmo agendamento** vinculado.
+  - Um `CHECK` amarra `done` à presença dessa referência.
+  - O rótulo `attended` sozinho não basta em lugar nenhum.
+- **O vínculo, garantido pelo banco:**
+  - a FK composta `(workspaceId, appointmentId, patientId, serviceId, unitId)` vai para um índice único novo no agendamento. Isso cobre o mesmo paciente, serviço e unidade;
+  - um índice único em `(workspaceId, appointmentId)` garante um agendamento por retorno. Não é parcial: os NULLs são distintos, com o mesmo efeito;
+  - **gatilhos nos dois lados guardam a regra temporal.** No retorno, o vínculo exige início posterior ao `createdAt`, que o banco escreve (ADR-049), e um estado do agendamento que aceite vínculo. No agendamento, uma remarcação que traga o início para antes da criação de um retorno pendente vinculado é recusada. **Substituído:** a regra do início saiu, com o gatilho da remarcação (ver "Ajustes da revisão do usuário", abaixo);
+  - trocar o serviço de um agendamento vinculado esbarra na FK. A remarcação traduz os dois casos para 409, sem citar o retorno. **Substituído:** sobrou só o caso da FK, e a mensagem cita o retorno, porque o vínculo é visível na lista.
+- **As travas:**
+  - o vínculo, a troca e a desvinculação travam os agendamentos envolvidos (o novo e o anterior) em ordem de id, e escrevem o retorno com um `updateMany` condicionado ao estado e ao vínculo relidos;
+  - o registro de atendimento trava o agendamento, depois o pacote, depois o retorno;
+  - o cancelamento e a atribuição escrevem só o retorno, condicionados a `pending`.
+
+  Nenhum caminho trava na ordem inversa.
+
+  **Complementado** pelos ajustes e pela revisão delta: o vínculo trava o retorno DEPOIS dos agendamentos e o relê antes de olhar o candidato; o cancelamento e a atribuição travam o retorno ANTES de ler. A ordem continua uma só: agendamentos (em ordem de id) → pacote → retorno.
+
+- **As mensagens:**
+  - **paciente, serviço ou unidade diferentes:** 400 com o motivo, porque são fatos visíveis na agenda;
+  - **agendamento cancelado ou com falta, e início anterior à criação:** um único 409 neutro ("este agendamento não pode cumprir este retorno"), sem distinguir os casos. **Substituído:** o início anterior à criação deixou de ser recusado;
+  - **o que ainda vaza (corrigido depois da revisão do `security`; ver "Pendente de decisão do usuário", abaixo):** o texto original dizia "de forma grosseira", e está errado. A origem e a criação são dedutíveis por quem opera a agenda;
+  - **a criação (`createdAt`)** não é projetada para quem só tem a agenda, porque aproximaria o atendimento de origem.
+- **O "vencido" é calculado no Node,** e isso é um desvio do texto do plano, que dizia "pelo relógio do banco". **Não aprovado e substituído** pelo relógio do banco (ver "Ajustes da revisão do usuário", abaixo).
+  - O vencimento automático é a data local, no fuso da unidade, do registro de atendimento (que o Node escreve) mais o intervalo.
+  - O "hoje" é a data local do relógio do Node.
+  - A comparação acontece no Node, com o mesmo relógio dos dois lados. Pelo ADR-049, quem compara define o relógio, e não há par misto.
+  - Usar o relógio do banco exigiria SQL cru fora dos modelos de coordenação do client protegido, uma mudança em arquivo sensível sem ganho de garantia.
+- **O seletor de responsável** (`GET /clinics/returns/assignees`) exige `clinics:schedule:read` e `schedule:write` ou `care:write`. Ele devolve só id da membership e nome dos candidatos operacionais: membro ativo com `schedule:read` e com `schedule:write` ou `care:write`. Não precisa de `members:read`, e o resto da lista de membros não aparece.
+- **Os nomes vêm do padrão existente:** a membership filtrada pelo workspace e o nome em `prisma.raw.user`, com a justificativa no código.
+- **Os escritores de `ClinicsReturn`:** só o serviço de retornos escreve. O registro de atendimento chama as funções dele (cumprir o vinculado, criar o automático) na própria transação. Uma regra estática fixa o arquivo único.
+
+**Resultados da implementação da F3.2:**
+
+- **A API:**
+  - `GET /clinics/returns` (lista com os filtros permitidos) e `GET /clinics/returns/:id`: `schedule:read`, com a projeção por permissão;
+  - `GET /clinics/returns/assignees`: o seletor;
+  - `POST /clinics/returns`: criação manual, com `care:write`, `care:read` e `schedule:read`;
+  - `POST /clinics/returns/:id/link`, `/unlink`, `/cancel` e `/assign`: `schedule:read` e a permissão da ação, ou a do motivo, conferida no serviço;
+  - o serviço de catálogo ganha `returnIntervalDays`.
+- **Uma decisão tomada no caminho, sobre o critério 2 da aprovação:** a repetição do cancelamento é idempotente quando é **o mesmo pedido, o mesmo motivo de quem encerrou**. Para qualquer outra pessoa, o 409 é neutro e igual. Com a regra literal, "mesmo motivo = idempotente" para qualquer um, quem só tem a agenda descobriria pelo 200 o motivo operacional de um encerramento de outra pessoa, que a projeção esconde dele. Quem repete o próprio pedido já sabe o motivo.
+- **Achado da migration:** o `createdAt` usa `dbgenerated("transaction_timestamp()")`, a convenção do ADR-049. Com `now()`, o Prisma lê o default como o dele e o `migrate diff` acusava diferença; o ensaio pegou isso. O campo entrou na regra estática do relógio de agendamento: o Prisma nunca o escreve.
+- **O ensaio da migration** (ADR-051 e adendo 1) foi feito pelo bloco da skill, num banco descartável:
+  - a falha forçada antes do `COMMIT` deixou o schema idêntico e o inventário em zero;
+  - a aplicação limpa deu inventário 35 e `migrate diff` vazio;
+  - a diferença de definições nas tabelas existentes é só a declarada: em `ClinicsService`, a coluna e o CHECK; em `ClinicsAppointment`, o índice único e o gatilho; em `ClinicsAttendance`, o índice único;
+  - o passo 5 do runbook foi ensaiado para esta migration, com um Postgres 17 isolado e a imagem da API fazendo o papel dos containers: o inventário do runbook deu 35, o caso íntegro chegou a "IGUAL" e depois ao `--applied`, e o gatilho adulterado fez o bloco interromper.
+- **A presença da porta E6** tem doze modelos e treze consultas: p50 de 0,94–0,96 ms e p95 de 1,06–1,13 ms. O gatilho da dívida não foi cruzado.
+
+**Revisão da F3.2 (`reviewer` e `security`, sem P0 nem P1) e o que mudou com ela:**
+
+- **P2, dos dois: um retorno podia ser concluído pelo atendimento que o gerou, ou por um registrado antes de ele existir.**
+  - **O defeito:** o registro de atendimento não confere o horário, e a paciente que chega cedo tem o registro antes do início. Com o retorno automático criado nesse registro, vincular a própria consulta passava pela regra "início posterior à criação" e concluía o retorno com o atendimento de origem.
+  - **O mesmo valia para um retorno manual** criado entre um registro antecipado e o horário da consulta.
+  - **Os testes não pegavam** porque a consulta de origem deles estava no passado.
+  - **A correção é estrutural, pelo critério 1 da aprovação** ("comprovar o registro de atendimento correspondente"):
+    - o registro de atendimento ganha `recordedAt`, escrito pelo relógio do banco. É `clock_timestamp()`, uma exceção ao ADR-049, que usa `transaction_timestamp()`: o registro pode ESPERAR a trava do agendamento, e a prova precisa do instante de depois da espera. Com o início da transação, um registro legítimo que esperou seria recusado. Os registros já existentes ficam com o instante da migration, anterior a qualquer retorno;
+    - o gatilho do retorno exige, para `done`, uma prova com `recordedAt` posterior ao `createdAt` do retorno. O gatilho também força o `createdAt` na inserção, como pediu o `reviewer`;
+    - um CHECK impede que a prova seja o atendimento de origem;
+    - o serviço confere as duas coisas antes, com a mesma recusa neutra. Pelo caminho do registro de atendimento, a prova é sempre posterior: o vínculo precisa ter comitado antes, sob a trava do agendamento.
+  - **O `reviewer` propunha** só o CHECK da origem, deixando o caso geral como resíduo. Não ficou como resíduo: um retorno manual criado logo depois de um registro antecipado não é caso raro.
+- **Ordem dos locks da migration (nit do `reviewer`):** os dois `ADD COLUMN`, em `ClinicsService` e em `ClinicsAttendance`, foram para o fim. O lock exclusivo deles fica preso só até o `COMMIT`. A estimativa das esperas passou a ser de cerca de 55 s, com até onze esperas de 5 s; é estimativa, não limite.
+- **P2 do `security`: o teste P0 não exercitava "não vincula agendamento de A".** Ganhou um teste: um retorno de B tentando vincular um agendamento de A recebe 404, e nada muda nos dois lados.
+- **Agendamento vinculado cancelado ou com falta:** o retorno segue pendente, com o vínculo visível e o estado do agendamento, até alguém trocar ou desvincular. Agora há teste.
+- **O bloco da skill** (no commit refeito como `d56445b`) exige `DADOS` e `DADOS_ESPERADO` juntos e pede semente fictícia. Foi ensaiado de novo.
+- **O ensaio da migration corrigida:**
+  - a falha forçada deixou o schema idêntico e o inventário em zero;
+  - a aplicação deu inventário **39** e `migrate diff` vazio;
+  - nas tabelas existentes mudou só o declarado, agora com a coluna `recordedAt` e o índice em `ClinicsAttendance`;
+  - o passo 5 do runbook foi ensaiado de novo: inventário 39, "IGUAL" seguido de `--applied`, e o bloco interrompeu sem o CHECK da origem e com o gatilho do `recordedAt` adulterado.
+- **Segunda rodada da revisão (P2 dos dois e nits): a evidência dos DADOS que a migration escreve.**
+  - **O preenchimento do `recordedAt` não tinha sido exercitado:** a migration o escreve em todos os registros de atendimento existentes, e a base do ensaio não tinha nenhum. É o que o adendo 1 do ADR-051 exige para migration que escreve dado.
+  - **O ensaio foi refeito** com uma semente fictícia de três registros de atendimento, com a cadeia inteira de FKs. A consulta de conferência lê a coluna por `to_jsonb(linha) ->> 'recordedAt'`, o que vale antes e depois de ela existir: contagem, preenchidos, todos anteriores ao `now()` da conferência e o `md5` dos ids.
+  - **Resultado:** a falha forçada deixou schema, inventário e dados intactos (`3|0|-|md5` antes e depois da falha). A aplicação deu inventário 39, `migrate diff` vazio e os dados esperados (`3|3|true|md5`, as mesmas linhas, todas preenchidas). As três leituras saem impressas pelo bloco, que agora as mostra (veja a skill `create-migration`), e ficaram na saída guardada do ensaio.
+  - **O `recordedAt` não se forja:** um gatilho próprio em `ClinicsAttendance` o força no INSERT e recusa a mudança depois. A função da F3.1, já publicada, não foi editada. Com isso o inventário passou a 39.
+  - **A recusa do banco no registro de atendimento** só viria com o relógio do banco recuando: pela ordem das travas, a prova desse caminho é sempre posterior. Ela agora vira 409, com log, e o registro inteiro volta. Antes, seria 500.
+- **Terceira passada (P2 do security e do reviewer):**
+  - **O teste do relógio recuando desligava o gatilho do retorno para a base inteira.** Agora desliga e religa dentro de uma transação: DDL é transacional, então nenhuma outra sessão o vê desligado e um processo morto no meio não deixa a base de teste sem a guarda. A alternativa sugerida, `session_replication_role = replica`, desligaria também as FKs e exige superusuário.
+  - **A leitura dos dados antes e depois da falha não ficava guardada:** o bloco do ensaio não a imprimia. Agora imprime, e o ensaio foi refeito com o mesmo resultado.
+  - **As Consequências do ADR-049 ainda diziam que `clock_timestamp()` não é usado.** Ganharam uma nota apontando esta exceção, e o comentário do campo no schema passou a dizer o mesmo.
+
+**Pendente de decisão do usuário: a origem e a criação do retorno são dedutíveis por quem opera a agenda** (P2 do `security`). **Decidido; ver o item 3 dos ajustes abaixo.**
+
+- **De forma passiva:** num retorno automático, o vencimento é a data local do atendimento de origem mais o intervalo do serviço. O intervalo aparece no catálogo, e a agenda mostra as consultas atendidas. Uma consulta atendida do mesmo paciente, serviço e unidade na data do vencimento menos o intervalo identifica o retorno como automático e aponta a origem.
+- **De forma ativa, e exata:** quem tem `schedule:write` cria agendamentos no passado e tenta vinculá-los. A regra "início posterior à criação" responde sim ou não, e por busca binária a criação sai com precisão de minutos. A recusa da remarcação dá o mesmo oráculo.
+- **Recomendação:** aceitar que a origem e a criação não são sigilosas para quem opera a agenda. O vencimento e o intervalo são necessários à operação e entregam a origem de qualquer jeito. A projeção continua a não as entregar diretamente, como redução de ruído. Opcionalmente, para tirar o oráculo exato, trocar a regra aprovada "início posterior à criação" por "atendimento registrado depois da criação", que agora existe e é a que de fato protege a conclusão. Agendamento fabricado pela recepção não serve de prova, porque a recepção não registra atendimento. Isso muda uma regra aprovada, então só com a sua decisão.
+
+**Ajustes da revisão do usuário (2026-10-22), registrados antes do código.** A revisão documental do ADR-051 foi aceita. A F3.2 volta com quatro ajustes, que valem como parte da decisão:
+
+1. **A trilha do cancelamento registrava o vínculo errado.**
+   - **O defeito:** o cancelamento lia o retorno antes do UPDATE que trava a linha. Se outra transação trocasse o agendamento vinculado nesse intervalo, o cancelamento removia o vínculo novo, mas auditava o antigo.
+   - **A correção:** o cancelamento trava a linha do retorno primeiro, com um `updateMany` condicionado a `pending`, e só então lê. A transição e a trilha usam essa leitura, que é a versão efetivamente substituída. A ordem das travas não muda: o cancelamento só trava o retorno.
+   - **Num retorno já encerrado,** a trava não pega nada, e a leitura é a final, porque encerrado não muda mais. A idempotência e o 409 neutro seguem iguais.
+   - **A atribuição tinha o mesmo defeito** (a trilha `before` e o "nada a fazer" vinham da leitura de antes da trava), e recebe a mesma correção.
+   - **Teste determinístico:** outra transação troca o vínculo (ou o responsável) e segura a linha; o pedido começa e lê; ela comita; o pedido termina. A trilha identifica exatamente o vínculo removido. A mutação que volta à leitura antiga precisa derrubar o teste.
+2. **O "vencido" usa o relógio do banco, conforme aprovado no plano.** O desvio para o relógio do Node não foi aprovado: a justificativa "quem compara define o relógio" não substitui a escolha explícita do plano.
+   - **Um instante do banco por operação de leitura:** `SELECT now()`, convertido para o fuso de cada unidade. O mesmo "hoje" serve ao filtro `overdue` e à projeção do campo `overdue`, e nenhuma operação lê "hoje" duas vezes.
+   - **Como ler o instante:** o client protegido recusa SQL cru. A leitura vai por um helper único, `agoraDoBanco`, em `src/prisma/`, que usa `prisma.raw` com um texto fixo: sem tabela, sem parâmetro e sem dado de tenant. Isso é uma **exceção nova ao §3.3 do CLAUDE.md e ao §2 do `SECURITY.md`** ("leitura do relógio do banco"), registrada nos dois. Um teste estático fixa o texto e o arquivo único.
+   - **Alternativas rejeitadas:**
+     - pôr a leitura entre os modelos de coordenação do ADR-047 (`coordination-sql.ts`) misturaria propósitos numa lista que é decisão de segurança da guarda de uso externo;
+     - uma view com `now()` dependeria de recurso em preview no Prisma;
+     - o filtro em SQL cru exigiria a consulta inteira fora do client protegido.
+   - **Testes:** a unidade fica num fuso escolhido na hora do teste, com o meio-dia local do banco. O Node é deslocado a partir dos minutos do banco desde a meia-noite local: cai por volta das 06h de amanhã e das 18h de ontem, com pelo menos 6 h de folga. O filtro e a projeção precisam dar a resposta do banco nos dois sentidos. Um teste conta uma leitura do relógio do banco por operação.
+   - **O vencimento automático também passa ao relógio do banco** (revisão delta do `reviewer`). O texto anterior dizia que ele "não muda", por ser "um dado do registro, e não um agora", e estava errado: o `completedAt` é um `new Date()` do Node, e compará-lo com o "hoje" do banco era o par misto do ADR-049. A base agora é o `recordedAt` do registro, forçado pelo banco e devolvido pelo INSERT.
+3. **A inferência da origem e da criação: decidida pelo usuário.**
+   - **Aceito:** a recepção pode correlacionar vencimento, serviço e agenda e formular hipóteses operacionais. Isso não equivale a garantir que a origem seja indedutível.
+   - **Não aceito:** uma consulta que permita descobrir com precisão um campo oculto por tentativas de vínculo.
+   - **Decisão: sai a condição "início posterior à criação".** Ela sai do serviço, do gatilho do retorno e da remarcação. O gatilho `ClinicsAppointment_return_temporal` e a função dele deixam a migration, porque só guardavam essa regra. A migration ainda não foi publicada, então é editada no lugar; nenhuma migration publicada muda.
+   - **Fica:** a exigência de atendimento registrado DEPOIS da criação, com o `recordedAt` imposto pelo banco; a recusa do atendimento de origem; e nenhuma conclusão sem registro.
+   - **Consequência registrada:** um agendamento iniciado antes da criação do retorno poderá cumpri-lo se o atendimento for registrado depois. O sistema comprova a ordem dos registros, e não que a visita física ocorreu depois. A regra permanece **hipótese do protótipo, sujeita à validação operacional**.
+   - **O critério "a remarcação não pode violar a regra temporal do vínculo"** passa a valer sem gatilho: a regra temporal agora é sobre o instante do registro, que a remarcação não muda. Trocar o serviço, a unidade ou o paciente de um agendamento vinculado continua esbarrando na FK do vínculo, com 409.
+   - **O que o vínculo ainda responde:** vincular um agendamento JÁ ATENDIDO e LIVRE diz se o registro dele é anterior à criação (409) ou posterior (conclui). Não é uma sonda por tentativas: o `recordedAt` não é escolhido por ninguém (o banco o impõe), não é projetado, e cada resposta positiva conclui o retorno, de forma irreversível e auditada. Os candidatos são só os atendimentos do mesmo paciente, serviço e unidade.
+   - **Corrigido na revisão delta do `security` (P2):** um agendamento atendido que JÁ cumpre outro retorno não concluía nada, e a resposta mudava conforme o registro dele (o 409 neutro ou o do índice único "já vinculado"). Era uma sonda repetível, sem trilha. Agora o vínculo alheio é conferido antes do estado e da prova, com uma consulta sob a trava do agendamento, e a resposta é sempre "já está vinculado a outro retorno", um fato visível na lista. O índice único fica como rede.
+   - **Inferência passiva e exata, aceita no item acima:** na cadeia automática, o registro que conclui um retorno cria o seguinte na mesma transação, e o `closedAt` do primeiro (projetado à agenda) é igual ao `createdAt` do segundo. Esconder o `createdAt` de quem só tem a agenda reduz ruído; não garante sigilo.
+   - **Testes:** variar apenas o início de um agendamento elegível (antes e depois da criação, perto e longe) dá a mesma resposta no vínculo e na remarcação, sem sondar `createdAt`. Continuam as provas: o atendimento anterior é recusado, a origem é recusada e nada conclui sem registro.
+4. **Cancelamento repetido: aceito como implementado.** A idempotência fica limitada ao mesmo ator e ao mesmo motivo, com as permissões ainda válidas: a permissão do motivo é conferida antes de qualquer leitura, também na repetição. O 409 neutro para os demais evita revelar o motivo de outra pessoa. Um teste cobre a repetição depois da perda da permissão (403, e não 200).
+
+**Depois dos ajustes:** a revisão delta do `reviewer` e do `security`, os testes, o ensaio da migration ajustada (o inventário passa de 39 para 37 objetos), a bateria final e um novo hash local para liberação. Sem push, deploy ou ativação; só dados fictícios.
+
+**Resultados dos ajustes:**
+
+- **A trava antes da leitura** é um `updateMany` sem efeito (`status` de `pending` para `pending`), condicionado a `pending`. O gatilho do retorno passa por ele sem recusar nem mudar nada: os imutáveis são iguais e o vínculo não muda. No registro de atendimento, o retorno continua sendo a última trava, e o cancelamento e a atribuição só travam o retorno. Os testes das corridas atendimento × cancelamento, nas duas ordens, seguem verdes.
+- **O "vencido"** lê `agoraDoBanco` uma vez por operação. A lista com o filtro `overdue` passa o mesmo mapa de "hoje" à projeção, e uma regra estática fixa a exceção do `raw`.
+- **A remarcação** ficou só com a FK do vínculo, e a mensagem não fala mais em horário. O `postgresErrorMessage`, que só servia ao gatilho removido, saiu de `prisma-exception.filter.ts`.
+- **O ensaio da migration ajustada** usou o bloco da skill e a semente fictícia:
+  - a falha forçada deixou schema, inventário e dados intactos (`3|0|-|md5` antes e depois da falha);
+  - a aplicação deu inventário **37**, `migrate diff` vazio e os dados esperados (`3|3|true|md5`);
+  - nas tabelas existentes mudou só o declarado: em `ClinicsAppointment`, agora só o índice único.
+- **O passo 5 do runbook foi ensaiado de novo,** com o Postgres 17 isolado e a imagem da API: o inventário deu 37, o caso íntegro chegou a "IGUAL" e ao `--applied`, e o gatilho do retorno adulterado fez o bloco interromper.
+- **As bases locais** (`veyra` e `veyra_test`) receberam o delta e o checksum novo da migration, que não foi publicada. A `veyra_test` ficou idêntica a uma aplicação do zero, também depois das mutações de banco. A `veyra` só difere pela tabela `public.t`, que não faz parte desta entrega.
+
+**Revisão delta (`reviewer` e `security`, os dois aprovando com ressalvas, sem P0 nem P1) e o que mudou com ela:**
+
+- **P2 do `security`: o agendamento que JÁ cumpre outro retorno virava sonda.** Corrigido com a conferência do vínculo alheio antes do estado e da prova (ver o item 3 dos ajustes).
+- **P2 do `reviewer`: uma troca concorrente fazia o vínculo responder conforme a prova.** Se outra escrita mudasse o vínculo entre a leitura e o UPDATE, a prova positiva respondia "mudou", sem concluir, e a negativa, a recusa neutra: outra sonda sem conclusão. Agora o vínculo trava o retorno depois dos agendamentos (a mesma ordem) e o relê. Se mudou, responde "mudou" (ou "encerrado") antes do vínculo alheio, do estado e da prova. O mesmo pedido concorrente é idempotente.
+- **P2 do `security`: a camada executável** tinha a lista antiga de exceções do `raw`. A skill `review-tenant-isolation` e o `ARCHITECTURE.md` passaram a citar a leitura do relógio e a apontar o §2 do `SECURITY.md` como lista canônica.
+- **Nits:**
+  - a regra estática ficou estrita: um só `.raw` e um só SQL cru no arquivo do relógio, e a leitura do relógio por SQL cru em string também é pega nos outros arquivos. As quatro evasões apontadas foram conferidas e caem;
+  - o helper avisa que roda fora de transação;
+  - a trava sem efeito registra que depende de READ COMMITTED;
+  - os comentários dizem "não projetada", e não "oculta";
+  - o vencimento automático passa ao `recordedAt` (acima);
+  - o teste do fuso ganhou folga de 6 h nos dois sentidos (antes, no sentido para trás, a folga podia ser de minutos);
+  - a remarcação e o item 4 da aprovação ganharam a marca "Substituído";
+  - fora do delta, o `PRODUCT_BRIEF.md` e o `ARCHITECTURE.md` ainda descreviam o retorno como `Task` do Core, e foram corrigidos.
+- **Confirmação dos dois (sem P0 nem P1, sem deadlock novo).** O que veio dela:
+  - **`reviewer`:** faltava o teste do mesmo vínculo feito concorrentemente (idempotente, 201, sem trilha nova), e ele entrou. O teste da troca contra o atendimento passou a conferir a mensagem "encerrado". A docstring do vínculo e este texto ganharam a trava do retorno.
+  - **`security`:** o comentário da trava sem efeito foi corrigido. Em REPEATABLE READ, ela falharia com erro de serialização (falha fechada), e não leria a versão velha.
+  - **Resíduo aceito, do `security`:** a regra estática do relógio não pega toda forma de ler o relógio por SQL cru noutro arquivo, como `Prisma.sql` aninhado, `statement_timestamp()` ou `now()` no meio da lista do SELECT. Ampliar o padrão pegaria os usos legítimos de `now()` em cláusulas de outras consultas, como as do outbox. Não há risco de tenant, porque ler o relógio não expõe dado. Quem barra um `raw` novo continua sendo a revisão, pelo passo 2 da skill `review-tenant-isolation`.
+- **Os ensaios da migration foram refeitos sobre o texto final** (o comentário mudou, e o checksum com ele): os dados deram `3|0|-|md5` antes e depois da falha e `3|3|true|md5` depois da aplicação, com inventário 37 e diff vazio. No passo 5, o inventário deu 37, o caso íntegro chegou a "IGUAL" e ao `--applied`, e o gatilho adulterado fez o bloco interromper.
+
+**Testes da F3.2** (dados fictícios):
+
+- **Integração, `clinics-returns` (40):**
+  - **criação:**
+    - o automático é pendente, sem responsável, com vencimento na data local mais o intervalo; o serviço sem intervalo não gera nada, e a repetição não duplica;
+    - **o vencimento automático vem do relógio do banco:** com o Node do outro lado da meia-noite local, nos dois sentidos, ele é a data local do banco mais o intervalo;
+    - o manual exige `care:write`; o intervalo vai de 1 a 365; o serviço arquivado é recusado;
+  - **conclusão:**
+    - consulta futura vinculada não conclui; o registro dela conclui uma vez, com a prova;
+    - vincular uma consulta já atendida conclui na hora;
+    - não há casamento implícito;
+    - nem o atendimento de origem, com a consulta no futuro e registrada antes do horário, nem um registro anterior a um retorno manual concluem o retorno;
+  - **vínculo:**
+    - outro paciente, serviço ou unidade dá 400; cancelado, falta e o atendimento de origem dão o mesmo 409 neutro;
+    - um agendamento cumpre um retorno só;
+    - a troca e a desvinculação funcionam; o encerrado é recusado;
+    - a remarcação que troca o serviço dá 409, sem mudança; o horário é livre;
+    - **variar apenas o início não sonda a criação:** quatro inícios, longe e perto, antes e depois da criação, dão a mesma resposta no vínculo e na remarcação, e o banco aceita o vínculo a um início anterior;
+    - **a consequência registrada:** o agendamento iniciado antes da criação cumpre o retorno com o atendimento registrado depois; registrado antes, não;
+    - **o agendamento que já cumpre outro retorno** dá a mesma recusa ("já está vinculado"), seja o registro dele anterior ou posterior à criação, e também quando ainda não foi atendido;
+    - o agendamento vinculado cancelado deixa o retorno pendente, com o vínculo visível, até a troca;
+  - **cancelamento:**
+    - motivo clínico dá 403 para a recepção, antes da origem, também no automático;
+    - `created_in_error` no automático dá 409 para o profissional;
+    - a repetição pelo mesmo autor é idempotente; outro motivo, outro autor e retorno concluído dão o mesmo 409;
+    - a repetição depois da perda da permissão do motivo dá 403, sem mudança;
+    - o cancelamento libera o agendamento;
+  - **atribuição:**
+    - o guest, um papel que escreve a agenda sem lê-la, um membro suspenso e um de outro workspace são recusados, com a mesma mensagem nos três primeiros;
+    - "sem acesso" aparece depois da suspensão e da perda de papel, e ser responsável não dá leitura;
+    - o seletor traz só id e nome dos candidatos, funciona para o `Profissional` sem `members:read` (cuja lista de membros segue fechada) e é recusado ao guest;
+  - **projeção e filtros:**
+    - quem tem só a agenda não recebe origem, motivo nem criação;
+    - os filtros permitidos funcionam, e filtro ou ordenação fora da lista dá 400;
+    - **o "vencido" é do relógio do banco:** numa unidade ao meio-dia local, com o Node do outro lado da meia-noite local nos dois sentidos (cerca de 06h de amanhã e 18h de ontem), o filtro, a lista e o detalhe dão a resposta do banco;
+    - uma leitura do relógio do banco por operação, na lista com e sem filtro e no detalhe;
+  - **banco:**
+    - concluir exige a prova do mesmo agendamento; o cancelado sem motivo é recusado pelo CHECK;
+    - a prova não é o atendimento de origem (CHECK) nem um registro anterior à criação (gatilho);
+    - o `recordedAt` é forçado no INSERT, mesmo com outro valor enviado, e imutável;
+    - a recusa da prova no registro de atendimento, com o relógio do banco recuando (simulado), vira 409, e o registro, a transição e a conclusão voltam;
+    - nascer fora de pendente, mudar o imutável junto de um caminho legítimo, mexer no encerrado, vincular a atendido mantendo pendente, e `created_in_error` com origem são recusados;
+    - a FK cruzada de workspace recusa; a exclusão do workspace cascateia;
+  - **corridas, com a ordem forçada:**
+    - atendimento × cancelamento, nas duas ordens;
+    - troca × atendimento do agendamento anterior, nas duas ordens;
+    - duas trocas simultâneas do mesmo retorno;
+    - dois retornos disputando o mesmo agendamento;
+    - **a trilha do cancelamento e a da atribuição** registram a versão efetivamente substituída, com outra transação trocando o vínculo (ou o responsável) depois da leitura inicial do pedido;
+    - **o vínculo com o retorno mudado por outra escrita** dá a mesma resposta ("mudou") para um candidato com prova posterior e um com prova anterior, sem concluir nada;
+    - **o mesmo vínculo feito por outra escrita** no meio do pedido é idempotente (201), sem trilha nova;
+  - **P0 de isolamento:**
+    - o workspace B não lê, não vincula, não cancela nem atribui retorno de A;
+    - um retorno de B não vincula agendamento de A (404), e nada muda nos dois lados.
+- **Suíte de restrição:** a presença pelo retorno.
+- **Unitários:**
+  - os escritores de `ClinicsReturn`;
+  - os estados e motivos iguais no contrato e no banco;
+  - o `createdAt` na regra do relógio do banco;
+  - a leitura do relógio do banco só em `relogio-do-banco.ts`, com o texto fixo. Trocar o texto ou ler `now()` por SQL cru noutro arquivo derruba a regra; os dois casos foram conferidos.
+- **Mutação (refeita sobre o código final, depois dos ajustes e da revisão delta): 38, das quais 36 morrem,** cada uma pelo teste esperado e todas compilando:
+  - **28 de código.** As duas equivalentes sobrevivem, como antes: são as pré-checagens da prova no serviço, e o banco recusa a mesma prova pelo CHECK e pelo gatilho. Ficam como defesa em profundidade;
+    - o atendimento não cumpre;
+    - o automático sem intervalo;
+    - o vínculo a atendido não conclui;
+    - o motivo clínico pela agenda;
+    - a projeção que vaza;
+    - a idempotência sem o autor;
+    - a trava só do agendamento novo;
+    - o vínculo sem a releitura do retorno travado (morre pelo teste do vínculo com o retorno mudado);
+    - o vínculo sem a releitura e sem a escrita condicionada (morre pelas duas trocas simultâneas);
+    - o vínculo sem travar o retorno antes de reler;
+    - o mesmo vínculo concorrente sem a idempotência da releitura;
+    - sem conferir a unidade;
+    - o responsável sem a exigência de leitura;
+    - o responsável sem a exigência de estar ativo;
+    - o acesso sem o estado;
+    - a remarcação sem a tradução;
+    - o cancelamento sem a checagem de origem;
+    - o serviço aceitando a prova de origem (equivalente);
+    - o serviço aceitando a prova anterior à criação (equivalente);
+    - o registro de atendimento sem traduzir a recusa da prova;
+    - o cancelamento lendo antes da trava (a leitura antiga);
+    - a atribuição lendo antes da trava;
+    - o "vencido" pelo relógio do Node;
+    - duas leituras de "hoje" na mesma operação;
+    - o serviço voltando a exigir o início posterior à criação;
+    - o vínculo sem conferir o vínculo alheio antes da prova;
+    - o vencimento automático pelo relógio do Node;
+    - a repetição do cancelamento antes da conferência da permissão;
+  - **10 de banco,** trocando a função ou derrubando a restrição na base de teste e restaurando em seguida:
+    - o gatilho voltando a exigir o início posterior à criação;
+    - o pendente apontando para atendido;
+    - sem o CHECK de estado;
+    - sem a FK da prova;
+    - a remarcação com o gatilho temporal de volta;
+    - sem o CHECK de `created_in_error`;
+    - sem o CHECK da origem;
+    - o gatilho aceitando a prova anterior à criação;
+    - o `recordedAt` sem ser forçado no INSERT;
+    - o `recordedAt` mutável.
+- **O teste em cadeia da G3.3** (`clinics-webhook-guard`, "em CADEIA, a entidade RAIZ também é travada") falhou por timeout de 30 s. Foi uma vez numa rodada das suítes do Clinics e uma em três rodadas isoladas. Depois passou 20 vezes seguidas, inclusive com um monitor do banco a cada segundo.
+  - **É o mesmo teste da falha da b48,** anterior à F3.2.
+  - **Investigado:** não houve erro do banco nem checkpoint na janela, e as conexões derrubadas no log são dos próprios testes da guarda. Também não houve sinal de porta indisponível nessa suíte.
+  - **Causa não identificada,** e não atribuída ao ambiente.
+  - **O teste foi instrumentado:** cada espera sem prazo dele (a entrega chegar ao destino, terminar, e a troca terminar) agora falha em 20 s dizendo qual etapa travou, com o estado do destino, da sessão da guarda e das sessões do banco. A próxima ocorrência traz a evidência.
+
 **H2, H3 e H6 continuam não validadas.** A aprovação técnica deste plano não equivale à validação operacional.
 
 **Implementação da F3.1 (notas, 2026-10-21).**
@@ -3444,6 +3729,7 @@ O inventário de todas as colunas de data e hora (2026-10-19) mostrou o seguinte
 - **Premissa sobre dados existentes:** o padrão do servidor de staging (`postgres:17-alpine`, sem `TZ`) é UTC, então fixar a sessão não reinterpreta nada já gravado. Em outro ambiente, confira `SHOW timezone` antes do primeiro deploy: fora de UTC, os instantes gravados pelo banco mudariam de sentido pelo deslocamento do fuso.
 - O `updatedAt` do despacho mostra a hora do banco.
 - `clock_timestamp()` não é usado: `now()` é o início da transação, o mesmo referencial dos claims.
+  - **Exceção posterior:** a F3.2 (ADR-048, adendo 7) usa `clock_timestamp()` no `ClinicsAttendance.recordedAt`. O registro pode esperar a trava do agendamento, e a prova da conclusão do retorno precisa do instante de depois da espera. Isso não muda o referencial dos claims.
 
 **Alternativas.**
 

@@ -59,7 +59,7 @@ Regras:
 - Toda entidade de domínio tem `workspaceId` e entra no set `WORKSPACE_MODELS`.
 - `PrismaService` expõe `db` (extension que injeta `workspaceId` em creates, `AND: [{workspaceId}, where]` em queries, bloqueia `findUnique`/`update`/`delete`/`upsert` e **lança erro** sem workspace no CLS) e `raw` (sem filtro, uso excepcional documentado).
 - Violações de unique (P2002), de FK (P2003) e de exclusão (`23P01`, que o Prisma com driver adapter entrega como P2039 genérico, com o código original em `meta.driverAdapterError.cause`) viram **409, nunca 500**, pelo filtro global (`PrismaExceptionFilter`). O `detail` do Postgres, que traz ids e valores, não vai para a resposta nem para o log. A violação de `CHECK` (`23514`) continua 500 **de propósito**: o contrato valida as mesmas faixas, então ela só aconteceria por defeito.
-- `raw` restrito a: identidade global (User/RefreshToken), autenticação, provisionamento controlado, jobs cross-workspace, rotinas administrativas justificadas.
+- `raw` restrito a: identidade global (User/RefreshToken), autenticação, provisionamento controlado, jobs cross-workspace, a leitura do relógio do banco (`agoraDoBanco`, texto fixo e sem tabela), rotinas administrativas justificadas. A lista canônica, com os detalhes, é o §2 do `SECURITY.md`.
 - FKs compostas garantem integridade cross-workspace no banco (`FOREIGN KEY (workspaceId, xId) REFERENCES X(workspaceId, id)`).
 - Defesa em profundidade futura: RLS no Postgres (ADR adiado com gatilho).
 
@@ -124,7 +124,7 @@ Um vertical é um conjunto de módulos NestJS, contratos e telas que estende o C
 
 **O que não é ponto de extensão** (cada um exige ADR próprio): timeline do Core, catálogo de automações e de eventos de webhook, ferramentas de IA sobre dados do vertical, restrição de leitura por contato nas telas do Core, edição de papéis, quotas e billing por vertical.
 
-**Parametrizar o Core** continua valendo quando o efeito é universal. Exemplos: retorno como `Task` do Core, com título neutro; envio de mensagem pelo serviço de conversas, com aprovação humana. Vale só onde a fronteira de dados do vertical permite: o Clinics, por exemplo, não usa a IA do Core sobre seus contatos (ADR-048 §6).
+**Parametrizar o Core** continua valendo quando o efeito é universal. Exemplo: envio de mensagem pelo serviço de conversas, com aprovação humana. (O retorno do Clinics já foi exemplo daqui, como `Task` do Core com título neutro; o ADR-048 adendo 7 o tirou do Core, porque o contato, o responsável e o vencimento revelavam o que o título escondia.) Vale só onde a fronteira de dados do vertical permite: o Clinics, por exemplo, não usa a IA do Core sobre seus contatos (ADR-048 §6).
 
 Direção de dependência: vertical → Core. Nunca o contrário. A skill `create-vertical` operacionaliza este checklist.
 

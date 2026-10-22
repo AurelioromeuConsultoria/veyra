@@ -624,6 +624,21 @@ describe('Clinics — restrição de conteúdo com a porta real e API de libera�
           },
         });
       },
+      // o retorno passa pelo paciente, pelo serviço e pela unidade de um
+      // agendamento real (F3.2): nasce pendente e sem vínculo
+      ClinicsReturn: async () => {
+        const ag = await agendamentoComPais();
+        return prisma.raw.clinicsReturn.create({
+          data: {
+            workspaceId: wsA.workspaceId,
+            patientId: ag.patientId,
+            serviceId: ag.serviceId,
+            unitId: ag.unitId,
+            dueDate: new Date('2026-12-01T00:00:00Z'),
+            createdByMembershipId: ag.createdByMembershipId,
+          },
+        });
+      },
     };
 
     /** Agendamento fictício com os pais (paciente, profissional, serviço, unidade). */
