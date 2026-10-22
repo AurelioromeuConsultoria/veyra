@@ -3341,7 +3341,7 @@ O resto do item 6 continua valendo: campos, criação automática e manual, venc
 2. **Taxa de faltas (F3.3a), conforme o item 7 do plano.**
    - **Rota:** `GET /api/clinics/metrics/no-show?from&to&unitId&professionalId&serviceId`, com `clinics:schedule:read`. Os nomes seguem o contrato em inglês, como `dueFrom` e `dueTo` dos retornos, e não `de` e `ate` do texto do plano.
    - **Período:** datas locais `[from, to)`, com `from < to` e no máximo 366 dias. A unidade é obrigatória quando há mais de uma ativa, como na criação do retorno. O recorte por profissional e por serviço é opcional.
-   - **Resposta, só agregados, com DTO estrito:** `attended`, `noShow`, `rate` (`faltas / (atendidos + faltas)`, ou `null` para "sem dados", nunca 0 %), `pendingPast` (marcados, confirmados e chegados com início antes de agora) e `canceled` (à parte, fora da conta). Nenhuma pessoa, nenhum id de agendamento.
+   - **Resposta, só agregados, com DTO estrito:** `attended`, `noShow`, `rate` (`faltas / (atendidos + faltas)`; `null` só quando atendidos + faltas = 0, o "sem dados". Com atendidos e nenhuma falta, a taxa é 0 %, legítima), `pendingPast` (marcados, confirmados e chegados com início antes de agora) e `canceled` (à parte, fora da conta). Nenhuma pessoa, nenhum id de agendamento.
    - **"Antes de agora" pelo relógio do banco:** reusa o `agoraDoBanco`, uma leitura por operação e fora de transação. É o mesmo helper, com a mesma consulta fixa: nenhum `raw` novo. Como a aceitação da exceção foi "estritamente como implementada", **um segundo ponto de uso precisa de aprovação explícita**.
    - **Conversão do período: desvio do texto do plano, para decidir.** O plano diz "convertidas no banco". No banco, isso exigiria SQL cru com parâmetros (`AT TIME ZONE`), e a exceção do `raw` não autoriza ampliar o acesso. A recomendação é converter com `resolverHoraLocal`, a mesma função que converte a data e a hora locais em `startsAt` quando o agendamento é criado. É cálculo de fuso puro, sem relógio, e os limites ficam consistentes com a forma como o início foi gravado.
    - **Contagem:** dois `groupBy` por estado no client protegido, um sobre o período e outro sobre o período antes de agora. Sem persistência. Uma mudança de estado entre as duas consultas pode deslocar uma contagem em um, o que se aceita para uma métrica operacional e fica registrado.
@@ -3406,6 +3406,51 @@ O resto do item 6 continua valendo: campos, criação automática e manual, venc
 4. a rota de candidatos sem filtrar pela prova, em vez do vínculo pelo cartão da agenda (item 3);
 5. a regra de sugestão do diálogo de consumo: pré-selecionar só quando há exatamente um pacote elegível (item 5);
 6. a ficha do paciente por rota própria, com a leitura por id (itens 4 e 5).
+
+**Aprovação da F3.3 (decisão do usuário, 2026-10-22), com condições que valem como parte da decisão.** A F3.2 está encerrada, publicada e validada. O plano original da F3 se mantém, sem reduzir o escopo. A divisão em F3.3a (API) e F3.3b (telas e e2e) está aprovada, e as condições abaixo **substituem** o que divergir no detalhamento acima.
+
+1. **Relógio e período da taxa de faltas.**
+   - **O relógio:** reutiliza o `agoraDoBanco` sem alterar o helper nem ampliar a exceção de SQL cru, com um único instante do banco por operação.
+   - **A conversão:** os limites do período são convertidos na aplicação, com as funções compartilhadas de fuso.
+   - **O contrato deixa explícito:** as datas são locais da unidade, o início é inclusivo e o limite final é exclusivo, sempre pelo **início do agendamento**.
+   - **A regra do limite de dia, documentada antes do código.** Um dia local não tem sempre 24 horas, e a meia-noite pode não existir ou se repetir. A função atual (`resolverHoraLocal`) devolve "inexistente" ou "ambígua" para esses casos, e por isso a regra fica definida aqui: **o início do dia local D é o primeiro instante cuja data local é D.**
+     - Se a meia-noite existe uma vez, é ela.
+     - Se a meia-noite se repete, é a primeira ocorrência. Exemplo: Havana, 2025-11-02.
+     - Se a meia-noite cai no pulo, é o instante em que o pulo termina, o primeiro horário local que existe naquele dia. Exemplos: São Paulo, 2018-11-04, e Santiago, 2025-09-07.
+     - O período `[from, to)` vai do início de `from` ao início de `to`, sem presumir 24 horas por dia. Exemplo: São Paulo, 2019-02-16, um dia de 25 horas.
+     - Conferido na base de fusos do runtime. A regra vira uma função compartilhada nos contratos (`inicioDoDiaLocal`), com testes desses casos e de um dia comum.
+   - **Testes exigidos:** as mudanças de horário de verão e os limites de dia, com agendamentos encostados nos dois limites.
+   - **A taxa:**
+     - "sem dados" vale **só** quando atendidos + faltas = 0, e então a taxa é nula (`null`), não zero;
+     - com atendimentos e nenhuma falta, a taxa é 0 %, legítima;
+     - os cancelados e os passados sem desfecho ficam separados, fora do denominador.
+2. **Consumo de pacote (F3.3b).**
+   - **Nenhum pacote é pré-selecionado**, nem quando há só um elegível. A pessoa escolhe explicitamente "avulso" ou um pacote, e antes de confirmar vê o pacote e o saldo antes e depois.
+   - **Falha ao carregar os pacotes não vira escolha automática por "avulso".** O diálogo mostra a falha, oferece recarregar e não confirma enquanto não houver lista.
+   - **Se o saldo mudar até a confirmação,** a recusa do servidor é apresentada e as opções são atualizadas. Nunca se troca de pacote nem se registra "avulso" em silêncio.
+   - **Sem `care:read`,** que é preciso para listar pacotes, a pessoa não vê pacotes e registra só "avulso", explicitamente e com o aviso.
+3. **Candidatos ao vínculo do retorno (F3.3a).**
+   - **Permissões:** as mesmas da ação de vincular (`schedule:read` na rota, e `schedule:write` ou `care:write`). A rota respeita o workspace e devolve só dados operacionais permitidos.
+   - **A lista independe da prova temporal e da origem oculta do atendimento**, inclusive na contagem, na ordenação e na paginação. Os critérios são só os visíveis na agenda:
+     - o mesmo paciente, o mesmo serviço e a mesma unidade;
+     - um estado que aceita vínculo;
+     - nenhum vínculo a outro retorno.
+
+     Por isso, o agendamento do atendimento de origem aparece como qualquer outro, e o vínculo dele é recusado com a mesma resposta neutra. Não há selo de "pode concluir".
+
+   - **É uma seleção de candidatos, não uma garantia de sucesso:** o vínculo reconfere tudo na transação.
+   - **Sem truncamento silencioso:** a resposta é paginada, com `limit` explícito (padrão 20, máximo 50), ordem por início e id, e `nextCursor` quando há mais. Há também um filtro opcional `from`, uma data local da unidade convertida pela mesma regra do início do dia.
+4. **Paciente por id e telas.**
+   - **A leitura por id** tem a mesma autorização e a mesma projeção da lista, inclusive a omissão de `contactId` sem `contacts:read`. O acesso direto à URL não contorna isso. Outro workspace recebe 404.
+   - **Sem `care:read`,** a seção de pacotes não aparece e **nenhuma consulta a pacotes é feita**. Os testes da F3.3b cobrem também a troca de sessão, a falha de recarga e as respostas antigas.
+5. **Sequência e aceite.**
+   - **A F3.3a começa depois deste registro.** Ela termina com `reviewer`, `security` e bateria sobre a versão final, e com o commit local, e para para revisão antes do push e da F3.3b.
+   - **O e2e da F3.3b inclui:**
+     - o "sem dados" e o 0 % legítimo;
+     - a escolha explícita entre avulso e pacote;
+     - a recepção sem acesso aos dados de atendimento e de pacote.
+
+Sem deploy, sem ativação do Clinics e sem dados reais. Os bloqueios operacionais e de piloto permanecem.
 
 **Implementação da F3.1 (notas, 2026-10-21).**
 
