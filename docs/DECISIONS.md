@@ -3657,3 +3657,18 @@ O inventário de todas as colunas de data e hora (2026-10-19) mostrou o seguinte
 - **Locks até o `COMMIT`:** a migration segura os locks até o fim, e as esperas se somam. Migration em tabela muito escrita roda em manutenção, como manda o runbook.
 - **Mais trabalho por migration:** o ensaio da falha forçada e o inventário entram no checklist da skill `create-migration` e no do agente `database`. O Definition of Done do `CLAUDE.md` (§6) não muda sem decisão do usuário. Se ele quiser, a linha seria "migration nova transacional, com inventário e falha forçada ensaiada (ADR-051)".
 - **Futuro, não decidido:** um hook que pergunte quando uma migration nova não tem `BEGIN`. Hoje a regra vale pela skill e pela revisão.
+
+### Adendo 1 (2026-10-22) — a evidência corresponde ao que a migration muda (decisão do usuário)
+
+O dump só de schema não prova o rollback de um backfill, e o "inventário zero" vale para objetos novos, não para qualquer migration. A recuperação verificável do item 3 passa a pedir a evidência do tipo de mudança:
+
+- **Objetos novos:** inventário em zero depois da falha forçada e com a contagem completa depois da aplicação.
+- **Objetos existentes alterados** (coluna nova em tabela existente; índice, gatilho, função ou restrição em tabela existente): a comparação das **definições anteriores e finais**. Depois da falha forçada, o `pg_dump --schema=public --schema-only` sai idêntico ao de antes. Depois da aplicação, a diferença entre os dois dumps é o efeito inteiro da migration, e precisa conter só o que ela declara.
+- **Migration de dados** (backfill, correção): a conferência **dos dados**.
+  - A base descartável é semeada com linhas representativas.
+  - Uma consulta de conferência (contagem, soma ou `md5` das linhas afetadas) dá o mesmo resultado antes e depois da falha forçada.
+  - Depois da aplicação, a consulta dá o resultado esperado, escrito antes do ensaio.
+
+A skill `create-migration` traz o bloco de ensaio com as três evidências: os ganchos de dados são opcionais, e a diferença de definições sai sempre, para conferência. O bloco foi ensaiado na `20261021120000_clinics_packages` (objetos novos) e numa migration sintética de dados, numa cópia temporária do repositório: a falha deixou os dados intactos, e o resultado esperado errado interrompeu o ensaio.
+
+**Definition of Done:** o `CLAUDE.md` (§6) ganha a linha aprovada: "migration nova conforme ADR-051, com atomicidade ou exceção justificada e recuperação ensaiada".

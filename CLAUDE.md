@@ -70,6 +70,7 @@ pnpm monorepo · TypeScript strict ponta a ponta · NestJS (monólito modular) �
 - [ ] Toda tabela nova tem `workspaceId`, entrou em `WORKSPACE_MODELS` e tem índice composto.
 - [ ] Nenhum segredo em texto plano; nenhum `.env` staged (só `.env.example`).
 - [ ] Migration comitada junto do código que a usa.
+- [ ] Migration nova conforme ADR-051, com atomicidade ou exceção justificada e recuperação ensaiada.
 - [ ] Testes relevantes passam; mudança em tenancy/RBAC tem teste de isolamento.
 - [ ] `docs/` atualizado se comportamento ou decisão mudou.
 - [ ] Push somente se pedido explicitamente.

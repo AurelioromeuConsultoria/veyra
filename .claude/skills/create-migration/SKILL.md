@@ -24,7 +24,11 @@ Referências: `docs/DOMAIN_MODEL.md §1`, `docs/SECURITY.md §2`, `docs/DECISION
    - **Valor novo de enum** (`ALTER TYPE ... ADD VALUE`) não é exceção: roda em transação, mas só pode ser usado depois do `COMMIT`. Quem precisa usá-lo faz duas migrations transacionais, a do valor primeiro.
    - **Cabeçalho da migration:** o que ela faz, os locks que pede e a **estimativa** das esperas por lock (o `lock_timeout` limita cada espera, não a soma nem o tempo de execução), e "se falhar: `DEPLOY_STAGING` §4, nunca `rolled-back` às cegas".
 5. **Aplique** com `prisma migrate dev` (aplica a migration já editada) e confira o resultado.
-6. **Recuperação verificável, antes do commit** (ADR-051 §3):
+6. **Recuperação verificável, antes do commit** (ADR-051 §3 e adendo 1). A evidência corresponde ao que a migration muda:
+   - **objetos novos:** o inventário (zero depois da falha, completo depois da aplicação);
+   - **objetos existentes alterados:** as definições anteriores e finais. O bloco abaixo imprime a diferença entre os dois dumps, e ela precisa conter só o que a migration declara;
+   - **migration de dados:** a conferência dos dados, com a base semeada e uma consulta cujo resultado esperado é escrito antes do ensaio (`SEMEIA`, `DADOS` e `DADOS_ESPERADO` no bloco). O dump só de schema não prova o rollback de um backfill. "Inventário zero" só vale para objetos novos; sem objeto novo, `ESPERADO` é 0 e o inventário pode ser uma consulta vazia.
+
    - **Inventário:** escreva a consulta que lista cada objeto criado pela migration (tipo, tabela, coluna, índice, restrição com `contype <> 'n'`, função, gatilho), com a contagem esperada. Ela vai para o `DEPLOY_STAGING` §4, em "Falha de migration", como a da `20261021120000_clinics_packages`.
    - **Ensaie a falha forçada pelo mesmo `prisma migrate deploy`**, com o bloco abaixo, rodado da raiz do repositório depois de trocar os três valores. Ele tem travas:
      - o banco descartável tem **sempre** o prefixo `veyra_ensaio_` e é apagado no fim, mesmo em falha. Nunca use `veyra`, `veyra_test` nem `veyra_e2e`;
@@ -38,7 +42,8 @@ Referências: `docs/DOMAIN_MODEL.md §1`, `docs/SECURITY.md §2`, `docs/DECISION
 
      **O bloco foi ensaiado**, com cada trava num teste por linha (com `set -e`, um teste no meio de `&&` não interrompe):
      - sobre a `20261021120000_clinics_packages`: "Ensaio OK";
-     - interrompe com mensagem nos outros casos: valores sem trocar, migration sem `BEGIN`, migration com duas transações e inventário com SQL inválido (já no passo 1).
+     - interrompe com mensagem nos outros casos: valores sem trocar, migration sem `BEGIN`, migration com duas transações e inventário com SQL inválido (já no passo 1);
+     - numa migration de dados sintética, numa cópia temporária do repositório: a falha deixou os dados intactos e a aplicação deu o esperado. Com o esperado errado, ou com só um de `DADOS` e `DADOS_ESPERADO`, interrompeu.
 
      Na falha, os logs aparecem antes de o diretório temporário ser apagado.
 
@@ -47,7 +52,11 @@ Referências: `docs/DOMAIN_MODEL.md §1`, `docs/SECURITY.md §2`, `docs/DECISION
      set -euo pipefail
      NOVA='<pasta da migration nova>'          # em apps/api/prisma/migrations
      INV='<arquivo com o inventário>'           # a consulta que vai para o DEPLOY_STAGING §4
-     ESPERADO='<objetos que ela cria>'          # a contagem do inventário com ela aplicada
+     ESPERADO='<objetos que ela cria>'          # a contagem do inventário com ela aplicada (0 se não cria objeto)
+     # migration de DADOS (backfill, correção): o dump só de schema não prova o rollback
+     SEMEIA=''          # opcional: SQL que semeia a base com linhas representativas e FICTÍCIAS (nunca dado copiado de ambiente real)
+     DADOS=''           # opcional: consulta de conferência dos dados (contagem, soma, md5)
+     DADOS_ESPERADO=''  # opcional: a saída esperada da consulta depois da migration
      BASE="veyra_ensaio_$(date +%s)"            # SEMPRE com o prefixo veyra_ensaio_
      PG=postgresql://veyra:veyra_dev@localhost:5434   # o Postgres local de dev (container veyra-postgres)
      API=$(git rev-parse --show-toplevel)/apps/api
@@ -57,6 +66,11 @@ Referências: `docs/DOMAIN_MODEL.md §1`, `docs/SECURITY.md §2`, `docs/DECISION
      pare() { echo "ENSAIO INTERROMPIDO: $*" >&2; exit 1; }
      [ -f "$M" ] || pare "migration não encontrada: $M"
      [ -f "$INV" ] || pare "inventário não encontrado: $INV"
+     for f in "$SEMEIA" "$DADOS" "$DADOS_ESPERADO"; do [ -z "$f" ] || [ -f "$f" ] || pare "arquivo não encontrado: $f"; done
+     # a conferência dos dados só vale inteira: a consulta E o resultado esperado
+     if { [ -n "$DADOS" ] && [ -z "$DADOS_ESPERADO" ]; } || { [ -z "$DADOS" ] && [ -n "$DADOS_ESPERADO" ]; }; then
+       pare "DADOS e DADOS_ESPERADO andam juntos"
+     fi
      # a regra do ADR-051: transação explícita, exatamente um BEGIN e um COMMIT
      [ "$(grep -c '^BEGIN;$' "$M")" = 1 ] || pare "ADR-051: a migration precisa de exatamente um BEGIN;"
      [ "$(grep -c '^COMMIT;$' "$M")" = 1 ] || pare "ADR-051: a migration precisa de exatamente um COMMIT;"
@@ -67,13 +81,17 @@ Referências: `docs/DOMAIN_MODEL.md §1`, `docs/SECURITY.md §2`, `docs/DECISION
      esquema() { docker exec veyra-postgres pg_dump -U veyra -d "$BASE" --schema=public --schema-only --no-owner --no-privileges | grep -vE '^--|^\\(un)?restrict' | sed '/^$/d'; }
      deploy() { (cd "$API" && DATABASE_URL="$PG/$BASE" npx prisma migrate deploy --config "$E/prisma.config.ts"); }
      inventario() { psql_ -d "$BASE" -f - < "$INV" | wc -l | tr -d ' '; }
+     dados() { psql_ -d "$BASE" -f - < "$DADOS"; }
+     semeia() { [ -z "$SEMEIA" ] || psql_ -d "$BASE" -f - < "$SEMEIA"; }
      # 1. a base: todas as migrations ANTES da nova, numa cópia fora do repositório
      mkdir -p "$E/migrations"; cp "$API/prisma/migrations/migration_lock.toml" "$E/migrations/"
      for d in "$API"/prisma/migrations/*/; do d=${d%/}; [ "${d##*/}" = "$NOVA" ] || cp -R "$d" "$E/migrations/"; done
      printf "export default { schema: '%s/prisma/schema', migrations: { path: '%s/migrations' }, datasource: { url: process.env.DATABASE_URL } };\n" "$API" "$E" > "$E/prisma.config.ts"
      docker exec veyra-postgres createdb -U veyra "$BASE"
      deploy > "$E/base.log" 2>&1
+     semeia
      esquema > "$E/antes.sql"
+     [ -z "$DADOS" ] || dados > "$E/dados-antes.txt"
      n=$(inventario); [ "$n" = 0 ] || pare "antes da migration, o inventário deu $n (esperado 0)"
      # 2. a falha forçada antes do COMMIT: o deploy falha e NADA muda
      mkdir "$E/migrations/$NOVA"
@@ -82,12 +100,20 @@ Referências: `docs/DOMAIN_MODEL.md §1`, `docs/SECURITY.md §2`, `docs/DECISION
      esquema > "$E/depois.sql"
      diff "$E/antes.sql" "$E/depois.sql" || pare "a falha deixou o schema diferente do de antes"
      n=$(inventario); [ "$n" = 0 ] || pare "depois da falha, o inventário deu $n (esperado 0)"
-     echo "falha forçada: schema intacto, inventário 0"
-     # 3. a aplicação limpa, num banco novo: o inventário completo e o diff vazio
+     if [ -n "$DADOS" ]; then dados > "$E/dados-falha.txt"; diff "$E/dados-antes.txt" "$E/dados-falha.txt" || pare "a falha mudou os dados"; fi
+     echo "falha forçada: schema intacto, inventário 0$([ -z "$DADOS" ] || echo ', dados intactos')"
+     # 3. a aplicação limpa, num banco novo: a base (semeada), depois a nova
      docker exec veyra-postgres dropdb -U veyra "$BASE"; docker exec veyra-postgres createdb -U veyra "$BASE"
-     cp "$M" "$E/migrations/$NOVA/migration.sql"
+     rm -r "$E/migrations/$NOVA"; deploy > "$E/limpa-base.log" 2>&1; semeia
+     mkdir "$E/migrations/$NOVA"; cp "$M" "$E/migrations/$NOVA/migration.sql"
      deploy > "$E/limpa.log" 2>&1
      n=$(inventario); [ "$n" = "$ESPERADO" ] || pare "aplicada, o inventário deu $n (esperado $ESPERADO)"
+     if [ -n "$DADOS" ]; then dados > "$E/dados-depois.txt"; diff "$DADOS_ESPERADO" "$E/dados-depois.txt" || pare "aplicada, os dados não deram o esperado"; fi
+     # as definições que mudaram: o efeito INTEIRO da migration no schema, para conferir
+     # que são só as declaradas (objetos existentes alterados aparecem aqui)
+     esquema > "$E/aplicada.sql"
+     echo "== mudanças de definição (antes → aplicada), confira que são só as declaradas:"
+     diff "$E/antes.sql" "$E/aplicada.sql" || true
      (cd "$API" && DATABASE_URL="$PG/$BASE" npx prisma migrate diff --from-config-datasource --to-schema prisma/schema --exit-code --config "$E/prisma.config.ts") > "$E/diff.log"
      echo "aplicação limpa: inventário $ESPERADO e migrate diff vazio. Ensaio OK"
      )
