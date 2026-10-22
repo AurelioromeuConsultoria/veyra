@@ -3344,7 +3344,7 @@ O resto do item 6 continua valendo: campos, criação automática e manual, venc
    - **Resposta, só agregados, com DTO estrito:** `attended`, `noShow`, `rate` (`faltas / (atendidos + faltas)`; `null` só quando atendidos + faltas = 0, o "sem dados". Com atendidos e nenhuma falta, a taxa é 0 %, legítima), `pendingPast` (marcados, confirmados e chegados com início antes de agora) e `canceled` (à parte, fora da conta). Nenhuma pessoa, nenhum id de agendamento.
    - **"Antes de agora" pelo relógio do banco:** reusa o `agoraDoBanco`, uma leitura por operação e fora de transação. É o mesmo helper, com a mesma consulta fixa: nenhum `raw` novo. Como a aceitação da exceção foi "estritamente como implementada", **um segundo ponto de uso precisa de aprovação explícita**.
    - **Conversão do período: desvio do texto do plano, para decidir.** O plano diz "convertidas no banco". No banco, isso exigiria SQL cru com parâmetros (`AT TIME ZONE`), e a exceção do `raw` não autoriza ampliar o acesso. A recomendação é converter com `resolverHoraLocal`, a mesma função que converte a data e a hora locais em `startsAt` quando o agendamento é criado. É cálculo de fuso puro, sem relógio, e os limites ficam consistentes com a forma como o início foi gravado.
-   - **Contagem:** dois `groupBy` por estado no client protegido, um sobre o período e outro sobre o período antes de agora. Sem persistência. Uma mudança de estado entre as duas consultas pode deslocar uma contagem em um, o que se aceita para uma métrica operacional e fica registrado.
+   - **Contagem:** dois `groupBy` por estado no client protegido, um sobre o período e outro sobre o período antes de agora. Sem persistência. As duas consultas podem observar estados diferentes, porque várias mudanças concorrentes podem acontecer entre elas. Isso se aceita para este indicador operacional e fica registrado. _(Corrigido na decisão do usuário sobre a F3.3a: o texto anterior limitava a diferença a um, e não há esse limite.)_
    - **Testes:**
      - a definição: o denominador, o "sem dados", os cancelados à parte e os passados sem desfecho;
      - os limites do período no fuso da unidade, com um agendamento às 23h30 locais do último dia;
@@ -3456,7 +3456,7 @@ Sem deploy, sem ativação do Clinics e sem dados reais. Os bloqueios operaciona
 
 - **Complemento da regra do limite de dia: PROPOSTO na F3.3a, a confirmar pelo usuário.** Ele muda uma regra aprovada, por isso fica fora do bloco da aprovação.
   - **O achado:** uma varredura de todos os fusos do runtime mostrou que um dia local pode **não existir**. Samoa (`Pacific/Apia`) e Tokelau (`Pacific/Fakaofo`) atravessaram a linha de data e pularam 2011-12-30 inteiro. A regra aprovada ("o primeiro instante cuja data local é D") não define nada para esses dias, e a função lançava erro.
-  - **A proposta:** o início do dia local D passa a ser **o primeiro instante cuja data local é D ou posterior**. Para todo dia que existe, o resultado é o mesmo da regra aprovada. Para um dia que não existe, é o início do dia seguinte que existe. Assim, o período `[2011-12-30, 2011-12-31)` em Samoa é vazio, e `[2011-12-29, 2011-12-31)` tem 24 horas.
+  - **A proposta:** o início do dia local D passa a ser **o primeiro instante cuja data local é D ou posterior**. Para todo dia que existe, o resultado é o mesmo da regra aprovada. Para um dia que não existe, é o início do dia seguinte que existe. Assim, em Samoa, fica vazio só o intervalo que corresponde exclusivamente ao dia pulado, `[2011-12-30, 2011-12-31)`, porque os dois limites coincidem. Um período maior que comece nesse dia continua incluindo os dias existentes seguintes: `[2011-12-30, 2012-01-01)` inclui o dia 31. E `[2011-12-29, 2011-12-31)` tem 24 horas.
   - **A ordem:** o texto desta proposta foi escrito antes do código dele, na mesma sessão, e vai para um commit de documentação separado, antes do commit da F3.3a.
   - **As varreduras:** 418 fusos, nos dias de mudança de deslocamento e nos vizinhos.
     - De 2000 a 2100, o intervalo que o contrato aceita, não há nenhum erro, e o resultado é sempre exatamente o primeiro instante. Os únicos dias com o início lido em outra data são os dois que não existem. O `reviewer` confirmou isso com uma verificação própria, que não usa a lógica da função, em cerca de 140 mil dias.
@@ -3475,8 +3475,8 @@ Sem deploy, sem ativação do Clinics e sem dados reais. Os bloqueios operaciona
   - **Profissional e serviço do recorte:** um inexistente, ou de outro workspace, dá zeros ("sem dados"), e não 404. A consulta passa pelo filtro do workspace, então a resposta não diz se o id existe.
   - **A varredura por minuto do `inicioDoDiaLocal`** nunca é alcançada de 2000 a 2100 (as duas verificações). Fica como defesa documentada, com custo limitado a uns 3.200 passos.
   - **Agendamentos vinculados nos candidatos:** saem todos os que estão vinculados a algum retorno, inclusive o do próprio retorno, que já aparece no vínculo dele. Esse critério é visível na agenda.
-  - **O cursor dos candidatos** é opaco (`base64url` do início e do id). Um cursor malformado ou forjado dá 400: o id precisa ser UUID estrito, e o instante, o ISO que o servidor escreve, com ano de 0001 a 9999.
-  - **As duas contagens da taxa** são consultas separadas. O deslocamento possível de um está registrado no serviço.
+  - **O cursor dos candidatos** é opaco por contrato (`base64url` do início e do id), mas **não é assinado**. A validação recusa com 400 o cursor malformado: o id precisa ser UUID estrito, e o instante, o ISO que o servidor escreve, com ano de 0001 a 9999. Ela não recusa necessariamente todo cursor fabricado com valores válidos, e não há garantia de autenticidade. Um cursor fabricado assim só reposiciona a página: a autorização continua nos filtros do servidor, que são o workspace e o paciente, o serviço e a unidade do retorno. _(Precisão da decisão do usuário sobre a F3.3a.)_
+  - **As duas contagens da taxa** são consultas separadas e podem observar estados diferentes, porque várias mudanças concorrentes podem acontecer entre elas. Isso foi aceito para este indicador operacional. O comentário do serviço ainda fala em "deslocar em um", o que é impreciso, e será corrigido quando o arquivo for alterado de novo, sem reabrir agora o código aprovado.
 - **Testes:**
   - **Unitários, o início do dia (6 novos):**
     - São Paulo: o dia comum, a meia-noite no pulo de 2018 e o dia de 25 h de 2019;
@@ -3534,7 +3534,7 @@ Sem deploy, sem ativação do Clinics e sem dados reais. Os bloqueios operaciona
 **Revisão da F3.3a (`reviewer` e `security`, os dois aprovando com ressalvas, sem P0) e o que mudou com ela:**
 
 - **P1 do `reviewer`:** o complemento da regra do dia estava escrito dentro do bloco da aprovação do usuário, como se fosse dele. Foi para estes Resultados, marcado como proposto e a confirmar. Ganhou Tokelau (`Pacific/Fakaofo`), que o `reviewer` achou, e as faixas corretas das varreduras. O texto vai num commit de documentação antes do commit da F3.3a.
-- **P2 do `security`: o cursor dos candidatos validava pouco.** Um id de 36 hífens, ou um instante que o JS lê mas o banco recusa (como `-271821-04-20`), virava 500. Um teste reproduziu esse 500 antes da correção. Agora o cursor exige um UUID estrito e o formato ISO que o servidor escreve, com ano de quatro dígitos. A confirmação dos dois achou ainda o ano `0000`, que o Postgres não tem. Ele também é recusado agora, e um teste e uma mutação provam que, sem essa guarda, a resposta era 500. O forjado dá 400.
+- **P2 do `security`: o cursor dos candidatos validava pouco.** Um id de 36 hífens, ou um instante que o JS lê mas o banco recusa (como `-271821-04-20`), virava 500. Um teste reproduziu esse 500 antes da correção. Agora o cursor exige um UUID estrito e o formato ISO que o servidor escreve, com ano de quatro dígitos. A confirmação dos dois achou ainda o ano `0000`, que o Postgres não tem. Ele também é recusado agora, e um teste e uma mutação provam que, sem essa guarda, a resposta era 500. O cursor malformado dá 400. Como o cursor não é assinado, isso não é garantia de autenticidade: o comentário do `lerCursor` ("um cursor forjado é 400") diz mais do que a validação faz, e será corrigido quando o arquivo for alterado de novo.
 - **P2 do `reviewer`: três lacunas de teste.** Eram o critério de unidade dos candidatos, a unidade arquivada da taxa (com o caso de nenhuma ativa registrado) e o `from` pela regra do dia. Viraram testes, e as mutações delas morrem.
 - **Nits:**
   - os pares de limite que faltavam;
@@ -3545,6 +3545,30 @@ Sem deploy, sem ativação do Clinics e sem dados reais. Os bloqueios operaciona
   - a citação da aprovação no `SECURITY.md`;
   - a lista fixa de quem pode usar o `agoraDoBanco`, numa regra estática: hoje só a taxa e os retornos;
   - as duas noções de limite de dia, a da agenda e a nova, como dívida com gatilho em `technical-debt.md`.
+
+**Decisão do usuário sobre a F3.3a (2026-10-22), com o push autorizado:**
+
+1. **O dia local inexistente:** aprovada a regra "o primeiro instante cuja data local é D ou posterior". A explicação foi ajustada nos Resultados. Ficam os testes do dia pulado isolado e de um período que atravessa esse dia.
+2. **Filtros e candidatos, aprovados:**
+   - a unidade arquivada vale quando informada;
+   - a unidade é exigida quando não há exatamente uma ativa;
+   - profissional ou serviço sem correspondência no workspace dá contagens zero e taxa nula;
+   - os candidatos excluem os agendamentos já vinculados, inclusive o vínculo atual, que continua mostrado separadamente.
+
+   A seleção segue sem usar a origem nem a prova temporal oculta, e o vínculo mantém a reconferência na transação.
+
+3. **Precisões documentais:**
+   - o cursor é opaco, mas não é assinado, e não há garantia de autenticidade;
+   - as duas consultas da métrica podem observar estados diferentes, sem o limite de um.
+
+   Entram neste commit de documentação, sem reabrir o código.
+
+4. **A divergência entre a agenda e as métricas** fica como dívida, com o gatilho registrado. **O suporte aos fusos raros em que as duas regras divergem não está validado de ponta a ponta enquanto elas divergirem.**
+5. **Próxima etapa:** com o CI verde, a F3.3b segue o plano aprovado. Continuam obrigatórios:
+   - a escolha explícita entre avulso e pacote;
+   - nenhuma consulta a pacotes sem permissão;
+   - o tratamento de falha sem dados antigos;
+   - a distinção entre taxa zero e "sem dados".
 
 **Implementação da F3.1 (notas, 2026-10-21).**
 
