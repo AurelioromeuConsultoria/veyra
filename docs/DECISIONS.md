@@ -3452,6 +3452,17 @@ O resto do item 6 continua valendo: campos, criação automática e manual, venc
 
 Sem deploy, sem ativação do Clinics e sem dados reais. Os bloqueios operacionais e de piloto permanecem.
 
+**Resultados da F3.3a (API), para revisão.**
+
+- **Complemento da regra do limite de dia: PROPOSTO na F3.3a, a confirmar pelo usuário.** Ele muda uma regra aprovada, por isso fica fora do bloco da aprovação.
+  - **O achado:** uma varredura de todos os fusos do runtime mostrou que um dia local pode **não existir**. Samoa (`Pacific/Apia`) e Tokelau (`Pacific/Fakaofo`) atravessaram a linha de data e pularam 2011-12-30 inteiro. A regra aprovada ("o primeiro instante cuja data local é D") não define nada para esses dias, e a função lançava erro.
+  - **A proposta:** o início do dia local D passa a ser **o primeiro instante cuja data local é D ou posterior**. Para todo dia que existe, o resultado é o mesmo da regra aprovada. Para um dia que não existe, é o início do dia seguinte que existe. Assim, o período `[2011-12-30, 2011-12-31)` em Samoa é vazio, e `[2011-12-29, 2011-12-31)` tem 24 horas.
+  - **A ordem:** o texto desta proposta foi escrito antes do código dele, na mesma sessão, e vai para um commit de documentação separado, antes do commit da F3.3a.
+  - **As varreduras:** 418 fusos, nos dias de mudança de deslocamento e nos vizinhos.
+    - De 2000 a 2100, o intervalo que o contrato aceita, não há nenhum erro, e o resultado é sempre exatamente o primeiro instante. Os únicos dias com o início lido em outra data são os dois que não existem. O `reviewer` confirmou isso com uma verificação própria, que não usa a lógica da função, em cerca de 140 mil dias.
+    - De 1970 a 1999, um caso falha: Monrovia 1972, com deslocamento em segundos, de antes da padronização. O contrato já recusa anos antes de 2000.
+  - **Um caso raro que a regra também cobre:** em Goose Bay (2000 a 2010), a meia-noite acontece, o relógio volta para o dia anterior às 00:01 e a meia-noite acontece de novo. O dia começa na primeira entrada. Os períodos são faixas contínuas de instantes, então os horários lidos depois disso como do dia anterior ficam dentro da faixa do dia.
+
 **Implementação da F3.1 (notas, 2026-10-21).**
 
 - **O `dealId` do pacote fica fora da F3.1.** Uma FK composta para o `Deal` do Core travaria a exclusão de deals. A alternativa seria `SET NULL` só na coluna (`ON DELETE SET NULL ("dealId")`), que o Prisma não modela sem drift. Como o vínculo só serve ao fluxo comercial, ele volta com a F4, por ADR.
