@@ -3330,6 +3330,83 @@ O resto do item 6 continua valendo: campos, criação automática e manual, venc
 
 **H2, H3 e H6 continuam não validadas.** A aprovação técnica deste plano não equivale à validação operacional.
 
+**Detalhamento da F3.3 (PROPOSTO, 2026-10-22).** O escopo aprovado é a taxa de faltas na API, as telas de pacote, saldo, retornos e faltas, e o e2e. A F3.3 não tem migration: a taxa usa o índice `(workspaceId, unitId, startsAt)`, que já existe, e nada muda no que a F3.1 e a F3.2 garantem no banco. Somente dados fictícios, sem deploy e sem ativação.
+
+1. **Duas entregas, cada uma com `reviewer` e `security`, bateria completa e parada para revisão:**
+   - **F3.3a, na API:** a taxa de faltas, os candidatos ao vínculo de um retorno e a leitura de um paciente por id;
+   - **F3.3b:** as telas e o e2e, sobre a API já revisada.
+
+   A recomendação é separar porque a F3.3a mexe em autorização e em agregação, e merece revisão própria antes das telas, que são a parte maior.
+
+2. **Taxa de faltas (F3.3a), conforme o item 7 do plano.**
+   - **Rota:** `GET /api/clinics/metrics/no-show?from&to&unitId&professionalId&serviceId`, com `clinics:schedule:read`. Os nomes seguem o contrato em inglês, como `dueFrom` e `dueTo` dos retornos, e não `de` e `ate` do texto do plano.
+   - **Período:** datas locais `[from, to)`, com `from < to` e no máximo 366 dias. A unidade é obrigatória quando há mais de uma ativa, como na criação do retorno. O recorte por profissional e por serviço é opcional.
+   - **Resposta, só agregados, com DTO estrito:** `attended`, `noShow`, `rate` (`faltas / (atendidos + faltas)`, ou `null` para "sem dados", nunca 0 %), `pendingPast` (marcados, confirmados e chegados com início antes de agora) e `canceled` (à parte, fora da conta). Nenhuma pessoa, nenhum id de agendamento.
+   - **"Antes de agora" pelo relógio do banco:** reusa o `agoraDoBanco`, uma leitura por operação e fora de transação. É o mesmo helper, com a mesma consulta fixa: nenhum `raw` novo. Como a aceitação da exceção foi "estritamente como implementada", **um segundo ponto de uso precisa de aprovação explícita**.
+   - **Conversão do período: desvio do texto do plano, para decidir.** O plano diz "convertidas no banco". No banco, isso exigiria SQL cru com parâmetros (`AT TIME ZONE`), e a exceção do `raw` não autoriza ampliar o acesso. A recomendação é converter com `resolverHoraLocal`, a mesma função que converte a data e a hora locais em `startsAt` quando o agendamento é criado. É cálculo de fuso puro, sem relógio, e os limites ficam consistentes com a forma como o início foi gravado.
+   - **Contagem:** dois `groupBy` por estado no client protegido, um sobre o período e outro sobre o período antes de agora. Sem persistência. Uma mudança de estado entre as duas consultas pode deslocar uma contagem em um, o que se aceita para uma métrica operacional e fica registrado.
+   - **Testes:**
+     - a definição: o denominador, o "sem dados", os cancelados à parte e os passados sem desfecho;
+     - os limites do período no fuso da unidade, com um agendamento às 23h30 locais do último dia;
+     - o relógio do Node deslocado não muda os passados sem desfecho;
+     - o RBAC, inclusive o guest;
+     - o P0 de isolamento: o workspace B não conta nada de A;
+     - o DTO estrito.
+
+3. **Candidatos ao vínculo (F3.3a, rota nova e pequena):** `GET /api/clinics/returns/:id/candidates`, com `schedule:read` e a ação do retorno (`schedule:write` ou `care:write`).
+   - **O que devolve:** os agendamentos do mesmo paciente, serviço e unidade, em estado que aceita vínculo e sem outro retorno, ordenados pelo início, com no máximo 50. Os campos são `id`, `startsAt`, `status` e o nome do profissional. Para retorno encerrado, a resposta é 409.
+   - **Sem filtrar pela prova.** Um agendamento atendido e livre aparece sem dizer se concluiria o retorno. Filtrar pela prova daria, sem custo, exatamente a informação que o vínculo só revela concluindo (a inferência residual aceita).
+   - **Alternativa:** vincular pelo cartão da agenda, sem rota nova. A recomendação é a rota, porque a recepção trabalha a lista de retornos, e o servidor decide a elegibilidade num lugar só.
+
+4. **Paciente por id (F3.3a):** `GET /api/clinics/patients/:id`, com `schedule:read` e a mesma projeção da lista. O `contactId` só vai para quem tem `contacts:read`. Serve à ficha, que precisa funcionar por link direto.
+
+5. **Telas (F3.3b).** Estado de servidor só no TanStack Query, com a chave incluindo a membership, como hoje. Nada do vertical é consultado antes do status ativo confirmado. Esconder é usabilidade: quem garante é o servidor.
+   - **Ficha do paciente** (`/clinics/patients/:id`, `schedule:read`): os retornos do paciente e, só com `care:read`, a seção **Pacotes**.
+     - Os pacotes mostram serviço, total, consumidas, restantes, estado e o preço total registrado. O preço é chamado "registrado", e não "pago": a D1 segue aberta.
+     - **Criar** (`care:write` e `schedule:read`): serviço, total de sessões e preço total opcional digitado, com uma confirmação que mostra o que fica congelado.
+     - **Cancelar** (`care:write`): uma confirmação que diz que as consumidas ficam e que não há reabertura.
+   - **Registro de atendimento na agenda** (`care:write`), com o consumo explícito do item 4 do plano:
+     - um diálogo lista os pacotes ativos do paciente para aquele serviço, com saldo, e a opção "Avulso";
+     - mostra o saldo antes e depois, e o botão nomeia a escolha;
+     - **sugestão:** com exatamente um pacote elegível, ele vem pré-selecionado; com dois ou mais, nada vem marcado e a escolha é obrigatória;
+     - sem `care:read`, que é preciso para listar os pacotes, só "Avulso", com o aviso;
+     - o 409 da repetição com outra escolha aparece como o servidor responde, sem nova tentativa automática.
+   - **Retornos** (`/clinics/returns`, `schedule:read`, item novo na navegação):
+     - **filtros:** estado, vencido, responsável (inclusive "sem responsável"), paciente e período de vencimento;
+     - **colunas:** paciente, serviço, vencimento, "vencido" (do servidor), responsável (com "sem acesso"), agendamento vinculado e estado;
+     - **ações, conforme a permissão:**
+       - vincular, por um diálogo com os candidatos e um aviso de que vincular uma consulta já atendida pode concluir o retorno;
+       - desvincular;
+       - cancelar: só os motivos operacionais para quem tem só `schedule:write`; todos para `care:write`, e "criado por engano" só no retorno manual, que só quem tem `care:read` enxerga;
+       - atribuir, com o seletor próprio;
+       - criar manualmente (`care:write`).
+     - **Projeção:** quem tem só a agenda vê o cancelado de forma genérica, sem motivo. A tela nunca pede o que a resposta não traz.
+   - **Faltas** (`/clinics/no-show`, `schedule:read`, item novo na navegação):
+     - período (por padrão, os últimos 30 dias até hoje, em datas locais), unidade e recorte;
+     - mostra a taxa ou "sem dados", "X faltas em Y (atendidos + faltas)", os passados sem desfecho (com o caminho para a agenda) e os cancelados à parte;
+     - sem gráfico e sem pessoas.
+   - **Testes de componente (Vitest):** a renderização por permissão, o diálogo de consumo (sugestão, saldo e escolha obrigatória), os motivos de cancelamento por permissão e o "sem dados".
+
+6. **E2E (Playwright, dados fictícios, na F3.3b):**
+   - o profissional cria um pacote na ficha, registra o atendimento escolhendo o pacote e vê o saldo cair de 10 para 9. A repetição não consome;
+   - a recepção não vê pacotes nem saldo na ficha, e a API responde 403. Ela vê os retornos, vincula uma consulta futura pelo diálogo, atribui um responsável e cancela com motivo operacional. O cancelado clínico aparece genérico para ela;
+   - o retorno automático nasce do atendimento de um serviço com intervalo, e o registro do agendamento vinculado o conclui;
+   - na tela de faltas, uma falta e um atendimento dão 50 % ("1 em 2"), e um período vazio dá "sem dados";
+   - o link direto para uma tela sem permissão mostra a recusa.
+
+7. **Integrar ou construir:** os componentes existentes (primitivos Radix/shadcn) e o TanStack Query/Table. Nenhuma biblioteca nova e nenhum gráfico.
+
+**Fica fora da F3.3:** a interface multiunidade, as notificações (F4), a D1 (pagamento), a reabertura de pacote, a correção de consumo (obrigatória antes do piloto), a exportação e o atalho "agendar o retorno" com a agenda pré-preenchida.
+
+**Decisões para a aprovação:**
+
+1. as duas entregas, F3.3a e F3.3b (item 1);
+2. o `agoraDoBanco` num segundo ponto de uso, a taxa de faltas, sem `raw` novo (item 2);
+3. a conversão do período com `resolverHoraLocal`, e não no banco: é um desvio do texto do plano (item 2);
+4. a rota de candidatos sem filtrar pela prova, em vez do vínculo pelo cartão da agenda (item 3);
+5. a regra de sugestão do diálogo de consumo: pré-selecionar só quando há exatamente um pacote elegível (item 5);
+6. a ficha do paciente por rota própria, com a leitura por id (itens 4 e 5).
+
 **Implementação da F3.1 (notas, 2026-10-21).**
 
 - **O `dealId` do pacote fica fora da F3.1.** Uma FK composta para o `Deal` do Core travaria a exclusão de deals. A alternativa seria `SET NULL` só na coluna (`ON DELETE SET NULL ("dealId")`), que o Prisma não modela sem drift. Como o vínculo só serve ao fluxo comercial, ele volta com a F4, por ADR.

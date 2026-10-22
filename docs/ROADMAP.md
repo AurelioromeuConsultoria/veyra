@@ -151,7 +151,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
     O **B2 foi levantado tecnicamente** para workspaces com o Clinics, sob o G′ (ADR-048 adendo 6). Isso não promete impedir toda chamada física posterior à restrição, depende das condições do banco e da reconciliação, e não muda a cobertura limitada dos despachos antigos. O Clinics segue desativado em staging, sem deploy.
 
   - **F2.3 — telas da agenda, do atendimento e dos pacientes, e e2e 🔍 (implementada, aguardando revisão; adendo 5 do ADR-048):** agenda da clínica em grade por profissional, na hora local da unidade; agendar e remarcar só em horário livre, inclusive na mudança de horário; ações de estado e registro de atendimento conforme o papel; pacientes com as consequências antes de confirmar. Só dados fictícios; não habilita o Clinics nem abre o B2.
-- **F3 — Continuidade 🚧 (adendo 7 do ADR-048; F3.1 publicada e validada; F3.2, retornos na API, implementada em commit local para revisão; F3.3 pendente)** Pacote com consumo de sessão no atendimento; retorno **no Clinics**, sem `Task` do Core; taxa de faltas apurável. Depende de H2, H3, H6 e D1, não validadas.
+- **F3 — Continuidade 🚧 (adendo 7 do ADR-048; F3.1 e F3.2 publicadas e validadas, esta no `14dc213`, com CI verde em Node 24; F3.3, a taxa de faltas, as telas e o e2e, com detalhamento PROPOSTO)** Pacote com consumo de sessão no atendimento; retorno **no Clinics**, sem `Task` do Core; taxa de faltas apurável. Depende de H2, H3, H6 e D1, não validadas.
   **Pronto quando:**
   - conclusão repetida ou concorrente não consome duas sessões, e consumo além do total é recusado;
   - sessões restantes e retornos pendentes estão corretos;
