@@ -2916,6 +2916,117 @@ A primeira versão está no `f00e873`. A leitura do usuário em 2026-10-21 aprov
 
 A taxa de faltas e a decisão sobre a correção de consumo seguem como aprovadas.
 
+**Detalhamento da F3.2 (PROPOSTO, 2026-10-22).** Responde ao que ficou para detalhar antes da F3.2. Se aprovado, **substitui** três pontos do item 6 e da tabela do item 8 do plano:
+
+- a "conclusão manual";
+- a permissão de "concluir";
+- a lista de motivos `patient_declined`, `not_needed` e `other`.
+
+O resto do item 6 continua valendo: campos, criação automática e manual, vencimento pelo relógio do banco no fuso da unidade, e nada de outbox, webhook ou IA.
+
+1. **"Concluir" é comprovar um atendimento realizado, e só o registro de atendimento comprova.**
+   - **Não existe ação de "concluir".** O retorno passa a `done` quando o agendamento vinculado a ele recebe o registro de atendimento.
+     - Se o vínculo já existe, isso acontece **na transação do registro de atendimento**.
+     - Se o agendamento vinculado já está `attended`, acontece no momento do vínculo.
+   - **Vincular um agendamento não conclui nada:** o retorno continua `pending`, agora com agendamento. Assim, marcar uma consulta nunca declara que ela aconteceu.
+   - **O banco garante o critério:** um trigger recusa `done` se o agendamento vinculado não estiver `attended`.
+   - **Encerrar o acompanhamento sem atendimento** é o **cancelamento**, com motivo de lista fechada (item 2). Nunca é "concluir".
+   - **Sem casamento implícito:** um atendimento do mesmo paciente e serviço que não esteja vinculado não conclui retorno nenhum. É a mesma regra do consumo explícito de pacote.
+   - **Agendamento vinculado cancelado ou com falta:** o retorno continua `pending`, e a lista mostra "reagendar". O vínculo não é desfeito sozinho, e a recepção vincula outro agendamento, que substitui o anterior e entra na trilha.
+   - **Desvincular sem substituir** também é permitido enquanto o retorno estiver `pending`, com as mesmas permissões do vínculo. É a saída para trocar o serviço de um agendamento vinculado (item 4).
+   - **A remarcação** mantém o vínculo, porque é o mesmo agendamento (item 4).
+
+2. **Cancelamento: o motivo define a permissão.** A lista é fechada, sem texto livre e sem `other`: um "outro" sem texto não diz nada à auditoria.
+
+   | Motivo                | Quem pode                                        | Restrição                   |
+   | --------------------- | ------------------------------------------------ | --------------------------- |
+   | `patient_declined`    | `clinics:schedule:write` ou `clinics:care:write` | —                           |
+   | `patient_unreachable` | `clinics:schedule:write` ou `clinics:care:write` | —                           |
+   | `not_needed`          | `clinics:care:write` (decisão clínica)           | —                           |
+   | `created_in_error`    | `clinics:care:write`                             | só retorno **criado à mão** |
+   - **Toda ação de escrita exige também `clinics:schedule:read`,** a leitura da lista.
+   - **Por que `created_in_error` vale só para o retorno manual:** o automático nasce da regra do serviço. Se ele não faz sentido, a decisão é clínica (`not_needed`). Senão, a recepção contornaria a exigência de `care:write` chamando de "erro" o que é decisão clínica.
+   - **Cancelar libera o vínculo:** o `appointmentId` volta a nulo, e a trilha guarda qual era. Isso libera o agendamento para outro retorno.
+   - **Repetir o mesmo cancelamento** devolve o estado. Cancelar um retorno `done` é 409. A reabertura segue fora da F3.
+
+3. **Atribuição, com as duas pontas conferidas:**
+   - **Quem atribui, reatribui ou tira o responsável:** `clinics:schedule:write` ou `clinics:care:write`, e `clinics:schedule:read`.
+   - **Quem pode ser responsável:** um membro **ativo** do workspace com `clinics:schedule:read` **e** com `clinics:schedule:write` ou `clinics:care:write`. Ou seja, alguém que vê a lista e consegue agir sobre o retorno. A conferência é feita **na membership viva e nas permissões do papel no momento da atribuição**, não no token de ninguém.
+     - Membro inexistente ou de outro workspace: 404 neutro.
+     - Suspenso, removido ou sem as permissões: 400 com uma mensagem única ("este membro não pode ser responsável por retornos"), sem dizer qual condição faltou.
+   - **Ser responsável não concede nada:** nenhuma permissão é ampliada, e o responsável que perde o acesso não passa a ver o retorno por ser o responsável.
+   - **"Sem acesso" é calculado na leitura,** pelo mesmo critério da atribuição. O responsável aparece com o nome e a marca "sem acesso", para alguém reatribuir. O motivo (suspensão, remoção ou papel) não aparece. Ninguém é desatribuído automaticamente, para preservar o histórico.
+   - **Sem responsável:** "sem responsável". O retorno automático nasce assim.
+
+4. **O agendamento vinculado: validações e garantias.**
+   - **Mesmo workspace, mesmo paciente e mesmo serviço, garantidos pelo banco.**
+     - A FK composta vai do retorno para `(workspaceId, id, patientId, serviceId)` do agendamento, apoiada num índice único novo em `ClinicsAppointment`.
+     - Com `NO ACTION`, uma remarcação que troque o **serviço** de um agendamento vinculado é recusada pelo banco. A API responde 409 "desvincule do retorno antes de trocar o serviço".
+     - "Mesmo serviço" é regra do protótipo, ligada à H3. Relaxá-la depois é decisão própria.
+   - **Estado do agendamento:** marcado, confirmado ou chegou (vínculo aberto), ou atendido (conclui na hora). **Cancelado e falta são recusados.**
+   - **Início estrito depois da criação do retorno,** pelo relógio do banco. Isso impede vincular o atendimento de origem ou qualquer visita anterior ao retorno.
+   - **Um agendamento cumpre no máximo um retorno:** um índice único parcial em `appointmentId`. Num retorno `done`, o vínculo fica para sempre.
+   - **Só retorno `pending` aceita vínculo.** Trocar o agendamento é permitido enquanto o retorno estiver `pending`.
+   - **Concorrência** (vínculo × registro de atendimento, dois vínculos ao mesmo agendamento, cancelamento × atendimento, remarcação do serviço × vínculo):
+     - **a ordem das travas é a mesma em todos os caminhos:** agendamento, depois pacote, depois retorno, para não haver deadlock;
+     - **as corridas têm teste com a ordem forçada,** como na F3.1;
+     - **o banco garante o desfecho:** o trigger de `done` e o índice único fazem a corrida perdida falhar fechado.
+
+5. **Projeção e filtros, no servidor:**
+   - **Com `clinics:schedule:read`:** paciente, serviço, unidade, vencimento, estado, a marca "vencido", o responsável (nome e "sem acesso") e o agendamento vinculado (id, início e estado). O motivo aparece se o retorno foi cancelado. Também vêm a criação e o encerramento.
+   - **Não aparece para esse papel:** o atendimento de origem, se o retorno é automático ou manual, quem o criou, nem pacote, saldo ou conteúdo de atendimento.
+   - **Com `clinics:care:read`, a mais:** o atendimento de origem e a origem (automática ou manual).
+   - **Filtros e ordenação permitidos:** estado, vencido, unidade, intervalo de vencimento, responsável (inclusive "sem responsável") e paciente. A ordenação é por vencimento e, depois, por id.
+   - **Proibido nos filtros e na ordenação:** nenhum filtro nem ordenação por origem, criador, atendimento de origem ou pacote, nem mesmo para `care:read`, para a lista não virar um caminho de consulta indireta.
+   - **Erros:**
+     - 404 neutro para retorno, agendamento ou membro inexistente ou de outro workspace;
+     - 409 com mensagens que não citam atendimento nem pacote;
+     - 400 por validação.
+
+6. **Banco (migration transacional, ADR-051):**
+   - **A tabela `ClinicsReturn`:**
+     - FKs compostas `NO ACTION`, e o workspace em cascata;
+     - o índice único parcial do agendamento;
+     - o `originAttendanceId` único;
+     - os CHECKs de estado: `pending` sem encerramento nem motivo; `done` com agendamento e encerramento; `canceled` com motivo e encerramento.
+   - **A coluna `ClinicsService.returnIntervalDays`,** de 1 a 365 e anulável.
+   - **O índice único** de apoio em `ClinicsAppointment`.
+   - **Os triggers:**
+     - imutáveis paciente, serviço, unidade, origem e criação;
+     - só sai de `pending`;
+     - `done` exige o agendamento `attended`.
+   - **Ensaio da falha forçada e inventário,** antes do commit.
+   - **O retorno entra** no registro do vertical, no `check:fk` e na presença da porta E6.
+
+7. **Auditoria (allowlist, ids e enums):** `clinics.return.created` (automático ou manual), `.linked` (do agendamento anterior ao novo, ou a nenhum), `.completed` (pelo atendimento), `.canceled` (motivo) e `.assigned` (do responsável anterior ao novo).
+
+8. **Testes previstos:**
+   - **projeção:** o papel só com agenda não recebe origem nem pacote, e os filtros não sondam vínculos;
+   - **permissões:** a matriz por ação e por motivo;
+   - **atribuição:** membro suspenso, removido, sem permissão e de outro workspace; e a marca "sem acesso" depois da perda de acesso;
+   - **vínculo:** outro paciente, serviço ou workspace; cancelado e falta; vínculo duplo; início anterior à criação; e o atendimento de origem;
+   - **conclusão:** só pelo atendimento, automática nos dois sentidos, e o trigger recusando `done` sem `attended`;
+   - **corridas:** com a ordem forçada;
+   - **criação automática:** com e sem intervalo, e a data no fuso da unidade;
+   - **cascata e isolamento:** a cascata do workspace e o workspace B;
+   - **mutações:** em cada garantia.
+
+**Fica fora da F3.2:**
+
+- a reabertura;
+- adiar o vencimento;
+- as telas (F3.3);
+- as notificações (F4);
+- a ponte para `Task`.
+
+**Decisões para aprovação:**
+
+- (1) concluir só pelo atendimento registrado, sem ação manual;
+- (2) os motivos e as permissões de cancelamento, com `created_in_error` só no manual;
+- (3) os critérios de atribuição e o "sem acesso" calculado na leitura;
+- (4) o vínculo com o mesmo paciente e serviço garantidos por FK, o que recusa trocar o serviço de um agendamento vinculado, e com o início depois da criação;
+- (5) a projeção e os filtros.
+
 **H2, H3 e H6 continuam não validadas.** A aprovação técnica deste plano não equivale à validação operacional.
 
 **Implementação da F3.1 (notas, 2026-10-21).**
