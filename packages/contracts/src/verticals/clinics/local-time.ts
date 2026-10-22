@@ -134,6 +134,43 @@ export function horaLocal(instante: Date, fuso: string): HoraLocal {
   };
 }
 
+/**
+ * O INÍCIO do dia local `data` no fuso: o primeiro instante cuja data local é
+ * `data` OU POSTERIOR (ADR-048 adendo 7, aprovação da F3.3 e o complemento da
+ * F3.3a). Um dia local não tem sempre 24 horas, e a meia-noite pode não existir
+ * ou se repetir:
+ * - existe uma vez: é ela;
+ * - repete (o relógio volta para 00:00): a PRIMEIRA ocorrência;
+ * - cai no pulo (o relógio salta de 23:59 para 01:00): o instante em que o
+ *   pulo termina, o primeiro horário local que existe naquele dia;
+ * - o DIA não existe (Samoa pulou 2011-12-30 ao atravessar a linha de data): o
+ *   início do dia seguinte que existe.
+ * Um período local `[de, até)` vai do início de `de` ao início de `até`.
+ */
+export function inicioDoDiaLocal(data: string, fuso: string): Date {
+  const [ano, mes, dia] = data.split('-').map(Number);
+  const ingenuo = Date.UTC(ano, mes - 1, dia);
+  // `AAAA-MM-DD` compara como data
+  const chegou = (t: number) => horaLocal(new Date(t), fuso).data >= data;
+  // o primeiro instante: já é o dia (ou depois), e o milissegundo anterior não
+  const primeiro = (t: number) => chegou(t) && !chegou(t - 1);
+  // candidatos: a meia-noite sob cada deslocamento do entorno (um dia antes, no
+  // ponto e um dia depois). Na meia-noite que existe, é ela; na repetida, as
+  // duas ocorrências; no pulo, a sob o deslocamento de antes cai exatamente no
+  // fim do pulo
+  const candidatos = [-86_400_000, 0, 86_400_000]
+    .map((delta) => ingenuo - deslocamentoEmMinutos(new Date(ingenuo + delta), fuso) * 60_000)
+    .filter(primeiro)
+    .sort((a, b) => a - b);
+  if (candidatos.length > 0) return new Date(candidatos[0]);
+  // uma transição fora desses formatos: o primeiro minuto, por varredura (o dia
+  // começa entre 15 h antes e, se não existir, 39 h depois da meia-noite em UTC)
+  for (let t = ingenuo - 15 * 3_600_000; t <= ingenuo + 39 * 3_600_000; t += 60_000) {
+    if (primeiro(t)) return new Date(t);
+  }
+  throw new Error(`Início do dia ${data} não encontrado no fuso ${fuso}`);
+}
+
 /** `AAAA-MM-DD` + `dias` (calendário puro, sem fuso). */
 export function somarDias(data: string, dias: number): string {
   const [ano, mes, dia] = data.split('-').map(Number);

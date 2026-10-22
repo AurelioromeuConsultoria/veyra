@@ -3463,6 +3463,89 @@ Sem deploy, sem ativação do Clinics e sem dados reais. Os bloqueios operaciona
     - De 1970 a 1999, um caso falha: Monrovia 1972, com deslocamento em segundos, de antes da padronização. O contrato já recusa anos antes de 2000.
   - **Um caso raro que a regra também cobre:** em Goose Bay (2000 a 2010), a meia-noite acontece, o relógio volta para o dia anterior às 00:01 e a meia-noite acontece de novo. O dia começa na primeira entrada. Os períodos são faixas contínuas de instantes, então os horários lidos depois disso como do dia anterior ficam dentro da faixa do dia.
 
+- **Contratos:**
+  - `inicioDoDiaLocal(data, fuso)` em `local-time.ts`, com a regra aprovada. Ela tenta os candidatos de meia-noite e, em último caso, varre por minuto;
+  - os esquemas e DTOs da taxa de faltas (`clinicsNoShowQuerySchema`, estrito: `from < to`, no máximo 366 dias) e dos candidatos (`listClinicsReturnCandidatesSchema` e a página com `nextCursor`). Os comentários explicitam a semântica do período e da taxa.
+- **Rotas:**
+  - `GET /api/clinics/metrics/no-show` (`schedule:read`);
+  - `GET /api/clinics/returns/:id/candidates` (`schedule:read`, mais a ação de vincular, conferida no serviço);
+  - `GET /api/clinics/patients/:id` (`schedule:read`, com a projeção da lista).
+- **Decisões tomadas no caminho:**
+  - **Unidade da taxa:** a informada vale mesmo arquivada, porque o histórico dela continua valendo. Sem ela, vale a única ativa; com nenhuma ou com duas ou mais, a resposta é 400. A unidade de outro workspace dá 404, igual à inexistente.
+  - **Profissional e serviço do recorte:** um inexistente, ou de outro workspace, dá zeros ("sem dados"), e não 404. A consulta passa pelo filtro do workspace, então a resposta não diz se o id existe.
+  - **A varredura por minuto do `inicioDoDiaLocal`** nunca é alcançada de 2000 a 2100 (as duas verificações). Fica como defesa documentada, com custo limitado a uns 3.200 passos.
+  - **Agendamentos vinculados nos candidatos:** saem todos os que estão vinculados a algum retorno, inclusive o do próprio retorno, que já aparece no vínculo dele. Esse critério é visível na agenda.
+  - **O cursor dos candidatos** é opaco (`base64url` do início e do id). Um cursor malformado ou forjado dá 400: o id precisa ser UUID estrito, e o instante, o ISO que o servidor escreve, com ano de 0001 a 9999.
+  - **As duas contagens da taxa** são consultas separadas. O deslocamento possível de um está registrado no serviço.
+- **Testes:**
+  - **Unitários, o início do dia (6 novos):**
+    - São Paulo: o dia comum, a meia-noite no pulo de 2018 e o dia de 25 h de 2019;
+    - Santiago: o pulo de 2025;
+    - Havana: a meia-noite repetida de 2025;
+    - Nova York: os dias de 23 e de 25 h;
+    - Goose Bay: a meia-noite que volta, em 2000;
+    - Samoa: o dia que não existe, em 2011.
+  - **Integração, taxa de faltas (7):**
+    - a definição: "sem dados" só sem atendidos nem faltas, o 0 % legítimo, e os cancelados e os passados sem desfecho à parte;
+    - os limites nos dias de 23 e de 25 h de São Paulo, na meia-noite repetida de Havana e no dia que não existe em Samoa, com agendamentos encostados no início e no fim de cada faixa;
+    - o relógio do Node deslocado para os dois lados, com uma leitura do relógio do banco por operação;
+    - o recorte por profissional e por serviço, com outra unidade no mesmo período fora da conta e com o DTO estrito;
+    - a validação, inclusive o período de exatamente 366 dias aceito, a unidade arquivada informada (vale) e nenhuma unidade ativa sem unidade informada (400);
+    - o RBAC;
+    - o P0 de isolamento, inclusive o profissional e o serviço de A pedidos por B (zeros).
+  - **Integração, candidatos (3):**
+    - a mesma lista para um retorno anterior, um posterior e o de origem, sem o agendamento de outra unidade, e o vínculo reconferindo;
+    - a paginação sem truncamento, com um empate no início desempatado pelo id;
+    - o `from` pela regra do início do dia local (22:00 locais da véspera ficam fora);
+    - as recusas, inclusive cursores forjados com a forma certa (id que não é UUID, instante fora da faixa do banco, ano 0000);
+    - as permissões de vincular, o encerrado e o P0.
+  - **Integração, paciente por id (1):** a mesma projeção da lista sem `contacts:read`, o guest e o P0 pela URL.
+- **Mutação: 25, das quais 24 morrem,** cada uma pelo teste esperado e todas compilando:
+  - **taxa (11):**
+    - "sem dados" virando 0;
+    - 0 virando "sem dados";
+    - o limite na meia-noite UTC;
+    - o dia de 24 h fixas;
+    - o "passado" pelo relógio do Node;
+    - os cancelados no denominador;
+    - os passados de qualquer estado;
+    - o fim inclusivo;
+    - sem o filtro de unidade;
+    - a unidade arquivada recusada;
+    - o período de 366 dias recusado;
+  - **candidatos (11):**
+    - o já vinculado na lista;
+    - sem os atendidos;
+    - o truncamento silencioso;
+    - sem a conferência da ação;
+    - os candidatos de um encerrado;
+    - o cursor sem desempate pelo id;
+    - o cursor sem o formato ISO do servidor;
+    - o cursor com UUID frouxo;
+    - o cursor com o ano 0000;
+    - candidatos de outra unidade;
+    - o `from` na meia-noite UTC;
+  - **paciente (1):** o `contactId` sempre;
+  - **início do dia (2):**
+    - a última ocorrência em vez da primeira, que morre pelo caso de Goose Bay;
+    - **sobrevive a que tira a guarda "o primeiro instante".** A varredura dos 418 fusos de 2000 a 2100 mostrou que ela é equivalente em todo caso real, porque a ordenação já escolhe a primeira entrada. Fica como defesa para um formato de transição que a base atual não tem.
+- **A primeira rodada de mutações** achou duas lacunas de teste: a unidade da taxa e o desempate do cursor. As duas viraram testes, e as mutações delas passaram a morrer.
+
+**Revisão da F3.3a (`reviewer` e `security`, os dois aprovando com ressalvas, sem P0) e o que mudou com ela:**
+
+- **P1 do `reviewer`:** o complemento da regra do dia estava escrito dentro do bloco da aprovação do usuário, como se fosse dele. Foi para estes Resultados, marcado como proposto e a confirmar. Ganhou Tokelau (`Pacific/Fakaofo`), que o `reviewer` achou, e as faixas corretas das varreduras. O texto vai num commit de documentação antes do commit da F3.3a.
+- **P2 do `security`: o cursor dos candidatos validava pouco.** Um id de 36 hífens, ou um instante que o JS lê mas o banco recusa (como `-271821-04-20`), virava 500. Um teste reproduziu esse 500 antes da correção. Agora o cursor exige um UUID estrito e o formato ISO que o servidor escreve, com ano de quatro dígitos. A confirmação dos dois achou ainda o ano `0000`, que o Postgres não tem. Ele também é recusado agora, e um teste e uma mutação provam que, sem essa guarda, a resposta era 500. O forjado dá 400.
+- **P2 do `reviewer`: três lacunas de teste.** Eram o critério de unidade dos candidatos, a unidade arquivada da taxa (com o caso de nenhuma ativa registrado) e o `from` pela regra do dia. Viraram testes, e as mutações delas morrem.
+- **Nits:**
+  - os pares de limite que faltavam;
+  - o período de 366 dias aceito;
+  - o profissional e o serviço de A pedidos por B;
+  - a decisão de zeros, e não 404, para profissional e serviço;
+  - a varredura por minuto como defesa documentada;
+  - a citação da aprovação no `SECURITY.md`;
+  - a lista fixa de quem pode usar o `agoraDoBanco`, numa regra estática: hoje só a taxa e os retornos;
+  - as duas noções de limite de dia, a da agenda e a nova, como dívida com gatilho em `technical-debt.md`.
+
 **Implementação da F3.1 (notas, 2026-10-21).**
 
 - **O `dealId` do pacote fica fora da F3.1.** Uma FK composta para o `Deal` do Core travaria a exclusão de deals. A alternativa seria `SET NULL` só na coluna (`ON DELETE SET NULL ("dealId")`), que o Prisma não modela sem drift. Como o vínculo só serve ao fluxo comercial, ele volta com a F4, por ADR.

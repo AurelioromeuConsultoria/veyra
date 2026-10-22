@@ -18,6 +18,8 @@ import { ClinicsReleasesService } from './clinics-releases.service';
 import { ClinicsAppointmentsController } from './schedule/clinics-appointments.controller';
 import { ClinicsAppointmentsService } from './schedule/clinics-appointments.service';
 import { ClinicsAttendanceService } from './schedule/clinics-attendance.service';
+import { ClinicsNoShowController } from './schedule/clinics-no-show.controller';
+import { ClinicsNoShowService } from './schedule/clinics-no-show.service';
 import { ClinicsReturnsController } from './schedule/clinics-returns.controller';
 import { ClinicsReturnsService } from './schedule/clinics-returns.service';
 
@@ -34,6 +36,7 @@ import { ClinicsReturnsService } from './schedule/clinics-returns.service';
     ClinicsAppointmentsController,
     ClinicsPackagesController,
     ClinicsReturnsController,
+    ClinicsNoShowController,
   ],
   providers: [
     ClinicsActivationService,
@@ -47,6 +50,7 @@ import { ClinicsReturnsService } from './schedule/clinics-returns.service';
     ClinicsAttendanceService,
     ClinicsPackagesService,
     ClinicsReturnsService,
+    ClinicsNoShowService,
   ],
   exports: [ClinicsActivationService],
 })

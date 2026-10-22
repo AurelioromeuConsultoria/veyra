@@ -65,6 +65,16 @@ export class ClinicsPatientsService {
     return rows.map((row) => toDto(row, withContactId));
   }
 
+  /** Um paciente, com a MESMA projeção da lista (F3.3a): 404 fora do workspace. */
+  async get(id: string, withContactId: boolean): Promise<ClinicsPatientDto> {
+    const row = (await this.prisma.db.clinicsPatient.findFirst({
+      where: { id },
+      include: COM_NOME,
+    } as never)) as unknown as PatientRow | null;
+    if (!row) throw new NotFoundException('Paciente não encontrado');
+    return toDto(row, withContactId);
+  }
+
   /** Idempotente: repetir devolve o perfil existente, sem nova trilha. */
   async create(auth: AuthContext, contactId: string): Promise<ClinicsPatientDto> {
     await this.contacts.get(contactId); // 404 para id inexistente ou de outro workspace

@@ -641,3 +641,78 @@ export interface ClinicsReturnAssigneeDto {
   membershipId: string;
   name: string;
 }
+
+/**
+ * Candidatos ao vínculo de um retorno (F3.3a): agendamentos do mesmo paciente,
+ * serviço e unidade, em estado que aceita vínculo e sem vínculo a retorno. Só
+ * critérios VISÍVEIS na agenda: a lista não depende da prova nem da origem
+ * (nem na contagem, nem na ordem, nem na paginação). Seleção, não garantia: o
+ * vínculo reconfere tudo. Paginada, sem truncamento silencioso.
+ */
+export const listClinicsReturnCandidatesSchema = z
+  .object({
+    /** data LOCAL da unidade: a partir do início desse dia (inclusivo) */
+    from: localDate.optional(),
+    limit: z.coerce.number().int().min(1).max(50).default(20),
+    /** opaco: o `nextCursor` da página anterior */
+    cursor: z.string().min(1).max(200).optional(),
+  })
+  .strict();
+export type ListClinicsReturnCandidatesInput = z.infer<typeof listClinicsReturnCandidatesSchema>;
+
+export interface ClinicsReturnCandidateDto {
+  id: string;
+  /** instante ISO (UTC) */
+  startsAt: string;
+  status: ClinicsAppointmentStatus;
+  professionalName: string;
+}
+
+export interface ClinicsReturnCandidatesPageDto {
+  items: ClinicsReturnCandidateDto[];
+  /** `null` = não há mais */
+  nextCursor: string | null;
+}
+
+// ── Taxa de faltas (F3.3a; ADR-048 adendo 7, item 7 e aprovação da F3.3) ─────
+
+/**
+ * Período em datas LOCAIS da unidade: `from` inclusivo, `to` EXCLUSIVO, pelo
+ * INÍCIO do agendamento. Os limites são o início de cada dia local (que nem
+ * sempre tem 24 horas: `inicioDoDiaLocal`). No máximo 366 dias.
+ */
+export const clinicsNoShowQuerySchema = z
+  .object({
+    from: localDate,
+    to: localDate,
+    /** obrigatória quando há mais de uma unidade ativa */
+    unitId: z.uuid().optional(),
+    professionalId: z.uuid().optional(),
+    serviceId: z.uuid().optional(),
+  })
+  .strict()
+  .refine((q) => q.from < q.to, { message: 'O fim do período vem depois do início', path: ['to'] })
+  .refine(
+    (q) =>
+      (Date.parse(`${q.to}T00:00:00Z`) - Date.parse(`${q.from}T00:00:00Z`)) / 86_400_000 <= 366,
+    { message: 'O período tem no máximo 366 dias', path: ['to'] },
+  );
+export type ClinicsNoShowQuery = z.infer<typeof clinicsNoShowQuerySchema>;
+
+/** Só AGREGADOS: nenhuma pessoa, nenhum agendamento. */
+export interface ClinicsNoShowDto {
+  from: string;
+  to: string;
+  unitId: string;
+  attended: number;
+  noShow: number;
+  /**
+   * `noShow / (attended + noShow)`, de 0 a 1. `null` = "sem dados": só quando
+   * atendidos + faltas = 0. Com atendidos e nenhuma falta, é 0 (legítimo).
+   */
+  rate: number | null;
+  /** marcados, confirmados e chegados com início antes de agora (relógio do banco); fora da conta */
+  pendingPast: number;
+  /** à parte, fora da conta */
+  canceled: number;
+}

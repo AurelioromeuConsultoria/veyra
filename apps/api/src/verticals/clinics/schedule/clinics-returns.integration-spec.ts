@@ -662,6 +662,185 @@ describe('Clinics — retornos (integração, F3.2)', () => {
     });
   });
 
+  // ── Candidatos ao vínculo (F3.3a) ───────────────────────────────────────
+
+  describe('os candidatos ao vínculo (F3.3a)', () => {
+    const candidatos = (id: string, q = '', s: Session = recepcao) =>
+      get(`/api/clinics/returns/${id}/candidates${q ? `?${q}` : ''}`, s);
+    const ids = async (id: string, q = '') =>
+      ((await candidatos(id, q).expect(200)).body.items as { id: string }[]).map((i) => i.id);
+
+    it('só critérios VISÍVEIS: a lista não depende da prova nem da origem, e cada item traz só id, início, estado e profissional', async () => {
+      const antes = await criarRetorno(); // criado ANTES dos atendimentos
+      const x0 = await agendar();
+      await atender(x0).expect(201); // origem de um automático
+      const depois = await criarRetorno(); // criado ENTRE os atendimentos
+      const x1 = await agendar();
+      await atender(x1).expect(201);
+      const y = await agendar();
+      const ocupado = await agendar();
+      await vincular((await criarRetorno()).id, ocupado).expect(201);
+      const cancelado = await agendar();
+      await post(`/api/clinics/appointments/${cancelado}/status`, owner, {
+        to: 'canceled',
+        cancelReason: 'patient_request',
+      }).expect(201);
+      const falta = await agendar();
+      await post(`/api/clinics/appointments/${falta}/status`, owner, { to: 'no_show' }).expect(201);
+      await agendar({ serviceId: outroServico });
+      await agendar({ patientId: outroPaciente });
+      // o mesmo paciente e serviço, noutra UNIDADE: fora da lista
+      const filial = await prisma.raw.clinicsUnit.create({
+        data: { workspaceId: wsA.workspaceId, name: 'Filial', timezone: fuso },
+      });
+      const modelo = (await prisma.raw.clinicsAppointment.findFirst({ where: { id: y } }))!;
+      await prisma.raw.clinicsAppointment.create({
+        data: {
+          workspaceId: wsA.workspaceId,
+          patientId: paciente,
+          professionalId: ana,
+          serviceId: servico,
+          unitId: filial.id,
+          startsAt: new Date('2030-11-05T15:00:00Z'),
+          endsAt: new Date('2030-11-05T16:00:00Z'),
+          createdByMembershipId: modelo.createdByMembershipId,
+        },
+      });
+      const automatico = await automaticoDe(x0);
+      // a mesma lista para o retorno anterior, o posterior e o de ORIGEM de x0
+      const esperado = [x0, x1, y];
+      expect(await ids(antes.id)).toEqual(esperado);
+      expect(await ids(depois.id)).toEqual(esperado);
+      expect(await ids(automatico!.id)).toEqual(esperado);
+      const pagina = (await candidatos(depois.id).expect(200)).body;
+      expect(pagina.nextCursor).toBeNull();
+      for (const item of pagina.items) {
+        expect(Object.keys(item).sort()).toEqual(['id', 'professionalName', 'startsAt', 'status']);
+      }
+      expect(pagina.items.map((i: { status: string }) => i.status)).toEqual([
+        'attended',
+        'attended',
+        'scheduled',
+      ]);
+      // seleção, não garantia: o vínculo reconfere (x0 é anterior a `depois`)
+      expect((await vincular(depois.id, x0).expect(409)).body.message).toBe(NAO_PODE_CUMPRIR);
+      expect((await vincular(automatico!.id, x0).expect(409)).body.message).toBe(NAO_PODE_CUMPRIR);
+    });
+
+    it('paginada por início e id, sem truncamento silencioso; `from` em data local da unidade; cursor e limite inválidos dão 400', async () => {
+      const r = await criarRetorno();
+      const passado = await agendar({ date: PASSADA });
+      const futuros = [];
+      for (let i = 0; i < 4; i++) futuros.push(await agendar());
+      // um EMPATE no início (outro profissional, o mesmo horário do segundo):
+      // a ordem desempata pelo id, e a paginação não pula nenhum dos dois
+      const base = (await prisma.raw.clinicsAppointment.findFirst({
+        where: { id: futuros[1] },
+      }))!;
+      const outraProf = await prisma.raw.clinicsProfessional.create({
+        data: { workspaceId: wsA.workspaceId, name: 'Bia Fictícia' },
+      });
+      const empate = await prisma.raw.clinicsAppointment.create({
+        data: {
+          workspaceId: wsA.workspaceId,
+          patientId: paciente,
+          professionalId: outraProf.id,
+          serviceId: servico,
+          unitId: unitA,
+          startsAt: base.startsAt,
+          endsAt: base.endsAt,
+          createdByMembershipId: base.createdByMembershipId,
+        },
+      });
+      const doisNoMesmoInicio = [futuros[1], empate.id].sort();
+      futuros.splice(1, 1, ...doisNoMesmoInicio);
+      const todos = [passado, ...futuros];
+      const vistos: string[] = [];
+      let cursor: string | null = null;
+      let paginas = 0;
+      do {
+        const q: string = `limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+        const pagina = (await candidatos(r.id, q).expect(200)).body as {
+          items: { id: string }[];
+          nextCursor: string | null;
+        };
+        vistos.push(...pagina.items.map((i) => i.id));
+        cursor = pagina.nextCursor;
+        paginas += 1;
+      } while (cursor && paginas < 10);
+      expect(vistos).toEqual(todos);
+      expect(paginas).toBe(6);
+      // e com páginas de 2, os mesmos, na mesma ordem
+      const deDois = (await candidatos(r.id, 'limit=2').expect(200)).body;
+      expect(deDois.items.map((i: { id: string }) => i.id)).toEqual(todos.slice(0, 2));
+      expect(deDois.nextCursor).not.toBeNull();
+      expect(await ids(r.id, 'from=2030-01-01')).toEqual(futuros);
+      // `from` é o início do DIA LOCAL da unidade (São Paulo, −03:00): 22:00 do
+      // dia 3 (01:00Z do dia 4) fica fora de `from=2030-11-04`
+      const vespera = await prisma.raw.clinicsAppointment.create({
+        data: {
+          workspaceId: wsA.workspaceId,
+          patientId: paciente,
+          professionalId: ana,
+          serviceId: servico,
+          unitId: unitA,
+          startsAt: new Date('2030-11-04T01:00:00Z'),
+          endsAt: new Date('2030-11-04T01:30:00Z'),
+          createdByMembershipId: (await prisma.raw.clinicsAppointment.findFirst({
+            where: { id: passado },
+          }))!.createdByMembershipId,
+        },
+      });
+      expect(await ids(r.id, 'from=2030-11-04')).not.toContain(vespera.id);
+      expect(await ids(r.id, 'from=2030-11-03')).toContain(vespera.id);
+      await candidatos(r.id, 'cursor=nao-e-um-cursor').expect(400);
+      // forjados, com a forma certa: id que não é UUID e instante fora da faixa
+      const forjar = (partes: unknown[]) =>
+        encodeURIComponent(Buffer.from(JSON.stringify(partes)).toString('base64url'));
+      await candidatos(
+        r.id,
+        `cursor=${forjar(['2030-11-04T11:00:00.000Z', '-'.repeat(36)])}`,
+      ).expect(400);
+      await candidatos(r.id, `cursor=${forjar(['-271821-04-20T00:00:00.000Z', r.id])}`).expect(400);
+      await candidatos(r.id, `cursor=${forjar(['2030-11-04', r.id])}`).expect(400);
+      // o ano 0000 passa no formato, mas o Postgres não tem ano zero
+      await candidatos(r.id, `cursor=${forjar(['0000-01-01T00:00:00.000Z', r.id])}`).expect(400);
+      await candidatos(r.id, 'limit=51').expect(400);
+      await candidatos(r.id, 'limit=0').expect(400);
+      await candidatos(r.id, 'from=2030-02-30').expect(400);
+      await candidatos(r.id, `patientId=${paciente}`).expect(400);
+    });
+
+    it('as permissões de VINCULAR; o retorno encerrado dá 409; o workspace B não lista os de A', async () => {
+      const r = await criarRetorno();
+      await agendar();
+      await candidatos(r.id, '', recepcao).expect(200);
+      await candidatos(r.id, '', profissional).expect(200);
+      await candidatos(r.id, '', await loginAs('guest-a@veyra.test')).expect(403);
+      // lê a agenda, mas não age sobre retornos: não lista candidatos
+      const papel = await prisma.raw.role.create({
+        data: { workspaceId: wsA.workspaceId, name: 'Só lê a agenda (fictício)' },
+      });
+      await prisma.raw.rolePermission.create({
+        data: {
+          workspaceId: wsA.workspaceId,
+          roleId: papel.id,
+          permissionKey: 'clinics:schedule:read',
+        },
+      });
+      await createMembershipFixture(
+        prisma,
+        wsA.workspaceId,
+        await createUserFixture(prisma, 'so-le-a@veyra.test'),
+        papel.id,
+      );
+      await candidatos(r.id, '', await loginAs('so-le-a@veyra.test')).expect(403);
+      await candidatos(r.id, '', ownerB).expect(404);
+      await cancelar(r.id, 'patient_declined').expect(201);
+      expect((await candidatos(r.id).expect(409)).body.message).toBe(ENCERRADO);
+    });
+  });
+
   // ── Cancelamento ─────────────────────────────────────────────────────────
 
   describe('o cancelamento', () => {

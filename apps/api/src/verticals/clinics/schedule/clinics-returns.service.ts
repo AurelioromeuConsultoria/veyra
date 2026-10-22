@@ -9,17 +9,20 @@ import {
 import type { PermissionKey } from '@veyra/contracts';
 import {
   horaLocal,
+  inicioDoDiaLocal,
   somarDias,
   type AssignClinicsReturnInput,
   type CancelClinicsReturnInput,
   type ClinicsAppointmentStatus,
   type ClinicsPermissionKey,
   type ClinicsReturnAssigneeDto,
+  type ClinicsReturnCandidatesPageDto,
   type ClinicsReturnCancelReason,
   type ClinicsReturnDto,
   type ClinicsReturnStatus,
   type CreateClinicsReturnInput,
   type LinkClinicsReturnInput,
+  type ListClinicsReturnCandidatesInput,
   type ListClinicsReturnsInput,
 } from '@veyra/contracts/verticals/clinics';
 import { Prisma } from '../../../generated/prisma/client';
@@ -171,6 +174,73 @@ export class ClinicsReturnsService {
     return elegiveis
       .map((m) => ({ membershipId: m.id, name: nomes.get(m.userId) ?? '' }))
       .sort((a, b) => a.name.localeCompare(b.name) || a.membershipId.localeCompare(b.membershipId));
+  }
+
+  /**
+   * Candidatos ao vínculo (F3.3a; aprovação da F3.3, item 3): agendamentos do
+   * mesmo paciente, serviço e unidade, em estado que aceita vínculo e sem
+   * vínculo a retorno. As permissões são as de vincular.
+   *
+   * Só critérios VISÍVEIS na agenda: a lista não depende da prova (o registro
+   * antes ou depois da criação) nem da origem, nem na contagem, nem na ordem,
+   * nem na paginação. O agendamento de origem aparece como qualquer outro, e o
+   * vínculo dele recebe a recusa neutra. É seleção, não garantia: o vínculo
+   * reconfere tudo na transação. Paginada por (início, id), sem truncar.
+   */
+  async candidates(
+    auth: AuthContext,
+    id: string,
+    query: ListClinicsReturnCandidatesInput,
+  ): Promise<ClinicsReturnCandidatesPageDto> {
+    await this.exigirAcao(auth);
+    const r = await lerRetorno(this.prisma.db, id);
+    if (r.status !== 'pending') throw new ConflictException(ENCERRADO);
+    const posicao = query.cursor ? lerCursor(query.cursor) : null;
+    let desde: Date | null = null;
+    if (query.from) {
+      const unidade = (await this.prisma.db.clinicsUnit.findFirst({
+        where: { id: r.unitId },
+        select: { timezone: true },
+      })) as unknown as { timezone: string };
+      desde = inicioDoDiaLocal(query.from, unidade.timezone);
+    }
+    const rows = (await this.prisma.db.clinicsAppointment.findMany({
+      where: {
+        patientId: r.patientId,
+        serviceId: r.serviceId,
+        unitId: r.unitId,
+        status: { in: VINCULAVEIS },
+        returns: { none: {} },
+        ...(desde ? { startsAt: { gte: desde } } : {}),
+        ...(posicao
+          ? {
+              OR: [
+                { startsAt: { gt: posicao.startsAt } },
+                { startsAt: posicao.startsAt, id: { gt: posicao.id } },
+              ],
+            }
+          : {}),
+      },
+      orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
+      take: query.limit + 1,
+      select: { id: true, startsAt: true, status: true, professional: { select: { name: true } } },
+    } as never)) as unknown as {
+      id: string;
+      startsAt: Date;
+      status: ClinicsAppointmentStatus;
+      professional: { name: string };
+    }[];
+    const pagina = rows.slice(0, query.limit);
+    const ultimo = pagina[pagina.length - 1];
+    return {
+      items: pagina.map((a) => ({
+        id: a.id,
+        startsAt: a.startsAt.toISOString(),
+        status: a.status,
+        professionalName: a.professional.name,
+      })),
+      nextCursor: rows.length > query.limit && ultimo ? escreverCursor(ultimo) : null,
+    };
   }
 
   // ── escrita ─────────────────────────────────────────────────────────────
@@ -816,6 +886,39 @@ export function trilha(row: ReturnRow): Record<string, unknown> {
     assigneeMembershipId: row.assigneeMembershipId,
     cancelReason: row.cancelReason,
   };
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** O ISO que o servidor escreve, com ano de 4 dígitos (o ano 0000 é recusado abaixo). */
+const INSTANTE_ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/** O cursor dos candidatos: opaco, com o início e o id do último da página. */
+function escreverCursor(a: { id: string; startsAt: Date }): string {
+  return Buffer.from(JSON.stringify([a.startsAt.toISOString(), a.id])).toString('base64url');
+}
+
+function lerCursor(cursor: string): { startsAt: Date; id: string } {
+  try {
+    const [inicio, id] = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as unknown[];
+    const startsAt = new Date(String(inicio));
+    // estrito: um UUID de verdade e um instante que volta IGUAL ao que o
+    // servidor escreveu, de 0001 a 9999 (o Postgres não tem ano zero). Um
+    // cursor forjado é 400, nunca um erro do banco
+    if (
+      typeof inicio === 'string' &&
+      typeof id === 'string' &&
+      INSTANTE_ISO.test(inicio) &&
+      UUID.test(id) &&
+      !Number.isNaN(startsAt.getTime()) &&
+      startsAt.getUTCFullYear() >= 1 &&
+      startsAt.toISOString() === inicio
+    ) {
+      return { startsAt, id };
+    }
+  } catch {
+    // cai na recusa abaixo
+  }
+  throw new BadRequestException('Cursor inválido');
 }
 
 /** `AAAA-MM-DD` → a coluna `date` (meia-noite UTC, sem fuso). */

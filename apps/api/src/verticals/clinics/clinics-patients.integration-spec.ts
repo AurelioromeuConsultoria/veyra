@@ -308,6 +308,39 @@ describe('Clinics — paciente e a regra da liberação de IA (integração, F2.
       expect(comId).toEqual([expect.objectContaining({ contactId })]);
     });
 
+    it('o paciente por id (F3.3a): a MESMA autorização e projeção da lista, inclusive sem `contactId` para quem não lê contatos; outro workspace e o guest não', async () => {
+      const papel = await prisma.raw.role.create({
+        data: { workspaceId: wsA.workspaceId, name: 'Só a agenda (fictício)' },
+      });
+      await prisma.raw.rolePermission.create({
+        data: {
+          workspaceId: wsA.workspaceId,
+          roleId: papel.id,
+          permissionKey: 'clinics:schedule:read',
+        },
+      });
+      await createMembershipFixture(
+        prisma,
+        wsA.workspaceId,
+        await createUserFixture(prisma, 'so-agenda-a@veyra.test'),
+        papel.id,
+      );
+      const soAgenda = await loginAs('so-agenda-a@veyra.test');
+      const id = (await tornarPaciente(contactId).expect(201)).body.id as string;
+      const daLista = (await get('/api/clinics/patients', soAgenda).expect(200)).body[0];
+      const direto = (await get(`/api/clinics/patients/${id}`, soAgenda).expect(200)).body;
+      expect(direto).toEqual(daLista);
+      expect(direto).not.toHaveProperty('contactId');
+      expect((await get(`/api/clinics/patients/${id}`, owner).expect(200)).body).toEqual(
+        expect.objectContaining({ id, contactId }),
+      );
+      await get(`/api/clinics/patients/${id}`, await loginAs('guest-a@veyra.test')).expect(403);
+      // P0: o workspace B (com o Clinics ativo) não lê o paciente de A pela URL
+      await app.get(ClinicsActivationService).enable('beta');
+      await get(`/api/clinics/patients/${id}`, await loginAs('owner-b@veyra.test')).expect(404);
+      await get('/api/clinics/patients/nao-e-uuid', owner).expect(400);
+    });
+
     it('busca pelo nome (a partir de 2 letras, sem diferenciar maiúsculas) e teto com os mais recentes primeiro', async () => {
       for (const name of ['Ana Fictícia', 'Bruno Fictício', 'Carla Outra']) {
         const id = (await post('/api/contacts', owner, { name }).expect(201)).body.id as string;

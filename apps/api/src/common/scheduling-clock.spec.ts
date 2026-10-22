@@ -117,5 +117,15 @@ describe('relógio de agendamento (ADR-049)', () => {
       (f) => f !== UNICO && relogioCru.test(readFileSync(f, 'utf8')),
     );
     expect(outros.map((f) => relative(SRC, f))).toEqual([]);
+    // e quem pode USAR o helper é uma lista fixa: um terceiro uso é decisão
+    // deliberada (aprovação da F3.3, condição 1)
+    const usam = arquivosDeProducao(SRC)
+      .filter((f) => f !== UNICO && /relogio-do-banco['"]/.test(readFileSync(f, 'utf8')))
+      .map((f) => relative(SRC, f))
+      .sort();
+    expect(usam).toEqual([
+      'verticals/clinics/schedule/clinics-no-show.service.ts',
+      'verticals/clinics/schedule/clinics-returns.service.ts',
+    ]);
   });
 });

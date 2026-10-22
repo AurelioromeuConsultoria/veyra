@@ -13,13 +13,16 @@ import {
   cancelClinicsReturnSchema,
   createClinicsReturnSchema,
   linkClinicsReturnSchema,
+  listClinicsReturnCandidatesSchema,
   listClinicsReturnsSchema,
   type AssignClinicsReturnInput,
   type CancelClinicsReturnInput,
   type ClinicsReturnAssigneeDto,
+  type ClinicsReturnCandidatesPageDto,
   type ClinicsReturnDto,
   type CreateClinicsReturnInput,
   type LinkClinicsReturnInput,
+  type ListClinicsReturnCandidatesInput,
   type ListClinicsReturnsInput,
 } from '@veyra/contracts/verticals/clinics';
 import { AuthContext, CurrentAuth } from '../../../common/decorators';
@@ -62,6 +65,17 @@ export class ClinicsReturnsController {
     @Param('id', new ParseUUIDPipe()) id: string,
   ): Promise<ClinicsReturnDto> {
     return this.returns.get(auth, id);
+  }
+
+  // os candidatos ao vínculo: as permissões de vincular (a ação, no serviço)
+  @RequireClinicsPermissions('clinics:schedule:read')
+  @Get('returns/:id/candidates')
+  candidates(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Query(new ZodPipe(listClinicsReturnCandidatesSchema)) query: ListClinicsReturnCandidatesInput,
+  ): Promise<ClinicsReturnCandidatesPageDto> {
+    return this.returns.candidates(auth, id, query);
   }
 
   // criar à mão é decisão clínica; a resposta é o retorno (care:write ⇒ care:read)

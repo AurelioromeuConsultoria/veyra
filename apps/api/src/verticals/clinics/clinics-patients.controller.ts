@@ -1,4 +1,14 @@
-import { Body, Controller, ForbiddenException, Get, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  ForbiddenException,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import {
   createClinicsPatientSchema,
   listClinicsPatientsSchema,
@@ -39,6 +49,16 @@ export class ClinicsPatientsController {
       throw new ForbiddenException('Filtrar por contato exige permissão para ver contatos');
     }
     return this.patients.list(query, readsContacts);
+  }
+
+  /** A ficha (F3.3a): a mesma autorização e a mesma projeção da lista. */
+  @RequireClinicsPermissions('clinics:schedule:read')
+  @Get('patients/:id')
+  async get(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<ClinicsPatientDto> {
+    return this.patients.get(id, await this.permissions.has(auth, 'contacts:read'));
   }
 
   @RequireClinicsPermissions('clinics:schedule:write', 'contacts:read')
