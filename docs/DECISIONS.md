@@ -3800,6 +3800,16 @@ Sem deploy, sem ativação do Clinics e sem dados reais. Os bloqueios operaciona
 
 - **Sem deploy e sem ativação do Clinics; só dados fictícios.**
 
+**Conclusão do A1 (2026-10-23).** O push foi autorizado pelo usuário: `2cb4698` (o registro), `a253576` (o código) e `29c39c9` (o plano da F4, PROPOSTO). O CI ficou verde nos quatro jobs, em Node 24, sobre o `29c39c9` (execução `39967844721`).
+
+- **O A1 está concluído.** Isso encerra a pendência da escolha explícita na API.
+- **Não encerra os demais bloqueios de ativação**, que continuam como estão:
+  - a barreira contínua de manutenção;
+  - B1, B3 e B4;
+  - H1–H7 e o jurídico;
+  - a correção de consumo, antes do piloto.
+- **Continuam bloqueados:** deploy, ativação do Clinics, envio real e dados reais.
+
 **Implementação da F3.1 (notas, 2026-10-21).**
 
 - **O `dealId` do pacote fica fora da F3.1.** Uma FK composta para o `Deal` do Core travaria a exclusão de deals. A alternativa seria `SET NULL` só na coluna (`ON DELETE SET NULL ("dealId")`), que o Prisma não modela sem drift. Como o vínculo só serve ao fluxo comercial, ele volta com a F4, por ADR.
