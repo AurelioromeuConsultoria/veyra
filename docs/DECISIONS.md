@@ -4174,126 +4174,142 @@ Sem deploy, sem ativação do Clinics e sem dados reais. Os bloqueios operaciona
 5. a definição da taxa de faltas (item 7);
 6. a correção de consumo como decisão obrigatória antes do piloto (item 9).
 
-### Adendo 8 (2026-10-23) — plano da F4: confirmação e reativação pelo WhatsApp, e conversão a partir do pipeline (PROPOSTO, revisão 1: a F4.0)
+### Adendo 8 (2026-10-23) — plano da F4: confirmação e reativação pelo WhatsApp, e conversão a partir do pipeline (PROPOSTO, revisão 3: a F4.0)
 
-**Situação: PROPOSTO, revisão 1. Nenhum código da F4 está autorizado.**
+**Situação: PROPOSTO, revisão 3. Nenhum código da F4 está autorizado.** A publicação desta documentação não autoriza implementação.
 
-A revisão 0 está no `29c39c9`.
+A revisão 0 está no `29c39c9`, e a revisão 1, no `0eb4038`. A revisão 2 não foi comitada: passou pelo `reviewer` e pelo `security`, e os achados dos dois que tocam o Clinics estão aqui. Os do Core estão no ADR-052, revisão 2.
 
-**Decisão do usuário de 2026-10-23:**
+- **Divisão do trabalho:** a F4.0–F4.5 está aprovada como organização do trabalho (decisão do usuário de 2026-10-23).
+- **O que fica onde:** o Core está no ADR-052, revisão 2, que traz também a primeira subentrega proposta (F4.1a). O Clinics fica neste adendo.
+- **A apresentação ao cliente não autoriza** atalho, deploy, ativação, envio real nem dados reais.
 
-- a divisão F4.0–F4.5 fica aprovada **como organização do trabalho**, e o plano continua PROPOSTO;
-- a F4.0 é só documentação;
-- nada da F4.1, nem outro código da F4, começa antes da revisão.
+**As decisões do usuário de 2026-10-23 sobre V1–V5** valem como critério desta revisão:
 
-**A apresentação ao cliente, marcada para a semana seguinte, não autoriza** atalho, deploy, ativação do Clinics, envio real nem dados reais.
+- **V1:** restrição de leitura mais minimização, **como direção arquitetural**. Não é uma solução do B1 já aprovada nem implementada. O ADR próprio deve cobrir notas, tarefas e as demais superfícies; proteger só o Inbox não fecha o bloqueio.
+- **V2:** a reativação é uma finalidade separada, tratada internamente como marketing por cautela. A categoria efetiva depende da Meta, e ela não herda o consentimento da confirmação.
+- **V3:** o 409 genérico ao excluir um deal vinculado é aceito como **provisório para o protótipo fictício**. Ele não resolve a política jurídica de exclusão.
+- **V4:** as métricas de resposta exigem também `conversations:read`. Agregar não elimina a inferência quando os filtros deixam um grupo pequeno.
+- **V5:** os 60 dias da reativação ficam aceitos como hipótese. Para a conversão, uma janela explícita por deal, com exemplos (item 7).
 
-**Onde fica cada parte:**
-
-- o que é do Core (template, consentimento, destinatário e o resultado do envio) está no **ADR-052**, também PROPOSTO;
-- este adendo fica com o que é do Clinics.
-
-As decisões abertas estão marcadas **[ABERTA Vn]**. As do ADR-052 estão marcadas [ABERTA Cn].
-
-**1. A fronteira de dados: pendência arquitetural explícita, não exceção aprovada.**
+**1. A fronteira de dados: pendência arquitetural explícita (V1).**
 
 Mesmo com a lista fechada de parâmetros, a F4 deixa no Core informação ligada à saúde:
 
-- **a mensagem enviada:** o corpo é a prévia, append-only, e os parâmetros ficam no despacho. Ela diz que "esta pessoa tem horário nesta clínica neste dia", e a clínica é de estética;
-- **a conversa com o número do paciente;**
-- **as respostas do paciente,** em texto livre, sobre as quais não há controle nenhum.
+- a mensagem enviada: o corpo é a prévia, append-only, e os parâmetros ficam no despacho;
+- a conversa com o número do paciente;
+- as respostas do paciente, em texto livre.
 
-Tudo isso fica legível com `conversations:read`, a chave do Core.
+Tudo isso é legível com `conversations:read`.
 
-- **A aprovação humana não retira a sensibilidade do conteúdo.** Ela decide o envio; não reclassifica o que fica guardado.
-- **Pela regra "na dúvida, a mais restrita" (§6.1), esse conteúdo é S.** Ele fica sob o B1 (§6.7), que passa a cobrir explicitamente as mensagens geradas pelo vertical e as respostas a elas. **Não é um risco aceito para o uso real.**
+- **A aprovação humana não retira a sensibilidade do conteúdo.**
+- **Esse conteúdo é S** (§6.1) e fica sob o B1, que passa a cobrir explicitamente as mensagens geradas pelo vertical, as respostas a elas e as conversas "remetente a identificar" (ADR-052, item 4). **Não é risco aceito para o uso real.**
 
-**O caminho para resolver antes do uso real:**
+**A direção arquitetural aprovada:** (A) restrição de leitura no Core, mais (B) minimização.
 
-- **(A) Restrição de leitura das conversas no Core** (recomendado como o caminho do B1). É a primeira opção do §6.7, estendida às conversas: num workspace com o Clinics, ler conversas, mensagens, a lista do Inbox, a busca, as notificações e a timeline de um contato restrito exigiria uma permissão a mais, contribuída pelo vertical.
-  - A forma seria uma extensão do E6 para um consumidor de leitura, com uma porta neutra.
-  - Isso cobre o que a F4 deixa e também o texto que a equipe já digita hoje (notas e tarefas).
-  - Exige um ADR próprio, alterando o ADR-047, e a bateria de testes da fronteira.
-- **(B) Minimização, complementar a (A):**
-  - os parâmetros do despacho são apagados depois de um resultado final, `sent` ou `failed_permanent`. O `unknown_after_dispatch` não apaga, porque é preciso resolver o caso;
+- **O ADR próprio de (A), antes do uso real,** precisa cobrir **todas** as superfícies em que um contato restrito aparece com conteúdo:
+  - conversas, mensagens e a lista do Inbox;
+  - a busca;
+  - notificações;
+  - a timeline e as atividades;
+  - **notas e tarefas**, que são o texto que a equipe já digita hoje;
+  - **arquivos e anexos**, inclusive a mídia recebida pelo WhatsApp (numa clínica de estética, a foto é o conteúdo mais sensível);
+  - as conversas "remetente a identificar" (ADR-052, item 2);
+  - deals ligados ao contato (título e descrição);
+  - tags e custom fields de texto;
+  - exportações e os endpoints de leitura em lote;
+  - contagens que revelem existência.
+
+  Proteger só o Inbox não fecha o B1. O ADR também define a permissão contribuída pelo vertical (extensão do E6 para um consumidor de leitura) e a bateria de testes por superfície.
+
+- **(B), complementar:**
+  - os parâmetros do despacho são apagados depois de um desfecho final;
   - a prévia guardada se limita à lista fechada.
+- **(C), um Inbox do vertical:** descartado, porque duplicaria o Core.
+- **(D), o jurídico:** a política do WhatsApp sobre informação de saúde (ADR-052, Contexto) e a LGPD são do §9.2.
+- **Até (A) estar decidido, implementado e provado,** a F4 corre **só com o transporte falso e dados fictícios**.
 
-  Isso reduz o resíduo, mas sozinho não resolve: as respostas do paciente continuam lá.
+**2. As finalidades do Clinics (V2).**
 
-- **(C) Um Inbox próprio do vertical:** descartado, porque duplicaria o Inbox do Core (CLAUDE.md §3.8 e §4).
-- **(D) Jurídico:**
-  - a política do WhatsApp proíbe "enviar ou solicitar informações relacionadas à saúde se as leis aplicáveis proibirem a distribuição dessas informações a sistemas que não cumprem os requisitos necessários" (ADR-052, Contexto);
-  - se e com que conteúdo uma clínica de estética pode confirmar horário pelo WhatsApp é pergunta para a avaliação jurídica do §9.2, e não conclusão de engenharia.
+| Finalidade            | Uso                                  | Campos permitidos                          | Categoria pedida à Meta |
+| --------------------- | ------------------------------------ | ------------------------------------------ | ----------------------- |
+| `clinics.confirmacao` | pedir confirmação de um horário      | primeiro nome, data, hora, nome da unidade | utility                 |
+| `clinics.reativacao`  | convidar a marcar um retorno vencido | primeiro nome, nome da unidade             | marketing, por cautela  |
 
-**[ABERTA V1]** Adotar (A) mais (B) como o caminho do B1, com o ADR próprio de (A) antes do uso real, ou outro caminho. **Até isso ser decidido e implementado, a F4 só corre com o transporte falso e dados fictícios.**
-
-**2. As finalidades do Clinics e o conteúdo.**
-
-O vertical cria duas finalidades na ativação (catálogo do ADR-052, item 2), cada uma com sua descrição e sua lista fechada de campos:
-
-| Finalidade            | Uso                                 | Campos permitidos                          | Categoria na Meta      |
-| --------------------- | ----------------------------------- | ------------------------------------------ | ---------------------- |
-| `clinics.confirmacao` | pedir confirmação de um horário     | primeiro nome, data, hora, nome da unidade | utility                |
-| `clinics.reativacao`  | convidar a marcar o retorno vencido | primeiro nome, nome da unidade             | marketing, por cautela |
-
+- **Cada finalidade tem o seu consentimento e a sua versão** (ADR-052, item 2). A reativação **não herda** o consentimento da confirmação, e o inverso também vale.
+- **A categoria efetiva é a que a Meta der.** Se a Meta classificar diferente do pedido, a versão do template muda (ADR-052, item 1), e isso exige revisão e aprovação novas.
 - **Nunca entram:** serviço, procedimento, profissional, estado de atendimento, pacote ou saldo.
-- **A conferência de apoio:** quando uma versão de template é ligada a uma finalidade do Clinics, o vertical compara o texto fixo com os nomes do próprio catálogo (serviços e profissionais) e recusa se encontrar algum.
-  - Quem libera de fato é a revisão humana da versão (ADR-052, item 1).
-  - A conferência automática só pega o óbvio.
-
-**[ABERTA V2]** A categoria da reativação. Um convite de retorno pode ser tratado como utility ("específico do usuário") ou como marketing. A engenharia trata como **marketing** até a revisão real da Meta (F4.5), porque marketing é o caso mais restrito: limite por usuário (erro 131049) e opt-in próprio.
+- **A conferência de apoio, sem gancho novo do Core:** na prévia e no lote, o vertical compara o texto renderizado (o texto fixo e o nome da unidade) com os nomes do próprio catálogo (serviços e profissionais) e recusa o destinatário se encontrar algum. O nome da unidade é parâmetro e pode carregar a especialidade. Quem libera o texto fixo de fato é a revisão humana (`templates:review`).
 
 **3. O pedido de envio (entidade S do Clinics).**
 
-- **A entidade:** `ClinicsOutreachRequest`, com workspace, tipo (confirmação ou reativação) e o alvo (o agendamento, ou o retorno vencido). Guarda também a fotografia do que valia na aprovação:
-  - o horário do agendamento;
+- **A entidade:** `ClinicsOutreachRequest`, com o tipo (confirmação ou reativação) e o alvo (o agendamento, ou o retorno vencido). Guarda o `approvalHash` (um HMAC; ADR-052, item 8) e os valores aprovados **só até o desfecho**. Depois, fica só o HMAC, pela minimização (B). Guarda também:
+  - a referência de origem;
   - o contato e o número;
-  - o consentimento usado;
+  - a versão da finalidade e o consentimento;
   - a versão do template;
   - a mensagem do Core;
   - quem aprovou e o lote.
 - **Os estados:**
-  - `aguardando_envio`: o despacho do Core está `reserved`, ou em nova tentativa depois de `failed_before_send`;
-  - `enviado`: o provedor aceitou;
-  - `nao_enviado`: comprovadamente não saiu, com o motivo. Cobre a recusa no worker, o `failed_permanent` e o cancelamento antes do envio;
-  - `incerto`: `unknown_after_dispatch`.
+  - `aguardando_envio`;
+  - `enviado`;
+  - `nao_enviado`: comprovadamente não saiu, com o motivo. Cobre o cancelado, o recusado na reconferência, o `failed_permanent` e o `failed_before_send` esgotado. Também cobre o `unknown_after_dispatch` com o código `not_sent_guard_aborted`, se o C18 do ADR-052 for aprovado; senão, esse caso fica `incerto`;
+  - `incerto`: `unknown_after_dispatch`, ou `in_doubt` da guarda.
 
-  Entrega e leitura não são estados do pedido. São sinais do provedor, que o Core guarda.
+  Entrega e leitura são sinais do provedor, guardados pelo Core.
 
-- **A idempotência:**
-  - na confirmação, no máximo um pedido não encerrado por (agendamento, horário). Remarcar abre uma chave nova;
-  - na reativação, no máximo um pedido não encerrado por retorno;
-  - um pedido novo para o mesmo alvo só depois de `nao_enviado`, e por ato explícito;
-  - depois de `incerto`, só pelo reenvio explícito do ADR-052 [C5], marcado como possível duplicata.
+- **A idempotência** é um índice único parcial **por alvo**, com estado diferente de `nao_enviado`:
+  - na confirmação, no máximo um pedido em `aguardando_envio`, `enviado` ou `incerto` por (agendamento, horário). Remarcar muda o alvo;
+  - na reativação, no máximo um desses por retorno;
+  - depois de `enviado` ou `incerto`, nenhum pedido novo é aceito para o mesmo alvo.
+- **As chaves de validade** são ids estáveis, sem horário: `clinics.appointment:<id>` e `clinics.return:<id>`. Elas ficam fixadas no pedido (ADR-052, item 9).
+- **Um pedido novo para o mesmo alvo** só depois de `nao_enviado`, por ato explícito e com aprovação nova.
+- **Depois de `incerto` (C5), o fluxo não oferece nada para aquele alvo:** nem reenvio, nem "mensagem nova". Vale a triagem do ADR-052, item 5, que registra o desfecho conhecido sem enviar. Se a clínica precisar falar com o paciente, ela usa outro meio, fora do fluxo.
 
-**4. A validade dos pedidos que ainda não saíram.**
+**4. A validade dos pedidos ainda não enviados.**
 
-| Evento antes do envio                                    | Efeito no pedido                                                                                                                                          |
-| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Agendamento cancelado, marcado como falta ou atendido    | Cancelado na mesma transação do evento, pelo serviço do Core de cancelar despacho não iniciado (ADR-052, item 4). Fica `nao_enviado (agendamento mudou)`. |
-| Agendamento remarcado                                    | O pedido do horário antigo é cancelado. Um pedido para o horário novo exige aprovação nova.                                                               |
-| Retorno concluído, cancelado ou vinculado a uma consulta | A reativação pendente é cancelada.                                                                                                                        |
-| Consentimento revogado                                   | O Core recusa no worker. Fica `nao_enviado (consentimento revogado)`, sem nova tentativa.                                                                 |
-| Número alterado, removido ou passado a outro contato     | O Core recusa no worker (ADR-052, item 3). Fica `nao_enviado (número mudou)`.                                                                             |
-| Versão do template pausada, desabilitada ou alterada     | O Core recusa. Fica `nao_enviado (template)`.                                                                                                             |
+As travas, o ponto de decisão e o que se promete estão no ADR-052, itens 5 a 8, e valem aqui. Em resumo: o que comita antes das travas impede o envio; o que chega com o envio em curso espera e registra o desfecho; com a guarda perdida, a mensagem pode sair, e isso é detectado como `incerto`.
 
-- **A corrida:** o cancelamento e o worker disputam a trava da linha do despacho, e quem chega primeiro vence.
-- **Se o envio já tinha saído:** o pedido fica `enviado`, e a tela diz "enviado antes do cancelamento" ou "enviado com o horário anterior". Uma mensagem de correção automática fica fora da F4.
-- **Nova tentativa e reenvio não se confundem:**
-  - a nova tentativa é do Core, e só depois de falha comprovadamente anterior ao envio (ADR-039);
-  - o reenvio de `incerto` nunca é automático.
+| Evento antes do ponto de decisão                         | Efeito                                                                                                                                                                                                                                                                                  |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agendamento cancelado, marcado como falta ou atendido    | A pré-condição (E7) deixa de valer, e o vertical cancela o despacho não iniciado. Fica `nao_enviado (agendamento mudou)`.                                                                                                                                                               |
+| Agendamento remarcado                                    | O pedido do horário antigo é cancelado. O horário novo exige aprovação nova.                                                                                                                                                                                                            |
+| Retorno concluído, cancelado ou vinculado a uma consulta | A reativação pendente é cancelada.                                                                                                                                                                                                                                                      |
+| Unidade renomeada ou com o fuso alterado                 | Não é evento de validade. O valor muda, o `approvalHash` deixa de bater na reconferência e o pedido não sai. Fica `nao_enviado (mudou desde a aprovação)`. Se a mudança comitar durante o envio em curso, a mensagem sai com o valor lido na reconferência, e isso é resíduo declarado. |
+| Consentimento revogado, ou pedido de parar               | O Core recusa. Fica `nao_enviado (consentimento)` ou `nao_enviado (pediu para parar)`.                                                                                                                                                                                                  |
+| Número alterado, removido ou passado a outro contato     | O Core recusa. Fica `nao_enviado (número)`.                                                                                                                                                                                                                                             |
+| Template divergente na Meta                              | O Core recusa. Fica `nao_enviado (template)`.                                                                                                                                                                                                                                           |
+
+- **A mudança que chega com o envio em curso** (com a guarda segurando as travas) espera até 10 s.
+  - Se a guarda terminar a tempo, o pedido fica `enviado` ou `incerto`, e a tela diz, por exemplo, "o cancelamento chegou com o envio em curso".
+  - Se não terminar, a mudança responde 409, e a tela pede para tentar de novo. **Cancelar ou remarcar um agendamento pode precisar de uma segunda tentativa enquanto um envio dele está em curso.**
+- **A ordem das travas no vertical:** toda mudança que invalida um pedido abre com `MudancasDeRestricao`, pegando a `validity:` exclusiva, **antes de qualquer linha própria**. Os caminhos a refatorar, que hoje travam linhas primeiro (unidade e depois agendamento, e os do retorno), são:
+  - mudar o status do agendamento (cancelar, falta, atender);
+  - remarcar;
+  - concluir, cancelar ou vincular um retorno.
+
+  Todos entram na fumaça da ordem global.
+
+- **Uma mensagem de correção automática** fica fora da F4.
 
 **5. O lote.**
 
-- **A lista de candidatos:**
-  - confirmações: os agendamentos dos próximos dias;
-  - reativações: os retornos vencidos da lista operacional da F3.2.
+- **Os candidatos:**
+  - para confirmação, os agendamentos dos próximos dias;
+  - para reativação, os retornos vencidos da lista operacional da F3.2.
 
-  Para cada candidato, a lista mostra se ele pode receber e, se não pode, por quê: sem consentimento para a finalidade, número ambíguo ou ausente, já tem pedido (com o estado), ou template indisponível.
+  Cada candidato aparece com o que impede o envio, se houver:
+  - sem consentimento para a finalidade;
+  - pediu para parar;
+  - número ambíguo ou ausente;
+  - já tem pedido (com o estado);
+  - template indisponível.
 
-- **Antes de aprovar,** a pessoa vê a prévia fiel de cada destinatário (ADR-052, item 1).
-- **A aprovação** vai com uma chave de idempotência. A resposta traz o resultado de cada destinatário: criado, já existente (com o estado) ou recusado (com o motivo).
-- **Repetir o lote não duplica ninguém,** e quem já foi processado aparece com o estado atual.
+- **A aprovação:** antes de aprovar, a pessoa vê a prévia fiel de cada destinatário. A aprovação leva os `approvalHash` no corpo.
+  - A rota **exige** a chave de idempotência e dá 409 para a mesma chave com outro lote.
+  - O servidor recalcula cada hash e recusa a divergência, **destinatário por destinatário**, cada um sob as próprias travas de aprovação.
+  - A resposta guardada traz só ids, estados e motivos.
+- **O resultado** vem por destinatário. Repetir o lote com a mesma chave devolve a resposta guardada (o replay), e não duplica ninguém. **O estado atual de cada destinatário** aparece relendo a lista, ou num lote novo, com chave nova, em que quem já foi processado vem como "já existente", com o estado.
 
 **6. Permissões e vínculos.**
 
@@ -4302,80 +4318,93 @@ O vertical cria duas finalidades na ativação (catálogo do ADR-052, item 2), c
   - `conversations:write`;
   - `consents:read`, porque a lista mostra a situação do consentimento.
 
-  O `Profissional` não envia, porque não tem `conversations:*`. **A D7 não é reaberta para a F4.**
+  O `Profissional` não envia. **A D7 não é reaberta para a F4.**
 
-- **O sinal "respondeu" e o link para a conversa** só aparecem com `conversations:read` e com o acesso àquela conversa, conforme as regras do Core. Sem isso, nada aparece, nem o sinal. Depois de (A), vale também a permissão de leitura restrita.
+- **O sinal "respondeu" e o link para a conversa** só aparecem com `conversations:read` e com o acesso àquela conversa, pelas regras do Core. Depois de (A), vale também a leitura restrita.
+- **As métricas de resposta (V4)** exigem a permissão da métrica **e** `conversations:read`. A agregação não elimina a inferência com grupos pequenos. Quem não pode ler as conversas não vê as contagens de resposta.
 - **O deal:**
-  - **listar e escolher** o deal no agendamento exige `pipelines:read` (a chave do Core que dá a leitura de deals) e `clinics:schedule:write`. Só aparecem os deals do mesmo contato do paciente;
+  - **listar e escolher** exige `pipelines:read` e `clinics:schedule:write`. Só aparecem os deals do mesmo contato do paciente;
   - **ver o vínculo depois** exige `pipelines:read` e `clinics:schedule:read`;
-  - **o vínculo fica numa tabela do Clinics,** com FK composta para o agendamento e para o `Deal`, e é **`RESTRICT` para o `Deal`**. Nada de S se apaga antes da decisão jurídica (§9.1).
-- **O efeito novo no Core,** a documentar em `docs/DOMAIN_MODEL.md` como regra neutra ("um registro de extensão pode impedir a exclusão de um deal"):
-  - excluir um deal que originou um agendamento dá 409, com a mensagem genérica que o Core já usa para FK violada: "Registro em uso por outros dados";
-  - a mensagem não nomeia o Clinics, o agendamento nem o paciente;
-  - **resíduo:** quem não vê o Clinics fica sabendo que "algo" impede a exclusão. A alternativa para a pessoa é marcar o deal como perdido.
-
-**[ABERTA V3]** Aceitar o 409 genérico como o efeito no Core, ou trocar por outra regra. Uma opção seria desfazer o vínculo antes da exclusão, mas isso apagaria um registro S, o que o §9.1 não permite.
-
-**[ABERTA V4]** As contagens agregadas de "resposta recebida" nas métricas: mostrar com a permissão da métrica (recomendado, porque não identificam pessoa nem conteúdo) ou exigir também `conversations:read`.
+  - **o vínculo fica numa tabela do Clinics,** com FK composta `RESTRICT` para o `Deal`.
+- **A exclusão de deal vinculado (V3, provisória para o protótipo fictício):**
+  - dá o 409 genérico que o Core já usa para FK violada, "Registro em uso por outros dados", sem nomear o Clinics, o agendamento ou o paciente. É **efeito novo no Core**, a documentar em `docs/DOMAIN_MODEL.md` como regra neutra;
+  - quem não vê o Clinics fica sabendo que "algo" impede a exclusão; a alternativa para a pessoa é marcar o deal como perdido;
+  - **não resolve a política jurídica de exclusão** (§9.2), que continua aberta.
 
 **7. Métricas: associação, não causa.**
 
-O período é em datas locais da unidade, intervalo [de, até), pela regra da F3.3a. "Sem dados" é diferente de 0 %.
+- **As regras comuns:**
+  - o período é em datas locais da unidade, no intervalo [de, até), pela regra da F3.3a;
+  - **as janelas J e N também contam em datas locais da unidade,** semiabertas: [D, D + J) e [D, D + N), em que D é a data local do deal ou da âncora;
+  - "sem dados" é diferente de 0 %;
+  - a unidade de contagem é sempre o agendamento, o deal ou o paciente, nunca a mensagem;
+  - um envio `incerto` não conta como enviado e aparece como grupo próprio;
+  - uma resposta que chega numa conversa "remetente a identificar" não conta, porque não se sabe de quem é.
 
-- **O funil da confirmação.** A unidade de contagem é o agendamento, contado uma vez.
-  - **Base:** os agendamentos com início no período, sem os cancelados, que ficam à parte, como na F3.3a.
-  - **Solicitação enviada:** a base com pedido `enviado` **para o horário final** do agendamento. Os enviados para um horário anterior aparecem à parte.
-  - **Entrega confirmada pelo provedor:** das enviadas, as com status `delivered` ou `read` da Meta.
-  - **Resposta recebida:** das enviadas, as com mensagem do paciente na conversa daquele número, depois do envio e antes do início. Conta só o fato, sem conteúdo.
-  - **Confirmado pela equipe:** das enviadas, as levadas a `confirmed` depois do envio e antes do início. O instante da transição precisa de fonte própria, que se decide na F4.3.
-  - **Falta por grupo:** a taxa de faltas da F3.3a para quem teve solicitação enviada e para quem não teve, lado a lado. **Isso é associação.**
-- **Conversão:**
-  - **Base:** os deals criados no período, no pipeline escolhido, com contato.
-  - **Numerador:** os deals com pelo menos um agendamento vinculado `attended`, contando cada deal uma vez.
-  - **O número pode subir depois.** O período fica "em apuração" até uma data de corte, a decidir.
-- **Pacientes com retorno depois da reativação** (associação temporal provisória, **não prova de que a mensagem causou o retorno**):
-  - **Base:** os pacientes com pelo menos uma reativação `enviado` no período.
-  - **Âncora:** a primeira reativação enviada ao paciente no período. As seguintes não criam âncora nova.
-  - **Numerador:** os pacientes com um atendimento `attended` cujo agendamento foi **criado depois da âncora** e começa em até **N = 60 dias** depois dela. O agendamento que já existia não conta. Cada paciente conta uma vez, com qualquer número de atendimentos.
-  - **O período fica "em apuração"** até N dias depois do fim.
-  - **O rótulo na tela diz** "associação temporal, não causa".
-- **Deduplicação:** o reenvio de um `incerto` não conta como nova solicitação. A unidade é sempre o agendamento, o deal ou o paciente, nunca a mensagem.
+**7.1. O funil da confirmação.** Cada agendamento conta uma vez.
 
-**[ABERTA V5]** O N (60 dias) e a data de corte da conversão. Os dois são provisórios sob H6, e a validação operacional (D6) pode mudá-los.
+| Etapa                            | Quem entra                                                                                                                                                                           |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Base                             | Os agendamentos com início no período, sem os cancelados, que ficam à parte                                                                                                          |
+| Solicitação enviada              | Da base, os que têm um pedido `enviado` **para o horário final**. Os enviados para um horário anterior aparecem à parte                                                              |
+| Entrega confirmada pelo provedor | Das enviadas, as com status `delivered` ou `read`                                                                                                                                    |
+| Resposta recebida                | Das enviadas, as com mensagem do paciente na conversa daquele número depois do envio e antes do início. Só o fato, sem conteúdo, e com `conversations:read` (V4)                     |
+| Confirmado pela equipe           | Das enviadas, as levadas a `confirmed` depois do envio e antes do início. A fonte do instante da transição se decide na F4.3                                                         |
+| Falta por grupo                  | A taxa da F3.3a em **três** grupos: com solicitação enviada, com solicitação incerta e sem solicitação. Os incertos ficam à parte para não contaminar a comparação. **É associação** |
+
+**7.2. Conversão, com janela por deal (V5).** A proposta, como hipótese sob H6:
+
+- **O deal entra na base** se foi criado no período, com contato, no pipeline escolhido.
+- **A janela do deal** é [D, D + **J = 90 dias**), com D a data local da criação.
+- **O deal converte** se tem um agendamento vinculado `attended` que foi **criado na criação do deal ou depois dela** e começa **dentro da janela**. Cada deal conta uma vez.
+- **O estado do deal (ganho, perdido ou aberto) não muda a conta.** Quem decide é o atendimento.
+- **A apuração do deal se encerra** no fim da janela. O período fica "em apuração" até `até + J` e pode subir até lá; depois disso, fica fechado.
+
+Exemplos, com o período de novembro de 2030:
+
+| #   | Deal criado | Agendamento vinculado                         | Resultado                                                          |
+| --- | ----------- | --------------------------------------------- | ------------------------------------------------------------------ |
+| 1   | 03/11       | criado 05/11, atendido 20/11                  | converte (dentro da janela)                                        |
+| 2   | 03/11       | criado 05/11, atendido 15/02 (104 dias)       | não converte (fora da janela)                                      |
+| 3   | 28/10       | atendido 10/11                                | não entra em novembro; conta em outubro, se for o caso             |
+| 4   | 03/11       | um falta e outro atendido 01/12               | converte pelo atendido                                             |
+| 5   | 03/11       | criado 01/11, antes do deal, e atendido 10/11 | não converte (o agendamento já existia)                            |
+| 6   | 03/11       | nenhum                                        | não converte; em 10/12 o período está "em apuração" até 01/03/2031 |
+
+**7.3. Pacientes com retorno depois da reativação** (associação temporal provisória, **não prova de causa**):
+
+- **A base:** os pacientes com pelo menos uma reativação `enviado` no período.
+- **A âncora:** a primeira reativação enviada ao paciente no período. As seguintes não criam âncora nova.
+- **O numerador:** os pacientes com um atendimento `attended` cujo agendamento foi **criado depois da âncora** e começa em [D, D + **N = 60 dias**), com D a data local da âncora (hipótese aceita). Cada paciente conta uma vez.
+- **O período fica "em apuração"** até N dias depois do fim.
+- **O rótulo na tela diz** "associação temporal, não causa".
+
+Exemplos, com o período de novembro de 2030:
+
+| #   | Reativações enviadas | Agendamento atendido                   | Resultado                                                      |
+| --- | -------------------- | -------------------------------------- | -------------------------------------------------------------- |
+| 1   | 05/11                | criado 07/11, atendido 20/11           | conta                                                          |
+| 2   | 05/11 e 20/11        | criado 22/11, atendido 30/11           | conta uma vez, com a âncora em 05/11                           |
+| 3   | 05/11                | criado 01/11, antes da âncora          | não conta                                                      |
+| 4   | 05/11                | criado 10/11, atendido 10/01 (66 dias) | não conta                                                      |
+| 5   | 28/10 e 03/11        | criado 05/11, atendido 12/11           | âncora em 03/11 (a primeira **do período**); conta em novembro |
+
+Pelo exemplo 5, o mesmo paciente também conta em outubro, com a âncora em 28/10: cada período mede as suas reativações. A soma de períodos não é um total de pacientes, e a tela diz isso.
 
 **8. As entregas.**
 
-| Entrega | O que inclui                                                                                                                                                                                                  | Testável aqui?                                               |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| F4.0    | ADR-052 e esta revisão, só documentação                                                                                                                                                                       | —                                                            |
-| F4.1    | Core, pelo ADR-052: template versionado e revisado, finalidades, consentimento, destinatário e ingestão sem ambiguidade (com o BSUID), cancelamento de despacho não iniciado, lote e as migrations do ADR-051 | sim, com o transporte falso e um catálogo de templates falso |
-| F4.2    | Clinics: os pedidos, a validade, o lote e a conferência do texto contra o catálogo                                                                                                                            | sim                                                          |
-| F4.3    | Clinics: o vínculo com o deal e as métricas                                                                                                                                                                   | sim                                                          |
-| F4.4    | As telas e o e2e                                                                                                                                                                                              | sim, com o transporte falso                                  |
-| F4.5    | Externa (ver abaixo)                                                                                                                                                                                          | não                                                          |
-
-- **O ADR de (A), o caminho do B1,** é independente da F4.1–F4.4, mas vem **antes do uso real**.
-- **O que se desenvolve e testa aqui,** sempre com o transporte falso e dados fictícios:
-  - a política nova;
-  - a ingestão de número ambíguo e de mensagem sem `from` (o BSUID), simulada pelo webhook assinado;
-  - a idempotência e a concorrência entre cancelamento e worker;
-  - o lote;
-  - a prévia fiel;
-  - a fronteira;
-  - as permissões e o isolamento (P0);
-  - as métricas com as bordas de fuso;
-  - as mutações e o e2e.
-- **O que depende da WABA e de configuração externa (F4.5):**
-  - as credenciais e o webhook alcançável. Staging segue bloqueado para deploy;
-  - os templates aprovados, e a leitura deles pela API (o formato real dos componentes);
-  - a categoria que a Meta der à reativação;
-  - o envio a quem nunca escreveu, e os códigos reais de erro;
-  - o comportamento do BSUID e do `from` omitido com pessoas reais;
-  - os limites do portfólio e o limite por usuário para marketing;
-  - o preço;
-  - a coleta real de opt-in e a base legal (§9.2);
-  - a resposta da política do WhatsApp sobre informação de saúde;
-  - as métricas com dados do piloto.
+| Entrega    | O que inclui                                                                                                                                                                                                                        | Testável aqui?                                 |
+| ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| F4.0       | O ADR-052 e este adendo, só documentação                                                                                                                                                                                            | —                                              |
+| **F4.1a**  | Core: telefones normalizados, ingestão sem atribuição silenciosa, a área RAI com as proteções e a religação no protocolo, a ordem das travas e o isolamento por item, se aprovado (ADR-052, revisão 2, "primeira subentrega")       | sim                                            |
+| F4.1b      | Core: finalidades versionadas, consentimento, bloqueio de parar e as chaves com o preenchimento                                                                                                                                     | sim                                            |
+| F4.1c      | Core: templates versionados, revisão e releitura; envio iniciado pelo negócio (`business_outbound`), com a guarda, o `approvalHash`, o cancelamento, `canceled` e o lote; o E7, se aprovado; os testes de crash do ponto de decisão | sim, com o transporte falso e o catálogo falso |
+| F4.1-BSUID | Core: suporte ao BSUID                                                                                                                                                                                                              | só depois de a F4.5 confirmar o payload        |
+| F4.2       | Clinics: os pedidos, a pré-condição, a validade, o lote e a conferência do texto                                                                                                                                                    | sim                                            |
+| F4.3       | Clinics: o vínculo com o deal e as métricas                                                                                                                                                                                         | sim                                            |
+| F4.4       | As telas e o e2e                                                                                                                                                                                                                    | sim, com o transporte falso                    |
+| F4.5       | Externa: WABA, templates aprovados, payloads reais (inclusive do BSUID), limites, preço, opt-in real e o jurídico                                                                                                                   | não                                            |
+| B1-(A)     | O ADR e a implementação da restrição de leitura (V1)                                                                                                                                                                                | sim; vem **antes do uso real**                 |
 
 **Fora da F4:**
 
@@ -4383,13 +4412,14 @@ O período é em datas locais da unidade, intervalo [de, até), pela regra da F3
 - a IA nos contatos da clínica;
 - os botões de resposta rápida;
 - a leitura do conteúdo das respostas;
+- **o reenvio de incerto (C5)**;
 - e-mail e SMS;
 - campanhas;
 - o envio por BSUID;
-- a mensagem de correção depois de um cancelamento;
-- a tela de templates, que fica na CLI.
+- a mensagem de correção;
+- a gestão de templates. A tela mínima de revisão de versão (`templates:review`) entra na F4.4.
 
-**Continuam bloqueados** deploy, ativação do Clinics, envio real e dados reais.
+**Continuam bloqueados** o código da F4, deploy, ativação do Clinics, envio real e dados reais.
 
 ## ADR-049 — Relógio de agendamento: quem compara define o relógio, e filas e leases usam o do banco
 
@@ -4672,193 +4702,526 @@ A skill `create-migration` traz o bloco de ensaio com as três evidências: os g
 
 **Definition of Done:** o `CLAUDE.md` (§6) ganha a linha aprovada: "migration nova conforme ADR-051, com atomicidade ou exceção justificada e recuperação ensaiada".
 
-## ADR-052 — Mensagem iniciada pelo negócio: template com conteúdo verificável, consentimento por finalidade e destinatário sem ambiguidade
+## ADR-052 — Mensagem iniciada pelo negócio: telefones normalizados, remetente sem atribuição silenciosa, template verificável, consentimento por finalidade e aprovação vinculada à prévia
 
-**Status:** PROPOSTO (F4.0, 2026-10-23). Nenhum código está autorizado. · **Data:** 2026-10-23
+**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). Nenhum código da F4 está autorizado. A publicação desta documentação não autoriza implementação. · **Data:** 2026-10-23
 
-**Contexto.** A F4 do Clinics (ADR-048, adendo 8) precisa que a empresa escreva primeiro. O Core da Entrega 9.1 foi desenhado para responder, e o que falta é universal: serve a qualquer workspace que envie aviso ou convite pelo WhatsApp. Por isso a decisão é do Core, com nomes neutros.
+A revisão 0 está no `0eb4038`. A revisão 1 não foi comitada; ela passou pelo `reviewer` (mudanças necessárias) e pelo `security` (bloqueado, sem P0), e os achados dos dois estão incorporados aqui. A confirmação desta revisão 2 aprovou com ressalvas (o `reviewer`, com quatro achados importantes; o `security`, com dois P1 novos, os mesmos do `reviewer`), e as correções dela também estão no texto. A conferência final dessas correções aprovou: o `security`, sem ressalva bloqueante, e o `reviewer`, com uma ressalva importante (a regra ao reabrir conversa) e duas de qualidade. As três estão no texto, e os dois disseram que não é preciso nova rodada. Nenhum ADR aceito é alterado antes da aprovação deste; as emendas que ele implicaria estão listadas no fim, em "Emendas propostas".
 
-**Conferido no código em 2026-10-23:**
+**As decisões do usuário de 2026-10-23** valem como critério:
 
-- **Envio:**
-  - o envio só vai ao `Conversation.externalAddress` de quem escreveu (ADR-038), e não escolhe um número de `Contact.phones`;
-  - o template é "registrado manualmente" com nome, idioma e quantidade de parâmetros. Não há versão, texto nem categoria;
-  - o corpo da `Message` de template é o que quem chama gravar, e é append-only.
-- **Consentimento:** o `ContactChannelConsent` vale por contato e canal, sem número da pessoa nem finalidade. A `evidence` é texto livre, e nenhuma API o cria.
-- **Ingestão:**
-  - **o campo `messages[].from` é exigido** (`channels/whatsapp.types.ts`);
-  - **o contato é achado com `findFirst` por telefone, sem ordem** (`resolveContact`). Um número de dois contatos cai em um deles, sem aviso;
-  - a conversa aberta é escolhida por canal e contato, não por número (`resolveConversation`).
+- **C1:** catálogo de finalidades por workspace, com versão. Um consentimento anterior não autoriza em silêncio uma finalidade ampliada.
+- **C2:** Owner, Admin e Member recebem `consents:read` e `consents:manage`. O `Profissional` não recebe por padrão. Os papéis existentes são tratados sem sobrescrever personalizações.
+- **C3:** `templates:review`, só para Owner e Admin por padrão.
+- **C4:** o pedido de parar é registrado por ação humana, sem interpretar o texto. Ele interrompe todas as finalidades daquele número e canal, inclusive os pedidos pendentes, e o bloqueio fica visível.
+- **C5: não aprovado.** Não há reenvio de entrega incerta, nem como mensagem nova oferecida pelo fluxo.
+- **C6:** o "remetente a identificar" fica no Inbox, com a segurança desenhada antes da aprovação.
+- **C7:** os consentimentos antigos ficam como histórico. Sem migração que presuma finalidade.
+- **C8:** continua com o jurídico.
+- **C9:** origem de lista fechada e referência estruturada, sem nota livre.
 
-**As regras externas, conferidas na documentação oficial em 2026-10-23.** As próprias páginas avisam que mudam. Reconferir na F4.5.
+Os quatro pontos que o usuário pediu resolvidos no desenho:
 
-- **[Política do WhatsApp Business](https://whatsappbusiness.com/pt-br/policy/)** (última atualização: 23/09/2026):
+1. o remetente sem contato não escapa das proteções;
+2. a reconferência do conteúdo do template;
+3. `sending` não é mensagem enviada;
+4. a aprovação fica vinculada à prévia.
+
+**Contexto.** A F4 do Clinics (ADR-048, adendo 8) precisa que a empresa escreva primeiro. O Core da 9.1 foi desenhado para responder. Ao conferir o código para isso, apareceram defeitos que já existem em todo workspace com WhatsApp. Por isso a decisão é do Core, com nomes neutros.
+
+**Conferido no código em 2026-10-23, e reconferido pelos dois revisores:**
+
+- **D-a.** O contato é achado com `findFirst` por telefone, sem ordem (`channels/whatsapp.service.ts`, `resolveContact`). Um número de dois contatos cai em um deles, em silêncio.
+- **D-b.** A conversa aberta é escolhida por canal e contato, não por número (`resolveConversation`). O `externalAddress` fica o primeiro (`COALESCE`). Se o contato escreve de outro número, a resposta vai para o primeiro, que pode ser de outra pessoa.
+- **D-c.** O schema exige `messages[].from` e `contacts[].wa_id` no payload inteiro (`whatsapp.types.ts`). Um item sem esses campos faz o payload todo ser ignorado com um aviso. O controller responde 200, e a Meta não reentrega. Com isso se perdem as outras mensagens e os recibos do lote, e um recibo `failed` perdido deixa aparecendo como entregue o que falhou.
+- **D-d. Os telefones não são normalizados.**
+  - O `phoneSchema` aceita `^\+?[0-9()\-. ]{6,25}$` (`packages/contracts/src/contacts.ts`), e a ingestão compara `+dígitos` com `phones: { has }` por igualdade exata.
+  - "(11) 99999-0000" num contato e "+5511999990000" em outro não são vistos como o mesmo número.
+- **A atribuição gravada.** A mensagem que entra grava `authorContactId`, e a atividade grava `contactId`. Os dois são append-only, e a FK do autor é `Cascade`. A timeline, o nome do autor, a exportação e a exclusão do contato seguem esses campos.
+- **O envio:**
+  - vai só ao `externalAddress` de quem escreveu (ADR-038);
+  - o template é "registrado manualmente" com nome, idioma e quantidade de parâmetros;
+  - o despacho grava e comita o marcador `dispatchedAt` com fencing **antes** da guarda (G3.2). A guarda ainda pode provar que nada começou, e aí o marcador é zerado (`naoSaiu`, `not_sent_guard_aborted`).
+- **A guarda de uso externo** (`ContentUseGuard`, ADR-047, adendos 6 e 7):
+  - protege três usos: `ai_generation`, `ai_message_dispatch` e `webhook_delivery`;
+  - as mudanças (`MudancasDeRestricao.porContato`) e as aprovações (`paraAprovacao`) esperam no máximo 10 s por trava e depois respondem 409, mas um uso pode segurar as travas por perto de 1 min;
+  - o nível 3 só aceita `deal:` e `task:`;
+  - o registro do uso guarda as chaves e é "só ids, por construção";
+  - um teste estático proíbe escrever `Conversation.contactId`, e o ADR-047, adendo 6, §9, decisão 4, exige que toda religação entre no protocolo.
+- **A trava da ingestão** é consultiva, de duas chaves de 32 bits por (workspace:canal, telefone), num espaço que não colide com o das travas de restrição. Quem escreve `Contact.phones` (editar, criar, importar, criar a partir do canal) não pega trava de restrição nenhuma.
+- **O consentimento** (`ContactChannelConsent`) vale por (contato, tipo de canal), sem número nem finalidade. A `evidence` é texto livre, e nenhuma API o cria.
+- **A idempotência** (`IdempotencyInterceptor`):
+  - só vale com o cabeçalho `Idempotency-Key`, e o escopo é (workspace, chave, rota);
+  - a mesma chave com outro corpo dá 409;
+  - o replay devolve o corpo guardado por 24 h.
+- **A conversa sem contato:**
+  - a porta do Clinics trata o sujeito `null` como restrito. Sem o Clinics, ele não é restrito, e o `ConversationContentReplayGuard` e o `latestSummary` decidem só pela porta;
+  - o `contentWhere` da IA acha o conteúdo pelo `conversation.contactId`.
+- **Eventos.** Não há evento de mensagem no catálogo de webhooks nem nos gatilhos de automação, e não há notificação de mensagem recebida. A ingestão só emite `contact.created`, e só quando cria um contato.
+- **A mídia recebida** vira `FileObject`, listado em `GET /files` e baixável com `files:read`.
+
+**As regras externas, conferidas na documentação oficial em 2026-10-23.** As páginas avisam que mudam. Reconferir na F4.5.
+
+- **[Política do WhatsApp Business](https://whatsappbusiness.com/pt-br/policy/)** (última atualização em 23/09/2026):
   - só se contata quem forneceu número ou nome de usuário e deu opt-in;
-  - boa prática: opt-in separado por categoria de mensagem;
+  - opt-in separado por categoria é boa prática;
   - respeitar todo pedido de bloqueio ou de parar, dentro e fora do WhatsApp;
-  - fora da janela de 24 h, só template aprovado;
+  - fora da janela de 24 h, só template;
   - e: "Não utilize o WhatsApp para fornecer telemedicina nem enviar ou solicitar informações relacionadas à saúde se as leis aplicáveis proibirem a distribuição dessas informações a sistemas que não cumprem os requisitos necessários para processar informações relacionadas à saúde."
-- **[Opt-in](https://developers.facebook.com/documentation/business-messaging/whatsapp/getting-opt-in):**
-  - deixar claro que a pessoa aceita mensagens **daquela empresa, com o nome dela**;
-  - o método é responsabilidade da empresa, conforme a lei aplicável;
-  - a página não fala de guarda de registros.
+- **[Opt-in](https://developers.facebook.com/documentation/business-messaging/whatsapp/getting-opt-in):** deixar claro que a pessoa aceita mensagens daquela empresa, com o nome dela. O método é responsabilidade da empresa, conforme a lei.
 - **[Categorias](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/template-categorization):**
-  - são marketing, utility e authentication;
   - utility só quando não é promocional e é específica do usuário;
   - conteúdo misto é marketing;
   - a Meta reclassifica.
-- **[Templates](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/overview) e o [webhook de status](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/message_template_status_update):**
-  - só sai template `APPROVED`. Pausado e desabilitado não saem;
-  - os parâmetros são posicionais ou nomeados;
-  - a edição de **conteúdo** de um aprovado é limitada a 1 por dia e 10 por 30 dias, e o template editado volta à revisão. Isso está na [página de preço máximo de marketing](https://developers.facebook.com/documentation/business-messaging/whatsapp/marketing-messages/pricing/) e não nas páginas gerais de template, então fica para reconferir na F4.5. **Uma versão aprovada pode, portanto, mudar de texto depois de registrada;**
-  - o webhook informa status e categoria. Não encontramos webhook de mudança de **conteúdo**.
-- **[Identidade (BSUID)](https://developers.facebook.com/documentation/business-messaging/whatsapp/business-scoped-user-ids/):**
+- **Templates** ([fundamentos](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/overview), [webhook de status](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/message_template_status_update)):
+  - só sai `APPROVED`;
+  - o webhook informa status e categoria, mas **não encontramos webhook de mudança de conteúdo**;
+  - a edição de conteúdo de um aprovado volta à revisão, com limite de 1 por dia e 10 por 30 dias. Isso está só na [página de preço máximo](https://developers.facebook.com/documentation/business-messaging/whatsapp/marketing-messages/pricing/), a reconferir.
+- **[BSUID](https://developers.facebook.com/documentation/business-messaging/whatsapp/business-scoped-user-ids/):**
   - o `user_id` é por portfólio e vem em todo webhook desde abril de 2026;
-  - **com nome de usuário, `from` e `wa_id` podem ser omitidos**, exceto se houve interação nos últimos 30 dias por aquele número da empresa ou se a pessoa está no contact book da Meta;
-  - o BSUID muda quando a pessoa troca de número (`previous_user_id`);
-  - o envio por BSUID estava previsto para julho de 2026.
-- **[Limites](https://developers.facebook.com/documentation/business-messaging/whatsapp/messaging-limits):**
-  - por portfólio, em 24 h móveis, de 250 a ilimitado;
-  - há um [limite por usuário para marketing](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/marketing-templates/per-user-limits/) (erro 131049).
-- **[Preço](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing):** por mensagem de template, por categoria e mercado, com mudanças a partir de 01/10/2026.
-- **[LGPD (Lei 13.709/2018)](https://www.planalto.gov.br/ccivil_03/_ato2015-2018/2018/lei/l13709.htm)**, para a avaliação jurídica, **não como conclusão de engenharia**:
-  - o art. 8º, §4º, diz que o consentimento vale para finalidades determinadas e que a autorização genérica é nula;
-  - o art. 11 trata do dado sensível.
-
-  A base legal de cada finalidade (se é consentimento ou outra) é do jurídico (ADR-048, §9.2).
+  - com nome de usuário, `from` e `wa_id` podem ser omitidos, com `from_user_id` no lugar;
+  - o BSUID muda quando a pessoa troca de número;
+  - o formato exato do payload precisa de confirmação com a Meta real.
+- **Limites:**
+  - [por portfólio](https://developers.facebook.com/documentation/business-messaging/whatsapp/messaging-limits), de 250 a ilimitado;
+  - [por usuário, para marketing](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/marketing-templates/per-user-limits/) (erro 131049).
+- **[Preço](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing):** por mensagem de template, por categoria e mercado.
+- **[LGPD](https://www.planalto.gov.br/ccivil_03/_ato2015-2018/2018/lei/l13709.htm),** como pergunta para o jurídico e não como conclusão: art. 8º, §4º (finalidades determinadas; autorização genérica nula) e art. 11 (dado sensível).
+- **A conferir na F4.5:** o 9º dígito brasileiro no `wa_id`.
 
 **Decisão proposta.**
 
-**1. O template tem conteúdo registrado e verificável, com prévia fiel.**
+**1. Telefones normalizados (a base de tudo).**
 
-- **O registro é por versão.** Cada versão guarda:
+- **Cada telefone de contato** ganha uma forma normalizada em E.164, calculada com uma biblioteca madura. Pela regra de integrar antes de construir, a proposta é a `libphonenumber-js`, e não um parser próprio.
+- **A região padrão** para número sem DDI vem de uma configuração do workspace, com `BR` como padrão. **[ABERTA C17]**
+- **Onde fica:** duas colunas por contato, preenchidas conforme o ADR-051, com a migration e o preenchimento idempotentes e ensaiados. Os índices vão numa migration própria (`CONCURRENTLY`, a exceção justificada).
+  - **as formas normalizadas** (E.164), com índice GIN;
+  - **as chaves de coincidência:** os últimos 8 dígitos de cada telefone, normalizado ou não, também com índice GIN.
+- **Como se acham os candidatos:** pela chave de coincidência, num índice só. Depois cada um é classificado como coincidência **exata** (a forma normalizada igual) ou **possível** (o resto).
+- **Telefone que não se normaliza** fica como está e é marcado. Para a ingestão, ele conta como **possível coincidência**: o número que entra coincide se os dígitos do telefone guardado, com pelo menos 8, são o final dos dígitos do número que entrou.
+- **O 9º dígito do Brasil:** o celular brasileiro com e sem o 9 depois do DDD é tratado como **possível coincidência**, e nunca como o mesmo número, até a F4.5 confirmar o formato do `wa_id`.
+- **Contatos arquivados contam.** O mesmo número em outro workspace não conta, e há teste P0 disso.
+- **Diagnóstico só de leitura**, a documentar no runbook antes de qualquer dado real:
+  - quantos números já são compartilhados na forma normalizada;
+  - quantos telefones não se normalizam;
+  - quantas conversas do WhatsApp têm `externalAddress` nulo;
+  - quantas linhas violariam os índices únicos parciais novos (item 2), **antes** de criá-los, porque uma duplicata existente faria a migration falhar;
+  - quantas mensagens e atividades antigas têm a atribuição gravada (item 2, C12).
+
+**2. Ingestão sem atribuição silenciosa: "remetente a identificar" (RAI).**
+
+- **Quando a mensagem vira RAI:** quando o número que entra tem **mais de um** contato candidato, por coincidência exata ou possível (item 1). A mensagem entra numa conversa **sem contato**, marcada `sender: unidentified`, que é a conversa RAI aberta de (canal, número), ou uma nova se não houver.
+- **Com um só candidato, e ele só "possível"** (o 9º dígito, ou um telefone que não se normaliza), a mensagem também vira **RAI**, com esse candidato listado. **Nunca é atribuída por aproximação.**
+- **Com um só candidato exato,** a mensagem vai para esse contato, como hoje. Ver o resíduo abaixo.
+- **Sem candidato nenhum,** cria um contato, como hoje (a entrada de lead da 9.1).
+- **Não existe identificação automática,** nem por nome de perfil, nem quando a ambiguidade some.
+- **A conversa passa a ser por (canal, contato, número),** o que corrige o D-b. O banco garante:
+  - um único parcial de conversa aberta por (canal, contato, número);
+  - um único parcial de conversa RAI aberta por (canal, número);
+  - um CHECK de que a conversa RAI tem `contactId IS NULL`.
+- **A resposta humana** de uma conversa identificada é bloqueada quando o `externalAddress` dela já não está entre os números normalizados do contato.
+- **Os índices únicos parciais diante de identificar e rejeitar:**
+  - **identificar** uma conversa RAI para um contato que já tem conversa aberta com aquele número **encerra a anterior** na mesma transação, com trilha e sem mexer nas mensagens. A identificada passa a ser a aberta;
+  - **rejeitar** uma conversa quando já existe uma RAI aberta para (canal, número) leva a rejeitada a RAI **encerrada**. Ela continua na área RAI e pode ser identificada depois, também com trilha;
+  - **reabrir ou responder** numa conversa encerrada quando já existe a aberta do mesmo (canal, contato, número), ou a RAI aberta do mesmo (canal, número), é **recusado com 409**, com mensagem em pt-BR que aponta a conversa aberta. Isso vale para os três caminhos que reabrem hoje: a mensagem registrada no Inbox, o `PATCH` com `status: open` e a ingestão;
+  - os casos têm teste, inclusive a resposta numa RAI encerrada.
+
+**A atribuição derivada (o que o desfazer precisa alcançar). [ABERTA C12]**
+
+- **A partir da F4.1a,** nenhuma mensagem nova grava `authorContactId`, nem a que entra pelo WhatsApp nem a registrada à mão no Inbox. A atividade de mensagem também não grava `contactId`. A autoria e a timeline são derivadas, na leitura, do contato atual da conversa, e a consulta e o índice da timeline de `Activity` mudam para isso.
+- **Com isso,** identificar, desfazer e "o remetente não é este contato" mudam de verdade o que aparece na timeline, o nome do autor, o que a exportação inclui e o que a exclusão do contato apaga.
+- **A recomendação** é valer para toda mensagem nova. A alternativa é valer só nas conversas que nascem RAI, mas aí "o remetente não é este contato" **não corrige** a timeline, a exportação nem a exclusão das conversas atribuídas automaticamente.
+- **Resíduo declarado:** as linhas antigas continuam como foram gravadas. O diagnóstico do item 1 as conta.
+
+**As proteções enquanto a identidade não é resolvida**, em **todo** workspace, com ou sem o Clinics. São checagens do **Core**, antes de qualquer porta:
+
+- **IA:**
+  - a reconferência dos três usos (`ai_generation`, `ai_message_dispatch` e `webhook_delivery`) e a aprovação de proposta releem o estado RAI e recusam;
+  - **elas também comparam o contato atual da conversa com o do escopo do uso** e recusam a diferença. Isso cobre o caso em que, enquanto o uso esperava a trava de X, a conversa foi desfeita e identificada como Y;
+  - `latestSummary`, `listProposals`, `pendingReply`, `approveSendMessage` e o `ConversationContentReplayGuard` tratam a conversa RAI como restrita, com `discard` no replay;
+  - nada é gerado nem devolvido.
+- **Webhooks, automações e notificações:**
+  - hoje não há evento de mensagem, nem gatilho de mensagem, nem notificação de mensagem recebida;
+  - a regra é **preventiva e fixada por teste estático:** a ingestão RAI não enfileira nada no outbox, e todo evento, gatilho ou notificação que vier a carregar mensagem precisa declarar o tratamento RAI, senão o teste falha.
+- **O contato criado na identificação** gera `contact.created`, como qualquer contato criado por uma pessoa. O evento não carrega conteúdo de mensagem e passa pelas regras normais (no workspace com o Clinics, nenhum evento de contato sai por webhook).
+- **Mídia:**
+  - **o anexo de qualquer conversa**, e não só da RAI, passa a exigir `conversations:read` **e** `files:read`, e o acesso àquela conversa, para listar, baixar e excluir (`GET /files`, o download e `DELETE /files/:id`). **É mudança de RBAC sobre `files:read` para todo workspace;**
+  - a mídia de conversa RAI segue também a regra do C13;
+  - "arquivos e anexos" entram na lista do B1-(A) (ADR-048, adendo 8, V1).
+- **Sem timeline:** nenhuma conversa RAI aparece na timeline de contato nenhum, porque a autoria é derivada e a conversa não tem contato.
+
+**Quem vê, quem identifica, e a trilha:**
+
+- **Ver a área RAI:** `conversations:read` **e** `contacts:write`, chave que o Guest não tem. **[ABERTA C13]** A regra vale **em todo endpoint**, e não só na tela:
+  - **sem `contacts:write`:**
+    - as conversas RAI ficam fora de `GET /conversations` e das contagens do Inbox;
+    - `GET /conversations/:id`, `/messages`, os anexos, `/send-policy`, os caminhos da IA (resumo, propostas, rascunho), o `PATCH /conversations/:id` (responsável e status) e o `POST /conversations/:id/messages` (a resposta) respondem **404**, e não 403, para não revelar que a conversa existe;
+    - atribuir uma conversa RAI a alguém sem `contacts:write` é recusado, porque a notificação `conversation_assigned` revelaria que ela existe;
+  - um teste por endpoint;
+  - O número aparece completo só para quem tem também `contacts:read`. Os outros veem os quatro últimos dígitos.
+  - A contagem de candidatos só aparece com `contacts:read`.
+  - Num workspace com dado sensível, a conversa RAI é restrita por padrão para a leitura restrita do B1-(A), quando ela existir.
+- **Identificar** exige `conversations:write`, `contacts:write` e `contacts:read`.
+  - A pessoa escolhe um dos candidatos, ou cria um contato novo, que recebe o número; aí o número fica com mais um contato.
+  - O servidor relê os candidatos sob as travas e recusa um contato fora deles.
+  - **A identificação vale só para aquela conversa.** Enquanto o número estiver em mais de um contato, **cada mensagem nova entra como RAI**. Para a atribuição ficar, a pessoa resolve a ambiguidade no cadastro (tira o número de um contato), sob o protocolo do item 3.
+- **Desfazer** devolve a conversa ao RAI, e **"o remetente não é este contato"** leva a RAI qualquer conversa, inclusive uma atribuída automaticamente. Os dois exigem as mesmas chaves de identificar.
+  - **Rejeitar oferece, no mesmo ato, tirar o número do contato.** É um escritor de telefone, sob o protocolo do item 3, com a revogação dos consentimentos daquele número (item 5).
+  - **Se a pessoa não tirar o número,** a próxima mensagem dele tem um candidato exato e cai de novo no contato. A tela diz isso, e há teste.
+- **Os três atos são religações**, e por isso entram no protocolo do ADR-047, adendo 6, §9 (item 3).
+  - **Um único escritor** de `Conversation.contactId`: o serviço de identificação. O teste estático passa a exigir isso.
+  - **Na mesma transação:**
+    - os resultados e as propostas de IA da conversa são expirados **por conversa**, e não só por contato;
+    - os replays guardados da conversa são apagados (`purgeCapabilityReplays`);
+    - os despachos da IA não iniciados da conversa ficam barrados. A reconferência do `ai_message_dispatch` compara o contato atual da conversa com o da aprovação e recusa a diferença, sem precisar do cancelamento do item 7.
+  - **O que já saiu** enquanto ela estava identificada (respostas enviadas, eventos de contato) não volta, e a trilha registra isso.
+- **A auditoria:**
+  - `conversation.sender_identified`, `conversation.sender_unidentified` e `conversation.sender_rejected`;
+  - registram a conversa, o contato escolhido ou o anterior, quantos candidatos havia e quem fez;
+  - **nem o número nem o conteúdo** entram na allowlist.
+
+**Resíduo declarado:**
+
+- um número reciclado ou errado que está num **só** contato continua caindo nesse contato. A F4.1a não tem como detectar isso;
+- o remédio humano é "o remetente não é este contato", tirando o número do contato no mesmo ato;
+- a detecção automática vem com o BSUID (item 10), quando um BSUID divergente vira RAI.
+
+**3. A ordem global das travas, emendada.** O que vale para o ADR-047, adendo 6, §3.2, se aprovado:
+
+- **Nível 0:** a trava de ingestão, que hoje é por (workspace:canal, telefone), passa a ser por **(workspace, chave de coincidência)**, **sem o canal**. Ela é declarada antes do nível 1, como a `clinics_activation`.
+  - **Quem a pega:** a ingestão e os três atos de identificação.
+  - **Sem o canal,** duas ingestões do mesmo número (ou de números que podem coincidir) por dois canais se serializam, e não criam dois contatos com o mesmo número.
+  - **Quem escreve telefone não a pega:** ele se serializa com a ingestão pela `address:`.
+- **Nível 1:** o workspace.
+- **Nível 2:** os contatos.
+- **Nível 3:** as entidades, numa única passada em ordem de chave:
+  - `deal:`, `task:` e as novas `conversation:<id>`, `address:<HMAC>` e `validity:<chave>`;
+  - **`address:`** usa o HMAC de (workspace, **chave de coincidência**), sem o canal. Com isso, a mesma chave cobre o número exato, a variante do 9º dígito e o telefone que não se normaliza; uma colisão só causa espera a mais.
+    - **O telefone não fica em claro na chave nem no registro do uso.**
+    - **A chave do HMAC** é do servidor, separada da do JWT, numa variável própria que entra no `.env.example`. Ela precisa ser **estável**, porque as chaves ficam gravadas no `ContentUse.entityKeys` e a marcação de órfãos depende delas. A rotação só acontece em manutenção, com plano;
+  - **`validity:`** usa chaves estáveis montadas pelo Core, com o prefixo do vertical, regex do Core, limite de quantidade e **sem horário**.
+- **Nível 4:** as linhas da operação.
+
+**Quem pega o quê:**
+
+| Operação                                                                     | Travas                                                                                                                                                                                                                                                                                                                                                                    |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Ingestão                                                                     | nível 0; depois `address:` compartilhada. O contato de lead criado dentro dela **não passa por `porContato`**: é uma exceção escrita, porque o nível 0 e a `address:` já o protegem e o contato novo tem id fresco, que ninguém mais trava                                                                                                                                |
+| Identificar, desfazer e rejeitar                                             | por `MudancasDeRestricao`, com a marcação de órfãos e o 409 quando a espera estoura: nível 0; workspace compartilhada; o contato anterior e o escolhido exclusivos (no rejeitar com retirada do número, o contato que o perde); `conversation:` e `address:` exclusivas. O contato **novo** criado na identificação também tem id fresco e não pega o nível 2 depois do 3 |
+| Todo escritor de telefone fora da ingestão (editar, criar na tela, importar) | `MudancasDeRestricao.porContato`: o contato e a `address:` de cada número acrescentado ou removido, exclusivos                                                                                                                                                                                                                                                            |
+| Uso iniciado pelo negócio (item 7)                                           | compartilhadas: workspace, contato, `address:`, `validity:`                                                                                                                                                                                                                                                                                                               |
+
+- **A ingestão ganha um `lock_timeout` próprio:** 2 s por mensagem, e um teto para o payload inteiro abaixo do prazo do webhook da Meta. O prazo exato da Meta fica a confirmar na F4.5.
+  - Se a ingestão não consegue a trava, o webhook responde erro (não 200), a Meta reentrega e o `externalId` deduplica.
+  - Isso muda a regra de resposta neutra do webhook (`docs/SECURITY.md` §7-D.4), e a mudança está nas emendas.
+  - Há teste disso.
+- **O `orcamentoDaGuarda`** passa a contar as travas novas.
+- **A fumaça da ordem global** (a lista de caminhos testados) ganha os caminhos novos.
+
+**4. Template com conteúdo registrado, revisado e reconferido.**
+
+- **O registro é por versão:**
   - o id do template na Meta, o nome, o idioma, a categoria e o formato dos parâmetros;
-  - os componentes com o texto fixo: cabeçalho, corpo, rodapé e botões;
-  - o hash do conteúdo canônico.
+  - os componentes;
+  - o vínculo de cada parâmetro com um campo da lista fechada da finalidade;
+  - o `contentHash`.
 
-  Mudou o conteúdo ou a categoria, nasce uma versão nova. A anterior fica, append-only.
+  Mudou o conteúdo, a categoria ou o vínculo, nasce uma versão nova. A anterior fica.
 
-- **A fonte do conteúdo é a Meta** (o template como a API o devolve), e não um texto digitado no Veyra. O cadastro é por CLI administrativa, como o do canal (ADR-037). Com o transporte falso, um catálogo falso do transporte faz o papel da Meta.
-- **Cada versão passa por uma revisão humana.** Ela só é usada depois que alguém com a permissão de revisão marca que o texto fixo respeita a fronteira de conteúdo da finalidade.
-  - A revisão registra quem, quando e o hash revisado.
-  - Se o hash muda, a revisão deixa de valer.
-- **Os parâmetros são ligados a campos.** Na versão, cada parâmetro é ligado a um campo da **lista fechada da finalidade** (item 2). Quem envia não manda texto livre: manda os valores desses campos, validados em tamanho e sem quebra de linha nem tabulação.
-- **A prévia fiel:**
-  - o servidor monta a prévia com a versão revisada e os valores;
-  - é essa prévia que a pessoa vê antes de aprovar;
-  - o despacho grava a versão e o hash usados.
-- **A reconferência acontece em dois momentos:** na aprovação e no worker, antes de chamar o provedor.
-  - Nos dois, a versão tem de estar revisada, e o status e a categoria na Meta têm de bater. A fonte é o webhook de status mais uma releitura com validade curta.
-  - Se houver divergência, o envio é bloqueado, e nenhuma outra versão é usada no lugar.
-- **O limite do que isso prova:**
-  - o Veyra só pede o envio de uma versão revisada, cujo conteúdo, segundo a Meta, tinha aquele hash;
-  - **não prova o texto entregue**, porque quem o monta é a Meta;
-  - também não substitui a revisão de categoria da Meta.
+- **A forma canônica do `contentHash`:**
+  - SHA-256 de um JSON com chaves ordenadas, montado por uma **allowlist por tipo de componente**: o texto do cabeçalho, do corpo e do rodapé; o tipo, o texto e a URL fixa dos botões; o idioma, a categoria, o formato e o vínculo;
+  - ficam fora `example` e o handle de mídia, que mudam entre leituras e dariam falsa divergência;
+  - um teste de unidade fixa a forma.
+- **Ficam recusados na F4,** por poderem levar dado do paciente a uma URL ou exigir outro fluxo:
+  - os componentes dinâmicos (botão de URL com sufixo variável, cabeçalho de mídia por link);
+  - a categoria `authentication`.
+- **A fonte do conteúdo é a Meta.** O cadastro é por CLI administrativa (ADR-037). Com o transporte falso, um catálogo falso faz o papel da Meta, inclusive para mudar o conteúdo nos testes.
+- **A revisão humana é por par (versão, finalidade):**
+  - fica num **endpoint com tela mínima**, sob `templates:review` e com RBAC. Não fica na CLI, onde o RBAC não vale;
+  - registra quem, quando, o `contentHash` e a finalidade;
+  - vale só para aquele hash e aquela versão da finalidade.
+- **A reconferência do conteúdo:**
+  - **na aprovação:** o servidor relê o template na Meta **antes** das travas da aprovação, sem cache, e compara hash, status `APPROVED` e categoria;
+  - **no despacho:** o worker relê da mesma forma, **antes** das travas da guarda;
+  - **falha na releitura:** não sai. É `failed_before_send`, e cada nova tentativa relê;
+  - **divergência:** não sai (`failed_permanent`, `template_changed`). A versão fica divergente, e voltar exige versão, revisão e aprovação novas. **Nenhuma outra versão é usada no lugar.**
+- **O limite, preservado:** isso prova que o Veyra só pediu o envio de uma versão revisada cujo conteúdo, segundo a Meta, tinha aquele hash **momentos antes**. Não controla uma alteração na Meta depois da releitura, e não prova o texto entregue.
 
-**2. O consentimento é por finalidade, canal e número, com histórico.**
+**5. Finalidades e consentimento.**
 
-- **A finalidade fica num catálogo por workspace.** É dado, não código. Cada finalidade tem:
-  - uma chave;
-  - a descrição mostrada à pessoa;
-  - a categoria de template permitida;
-  - a lista fechada de campos.
-
-  O vertical cria as suas na ativação, como cria o papel `Profissional`.
-
-- **O escopo do consentimento:**
-  - workspace e contato;
-  - o canal, isto é, o número da empresa, porque o opt-in nomeia a empresa;
-  - o número da pessoa, em E.164;
-  - a finalidade.
-
-  **Duas finalidades não compartilham autorização, e não existe consentimento "geral".**
-
-- **O registro guarda:**
-  - quem registrou e quando;
-  - a origem, de uma lista fechada: presencial, telefone, formulário ou importação;
-  - uma referência opcional, como o id de um formulário;
-  - a fotografia da descrição da finalidade naquele momento, que é o que a pessoa aceitou.
-
-  O campo de texto livre de hoje não é usado no fluxo novo. **[ABERTA C9]**
-
+- **A finalidade (C1):**
+  - é versionada, com chave, descrição mostrada à pessoa, categoria permitida e lista fechada de campos;
+  - qualquer mudança cria versão nova;
+  - **na F4, versões novas só pela CLI administrativa,** com auditoria. O vertical cria as suas na ativação.
+- **O consentimento:**
+  - vale para (contato, canal, número normalizado, versão da finalidade). Hoje vale por tipo de canal; isso muda;
+  - **um consentimento de versão anterior não autoriza a versão nova.** Consequência aceita: corrigir a descrição exige consentimento novo.
+- **A origem e a referência (C9):**
+  - **a origem** é uma lista fechada: `in_person`, `phone` e `paper_form`. A `import` sai do MVP, porque o import de hoje não cria lote verificável;
+  - **a referência é emitida pelo servidor,** nunca digitada: um código de recibo (prefixo fixo e número sequencial por workspace) que a clínica pode anotar no papel;
+  - os tipos de referência por UUID ficam recusados até as entidades existirem;
+  - **não há campo de texto nenhum,** e o `evidence` antigo não é usado no fluxo novo;
+  - o registro guarda a fotografia da descrição da versão aceita.
 - **O histórico:**
   - a concessão é imutável;
-  - a revogação é registrada uma vez, com quem, quando e a origem: pedido da pessoa pelo WhatsApp, por telefone ou presencial;
-  - nada se apaga, exceto pela exclusão do contato, pelas regras do Core;
-  - um gatilho no banco garante isso, como nos modelos append-only.
-- **As permissões são duas chaves novas do Core:**
-  - `consents:read`: ver a situação e o histórico;
-  - `consents:manage`: registrar e revogar.
+  - a revogação é registrada uma vez, com quem, quando e a origem;
+  - a imutabilidade segue o padrão do Core (o append-only no `PrismaService`) mais um gatilho só de `UPDATE`, que permite apenas preencher a revogação uma vez;
+  - o `DELETE` em cascata pela exclusão do contato continua permitido, e há teste disso.
+- **Mudança de número:**
+  - **tirar um número de um contato** revoga, na mesma transação, os consentimentos de (contato, número);
+  - pôr o número de volta não reativa nada.
+- **As permissões (C2 e C3):**
+  - **as chaves novas:** `consents:read`, `consents:manage` e `templates:review`;
+  - **os endpoints de consentimento** exigem também `contacts:read`, porque mostram o número e o histórico;
+  - **o preenchimento nos papéis de sistema existentes:**
+    - é **só de acréscimo**, idempotente e auditado, pelo `systemKey`;
+    - `consents:*` vai para `owner`, `admin` e `member`, e `templates:review` para `owner` e `admin`;
+    - não remove concessão, não toca papel sem `systemKey`, não toca o `Profissional`;
+    - um teste prova que as concessões a mais continuam;
+  - **o template de papéis do Core** inclui as chaves novas no Member, para workspaces novos.
+- **O pedido de parar (C4):**
+  - **é ato humano,** com `consents:manage`, sem interpretar o texto;
+  - **o efeito, numa transação:**
+    - lê o conjunto de contatos que têm o número e pega as travas (contatos exclusivos e depois o `address:`);
+    - **relê** o conjunto sob as travas. Se ele cresceu, aborta e tenta de novo, com limite, porque não pode voltar ao nível 2 depois do 3;
+    - cria o **bloqueio** por (canal, número), visível no Inbox, no contato e nas listas do vertical;
+    - revoga todas as finalidades daquele número e canal, de todos os contatos;
+    - cancela os despachos não iniciados para aquele número e canal (item 7);
+  - **o bloqueio sobrevive à exclusão do contato.**
+  - **Com o bloqueio ativo, nada iniciado pelo negócio sai** para aquele número e canal.
+  - **Retirar o bloqueio** é um ato próprio e auditado. **[ABERTA C15]** Não reativa consentimento antigo.
+  - **[ABERTA C16, para confirmação]** O escopo é (canal, número), como decidido. Se o workspace tiver dois números da empresa, o outro canal continua podendo enviar. A recomendação é estender para (workspace, número), porque quem pediu para parar falou com a empresa.
+- **C7:** os consentimentos da 9.1 ficam como histórico e não autorizam o envio novo.
 
-  Pelo template de papéis, vão para o Owner e o Admin. **[ABERTA C2]**
+**6. Destinatário sem ambiguidade no envio.** O envio iniciado pelo negócio só vai a um (contato, número) que, na aprovação e no despacho:
 
-- **A reconferência no despacho:** na aprovação e no worker, logo antes do provedor, tem de haver consentimento vigente para (canal, contato, número, finalidade do template).
-  - Se foi revogado no meio, a mensagem não sai. O despacho fica `failed_permanent`, com motivo próprio, e não tenta de novo.
-  - A política já é revalidada no worker (ADR-038). O consentimento passa a fazer parte dela.
-- **O pedido de parar:** o mínimo é uma ação explícita no Inbox, "registrar pedido de parar", que revoga as finalidades daquele número e canal. **[ABERTA C4]**
-- **Sobre a evidência já existente:** não se registra como conclusão jurídica que guardar a finalidade agora evita recolher a evidência depois. Isso depende da validação jurídica e operacional.
+- está entre os números normalizados do contato;
+- tem **um só** candidato, sem coincidência possível com outro contato;
+- tem consentimento vigente;
+- não tem bloqueio.
 
-**3. O destinatário é sem ambiguidade, no envio e na resposta.**
+Se alguma condição falha, a mensagem não sai, com o motivo por destinatário (`address_ambiguous`, `address_changed`, `consent_revoked` ou `opted_out`). **Nada escolhe outro número nem outro contato.**
 
-- **O envio iniciado pelo negócio só vai a um (contato, número)** que cumpra três condições, conferidas na aprovação e de novo no worker:
-  - o número está entre os do contato, normalizado em E.164;
-  - pertence a **um só** contato do workspace;
-  - tem consentimento vigente (item 2).
+**7. `sending` não é mensagem enviada.**
 
-  Se alguma condição falha, a mensagem não sai, e o motivo aparece por destinatário. **Nada escolhe outro número nem outro contato.**
+- **O tipo de uso novo:** o envio iniciado pelo negócio ganha um `TipoDeUso` próprio, `business_outbound`, registrado em `OrigensDosUsos`, com especificação de origem e motivos próprios. O veredito da guarda continua com três valores.
+- **A porta E6 não é consultada nesse envio.** **[ABERTA C14]**
+  - O motivo: é mensagem de autoria humana, aprovada por pessoa, com o texto fixo revisado e os campos da lista fechada. A regra do ADR-048, §6.3, item 5, já dispensa a mensagem humana da checagem do consumidor `ai`.
+  - A guarda serve aqui à **serialização** com as mudanças, e não à restrição de IA.
+  - A fronteira de conteúdo é garantida pela revisão (item 4), pela lista fechada (item 5) e pelo B1-(A).
+- **A sequência do worker,** que **mantém a ordem da G3.2:**
+  1. **claim** (`reserved` → `sending`, com lease e fencing). Nada foi enviado;
+  2. **releitura do template** (item 4), fora das travas;
+  3. **o marcador `dispatchedAt`**, comitado numa transação própria, com fencing, como hoje. Ele é conservador: diz "pode ter saído";
+  4. **a guarda:**
+     - as travas compartilhadas, na ordem do item 3;
+     - a **reconferência**, com leituras novas: o fencing; `cancelRequestedAt`; consentimento e bloqueio; destinatário (item 6); versão e hash; o `approvalHash` (item 8); e a pré-condição do vertical (item 9);
+     - o registro durável do uso e a prova de vida;
+  5. **o início da chamada pela guarda. É este o ponto de decisão.**
+     - Antes dele, a guarda pode provar que nada começou. O marcador é zerado, e o desfecho é comprovadamente não enviado:
+       - `canceled` ou `failed_permanent`;
+       - `failed_before_send`: trava, sessão, prova de vida ou prazo;
+       - ou o caso da varredura: o estado continua `unknown_after_dispatch` com o código `not_sent_guard_aborted`, como no limite aceito em 2026-10-21. O web já mostra esse caso como "Não saiu", pela prova do uso `aborted`.
+     - **[ABERTA C18]** O Clinics tratar esse código como `nao_enviado`. Isso permitiria um pedido novo, com aprovação nova, depois de um estado que formalmente é incerto.
+     - Depois dele, o desfecho é `sent` ou incerto (`unknown_after_dispatch` ou `in_doubt`).
+  6. **o desfecho gravado ainda sob as travas,** e `COMMIT`.
+- **O cancelamento de despacho não iniciado** é um serviço neutro do Core. Ele roda sempre sob a trava **exclusiva** da chave que o worker trava compartilhada (`validity:` ou `address:`):
+  - **`reserved`, ou `failed_before_send` à espera:** passa a `canceled`, estado novo e comprovadamente não enviado, e **devolve a reserva de quota**;
+  - **`sending`:** grava `cancelRequestedAt` e responde "pedido registrado". O worker o encontra na reconferência. O desfecho final é `canceled` se a guarda ainda não começou, ou `sent` ou incerto se já começou;
+  - **`sent` ou `unknown_after_dispatch`:** não cancela e devolve o estado.
+- **O valor `canceled` no enum** entra por `ALTER TYPE ... ADD VALUE` numa migration própria, sem uso na mesma transação, conforme o ADR-051. O selo de despacho no web e todo `switch` sobre `DispatchState` passam a tratar o estado novo.
+- **O que se promete:**
+  - **uma mudança que comita antes das travas do passo 4** é vista na reconferência, e a mensagem não sai;
+  - **uma mudança que chega com a guarda segurando as travas** espera **até 10 s**. Se a guarda terminar nesse prazo, a mudança vê o desfecho e o registra com verdade. Se não terminar, a mudança responde **409** e a tela pede para tentar de novo: cancelar um agendamento, registrar um pedido de parar ou revogar consentimento podem precisar de uma segunda tentativa enquanto um envio está em curso;
+  - **o que não se promete:**
+    - a mensagem pode sair depois de uma revogação **se a guarda se perder**. Isso é detectado como `in_doubt`, com a trilha e a triagem do G′, e ter lido antes do envio não prova que nada saiu depois;
+    - **o nome do contato** é o lido na reconferência. A edição do nome não pega trava, e uma edição que comita durante o envio não o impede.
+- **Os testes são determinísticos,** com portões em cada passo, usando o transporte falso pausável e os portões que a guarda já usa:
+  - cada mudança (revogação, parar, número alterado ou passado a outro contato, cancelamento, remarcação) antes do passo 4, durante a reconferência e durante a chamada;
+  - a espera de 10 s com o 409;
+  - a guarda perdida, com o `in_doubt` esperado;
+  - crash depois da chamada e antes do `COMMIT`, sem novo claim;
+  - crash entre o marcador e o início da chamada, que deve levar a `unknown_after_dispatch`.
+- **C5:** `unknown_after_dispatch` e `in_doubt` nunca são reenviados. O fluxo não oferece reenvio nem "mensagem nova" para o mesmo alvo. A triagem registra o desfecho conhecido ("confirmado que chegou", "confirmado que não chegou", "sem informação"), com trilha, **sem ação de envio**.
 
-- **Número compartilhado ou duplicado** (mais de um contato com o mesmo número): o envio é recusado (`address_ambiguous`) até uma pessoa resolver, unindo os contatos ou tirando o número de um deles. Sem exceção no MVP.
-- **Número alterado, removido ou passado a outro contato** entre a aprovação e o worker: recusado no worker. O pedido aparece como não enviado, e um novo pedido exige nova aprovação.
-- **A conversa passa a ser por número.** A conversa iniciada pelo negócio é por (canal, contato, número), e a resposta entra na conversa daquele número.
-- **A ingestão, corrigida para todo workspace:**
-  - **número de mais de um contato:** a mensagem entra numa conversa **sem contato definido** ("remetente a identificar"), sem se ligar a nenhum dos dois, até uma pessoa decidir. O `findFirst` sem ordem sai;
-  - **mensagem sem `from` (só o BSUID):** é aceita e não se perde. Ela só se liga a um contato se aquele BSUID já tiver chegado junto com um número desse contato. Fora isso, vira "remetente a identificar". **Nunca se liga pelo nome do perfil**;
-  - **troca de número** (BSUID novo, com `previous_user_id`): o contato não muda sozinho, e o consentimento do número antigo não passa para o novo.
-- **O envio por BSUID fica fora.**
+**8. A aprovação vinculada à prévia.**
 
-**[ABERTA C6]** Onde fica o "remetente a identificar": numa conversa sem contato, dentro do Inbox (recomendado), ou numa fila separada.
-
-**4. A validade e o resultado do envio.**
-
-- **Cancelar despacho não iniciado:** um serviço neutro do Core cancela, sob a trava da linha, um despacho `reserved` ou um `failed_before_send` que aguarda nova tentativa.
-  - Com o despacho em `sending`, `sent` ou `unknown_after_dispatch`, não cancela e devolve o estado.
-  - Quem usa é o vertical, na mesma transação do evento que invalida o pedido.
-- **Nova tentativa não é reenvio.** A regra continua a do ADR-039:
-  - `failed_before_send` é comprovadamente não enviado, e o outbox tenta de novo;
-  - `unknown_after_dispatch` não reenvia.
-
-  O que se acrescenta: reenviar um incerto só por ato humano explícito e auditado, como mensagem nova marcada como possível duplicata. **[ABERTA C5]**
-
+- **O `approvalHash` é um HMAC** com chave do servidor, porque os valores têm pouca entropia e são apagados depois. Ele cobre a forma canônica, versionada, de:
+  - o workspace;
+  - o canal e o `phoneNumberId` do remetente;
+  - o contato e o número normalizado;
+  - a versão do template, o `contentHash` e a revisão do par (versão, finalidade);
+  - a versão da finalidade e o consentimento;
+  - os **valores exatos** de cada parâmetro, como renderizados na prévia;
+  - a referência de origem;
+  - o **prazo de validade da aprovação**.
+- **O prazo:**
+  - na confirmação, vale até o início do agendamento menos uma margem;
+  - na reativação, 24 h;
+  - passou do prazo, não sai (`approval_expired`). Isso também limita o backoff do outbox, que chega a horas.
+- **Na aprovação:**
+  - o cliente manda, por destinatário, o alvo e o `approvalHash` da prévia que viu;
+  - o servidor relê o template (item 4), pega as travas de aprovação (`paraAprovacao`) **por destinatário**, recalcula o hash com os dados atuais e **recusa a divergência**;
+  - cada destinatário é processado por si. O lote não é uma transação com N travas.
+- **No despacho (passo 4),** o worker recalcula o hash. O que mudou dá `failed_permanent` (`approval_stale`), e enviar exige aprovação nova. **Nada é atualizado em silêncio.**
 - **O lote:**
-  - o pedido de lote tem chave de idempotência;
-  - a resposta traz o resultado de cada destinatário: criado, já existente (com o estado) ou recusado (com o motivo);
-  - repetir o lote não duplica.
+  - a rota **exige** o cabeçalho `Idempotency-Key` e responde 400 sem ele;
+  - a mesma chave com outro lote dá 409, pelo interceptor do Core;
+  - **a resposta guardada traz só ids, estados e motivos,** nunca a prévia. Ela fica 24 h, e o replay devolve essa resposta, e não o estado atual: para ver o estado atual, a tela relê a lista.
+
+**9. A pré-condição do vertical (E7). [ABERTA C10]**
+
+- **O problema:** o Core não conhece o agendamento, mas precisa saber, sob as travas, se o pedido ainda vale e quais são os valores atuais dos campos do vertical.
+- **A porta `OutboundPrecondition`:**
+  - as **chaves de validade** são fixadas na criação do pedido e gravadas nele;
+  - no passo 4, a porta recebe a referência de origem e responde: se vale, os valores atuais dos campos do vertical e as chaves de validade dessa referência;
+  - o Core **recusa** se as chaves diferem das fixadas.
+- **O contrato de isolamento:**
+  - a porta **só lê**: sem escrita, sem `FOR UPDATE`, sem trava consultiva;
+  - roda no CLS do workspace do despacho, com o client filtrado. Um teste P0 prova que uma referência de outro workspace "não vale";
+  - o roteamento é por prefixo, para uma única porta;
+  - o Core valida os valores contra a lista fechada da finalidade (o conjunto exato de chaves, o tipo, o tamanho, nenhuma quebra de linha ou tabulação) e recusa o resto;
+  - o prazo cabe no `reconferenciaMs` (3 s).
+- **As três respostas não se confundem:**
+  - **"não vale"** dá `canceled` ou `failed_permanent`, com o motivo;
+  - **"indisponível"** (erro ou prazo) dá `failed_before_send`, e a nova tentativa consulta de novo;
+  - **prefixo desconhecido** dá `failed_permanent`.
+- **As mudanças do vertical** que invalidam um pedido abrem com `MudancasDeRestricao`, pegando a `validity:` exclusiva **antes de qualquer linha própria**, e chamam o cancelamento (item 7). A unicidade de pedido por alvo vem de um índice único parcial, e não de trava de linha. Os caminhos a refatorar estão no ADR-048, adendo 8.
+- **A alternativa,** o vertical invalidar cada pedido a cada mudança de campo, fica descartada: esquecer um campo deixaria passar um valor velho.
+- **É um ponto de composição a mais no ADR-047,** e precisa de aprovação explícita.
+
+**10. A ingestão e o BSUID, separados.**
+
+- **O isolamento por item do D-c,** comprovado: um item de `messages[]` ou de `contacts[]` que não passa no schema não derruba os outros nem os recibos.
+  - O item é contado e registrado **sem conteúdo**, inclusive sem `from_user_id`, e **não é ingerido**.
+  - **[ABERTA C11]** Entrar na F4.1a: recomendado pelos dois revisores.
+- **O suporte ao BSUID (F4.1-BSUID, depois da F4.5),** que depende da confirmação do payload:
+  - a mensagem sem `from` entra como RAI;
+  - ela só se liga a um contato se o BSUID já tiver chegado junto com um número desse contato, nunca pelo nome do perfil;
+  - um BSUID divergente para um número com um só contato vira RAI;
+  - a troca de número não move contato nem consentimento.
 
 **Alternativas consideradas:**
 
-- **Confirmar só quem já escreveu, sem conversa iniciada pelo negócio:** descartada como padrão, porque a recepção cadastra a maioria das pessoas fora do WhatsApp. Fica como modo degradado.
-- **Template só pelo nome, como hoje:** descartada. Não demonstra que a mensagem respeita a fronteira.
-- **Texto do template digitado no Veyra:** descartado como fonte, porque pode divergir do que a Meta aprovou.
-- **Um consentimento por canal:** descartado. Juntaria finalidades diferentes numa autorização genérica.
-- **Escolher o contato mais recente quando o número é compartilhado:** descartada. Seria escolher em silêncio.
+- **Só confirmar quem já escreveu:** descartada como padrão. Fica como modo degradado.
+- **Template só pelo nome:** descartado.
+- **Texto digitado no Veyra como fonte:** descartado.
+- **Um consentimento por canal:** descartado, porque seria uma autorização genérica.
+- **Escolher o contato mais recente:** descartado, porque seria escolha silenciosa.
+- **Reconferir o conteúdo pelo webhook de status:** descartado, porque o webhook não informa mudança de conteúdo.
+- **Comparar telefones sem normalizar:** descartado, porque mantém o D-a.
+- **Gravar `dispatchedAt` sob as travas:** descartado. Ele só ficaria durável no `COMMIT`, depois da chamada, e um crash levaria a reenvio.
 
 **Consequências:**
 
-- **O Core passa a iniciar conversa.** As garantias novas de ingestão (ambiguidade e BSUID) valem para todo workspace, não só para o Clinics. A ingestão atual tem dois defeitos que a 9.1 não cobria:
-  - o número compartilhado cai num contato arbitrário;
-  - a mensagem sem `from` é recusada pelo schema.
-- **Há migrations no Core,** conforme o ADR-051: finalidade, consentimento com número e finalidade, templates versionados e revisados, e conversa por número.
-- **Os consentimentos da 9.1,** que não têm número nem finalidade, não autorizam o envio novo e ficam só como histórico. **[ABERTA C7]**
-- **O template no Inbox também passa a exigir** versão revisada e finalidade. É uma mudança de comportamento da 9.1.
+- **O Core passa a iniciar conversa,** e a ingestão corrigida (D-a a D-d) vale para todo workspace.
+- **Migrations no Core**, conforme o ADR-051:
+  - telefones normalizados, com preenchimento e índice;
+  - conversa por número e estado RAI, com os índices e o CHECK;
+  - finalidade versionada;
+  - consentimento novo;
+  - bloqueio;
+  - template versionado e revisão;
+  - `canceled` e `cancelRequestedAt`;
+  - o preenchimento das chaves.
+- **O template no Inbox também passa a exigir** versão revisada e finalidade. É mudança de comportamento da 9.1.
+- **Uma releitura de template na Meta** por aprovação e por despacho.
+- **A F4.1a é a maior mudança do Core desde o G′:** ela toca ingestão, contatos, conversas, a guarda e os caminhos de leitura da IA.
 
-**Decisões abertas para a revisão:**
+**Emendas propostas** (aplicadas, com a marca "Alterado pelo ADR-052", só se este for aprovado):
 
-- **[ABERTA C1]** As finalidades: catálogo por workspace (recomendado) ou lista fechada do Core.
-- **[ABERTA C2]** Quem recebe `consents:manage` além de Owner e Admin. A recomendação é o Member, porque é a recepção que colhe o opt-in.
-- **[ABERTA C3]** A permissão de revisão de template: uma chave nova, `templates:review`, só para Owner e Admin (recomendado), ou uma chave existente.
-- **[ABERTA C4]** O pedido de parar: só a ação humana no Inbox (recomendado no MVP) ou também detecção por palavra-chave. A detecção exigiria ler o conteúdo, com risco de falso positivo.
-- **[ABERTA C5]** Reenviar um incerto por ato humano: permitido com aviso e auditoria (recomendado), ou proibido.
-- **[ABERTA C6]** Onde fica o "remetente a identificar" (item 3).
-- **[ABERTA C7]** Os consentimentos antigos. A recomendação é que não valham para o envio novo. Migrá-los com uma finalidade padrão está descartado, porque criaria a autorização genérica.
-- **[ABERTA C8]** A base legal de cada finalidade, e se ela é o consentimento: decisão do jurídico (ADR-048, §9.2), não da engenharia.
-- **[ABERTA C9]** A origem do consentimento só por lista fechada mais referência (recomendado), ou também uma nota curta. Texto livre no Core pode receber dado de saúde (ADR-048, §6.7).
+- **ADR-038 (c):** o destinatário pode ser um número escolhido entre os do contato, sob o item 6.
+- **ADR-039, adendo 1, e `docs/SECURITY.md` §7-D.10:** o mesmo, mais o estado `canceled`.
+- **ADR-040 e `docs/SECURITY.md` §7-D.9:** a trava da ingestão, que passa a ser por (workspace, chave de coincidência), e a RAI.
+- **`docs/SECURITY.md` §7-D.4:** a resposta neutra do webhook. A falta de trava passa a responder erro, para a Meta reentregar.
+- **ADR-023:** a semântica de autoria da `Message`, que passa a ser derivada da conversa (C12).
+- **`docs/SECURITY.md` §7-D.8:** o consentimento por número e finalidade.
+- **A permissão de anexos:** `files:read` deixa de bastar para os anexos de conversa.
+- **ADR-047, adendo 6:**
+  - §3.2: a ordem das travas do item 3;
+  - §7 e §9: a religação pela identificação e o escritor único de `Conversation.contactId`;
+  - o tipo de uso `business_outbound`;
+  - o E7.
+
+**Decisões abertas:**
+
+- **[ABERTA C10]** O E7 (item 9): aprovar a porta `OutboundPrecondition` (recomendado).
+- **[ABERTA C11]** O isolamento por item na F4.1a (recomendado).
+- **[ABERTA C12]** A atribuição derivada para toda mensagem nova que entra (recomendado) ou só para as conversas que nascem RAI.
+- **[ABERTA C13]** Ver a área RAI: `conversations:read` mais `contacts:write`, sem o Guest (recomendado), ou só `conversations:read`.
+- **[ABERTA C14]** O envio iniciado pelo negócio sem consultar a porta E6, como mensagem de autoria humana (recomendado), ou com um consumidor novo respondido pela porta.
+- **[ABERTA C15]** Retirar o bloqueio de parar: uma chave própria, `consents:unblock`, só para Owner e Admin (recomendado), ou `consents:manage`.
+- **[ABERTA C16]** O escopo do pedido de parar: (canal, número), como decidido, ou (workspace, número) (recomendado). Para confirmar.
+- **[ABERTA C17]** A região padrão da normalização: configuração do workspace com `BR` como padrão (recomendado).
+- **[ABERTA C18]** O Clinics tratar o despacho `unknown_after_dispatch` com `not_sent_guard_aborted` como `nao_enviado`, permitindo um pedido novo com aprovação nova (recomendado, porque a guarda provou que o uso não começou), ou mantê-lo como incerto, sem pedido novo.
+- **C8** continua com o jurídico.
+
+**A primeira subentrega executável, proposta para aprovação: F4.1a, identidade sem atribuição silenciosa (Core).**
+
+- **O que entra:**
+  - **telefones normalizados (item 1),** com a biblioteca, as formas normalizadas e as chaves de coincidência, o preenchimento, os índices e o diagnóstico só de leitura;
+  - **a RAI completa (item 2):**
+    - o nascimento por candidato múltiplo ou possível, e a conversa por número (D-b);
+    - a atribuição derivada (C12);
+    - as proteções no Core: os três usos, a aprovação, os caminhos de leitura da IA e o replay;
+    - a mídia;
+    - os testes estáticos de outbox e eventos;
+    - quem vê (C13), aplicado em cada endpoint com 404;
+    - identificar, desfazer e rejeitar (com a retirada do número oferecida), com a religação no protocolo, as expirações e os bloqueios na mesma transação, o tratamento dos índices únicos e a auditoria;
+    - a reconferência da IA comparando o contato da conversa com o do escopo;
+    - a resposta bloqueada para número que saiu do contato;
+    - **a permissão de anexos de toda conversa** (`conversations:read` e `files:read`), que é mudança de RBAC;
+  - **a ordem das travas (item 3)** nos caminhos da F4.1a: o nível 0 por (workspace, chave de coincidência), `conversation:`, `address:` por HMAC da chave de coincidência, a exceção do contato de id fresco, os escritores de telefone, o `lock_timeout` da ingestão, o orçamento e a fumaça;
+  - **o isolamento por item (item 10),** se C11 for aprovado;
+  - **as migrations conforme o ADR-051,** com ensaio de falha e recuperação, e as conversas existentes inalteradas.
+- **O que não entra:**
+  - o BSUID;
+  - finalidades, consentimento e bloqueio;
+  - templates;
+  - o envio iniciado pelo negócio e o `business_outbound`;
+  - o E7 e o estado `canceled`;
+  - qualquer coisa do Clinics.
+
+  Os despachos da IA não iniciados de uma conversa religada são barrados pela reconferência do `ai_message_dispatch`, que compara o contato atual da conversa com o da aprovação. O cancelamento neutro vem na F4.1c.
+
+- **Os testes:**
+  - formatos diferentes do mesmo telefone;
+  - telefone que não se normaliza;
+  - o 9º dígito como possível coincidência;
+  - arquivado conta;
+  - outro workspace não conta (P0);
+  - número compartilhado vira RAI;
+  - um único candidato só "possível" vira RAI, com ele listado;
+  - duas ingestões do mesmo número novo por dois canais criam um contato só;
+  - a ingestão sem a trava no prazo responde erro, e a reentrega é deduplicada;
+  - reabrir ou responder numa conversa encerrada com outra aberta da mesma chave dá 409, inclusive numa RAI encerrada;
+  - a mensagem seguinte à identificação continua RAI enquanto o número for compartilhado;
+  - identificar contra a ingestão do mesmo número, e desfazer contra um uso de IA em andamento, os dois com os portões da guarda;
+  - associação equivocada, com desfazer e rejeitar, com e sem a retirada do número;
+  - identificar quando o contato já tem conversa aberta com o número (a anterior é encerrada), e rejeitar quando já há RAI aberta (a rejeitada fica RAI encerrada);
+  - uma geração de IA que esperava a trava de X, com a conversa desfeita e identificada como Y no meio, é recusada;
+  - um despacho da IA aprovado antes de religar a conversa é barrado na reconferência;
+  - troca de número e número reciclado, com o resíduo declarado;
+  - resposta pela conversa do número certo, e bloqueada quando o número saiu do contato;
+  - IA, replay, resumo, propostas e mídia recusados para RAI num workspace **sem** o Clinics;
+  - nada enfileirado pela ingestão RAI;
+  - o escritor único de `contactId`;
+  - a auditoria sem número;
+  - as permissões de cada ato, e o 404 de cada endpoint para quem não tem `contacts:write`;
+  - os anexos de conversa exigem `conversations:read` e `files:read`;
+  - a mensagem registrada à mão não grava `authorContactId`;
+  - `contacts[]` sem `wa_id` e `messages[]` sem `from`, com o lote preservado;
+  - as conversas antigas inalteradas;
+  - mutações em cada garantia.
+- **O processo:**
+  - o ADR aprovado antes;
+  - `reviewer` e `security` antes do commit, e de novo sobre o delta;
+  - bateria completa, com a fumaça da ordem das travas;
+  - commit local e parada para revisão.
+- **Por que primeiro:**
+  - corrige defeitos comprovados que já existem em todo workspace com WhatsApp;
+  - é a base do destinatário sem ambiguidade;
+  - não depende da Meta;
+  - não abre envio nenhum.
+- **Continuam bloqueados:** deploy, ativação, envio real e dados reais.
