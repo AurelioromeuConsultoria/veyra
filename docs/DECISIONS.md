@@ -3713,6 +3713,35 @@ Sem deploy, sem ativação do Clinics e sem dados reais. Os bloqueios operaciona
   1. **A API ainda aceita o corpo vazio como "avulso".** Isso foi aprovado na F3.1, quando a tela registrava sem corpo, e deixou de ser necessário: a tela agora sempre manda `packageId` (`null` para avulso). Hoje, a escolha explícita depende só da tela. Uma aba aberta com a versão anterior, ou outro chamador, ainda registraria "avulso" com um clique. **Recomendação:** antes da ativação, exigir `packageId` no contrato (`null` explícito para avulso) e recusar o corpo vazio. Isso muda a decisão da F3.1, então só com a sua aprovação.
   2. **O saldo pode mudar sem invalidar a escolha.** Se o saldo cai de 7 para 5 entre a leitura e a confirmação, o pacote continua elegível e o servidor aceita, embora a tela tenha mostrado "7 → 6". O pacote não é trocado e nada vira "avulso", que é o essencial da condição, mas o "antes e depois" mostrado pode estar desatualizado. **Recomendação:** registrar como limitação aceita do protótipo. Se quiser garantir o saldo exibido, a alternativa é enviar o saldo esperado no registro e recusar quando divergir, o que também muda a API.
 
+**Decisão do usuário sobre a F3.3b (2026-10-23), com o push autorizado:**
+
+- **Os dois desvios estão aprovados:** a ficha em `/clinics/patient?id=…`, sem ampliar a composição de rotas do Core, e o retorno manual criado pela ficha do paciente.
+- **A escolha explícita na API está aprovada:** `packageId` presente, `null` para avulso ou o id do pacote. Corpo vazio ou campo ausente não decide pelo usuário. Vai numa entrega separada (o ajuste A1, abaixo), sem alterar o lote já revisado, e antes da ativação do Clinics.
+- **O saldo entre a leitura e a confirmação** fica aceito como limitação do protótipo com dados fictícios.
+  - O saldo mostrado é o consultado naquele momento, e não uma reserva.
+  - A confirmação autoriza uma sessão do pacote escolhido, sem substituição automática. O servidor mantém a proteção contra saldo insuficiente e consumo duplicado.
+  - **A interface deixa claro** que o saldo pode mudar até a confirmação. **Depois do sucesso, a tela mostra o saldo atualizado pelo servidor,** e não o resultado de subtrair um localmente.
+  - Não entra saldo esperado no contrato.
+- **Com o CI verde, a F3.3b e a F3 estão concluídas funcionalmente.** O ajuste A1 é pendência própria antes da ativação. Fechar a F3 não libera o piloto nem dispensa a barreira contínua de manutenção.
+
+**Ajuste pré-ativação A1 — escolha explícita no registro de atendimento (decidido pelo usuário em 2026-10-23; registrado antes do código).**
+
+- **O contrato:** `recordClinicsAttendanceSchema` passa a exigir a chave: `packageId: z.uuid().nullable()`, sem `.optional()`. `{ "packageId": null }` é avulso, e `{ "packageId": "<id>" }` é o pacote. `{}` e o corpo vazio são recusados com 400, e o corpo que não é JSON continua recusado com 415. Nada disso tem efeito.
+- **Os consumidores existentes, conferidos:**
+  - **a tela** (`agenda/RegistroDeAtendimento.tsx`) já manda sempre `{ packageId }`, desde a F3.3b;
+  - **o e2e** passa pela tela ou manda `data: { packageId }`;
+  - **nenhum serviço interno** (a IA, um job) chama o registro: o único chamador do `ClinicsAttendanceService.record` é o controller;
+  - **os testes de integração** mandavam o registro sem corpo (`clinics-schedule`, `clinics-returns`) e testavam o transporte da ausência (`clinics-packages`). Eles passam a mandar a escolha explícita, e os de transporte passam a esperar a recusa;
+  - **uma aba aberta com a tela de antes da F3.3b** mandaria sem corpo e passa a receber 400. É a falha fechada que se quer.
+- **O middleware da F3.1 fica, e a ausência deixa de valer como avulso.** O `CorpoOpcionalMiddleware` continua recusando com 415 os bytes que ninguém interpretou, sem ler o resto e fechando a conexão. Essa garantia de transporte foi revisada na F3.1 e não muda. O que muda é o controller: o corpo ausente, mesmo com o vazio provado, passa a responder 400 ("escolha explícita exigida"), em vez de virar avulso. A prova de vazio fica só para distinguir essa resposta (400) do conteúdo não interpretado (415).
+- **A idempotência fica:** repetir a mesma escolha não consome de novo, e uma escolha diferente continua dando 409.
+- **Testes exigidos:** um pedido sem escolha explícita (corpo vazio, `{}`, chave ausente, corpo que não é JSON) não deixa registro de atendimento, nem consumo, nem transição para `attended`, nem auditoria. Também a idempotência com `null` e com o pacote, e a escolha diferente dando 409.
+- **A interface (a precisão do saldo):**
+  - o painel diz que o saldo é o desta consulta e pode mudar até a confirmação, e que o servidor confere;
+  - depois do sucesso, o painel mostra o saldo do pacote relido do servidor, ou "registrado como avulso", e só então se fecha pela pessoa;
+  - um teste prova que o número mostrado é o do servidor, mesmo quando difere de "antes − 1".
+- **O processo:** `reviewer`, `security` e bateria completa, com commit local e parada para revisão antes do push.
+
 **Implementação da F3.1 (notas, 2026-10-21).**
 
 - **O `dealId` do pacote fica fora da F3.1.** Uma FK composta para o `Deal` do Core travaria a exclusão de deals. A alternativa seria `SET NULL` só na coluna (`ON DELETE SET NULL ("dealId")`), que o Prisma não modela sem drift. Como o vínculo só serve ao fluxo comercial, ele volta com a F4, por ADR.
