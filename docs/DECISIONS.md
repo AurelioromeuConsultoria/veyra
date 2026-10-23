@@ -3616,6 +3616,103 @@ Sem deploy, sem ativação do Clinics e sem dados reais. Os bloqueios operaciona
   - a paginação dos candidatos.
 - **E2E (Playwright, dados fictícios):** os cenários do detalhamento, mais o "sem dados" e o 0 % legítimo, a escolha explícita entre avulso e pacote, e a recepção sem acesso aos dados de atendimento e de pacote.
 
+**Resultados da F3.3b (telas e e2e), para revisão.**
+
+- **Rotas e navegação:**
+  - "Retornos" e "Faltas" entraram na lateral do grupo "Clínica";
+  - a ficha é `/clinics/patient?id=…`, e não `/clinics/patients/:id`, como dizia a nota. **Desvio:** a regra de composição do web (Core) só aceita rotas de vertical estáticas, e foi mantida. Um id que não é UUID nem chega ao servidor;
+  - o nome na lista de pacientes e na lista de retornos leva à ficha.
+- **A porta das telas novas** é a da agenda: o status ativo e as chaves da agenda **e** do catálogo. O catálogo dá os nomes de serviço e profissional e o fuso da unidade, e os dois papéis que leem a agenda já o têm.
+- **Registro de atendimento:**
+  - o botão do cartão da agenda abre o painel de escolha (`agenda/RegistroDeAtendimento.tsx`), e o registro direto, que gravava "avulso" com um clique, deixou de existir;
+  - o painel segue todas as condições: nada marcado, a falha não vira "avulso", a recusa recarrega e desfaz a escolha, e sem `care:read` nenhuma consulta a pacotes;
+  - o e2e da agenda da F2 passou a escolher "avulso" explicitamente.
+- **Ficha, retornos e faltas** seguem as notas.
+  - **A lista de retornos é uma só** (`retornos/ListaDeRetornos.tsx`), na tela e na ficha.
+  - **O catálogo inclui os arquivados nas telas novas:** um pacote ou uma métrica pode citar um serviço arquivado. Para criar, só os ativos.
+- **Testes de componente:** 19 novos (`continuidade.test.tsx`) e 2 de sessão (`session-isolation.test.tsx`):
+  - a escolha sem pré-seleção, inclusive com um pacote só;
+  - a falha que não vira avulso;
+  - a recusa que recarrega e desfaz;
+  - nenhuma consulta a pacotes sem `care:read`, no painel e na ficha;
+  - a recarga que falha, sem dado antigo, na ficha, nos retornos e nas faltas;
+  - a confirmação do pacote (o que fica congelado, e que o preço não é pagamento) e o envio em centavos inteiros;
+  - o id inválido;
+  - os motivos de cancelamento conforme a permissão e a origem;
+  - a paginação dos candidatos;
+  - "Sem dados" e 0 % distintos;
+  - **sessão:** depois da troca de A, que lê pacotes, para B, que não lê, a ficha de B não tem a seção e nenhuma consulta a pacotes sai com B. A resposta antiga de pacotes de A, que chega depois do login de C, não aparece na ficha de C.
+- **E2E (`clinics-continuidade.spec.ts`, 6 cenários, dados fictícios):**
+  - o profissional cria o pacote e registra escolhendo-o, e o saldo cai de 10 para 9. A repetição do mesmo pedido não consome de novo, e a repetição com outra escolha dá 409;
+  - a recepção fica sem pacotes e sem consulta, a API responde 403, e o cancelado clínico aparece genérico. A recepção cancela um retorno com motivo operacional, e só vê os motivos operacionais;
+  - o link direto de um convidado (sem as chaves do Clinics) para as telas novas mostra a recusa, sem consulta ao vertical;
+  - o retorno automático é vinculado pela recepção, atribuído e concluído pelo registro;
+  - "Sem dados", 0 % legítimo e 50 %;
+  - as telas novas num workspace sem o Clinics.
+
+**Revisão da F3.3b (`reviewer`: mudanças necessárias; `security`: aprovado com ressalvas; sem P0) e o que mudou com ela:**
+
+- **P1 do `reviewer` e P2 do `security`: o teste da resposta antiga de pacotes passaria sem a defesa.** As chaves de cache de A e de C não colidiam. Agora A e C têm o mesmo id de paciente.
+  - **A prova:** uma mutação que tira as três proteções da ADR-050 juntas, mantendo o login funcional, derruba o teste de C.
+    - **O que a mutação faz:** usa um cache único, só com a sessão atualizada na troca, sem remontagem, sem limpeza, sem época e sem escopo.
+    - **Onde cai:** na asserção dos pacotes de C. A ficha de C fica presa à consulta de A, ainda a caminho na mesma chave, e nunca recebe os próprios pacotes.
+    - **Correção na confirmação:** a primeira tentativa de mutação quebrava o próprio login, e os testes caíam antes das asserções. A frase anterior ("derruba os dois testes") não provava nada.
+  - **O primeiro teste** continua verde sob essa mutação: ele prova o portão da permissão (nenhuma consulta a pacotes sai com B), e não o isolamento.
+- **P1 do `reviewer`: o teste da recusa não provava que a escolha é desfeita.**
+  - **Recusa com o pacote ainda elegível:** depois do 409, com o saldo de 5 caindo para 4, a opção volta desmarcada e com o saldo novo.
+  - **Recarga em andamento:** enquanto ela não chega, não há opção nem confirmação.
+  - **A agenda relida:** ela é relida pela própria recusa.
+- **P1 do `reviewer`: o e2e não cobria três cenários do detalhamento.** Entraram os três:
+  - a repetição que não consome;
+  - a recepção cancelando com motivo operacional;
+  - o link direto sem permissão.
+- **P2, dos dois:**
+  - **A recusa não relia a agenda.** Era uma regressão do `onSettled` antigo, e foi corrigida.
+  - **Dois pacotes iguais tinham o mesmo rótulo.** A opção e o botão agora trazem a data e a hora de criação no fuso da unidade.
+- **P2 do `reviewer`:**
+  - **A lista de retornos cortava em 100 sem aviso.** Agora pede `limit` explícito e avisa quando chega ao teto.
+  - **O erro do cancelamento de pacote aparecia atrás do painel.** Foi para dentro dele.
+  - **Uma taxa positiva pequena aparecia como "0 %".** Agora aparece "< 0,1 %", e a quase total, "> 99,9 %".
+- **Nits:**
+  - os testes de componente usam o `QueryClient` de produção e recarregam por invalidação;
+  - um horário sem o fuso da unidade é dito ("UTC" ou "horário indisponível");
+  - os botões das linhas trazem o contexto no nome acessível;
+  - os caminhos vêm das constantes;
+  - as mensagens de serviços e pacotes estão separadas;
+  - o preço inválido é avisado, com o teto do contrato;
+  - o registro invalida também os retornos;
+  - o "0 %" e o período do e2e são exatos.
+- **Mantido e registrado (nit do `reviewer`):** os itens "Retornos" e "Faltas" da navegação pedem só `schedule:read`, e a página pede também `catalog:read`, como a "Agenda da clínica" já faz. O item de navegação é uma chave só, um tipo do Core. Os dois papéis do Clinics que leem a agenda têm as duas.
+- **Mutações do web: 12, todas mortas,** cada uma pelo teste esperado, com a saída gravada na rodada final:
+  - a recusa sem desfazer a escolha;
+  - a confirmação durante a recarga;
+  - a recusa sem reler a agenda;
+  - a pré-seleção do pacote único;
+  - a consulta a pacotes sem `care:read`, no painel e na ficha;
+  - a falha permitindo registrar "avulso". A versão anterior dessa mutação era equivalente, porque o painel já esconde as opções na falha, e foi trocada por uma que de fato oferece e confirma "avulso";
+  - a taxa sem a ponta de baixo e sem a ponta de cima;
+  - o aviso do teto com exatamente 100 retornos;
+  - o dado antigo depois de uma recarga que falha, na lista de retornos e nos pacotes.
+- **Confirmação dos dois (`reviewer`: mudanças necessárias; `security`: aprovado com ressalvas; sem P0):**
+  - **P1 do `reviewer` e P2 do `security`:** a prova da mutação de sessão, corrigida acima.
+  - **P2 do `reviewer`:**
+    - a taxa no limite exato de cima (1999 faltas em 2000) aparecia como "100 %", e agora aparece "> 99,9 %";
+    - na ficha, dois pacotes iguais não se distinguiam. A linha, o botão de cancelar e a confirmação agora trazem a data e a hora de criação.
+  - **Nits:**
+    - a recusa de um pacote não reaparece no painel de outro;
+    - o horário sem fuso diz "UTC" também no painel de registro, com um auxiliar só;
+    - a lista pede 101 e mostra 100, e só avisa quando há mais;
+    - a validação do pacote é a do esquema do contrato, sem repetir os limites;
+    - a saída das mutações fica em arquivo.
+- **Terceira passada do `reviewer` (aprovado com ressalvas, sem bloqueante):** os oito itens estão resolvidos.
+  - **A mutação de sessão foi rodada de novo contra o teste final**, depois da bateria, e cai na mesma asserção, com o rótulo novo. O patch da mutação fica guardado para quem quiser repeti-la.
+  - **Na ficha, com unidades em fusos diferentes, a data de criação vai em UTC** (e diz), para não divergir do painel de registro da agenda. Com um fuso só, vale o dele.
+  - **A dica do total de sessões** não repete mais o limite do contrato.
+
+- **Pendente de decisão do usuário (P2 do `security`), sem implementar nesta entrega de telas:**
+  1. **A API ainda aceita o corpo vazio como "avulso".** Isso foi aprovado na F3.1, quando a tela registrava sem corpo, e deixou de ser necessário: a tela agora sempre manda `packageId` (`null` para avulso). Hoje, a escolha explícita depende só da tela. Uma aba aberta com a versão anterior, ou outro chamador, ainda registraria "avulso" com um clique. **Recomendação:** antes da ativação, exigir `packageId` no contrato (`null` explícito para avulso) e recusar o corpo vazio. Isso muda a decisão da F3.1, então só com a sua aprovação.
+  2. **O saldo pode mudar sem invalidar a escolha.** Se o saldo cai de 7 para 5 entre a leitura e a confirmação, o pacote continua elegível e o servidor aceita, embora a tela tenha mostrado "7 → 6". O pacote não é trocado e nada vira "avulso", que é o essencial da condição, mas o "antes e depois" mostrado pode estar desatualizado. **Recomendação:** registrar como limitação aceita do protótipo. Se quiser garantir o saldo exibido, a alternativa é enviar o saldo esperado no registro e recusar quando divergir, o que também muda a API.
+
 **Implementação da F3.1 (notas, 2026-10-21).**
 
 - **O `dealId` do pacote fica fora da F3.1.** Uma FK composta para o `Deal` do Core travaria a exclusão de deals. A alternativa seria `SET NULL` só na coluna (`ON DELETE SET NULL ("dealId")`), que o Prisma não modela sem drift. Como o vínculo só serve ao fluxo comercial, ele volta com a F4, por ADR.

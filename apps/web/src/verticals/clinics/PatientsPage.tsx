@@ -3,6 +3,7 @@ import type { ContactDto, Paginated } from '@veyra/contracts';
 import type { ClinicsPatientDto } from '@veyra/contracts/verticals/clinics';
 import { UserPlus } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Button } from '../../components/ui/button';
 import { Drawer } from '../../components/ui/drawer';
 import { Field, Input } from '../../components/ui/input';
@@ -11,6 +12,7 @@ import { api, ApiError, toQuery } from '../../lib/api';
 import { fullStamp } from '../../lib/format';
 import { hasPermission, useSession } from '../../lib/session';
 import { useClinicsAccess } from './access';
+import { fichaDoPaciente } from './nav';
 
 const PATIENTS_KEY = ['clinics', 'patients'] as const;
 /** Teto da lista na tela; acima dele, a busca (ADR-048 adendo 5). */
@@ -125,7 +127,11 @@ function PatientsReady() {
             <tbody>
               {linhas.map((p) => (
                 <tr key={p.id} className="border-b border-border/60 last:border-b-0">
-                  <td className="px-4 py-2">{p.name}</td>
+                  <td className="px-4 py-2">
+                    <Link className="underline" to={fichaDoPaciente(p.id)}>
+                      {p.name}
+                    </Link>
+                  </td>
                   <td className="px-4 py-2 num text-data text-muted-fg">
                     {fullStamp(p.createdAt)}
                   </td>

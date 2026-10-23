@@ -15,7 +15,7 @@ import { escopoAtual } from './session-scope';
  * real. Dados fictícios.
  */
 const PERMISSOES = ['clinics:schedule:read', 'clinics:catalog:read', 'contacts:read'];
-const pessoa = (id: string, workspace: string) =>
+const pessoa = (id: string, workspace: string, extras: string[] = []) =>
   ({
     id: `u-${id}`,
     name: `Pessoa ${id.toUpperCase()}`,
@@ -28,12 +28,30 @@ const pessoa = (id: string, workspace: string) =>
       roleName: 'Member',
       status: 'active',
     },
-    permissions: PERMISSOES,
+    permissions: [...PERMISSOES, ...extras],
     memberships: [],
   }) as unknown as AuthUserDto;
-const A = pessoa('a', 'Clínica A');
+// A e C leem o atendimento (pacotes, F3.3b); B, não
+const A = pessoa('a', 'Clínica A', ['clinics:care:read']);
 const B = pessoa('b', 'Clínica B');
-const PACIENTES: Record<string, string> = { 'u-a': 'Paciente de A', 'u-b': 'Paciente de B' };
+const C = pessoa('c', 'Clínica C', ['clinics:care:read']);
+const PACIENTES: Record<string, string> = {
+  'u-a': 'Paciente de A',
+  'u-b': 'Paciente de B',
+  'u-c': 'Paciente de C',
+};
+/**
+ * ids de verdade (a ficha só consulta um UUID). A e C têm o MESMO id: a chave
+ * de cache dos pacotes colide, e só o cache por sessão e o descarte por época
+ * (ADR-050) impedem que a resposta antiga de A apareça para C.
+ */
+const PACIENTE_ID: Record<string, string> = {
+  'u-a': '0b9f1c2e-5d6a-4c3b-9e8f-00000000000a',
+  'u-b': '0b9f1c2e-5d6a-4c3b-9e8f-00000000000b',
+  'u-c': '0b9f1c2e-5d6a-4c3b-9e8f-00000000000a',
+};
+/** o pacote de cada um, com um total distinto para reconhecer na tela */
+const SESSOES: Record<string, number> = { 'u-a': 8, 'u-b': 9, 'u-c': 12 };
 const CONTATOS: Record<string, string> = { 'u-a': 'Ana de A', 'u-b': 'Ana de B' };
 
 interface Servidor {
@@ -45,6 +63,8 @@ interface Servidor {
   /** segura a PRÓXIMA resposta deste caminho; ela é calculada na hora do pedido */
   segurar: string | null;
   seguradas: (() => void)[];
+  /** de quem era a sessão em cada consulta a pacotes */
+  pacotesPedidos: string[];
 }
 
 const json = (body: unknown, status: number, escopo?: string, emiteSessao = false) =>
@@ -59,7 +79,13 @@ const json = (body: unknown, status: number, escopo?: string, emiteSessao = fals
   });
 
 function subirServidor(): Servidor {
-  const s: Servidor = { cookie: null, expirou: false, segurar: null, seguradas: [] };
+  const s: Servidor = {
+    cookie: null,
+    expirou: false,
+    segurar: null,
+    seguradas: [],
+    pacotesPedidos: [],
+  };
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -67,7 +93,7 @@ function subirServidor(): Servidor {
       const metodo = init?.method ?? 'GET';
       if (metodo === 'POST' && url === '/api/auth/login') {
         const { email } = JSON.parse(String(init!.body)) as { email: string };
-        s.cookie = email.startsWith('a') ? A : B;
+        s.cookie = email.startsWith('a') ? A : email.startsWith('c') ? C : B;
         s.expirou = false;
         return json(s.cookie, 201, undefined, true);
       }
@@ -98,10 +124,66 @@ function subirServidor(): Servidor {
       }
       if (url === '/api/auth/me') return json(viva, 200, escopo);
       if (url === '/api/clinics/status') return json({ active: true }, 200, escopo);
+      const paciente = {
+        id: PACIENTE_ID[viva.id],
+        name: PACIENTES[viva.id],
+        createdAt: '2030-01-01T00:00:00Z',
+      };
+      if (url.startsWith('/api/clinics/patients/')) {
+        return url.endsWith(paciente.id)
+          ? json(paciente, 200, escopo)
+          : json({ message: 'Paciente não encontrado' }, 404, escopo);
+      }
       if (url.startsWith('/api/clinics/patients')) {
+        return segurar(json([paciente], 200, escopo));
+      }
+      if (url.startsWith('/api/clinics/units')) {
+        return json(
+          [{ id: `un-${viva.id}`, name: 'Unidade', timezone: 'America/Sao_Paulo' }],
+          200,
+          escopo,
+        );
+      }
+      if (url.startsWith('/api/clinics/services')) {
+        return json(
+          [
+            {
+              id: 'sv',
+              name: 'Limpeza',
+              durationMin: 30,
+              priceCents: null,
+              currency: 'BRL',
+              returnIntervalDays: null,
+              archivedAt: null,
+            },
+          ],
+          200,
+          escopo,
+        );
+      }
+      if (url.startsWith('/api/clinics/returns')) return json([], 200, escopo);
+      if (url.startsWith('/api/clinics/packages')) {
+        s.pacotesPedidos.push(viva.id);
+        if (!viva.permissions.includes('clinics:care:read' as never)) {
+          return json({ message: 'Sem permissão' }, 403, escopo);
+        }
         return segurar(
           json(
-            [{ id: `p-${viva.id}`, name: PACIENTES[viva.id], createdAt: '2030-01-01T00:00:00Z' }],
+            [
+              {
+                id: `pk-${viva.id}`,
+                patientId: paciente.id,
+                serviceId: 'sv',
+                totalSessions: SESSOES[viva.id],
+                consumedSessions: 0,
+                remainingSessions: SESSOES[viva.id],
+                totalPriceCents: null,
+                currency: 'BRL',
+                status: 'active',
+                createdAt: '2030-01-01T00:00:00Z',
+                closedAt: null,
+              },
+            ],
             200,
             escopo,
           ),
@@ -160,6 +242,15 @@ async function abrirPacientes() {
   const lateral = within(await screen.findByRole('navigation', { name: 'Principal' }));
   fireEvent.click(await lateral.findByRole('link', { name: 'Pacientes' }));
 }
+
+/** A ficha de quem está na sessão, pelo link da lista. */
+async function abrirFicha(nome: string) {
+  await abrirPacientes();
+  fireEvent.click(await screen.findByRole('link', { name: nome }));
+}
+const linhaDoPacote = (sessoes: number) => ({
+  name: `Pacote de ${sessoes} sessões de Limpeza, criado em 31/12/2029 21:00`,
+});
 
 const buscar = (termo: string) =>
   fireEvent.change(screen.getByLabelText(/^Buscar paciente/), { target: { value: termo } });
@@ -341,5 +432,49 @@ describe('duas sessões na mesma aba (ADR-050)', () => {
     await abrirPacientes();
     await waitFor(() => expect(servidor.seguradas).toHaveLength(1));
     expect(screen.queryByText('Paciente de A')).toBeNull();
+  });
+
+  describe('pacotes na ficha (F3.3b)', () => {
+    it('A, que lê o atendimento, vê o pacote; depois da troca para B, que não lê, a ficha de B não tem pacotes e NENHUMA consulta a pacotes sai com B', async () => {
+      const servidor = subirServidor();
+      abrirAba();
+      await entrar('a@teste.test');
+      await abrirFicha('Paciente de A');
+      expect(await screen.findByRole('row', linhaDoPacote(8))).toBeInTheDocument();
+
+      // a sessão expira; a próxima requisição (a lista, pelo link) descobre
+      servidor.expirou = true;
+      fireEvent.click(screen.getByRole('link', { name: 'Todos os pacientes' }));
+      expect(await screen.findByRole('button', { name: 'Entrar' })).toBeInTheDocument();
+      await entrar('b@teste.test');
+      await abrirFicha('Paciente de B');
+      expect(await screen.findByRole('heading', { name: 'Paciente de B' })).toBeInTheDocument();
+      expect(screen.queryByRole('region', { name: 'Pacotes do paciente' })).toBeNull();
+      expect(screen.queryByRole('row', linhaDoPacote(8))).toBeNull();
+      expect(servidor.pacotesPedidos).not.toContain('u-b');
+    });
+
+    it('a resposta ANTIGA de pacotes de A, que chega depois do login de C, não aparece na ficha de C', async () => {
+      const servidor = subirServidor();
+      abrirAba();
+      await entrar('a@teste.test');
+      servidor.segurar = '/api/clinics/packages';
+      await abrirFicha('Paciente de A');
+      await waitFor(() => expect(servidor.seguradas).toHaveLength(1));
+
+      // a sessão expira; a próxima requisição (a lista, pelo link) descobre
+      servidor.expirou = true;
+      fireEvent.click(screen.getByRole('link', { name: 'Todos os pacientes' }));
+      expect(await screen.findByRole('button', { name: 'Entrar' })).toBeInTheDocument();
+      await entrar('c@teste.test');
+      await abrirFicha('Paciente de C');
+      expect(await screen.findByRole('row', linhaDoPacote(12))).toBeInTheDocument();
+
+      // a resposta de A, já calculada, chega agora
+      servidor.seguradas[0]();
+      await new Promise((r) => setTimeout(r, 50));
+      expect(screen.queryByRole('row', linhaDoPacote(8))).toBeNull();
+      expect(screen.getByRole('row', linhaDoPacote(12))).toBeInTheDocument();
+    });
   });
 });

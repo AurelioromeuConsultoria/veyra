@@ -4,7 +4,10 @@ import {
   CLINICS_AGENDA_PATH,
   CLINICS_AI_RELEASES_PATH,
   CLINICS_CATALOG_PATH,
+  CLINICS_NO_SHOW_PATH,
+  CLINICS_PATIENT_PATH,
   CLINICS_PATIENTS_PATH,
+  CLINICS_RETURNS_PATH,
 } from './nav';
 
 export { useClinicsNavGroups } from './nav';
@@ -18,6 +21,15 @@ const ClinicsAgendaPage = lazy(() =>
 const ClinicsPatientsPage = lazy(() =>
   import('./PatientsPage').then((m) => ({ default: m.ClinicsPatientsPage })),
 );
+const ClinicsPatientPage = lazy(() =>
+  import('./PatientPage').then((m) => ({ default: m.ClinicsPatientPage })),
+);
+const ClinicsReturnsPage = lazy(() =>
+  import('./ReturnsPage').then((m) => ({ default: m.ClinicsReturnsPage })),
+);
+const ClinicsNoShowPage = lazy(() =>
+  import('./NoShowPage').then((m) => ({ default: m.ClinicsNoShowPage })),
+);
 const ClinicsAiReleasesPage = lazy(() =>
   import('./AiReleasesPage').then((m) => ({ default: m.ClinicsAiReleasesPage })),
 );
@@ -26,6 +38,9 @@ const ClinicsAiReleasesPage = lazy(() =>
 export const clinicsRoutes: readonly VerticalRoute[] = [
   { path: CLINICS_AGENDA_PATH, element: <ClinicsAgendaPage /> },
   { path: CLINICS_PATIENTS_PATH, element: <ClinicsPatientsPage /> },
+  { path: CLINICS_PATIENT_PATH, element: <ClinicsPatientPage /> },
+  { path: CLINICS_RETURNS_PATH, element: <ClinicsReturnsPage /> },
+  { path: CLINICS_NO_SHOW_PATH, element: <ClinicsNoShowPage /> },
   { path: CLINICS_CATALOG_PATH, element: <ClinicsCatalogPage /> },
   { path: CLINICS_AI_RELEASES_PATH, element: <ClinicsAiReleasesPage /> },
 ];

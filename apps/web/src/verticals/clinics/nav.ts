@@ -1,10 +1,28 @@
-import { CalendarDays, ClipboardList, ShieldCheck, UsersRound } from 'lucide-react';
+import {
+  CalendarClock,
+  CalendarDays,
+  ClipboardList,
+  Percent,
+  ShieldCheck,
+  UsersRound,
+} from 'lucide-react';
 import { useMemo } from 'react';
 import type { NavGroup } from '../../lib/nav';
 import { useClinicsStatus } from './access';
 
 export const CLINICS_AGENDA_PATH = '/clinics/agenda';
 export const CLINICS_PATIENTS_PATH = '/clinics/patients';
+/**
+ * A ficha de um paciente (F3.3b): fora da navegação, aberta pela lista, com o
+ * id na query (`?id=`). As rotas de vertical são estáticas (composition.test).
+ */
+export const CLINICS_PATIENT_PATH = '/clinics/patient';
+
+/** O caminho da ficha de um paciente. */
+export const fichaDoPaciente = (id: string) =>
+  `${CLINICS_PATIENT_PATH}?id=${encodeURIComponent(id)}`;
+export const CLINICS_RETURNS_PATH = '/clinics/returns';
+export const CLINICS_NO_SHOW_PATH = '/clinics/no-show';
 export const CLINICS_CATALOG_PATH = '/clinics/catalog';
 export const CLINICS_AI_RELEASES_PATH = '/clinics/ai-releases';
 
@@ -42,6 +60,20 @@ export function useClinicsNavGroups(): readonly NavGroup[] {
                   icon: UsersRound,
                   permission: 'clinics:schedule:read',
                   aliases: ['paciente', 'cliente da clínica'],
+                },
+                {
+                  to: CLINICS_RETURNS_PATH,
+                  label: 'Retornos',
+                  icon: CalendarClock,
+                  permission: 'clinics:schedule:read',
+                  aliases: ['retorno', 'volta', 'follow-up'],
+                },
+                {
+                  to: CLINICS_NO_SHOW_PATH,
+                  label: 'Faltas',
+                  icon: Percent,
+                  permission: 'clinics:schedule:read',
+                  aliases: ['falta', 'taxa de faltas', 'no-show'],
                 },
                 {
                   to: CLINICS_CATALOG_PATH,

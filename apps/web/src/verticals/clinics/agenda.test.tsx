@@ -296,6 +296,7 @@ describe('Agenda da clínica (F2.3)', () => {
       'GET /api/clinics/appointments': {
         body: [agendamento({ status: 'confirmed', attendanceId: null })],
       },
+      'GET /api/clinics/packages': { body: [] },
       [`POST /api/clinics/appointments/${AG}/attendance`]: { status: 201, body: { id: 'x' } },
     });
     renderizar(<ClinicsAgendaPage />);
@@ -306,11 +307,15 @@ describe('Agenda da clínica (F2.3)', () => {
     expect(screen.queryByRole('button', { name: /^Registrar chegada:/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /^Cancelar:/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /^Remarcar:/ })).toBeNull();
+    // o botão abre a ESCOLHA (F3.3b): nada é registrado sem escolher
     fireEvent.click(registrar);
+    fireEvent.click(await screen.findByLabelText('Avulso (sem pacote)'));
+    fireEvent.click(screen.getByRole('button', { name: 'Registrar atendimento avulso' }));
     await waitFor(() =>
-      expect(chamadas.map((c) => c.chave)).toContain(
-        `POST /api/clinics/appointments/${AG}/attendance`,
-      ),
+      expect(chamadas).toContainEqual({
+        chave: `POST /api/clinics/appointments/${AG}/attendance`,
+        corpo: { packageId: null },
+      }),
     );
   });
 

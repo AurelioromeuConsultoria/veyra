@@ -28,6 +28,7 @@ import {
   diaDaSemana,
   horariosLivres,
 } from './agenda/slots';
+import { RegistroDeAtendimento } from './agenda/RegistroDeAtendimento';
 
 const AGENDA_KEY = ['clinics', 'appointments'] as const;
 const ROTULO_DA_ACAO = {
@@ -283,6 +284,7 @@ function AgendaReady() {
                       agendamento={agendamento}
                       podeMarcar={podeMarcar}
                       podeAtender={podeAtender}
+                      fuso={unidade?.timezone ?? null}
                       // profissional arquivado: o drawer não teria serviços nem horários
                       podeRemarcar={podeMarcar && coluna.profissional !== null}
                       onRemarcar={() => setDrawer({ kind: 'remarcar', agendamento })}
@@ -326,36 +328,32 @@ function CartaoDeAgendamento({
   agendamento,
   podeMarcar,
   podeAtender,
+  fuso,
   podeRemarcar,
   onRemarcar,
 }: {
   agendamento: ClinicsAppointmentDto;
   podeMarcar: boolean;
   podeAtender: boolean;
+  fuso: string | null;
   podeRemarcar: boolean;
   onRemarcar: () => void;
 }) {
   const queryClient = useQueryClient();
   const [cancelando, setCancelando] = useState(false);
+  const [registrando, setRegistrando] = useState(false);
   const [motivo, setMotivo] = useState<ClinicsCancelReason | ''>('');
   const recarregar = () => void queryClient.invalidateQueries({ queryKey: AGENDA_KEY });
   const mudar = useMutation({
     mutationFn: (corpo: { to: string; cancelReason?: ClinicsCancelReason }) =>
       api.post<ClinicsAppointmentDto>(`/api/clinics/appointments/${agendamento.id}/status`, corpo),
-    // cada ação limpa o erro da outra: nada de alerta velho ao lado do estado novo
-    onMutate: (): void => atender.reset(),
     onSuccess: () => {
       setCancelando(false);
       setMotivo('');
     },
     onSettled: recarregar,
   });
-  const atender = useMutation({
-    mutationFn: () => api.post(`/api/clinics/appointments/${agendamento.id}/attendance`),
-    onMutate: (): void => mudar.reset(),
-    onSettled: recarregar,
-  });
-  const erro = mudar.error ?? atender.error;
+  const erro = mudar.error;
   // único por cartão: hora, paciente e profissional
   const quem = `${agendamento.localStart} ${agendamento.patientName} (${agendamento.professionalName})`;
   const transicoes = TRANSICOES[agendamento.status];
@@ -420,9 +418,11 @@ function CartaoDeAgendamento({
               <Button
                 size="sm"
                 variant="secondary"
-                disabled={atender.isPending}
                 aria-label={`Registrar atendimento: ${quem}`}
-                onClick={() => atender.mutate()}
+                onClick={() => {
+                  mudar.reset();
+                  setRegistrando(true);
+                }}
               >
                 Registrar atendimento
               </Button>
@@ -470,6 +470,16 @@ function CartaoDeAgendamento({
           </div>
         ) : null}
       </article>
+      <Drawer open={registrando} onOpenChange={setRegistrando} title="Registrar atendimento">
+        {registrando ? (
+          <RegistroDeAtendimento
+            agendamento={agendamento}
+            fuso={fuso}
+            onAgendaMudou={recarregar}
+            onDone={() => setRegistrando(false)}
+          />
+        ) : null}
+      </Drawer>
     </Panel>
   );
 }

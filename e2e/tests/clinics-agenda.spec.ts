@@ -217,6 +217,10 @@ test.describe('Clinics — agenda da clínica', () => {
       await doProfissional
         .getByRole('button', { name: `Registrar atendimento: ${quem('22:00', c)}` })
         .click();
+      // a escolha é explícita (F3.3b): sem pacote do paciente, só "avulso"
+      const escolha = page.getByRole('dialog', { name: 'Registrar atendimento' });
+      await escolha.getByLabel('Avulso (sem pacote)').check();
+      await escolha.getByRole('button', { name: 'Registrar atendimento avulso' }).click();
       await expect(doProfissional).toContainText('Atendido');
       await comVinculo;
 
