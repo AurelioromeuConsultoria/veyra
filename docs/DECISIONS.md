@@ -4704,7 +4704,7 @@ A skill `create-migration` traz o bloco de ensaio com as três evidências: os g
 
 ## ADR-052 — Mensagem iniciada pelo negócio: telefones normalizados, remetente sem atribuição silenciosa, template verificável, consentimento por finalidade e aprovação vinculada à prévia
 
-**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). Nenhum código da F4 está autorizado. A publicação desta documentação não autoriza implementação. · **Data:** 2026-10-23
+**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). **A F4.1a foi aprovada para implementação em 2026-10-23**, com as condições registradas no fim deste ADR. O resto continua PROPOSTO, e nenhum outro código da F4 está autorizado. · **Data:** 2026-10-23
 
 A revisão 0 está no `0eb4038`. A revisão 1 não foi comitada; ela passou pelo `reviewer` (mudanças necessárias) e pelo `security` (bloqueado, sem P0), e os achados dos dois estão incorporados aqui. A confirmação desta revisão 2 aprovou com ressalvas (o `reviewer`, com quatro achados importantes; o `security`, com dois P1 novos, os mesmos do `reviewer`), e as correções dela também estão no texto. A conferência final dessas correções aprovou: o `security`, sem ressalva bloqueante, e o `reviewer`, com uma ressalva importante (a regra ao reabrir conversa) e duas de qualidade. As três estão no texto, e os dois disseram que não é preciso nova rodada. Nenhum ADR aceito é alterado antes da aprovação deste; as emendas que ele implicaria estão listadas no fim, em "Emendas propostas".
 
@@ -5225,3 +5225,135 @@ Se alguma condição falha, a mensagem não sai, com o motivo por destinatário 
   - não depende da Meta;
   - não abre envio nenhum.
 - **Continuam bloqueados:** deploy, ativação, envio real e dados reais.
+
+**Aprovação da F4.1a (decisão do usuário, 2026-10-23).** O usuário autorizou o push de `14e7d54` e aprovou **iniciar a F4.1a**, com as decisões e condições abaixo, registradas antes do código. A aprovação **não** se estende às demais subentregas da F4. C10, C14, C15, C16 e C18 continuam abertas, e nenhuma delas está implicitamente aprovada.
+
+- **C11, aprovado:** os itens malformados são isolados, preservando as mensagens e os recibos válidos do mesmo payload. A assinatura continua verificada sobre o corpo original, antes de qualquer processamento.
+- **C12, aprovado:** a **atribuição ao contato** passa a ser derivada da conversa em todas as mensagens novas. Isso **não** altera a **autoria**: `authorType`, o membro que escreveu ou aprovou, a origem de IA e a auditoria histórica ficam como estão.
+- **C13, aprovado:** ver a área RAI exige `conversations:read` e `contacts:write`; identificar exige também as permissões adicionais documentadas. A proteção vale no servidor, inclusive em contagens, mídia, busca e acesso direto.
+- **C17, aprovado:** a região é configurável por workspace, com `BR` como padrão inicial.
+  - O telefone original e a forma normalizada ficam guardados separadamente.
+  - Mudar a região não pode reinterpretar em silêncio os números existentes: exige diagnóstico e um procedimento explícito.
+  - O padrão não é usado para adivinhar nem completar número ambíguo.
+- **A condição sobre o legado:** identificar, desfazer ou rejeitar não pode parecer corrigir a conversa inteira enquanto o histórico antigo continua atribuído ao contato anterior em alguma superfície.
+  - O comportamento escolhido é registrado antes do código.
+  - O teste contém uma conversa com mensagens antigas e novas, porque o caso só com mensagens novas não prova a transição.
+- **Os critérios adicionais:**
+  1. **Item inválido não é falha transitória.** Falha de banco, timeout ou trava não vira descarte com 200. Há teste de um lote parcialmente processado e da reentrega, sem perda nem duplicação dos itens válidos.
+  2. **Índices e preenchimento não fundem contatos, não encerram conversas e não escolhem vencedor** em silêncio. Duplicatas e estados incompatíveis achados no diagnóstico exigem tratamento explícito antes da migration correspondente.
+  3. **A proteção dos anexos se soma às permissões existentes.** `files:read` e o acesso à conversa, sozinhos, não autorizam exclusão: a permissão de escrita e exclusão continua exigida. Há teste de arquivo com mais de um vínculo.
+  4. **O 409 que aponta uma conversa aberta** só identifica ou liga para uma conversa que o solicitante pode acessar. Fora disso, a resposta é genérica.
+  5. **A exceção de trava do contato recém-criado** vale só para o id criado naquela transação, e não é atalho para editar contato existente. Ela entra na prova da ordem das travas e nos testes de corrida.
+  6. **A chave HMAC** tem configuração e procedimento de rotação documentados, e nunca é gerada a cada processo ou inicialização.
+- **O processo:** `reviewer` e `security`, revisão do delta, bateria completa e ensaios das migrations. Commit local e parada para revisão antes do push.
+- **Continuam bloqueados:** deploy, ativação do Clinics, envio real e dados reais.
+
+**Notas de implementação da F4.1a, decididas antes do código (2026-10-23).**
+
+**1. O legado: bloquear a religação nas conversas com atribuição gravada.**
+
+- **A definição.** Uma conversa tem **legado incompatível** quando qualquer uma destas linhas ainda guarda o contato por si:
+  - uma `Message` dela com `authorContactId` preenchido;
+  - uma `Activity` dela (`conversationId`) com `contactId` preenchido.
+
+  Toda conversa anterior à F4.1a que tenha mensagens está nesse caso, e continua nele depois de receber mensagens novas.
+
+- **O comportamento escolhido nesta entrega: bloquear.** Nessas conversas, identificar, desfazer e rejeitar respondem **409**, com a mensagem: "Esta conversa tem mensagens anteriores à atualização, ligadas ao contato. Corrigir o remetente dela ainda não é possível." Nada é alterado.
+  - O tratamento próprio do legado (migrar a atribuição antiga, ou outro caminho) fica para uma entrega com decisão própria.
+  - **A ingestão não muda com isso:** um número compartilhado continua abrindo uma conversa RAI, que nasce sem legado.
+- **Onde a religação é permitida:** só nas conversas **sem** legado, isto é, as RAI e as criadas depois da F4.1a. Nelas, a atribuição de todas as mensagens é derivada da conversa. Ao religar, a timeline, o autor exibido, os anexos e a exclusão do contato mudam juntos.
+- **A exportação:** o produto não tem hoje exportação de dados de contato; ela está no backlog. Quando existir, ela deriva a atribuição pela conversa, e um teste a amarra a esta regra.
+- **O que não muda:**
+  - `authorType`, `authorMembershipId`, a origem de IA (`fromAiProposal`) e a auditoria nunca são reescritos nem apagados;
+  - a religação só muda `Conversation.contactId`, pelo escritor único.
+- **O teste de transição:** uma conversa com mensagens e atividades antigas (com a atribuição gravada) e novas (derivadas). Ele prova duas coisas:
+  - (a) identificar, desfazer e rejeitar dão 409, e nada muda;
+  - (b) a timeline, o autor das mensagens, os anexos e a exclusão do contato estão consistentes entre as antigas e as novas.
+
+  Ao lado, uma conversa criada depois da F4.1a e depois rejeitada. Ela sai da timeline do contato, não aparece mais como dele e não é apagada com ele.
+
+**2. A atribuição derivada (C12).**
+
+- **Toda escrita nova deixa de gravar o contato,** pela ingestão ou pelo registro manual de mensagem no Inbox:
+  - a `Message` não grava `authorContactId`;
+  - a `Activity` que tem `conversationId` não grava `contactId`.
+- **A timeline do contato** passa a ser: as atividades com `contactId = X`, que são o legado e as que não são de conversa, **mais** as atividades sem `contactId` de conversas cujo contato atual é X. Ela usa os índices por `contactId` e por `conversationId` que já existem, com a paginação keyset atual.
+- **O autor exibido de uma mensagem de entrada** é o `authorContactId` gravado, quando houver (legado), e senão o contato atual da conversa. Na conversa RAI, aparece "Remetente a identificar".
+- **A exclusão do contato** continua pelas FKs atuais. A conversa ligada a X cai em cascata, com as mensagens dela. As mensagens de legado com `authorContactId = X` caem também. Uma conversa religada para outro contato, ou levada a RAI, deixa de cair com X.
+
+**3. O isolamento por item (C11) e as falhas transitórias.**
+
+- **O envelope** (`object`, `entry`, `changes`, `value`, `metadata`) continua validado como hoje. `messages[]`, `contacts[]` e `statuses[]` passam a ser validados **item a item**.
+  - O item inválido é contado e registrado **sem conteúdo** (nem `from`, nem `from_user_id`, nem o corpo), e não é ingerido.
+  - Os outros seguem.
+- **A assinatura** continua conferida sobre o corpo bruto, antes do parse (ADR-037), sem mudança.
+- **A falha transitória** (banco, timeout, trava não obtida no `lock_timeout`) **propaga**. O webhook responde erro, e a Meta reentrega. Isso já acontece hoje com erro de banco: o controller não captura a exceção. A F4.1a mantém esse comportamento e o estende à trava.
+- **A reentrega** é deduplicada: as mensagens pelo `externalId`, sob a trava, e os recibos pelo único do `MessageStatusEvent`.
+- **O teste:** um lote com itens válidos e um inválido, em que a falha transitória acontece no meio. Na reentrega, nada se perde e nada se duplica.
+
+**4. O C13 no servidor, endpoint por endpoint.**
+
+- **Sem `contacts:write`:**
+  - a conversa RAI fica fora de `GET /conversations` (inclusive os filtros e a busca dessa rota) e de toda contagem do Inbox;
+  - respondem **404** o detalhe, `/messages`, `/send-policy`, o `PATCH` (responsável e status), o `POST /messages` e os caminhos da IA da conversa (resumo, propostas, rascunho);
+  - o anexo de uma conversa RAI também dá 404 (item 5);
+  - atribuir uma conversa RAI a quem não tem `contacts:write` é recusado.
+- **O teste** cobre cada endpoint, com um papel de teste que tem `conversations:read` sem `contacts:write`, mais o Guest.
+
+**5. Os anexos (critério 3).**
+
+- **O arquivo com vínculo de mensagem** (`MessageAttachment` ou `InboundMedia`) passa a exigir, **além** das permissões que já existem:
+  - `conversations:read`;
+  - o acesso a **todas** as conversas a que ele está ligado, incluindo a regra do C13 para as RAI.
+
+  A regra é fechada: um vínculo sem acesso basta para negar.
+
+- **Por operação:**
+  - listar (`GET /files`) e baixar exigem `files:read` mais a regra acima;
+  - excluir exige `files:write` mais a regra acima.
+
+  `files:read` e o acesso à conversa não autorizam exclusão.
+
+- **Arquivo sem vínculo de mensagem** continua como hoje.
+- **Os testes:** um arquivo ligado a duas conversas, uma delas RAI, e as três operações para cada perfil.
+
+**6. O 409 que aponta uma conversa (critério 4).**
+
+- **O conflito com o índice único** ao reabrir, responder, identificar ou rejeitar só nomeia ou liga a conversa aberta se o solicitante pode acessá-la, pelas regras normais e pelo C13.
+- **Fora disso,** a mensagem é genérica: "Já existe outra conversa aberta para este número."
+
+**7. A normalização (C17) e o diagnóstico (critério 2).**
+
+- **Os dados:**
+  - `Workspace.phoneRegion`, com `BR` como padrão e um CHECK de duas letras maiúsculas. **Não há caminho de mudança na F4.1a**; o procedimento com diagnóstico vem quando for preciso;
+  - `Contact.phones` fica como está (o original);
+  - `Contact.phonesNormalized` guarda as formas E.164 válidas;
+  - `Contact.phoneMatchKeys` guarda os últimos 8 dígitos de cada telefone com pelo menos 8 dígitos.
+- **A normalização** usa a `libphonenumber-js` com a região do workspace e só aceita número **válido**. Um número que a biblioteca não valida fica fora de `phonesNormalized`, sem tentativa de completar nada.
+- **O preenchimento:**
+  - as chaves de coincidência são calculadas em SQL, na própria migration, porque são só dígitos;
+  - as formas normalizadas vêm de uma CLI idempotente, por lotes, com relatório.
+  - Até ela rodar, um contato sem forma normalizada conta como coincidência "possível". O efeito é RAI, que é o lado seguro, e o procedimento de release roda a CLI logo depois da migration.
+- **Toda escrita de telefone** (criar, editar, importar, criar a partir do canal, retirar o número no rejeitar) recalcula as duas colunas no serviço.
+- **O diagnóstico só de leitura** (uma CLI, a documentar no runbook) conta:
+  - os números compartilhados na forma normalizada;
+  - os telefones que não se normalizam;
+  - as conversas do WhatsApp com `externalAddress` nulo;
+  - as conversas e mensagens com legado;
+  - **as linhas que violariam os índices únicos novos.**
+- **Os índices únicos** são criados numa migration própria, **depois** do diagnóstico. Se houver violação, a migration falha, de forma visível, e nada é corrigido sozinho: o tratamento é humano e explícito.
+
+**8. A trava de endereço, a exceção e a chave HMAC (critérios 5 e 6).**
+
+- **A exceção do contato de id fresco** só vale para o contato criado **na mesma transação**, pela ingestão ou pela identificação. Ela está no código como um parâmetro que só o caminho de criação passa. Editar um contato existente sempre passa por `MudancasDeRestricao.porContato`.
+- **A prova da ordem das travas** (a fumaça) e os testes de corrida incluem:
+  - a ingestão;
+  - identificar, desfazer e rejeitar;
+  - os escritores de telefone;
+  - a criação de lead dentro da ingestão.
+- **A chave HMAC:**
+  - fica numa variável própria (`ADDRESS_LOCK_KEY`), obrigatória: sem ela, a API não sobe, e não há valor gerado na inicialização;
+  - entra no `.env.example` e na checagem de configuração do boot;
+  - **a rotação, documentada em `docs/SECURITY.md`:** só em manutenção, com os workers parados e sem `ContentUse` autorizado em aberto (a consulta de conferência está no procedimento). Depois, troca-se a chave e sobe-se de novo. Nenhuma chave antiga fica em uso, e as travas não sobrevivem ao reinício.
+
+**9. Ordem de implementação:** contratos → API (migrations, ingestão, contatos, conversas, identificação, anexos, IA, travas) → web (a área RAI no Inbox, com identificar, desfazer e rejeitar, e o autor derivado).
