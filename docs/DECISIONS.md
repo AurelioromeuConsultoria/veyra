@@ -3570,6 +3570,52 @@ Sem deploy, sem ativação do Clinics e sem dados reais. Os bloqueios operaciona
    - o tratamento de falha sem dados antigos;
    - a distinção entre taxa zero e "sem dados".
 
+**Notas de implementação da F3.3b (telas e e2e), decididas antes do código.** Seguem o detalhamento e as condições aprovadas. O que é escolha nova está marcado.
+
+- **Rotas e navegação:**
+  - `/clinics/patients/:id` é a ficha, e o nome na lista de pacientes leva até ela;
+  - `/clinics/returns` (Retornos) e `/clinics/no-show` (Faltas) entram na navegação, com `schedule:read`;
+  - a porta de sempre: nada do vertical é consultado antes do status ativo confirmado e da permissão da tela.
+- **Dado de servidor só no TanStack Query.** A troca de sessão já monta um cache novo e descarta a resposta de outra época (ADR-050).
+  - **Com erro, nenhum dado antigo:** uma recarga que falha esconde a lista e mostra o alerta, como nas telas da F2.
+  - **Sem `care:read`,** a seção de pacotes não existe e nenhuma consulta a `/api/clinics/packages` é feita.
+- **Registro de atendimento na agenda (consumo explícito):**
+  - o botão abre um painel de escolha com os pacotes ativos do paciente para aquele serviço e com saldo, e a opção "Avulso";
+  - **nada vem marcado,** e o botão de confirmar fica desabilitado até a escolha. O texto dele nomeia a escolha, com o saldo antes e depois;
+  - enquanto os pacotes carregam, ou se a consulta falha, não se confirma. A falha mostra o alerta e "tentar de novo", e nunca vira "avulso";
+  - o "avulso" vai como escolha explícita (`packageId: null`);
+  - **a recusa do servidor** (o saldo acabou, o pacote encerrou ou a repetição veio com outra escolha) aparece como veio, as opções são recarregadas e a escolha é desfeita. Nada troca de pacote nem registra "avulso" em silêncio;
+  - **sem `care:read`,** a única opção é "Avulso", com o aviso de que os pacotes não estão visíveis para essa pessoa.
+- **A ficha do paciente:**
+  - **pacotes** (só com `care:read`): serviço, sessões (total, consumidas, restantes), estado e o preço total "registrado", nunca "pago";
+  - **criar** (`care:write`): serviço, total de sessões e preço total opcional, digitado em reais e enviado em centavos inteiros. Uma confirmação mostra o que fica congelado;
+  - **cancelar** (`care:write`): uma confirmação diz que as consumidas ficam e que não há reabertura;
+  - **retornos do paciente:** a lista filtrada, com o mesmo componente da tela de retornos.
+  - **Escolha nova, para a revisão:** a **criação manual de retorno fica na ficha**, onde o paciente já está escolhido, e não na tela de retornos, como dizia o detalhamento. Isso evita repetir a busca de paciente. A tela de retornos leva à ficha pelo nome do paciente.
+- **Tela de retornos:**
+  - **filtros:** estado, vencido, responsável (inclusive "sem responsável") e período de vencimento;
+  - **ações conforme a permissão:**
+    - vincular, por um painel com os candidatos paginados ("carregar mais" pelo `nextCursor`), a partir de 30 dias antes de hoje (um padrão da tela; o servidor decide) e com o aviso sobre consultas já atendidas;
+    - desvincular;
+    - cancelar, com os motivos conforme a permissão;
+    - atribuir, com o seletor próprio.
+  - **Projeção:** a tela mostra o cancelado sem motivo quando a resposta não traz o motivo.
+- **Tela de faltas:**
+  - período em datas locais (por padrão, os 30 dias até hoje; o "hoje" do padrão vem do relógio do navegador no fuso da unidade, e o servidor decide o resto), unidade e recorte opcional por profissional e serviço;
+  - mostra a taxa em porcentagem ou "Sem dados", **nunca 0 % para "sem dados"**;
+  - mostra "X faltas em Y (atendidos + faltas)", os passados sem desfecho com o caminho para a agenda e os cancelados à parte.
+- **Testes de componente (Vitest):**
+  - a escolha obrigatória, sem pré-seleção;
+  - a falha ao carregar os pacotes, que não vira "avulso";
+  - a recusa que recarrega e desfaz a escolha;
+  - nenhuma consulta a pacotes sem `care:read`;
+  - a recarga que falha, sem dado antigo;
+  - a troca de sessão e a resposta antiga de pacotes (com o servidor falso do teste de isolamento da ADR-050);
+  - 0 % e "sem dados" distintos;
+  - os motivos de cancelamento conforme a permissão;
+  - a paginação dos candidatos.
+- **E2E (Playwright, dados fictícios):** os cenários do detalhamento, mais o "sem dados" e o 0 % legítimo, a escolha explícita entre avulso e pacote, e a recepção sem acesso aos dados de atendimento e de pacote.
+
 **Implementação da F3.1 (notas, 2026-10-21).**
 
 - **O `dealId` do pacote fica fora da F3.1.** Uma FK composta para o `Deal` do Core travaria a exclusão de deals. A alternativa seria `SET NULL` só na coluna (`ON DELETE SET NULL ("dealId")`), que o Prisma não modela sem drift. Como o vínculo só serve ao fluxo comercial, ele volta com a F4, por ADR.
