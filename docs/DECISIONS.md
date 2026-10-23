@@ -4164,6 +4164,147 @@ Sem deploy, sem ativação do Clinics e sem dados reais. Os bloqueios operaciona
 5. a definição da taxa de faltas (item 7);
 6. a correção de consumo como decisão obrigatória antes do piloto (item 9).
 
+### Adendo 8 (2026-10-23) — plano da F4: confirmação e reativação pelo WhatsApp, e conversão a partir do pipeline (PROPOSTO, revisão 0)
+
+**Situação: PROPOSTO, revisão 0. Nenhum código está autorizado.** O plano foi feito depois da F3, concluída funcionalmente no `0881239`, e do ajuste A1 (`a253576`, commit local).
+
+- **Bloqueios que continuam:** sem deploy, com o Clinics desativado em staging e **somente dados fictícios**.
+- **O que continua pendente:**
+  - o ajuste A1, antes da ativação;
+  - a barreira contínua de manutenção;
+  - H2, H3 e H6, não validadas;
+  - a correção de consumo, antes do piloto.
+
+**O que a F4 entrega (ADR-036 e roadmap).**
+
+- A confirmação e a reativação pelo WhatsApp, com aprovação humana.
+- A conversão a partir do pipeline.
+- As três métricas apuráveis: faltas, conversão e pacientes recuperados.
+
+**Integrar ou construir (§3.15).** A F4 reusa o canal da Entrega 9.1 (Cloud API da Meta, direta). Um serviço externo de lembretes ou um BSP levaria dado S a mais um operador, por isso fica descartado.
+
+**O ponto de partida, conferido no código.**
+
+O que já existe para o envio:
+
+- a política pura (ADR-038);
+- a reserva de despacho com quota (ADR-039);
+- o template, exigido fora da janela, que só sai com consentimento vigente;
+- a revalidação no worker;
+- `unknown_after_dispatch`, sem reenvio;
+- o transporte falso.
+
+O que falta:
+
+1. **Registrar o opt-in.** O modelo `ContactChannelConsent` existe, mas nenhuma API nem tela o cria; só os testes inserem.
+2. **Cadastrar templates.** O modelo `MessageTemplate` existe e é "registrado manualmente", sem CLI nem API.
+3. **Iniciar a conversa.** O envio responde só ao número que falou com a gente (`Conversation.externalAddress`) e, por decisão da 9.1, não escolhe um número de `Contact.phones`. Um paciente cadastrado na recepção que nunca escreveu não recebe confirmação.
+4. **Pôr ação do vertical numa tela do Core.** Nenhum dos seis pontos do ADR-047 permite isso, por exemplo no deal.
+
+O que a F4 precisa respeitar:
+
+- **A IA fica indisponível para os contatos de workspace com o Clinics** (§6.4). A F4 não usa IA. A mensagem enviada por pessoa não passa pela checagem do consumidor `ai` (§6.3, item 5).
+- **O vertical não escreve conteúdo S em entidade do Core** (§6.2, item 2), e isso inclui a mensagem.
+
+**Decisões para aprovação.** Cada uma vira ADR ou adendo antes do código.
+
+1. **O que a mensagem carrega.**
+   - **Recomendação:** os parâmetros do template formam uma allowlist fechada (primeiro nome, data, hora e nome da unidade). Nunca entram serviço, procedimento, profissional ou estado de atendimento. Quem monta a allowlist é o vertical, e um teste a verifica, como no §6.2, item 2.
+   - **O texto fixo do template é da clínica**, aprovado na Meta. No Veyra, só existe o nome dele.
+   - **Residual declarado:** o despacho guarda os parâmetros (`MessageDispatch.templateParams`), e a conversa fica no Core. Com isso, o Core registra que "esta pessoa tem horário nesta clínica neste dia", legível com `conversations:read`.
+     - Pela regra "na dúvida, a mais restrita", isso é tratado como S.
+     - Fica sob o B1 para dados reais. Não é um risco aceito para o piloto.
+2. **Conversa iniciada pelo negócio (capacidade do Core; revê a 9.1).**
+   - **Recomendação:** abrir a conversa para um número que **uma pessoa escolhe explicitamente** entre os do contato, normalizado em E.164.
+     - Só com template e consentimento vigente **para aquele número**.
+     - O número vira o `externalAddress` da conversa aberta.
+     - A resposta entra pela regra atual da ingestão: o contato é achado pelo número, e a mensagem vai para a conversa aberta desse contato no canal. A implementação precisa provar que o número escolhido leva ao mesmo contato.
+   - **Alternativa:** confirmar só quem já escreveu. Fica descartada como padrão, porque a recepção cadastra a maioria dos pacientes fora do WhatsApp. Ela fica como modo degradado, se a capacidade não for aprovada.
+3. **Opt-in com número e finalidade.**
+   - **Recomendação:** uma API e uma tela no Core para registrar e revogar o consentimento, com auditoria. Os campos:
+     - contato, canal e número;
+     - finalidade: `transactional` para a confirmação e `marketing` para a reativação;
+     - origem: `agent`, `form` ou `import`;
+     - evidência curta, sem dado sensível.
+   - **A finalidade entra agora** porque a Meta e a LGPD tratam as duas de forma diferente. Fazer o retrofit depois exigiria recolher a evidência de novo.
+   - **O template ganha a categoria**, e a política passa a exigir a finalidade correspondente.
+   - **É migration no Core**, conforme o ADR-051.
+4. **Cadastro de templates.**
+   - **Recomendação:** uma CLI administrativa, como a `channel:whatsapp` (ato administrativo, ADR-037), com nome, idioma, quantidade de parâmetros e categoria.
+   - Sem sincronização com a Meta e sem tela na F4.
+5. **Quem envia.**
+   - **Recomendação:** a recepção, com `clinics:schedule:write` **e** `conversations:write`, chaves que o Member já tem. Não há chave nova.
+   - O `Profissional` não envia, porque não tem `conversations:*`. Por isso a D7 não precisa ser reaberta para a F4, e isso fica registrado.
+   - **A reativação parte dos retornos vencidos** (a lista operacional da F3.2, com `schedule:read`), e não de "sem atendimento há N dias", que exigiria `care:read`.
+6. **Aprovação humana, sem envio automático.**
+   - **Cada envio é ato de uma pessoa.** A tela lista os candidatos (as confirmações dos próximos dias e os retornos vencidos), e a pessoa marca e envia. No envio em lote, cada destinatário aparece.
+   - **Idempotência:**
+     - no máximo uma solicitação de confirmação por agendamento e horário; remarcar permite outra;
+     - o reenvio só acontece por pedido explícito e nunca a partir de `unknown_after_dispatch`.
+   - Sem automação agendada e sem IA.
+7. **A resposta do paciente.**
+   - **Recomendação:** o Clinics **não lê o conteúdo** da conversa. Ele mostra só o sinal "respondeu depois do envio" (o `lastInboundAt` posterior ao envio) e o link para a conversa no Inbox.
+   - **Quem confirma o agendamento é a pessoa**, pela agenda.
+   - **Os botões de resposta rápida ficam fora**, porque dependem do template aprovado e do formato do webhook, ainda não validados.
+8. **Conversão a partir do pipeline.**
+   - **Recomendação:** sem ponto de composição novo. No agendamento, a pessoa escolhe, se quiser, o deal aberto do contato.
+   - **O vínculo fica em tabela do vertical**, com FKs compostas para o agendamento e para o `Deal`.
+   - **Para o `Deal`, a FK é `RESTRICT`.** Excluir um deal que originou um agendamento é recusado (409), como a exclusão do contato com perfil de paciente (§9.1, provisório). Isso porque o vínculo é S e nada de S se apaga antes da decisão jurídica.
+   - **O vertical nunca escreve no deal.**
+   - **A métrica:** dos deals criados no período, quantos têm um agendamento vinculado `attended`.
+   - **Alternativa descartada:** inferir a conversão pelo contato, sem vínculo, porque contaria upsell e agendamento anterior ao deal.
+9. **Métricas (H6, definições provisórias).** O período é em datas locais da unidade, pela regra da F3.3a.
+   - **Faltas:** a da F3.3a, com o recorte "com e sem confirmação".
+   - **Conversão:** a do item 8.
+   - **Pacientes recuperados:** das reativações enviadas no período, quantas tiveram atendimento `attended` em até N dias. O N é fixo e fica documentado.
+   - **"Apuráveis com dados do piloto"** continua dependendo do piloto. A F4 entrega a apuração sobre dados fictícios.
+
+**Entregas propostas.**
+
+- **F4.0:** os ADRs das decisões, sem código.
+- **F4.1, no Core:**
+  - o consentimento, com número e finalidade;
+  - os templates, com categoria e a CLI;
+  - a conversa iniciada pelo negócio;
+  - as migrations conforme o ADR-051.
+- **F4.2, na API do Clinics:**
+  - as solicitações de confirmação e de reativação, com entidade S própria, idempotência, allowlist de parâmetros e fronteira;
+  - o sinal "respondeu".
+- **F4.3, na API do Clinics:** o vínculo com o pipeline e as métricas.
+- **F4.4:** as telas e o e2e, com o transporte falso.
+- **F4.5, externa:** a validação na WABA real, com o roteiro do `WABA_VALIDATION.md` mais os itens novos da F4.
+
+**O que se desenvolve e testa aqui, com o transporte falso e dados fictícios.** Tudo das F4.1 a F4.4:
+
+- a política nova (número e finalidade);
+- o roteamento da resposta para a conversa iniciada pelo negócio, simulado pelo webhook assinado;
+- a idempotência e a concorrência do envio;
+- a fronteira de conteúdo S;
+- as permissões e o isolamento (P0);
+- as métricas com bordas de fuso e "sem dados";
+- as mutações e o e2e.
+
+**O que depende da WABA e de configuração externa.**
+
+- **As credenciais e a conta:** WABA, `phone_number_id`, token, app secret e verify token.
+- **O webhook alcançável pela Meta.** Staging está bloqueado para deploy pela barreira de manutenção.
+- **Os templates aprovados pela Meta:** o texto, a categoria (utility e marketing), o idioma e a ordem dos parâmetros. É a maior incógnita, o item 6 do roteiro.
+- **O envio a um número que nunca escreveu:** se a Meta aceita, e os códigos reais de erro (número sem WhatsApp, por exemplo) para o `meta-errors.ts`.
+- **A operação do número:** os limites de envio, a qualidade e a verificação do negócio.
+- **O preço por mensagem de template**, que afeta a quota e o custo.
+- **A coleta real de opt-in na clínica e a base legal** (jurídico, §9.2).
+- **As métricas com dados do piloto**, que dependem de B1, B3, B4, H1–H7 e da autorização de ativação.
+
+**Fora da F4:**
+
+- o envio automático;
+- a IA nos contatos da clínica;
+- os botões de resposta rápida;
+- a interpretação do conteúdo da resposta;
+- e-mail e SMS;
+- as campanhas;
+- a sincronização e a tela de templates.
+
 ## ADR-049 — Relógio de agendamento: quem compara define o relógio, e filas e leases usam o do banco
 
 **Status:** aceito (plano aprovado pela revisão de 2026-10-19; a entrega segue para revisão) · **Data:** 2026-10-19
