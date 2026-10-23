@@ -4174,146 +4174,222 @@ Sem deploy, sem ativação do Clinics e sem dados reais. Os bloqueios operaciona
 5. a definição da taxa de faltas (item 7);
 6. a correção de consumo como decisão obrigatória antes do piloto (item 9).
 
-### Adendo 8 (2026-10-23) — plano da F4: confirmação e reativação pelo WhatsApp, e conversão a partir do pipeline (PROPOSTO, revisão 0)
+### Adendo 8 (2026-10-23) — plano da F4: confirmação e reativação pelo WhatsApp, e conversão a partir do pipeline (PROPOSTO, revisão 1: a F4.0)
 
-**Situação: PROPOSTO, revisão 0. Nenhum código está autorizado.** O plano foi feito depois da F3, concluída funcionalmente no `0881239`, e do ajuste A1 (`a253576`, commit local).
+**Situação: PROPOSTO, revisão 1. Nenhum código da F4 está autorizado.**
 
-- **Bloqueios que continuam:** sem deploy, com o Clinics desativado em staging e **somente dados fictícios**.
-- **O que continua pendente:**
-  - o ajuste A1, antes da ativação;
-  - a barreira contínua de manutenção;
-  - H2, H3 e H6, não validadas;
-  - a correção de consumo, antes do piloto.
+A revisão 0 está no `29c39c9`.
 
-**O que a F4 entrega (ADR-036 e roadmap).**
+**Decisão do usuário de 2026-10-23:**
 
-- A confirmação e a reativação pelo WhatsApp, com aprovação humana.
-- A conversão a partir do pipeline.
-- As três métricas apuráveis: faltas, conversão e pacientes recuperados.
+- a divisão F4.0–F4.5 fica aprovada **como organização do trabalho**, e o plano continua PROPOSTO;
+- a F4.0 é só documentação;
+- nada da F4.1, nem outro código da F4, começa antes da revisão.
 
-**Integrar ou construir (§3.15).** A F4 reusa o canal da Entrega 9.1 (Cloud API da Meta, direta). Um serviço externo de lembretes ou um BSP levaria dado S a mais um operador, por isso fica descartado.
+**A apresentação ao cliente, marcada para a semana seguinte, não autoriza** atalho, deploy, ativação do Clinics, envio real nem dados reais.
 
-**O ponto de partida, conferido no código.**
+**Onde fica cada parte:**
 
-O que já existe para o envio:
+- o que é do Core (template, consentimento, destinatário e o resultado do envio) está no **ADR-052**, também PROPOSTO;
+- este adendo fica com o que é do Clinics.
 
-- a política pura (ADR-038);
-- a reserva de despacho com quota (ADR-039);
-- o template, exigido fora da janela, que só sai com consentimento vigente;
-- a revalidação no worker;
-- `unknown_after_dispatch`, sem reenvio;
-- o transporte falso.
+As decisões abertas estão marcadas **[ABERTA Vn]**. As do ADR-052 estão marcadas [ABERTA Cn].
 
-O que falta:
+**1. A fronteira de dados: pendência arquitetural explícita, não exceção aprovada.**
 
-1. **Registrar o opt-in.** O modelo `ContactChannelConsent` existe, mas nenhuma API nem tela o cria; só os testes inserem.
-2. **Cadastrar templates.** O modelo `MessageTemplate` existe e é "registrado manualmente", sem CLI nem API.
-3. **Iniciar a conversa.** O envio responde só ao número que falou com a gente (`Conversation.externalAddress`) e, por decisão da 9.1, não escolhe um número de `Contact.phones`. Um paciente cadastrado na recepção que nunca escreveu não recebe confirmação.
-4. **Pôr ação do vertical numa tela do Core.** Nenhum dos seis pontos do ADR-047 permite isso, por exemplo no deal.
+Mesmo com a lista fechada de parâmetros, a F4 deixa no Core informação ligada à saúde:
 
-O que a F4 precisa respeitar:
+- **a mensagem enviada:** o corpo é a prévia, append-only, e os parâmetros ficam no despacho. Ela diz que "esta pessoa tem horário nesta clínica neste dia", e a clínica é de estética;
+- **a conversa com o número do paciente;**
+- **as respostas do paciente,** em texto livre, sobre as quais não há controle nenhum.
 
-- **A IA fica indisponível para os contatos de workspace com o Clinics** (§6.4). A F4 não usa IA. A mensagem enviada por pessoa não passa pela checagem do consumidor `ai` (§6.3, item 5).
-- **O vertical não escreve conteúdo S em entidade do Core** (§6.2, item 2), e isso inclui a mensagem.
+Tudo isso fica legível com `conversations:read`, a chave do Core.
 
-**Decisões para aprovação.** Cada uma vira ADR ou adendo antes do código.
+- **A aprovação humana não retira a sensibilidade do conteúdo.** Ela decide o envio; não reclassifica o que fica guardado.
+- **Pela regra "na dúvida, a mais restrita" (§6.1), esse conteúdo é S.** Ele fica sob o B1 (§6.7), que passa a cobrir explicitamente as mensagens geradas pelo vertical e as respostas a elas. **Não é um risco aceito para o uso real.**
 
-1. **O que a mensagem carrega.**
-   - **Recomendação:** os parâmetros do template formam uma allowlist fechada (primeiro nome, data, hora e nome da unidade). Nunca entram serviço, procedimento, profissional ou estado de atendimento. Quem monta a allowlist é o vertical, e um teste a verifica, como no §6.2, item 2.
-   - **O texto fixo do template é da clínica**, aprovado na Meta. No Veyra, só existe o nome dele.
-   - **Residual declarado:** o despacho guarda os parâmetros (`MessageDispatch.templateParams`), e a conversa fica no Core. Com isso, o Core registra que "esta pessoa tem horário nesta clínica neste dia", legível com `conversations:read`.
-     - Pela regra "na dúvida, a mais restrita", isso é tratado como S.
-     - Fica sob o B1 para dados reais. Não é um risco aceito para o piloto.
-2. **Conversa iniciada pelo negócio (capacidade do Core; revê a 9.1).**
-   - **Recomendação:** abrir a conversa para um número que **uma pessoa escolhe explicitamente** entre os do contato, normalizado em E.164.
-     - Só com template e consentimento vigente **para aquele número**.
-     - O número vira o `externalAddress` da conversa aberta.
-     - A resposta entra pela regra atual da ingestão: o contato é achado pelo número, e a mensagem vai para a conversa aberta desse contato no canal. A implementação precisa provar que o número escolhido leva ao mesmo contato.
-   - **Alternativa:** confirmar só quem já escreveu. Fica descartada como padrão, porque a recepção cadastra a maioria dos pacientes fora do WhatsApp. Ela fica como modo degradado, se a capacidade não for aprovada.
-3. **Opt-in com número e finalidade.**
-   - **Recomendação:** uma API e uma tela no Core para registrar e revogar o consentimento, com auditoria. Os campos:
-     - contato, canal e número;
-     - finalidade: `transactional` para a confirmação e `marketing` para a reativação;
-     - origem: `agent`, `form` ou `import`;
-     - evidência curta, sem dado sensível.
-   - **A finalidade entra agora** porque a Meta e a LGPD tratam as duas de forma diferente. Fazer o retrofit depois exigiria recolher a evidência de novo.
-   - **O template ganha a categoria**, e a política passa a exigir a finalidade correspondente.
-   - **É migration no Core**, conforme o ADR-051.
-4. **Cadastro de templates.**
-   - **Recomendação:** uma CLI administrativa, como a `channel:whatsapp` (ato administrativo, ADR-037), com nome, idioma, quantidade de parâmetros e categoria.
-   - Sem sincronização com a Meta e sem tela na F4.
-5. **Quem envia.**
-   - **Recomendação:** a recepção, com `clinics:schedule:write` **e** `conversations:write`, chaves que o Member já tem. Não há chave nova.
-   - O `Profissional` não envia, porque não tem `conversations:*`. Por isso a D7 não precisa ser reaberta para a F4, e isso fica registrado.
-   - **A reativação parte dos retornos vencidos** (a lista operacional da F3.2, com `schedule:read`), e não de "sem atendimento há N dias", que exigiria `care:read`.
-6. **Aprovação humana, sem envio automático.**
-   - **Cada envio é ato de uma pessoa.** A tela lista os candidatos (as confirmações dos próximos dias e os retornos vencidos), e a pessoa marca e envia. No envio em lote, cada destinatário aparece.
-   - **Idempotência:**
-     - no máximo uma solicitação de confirmação por agendamento e horário; remarcar permite outra;
-     - o reenvio só acontece por pedido explícito e nunca a partir de `unknown_after_dispatch`.
-   - Sem automação agendada e sem IA.
-7. **A resposta do paciente.**
-   - **Recomendação:** o Clinics **não lê o conteúdo** da conversa. Ele mostra só o sinal "respondeu depois do envio" (o `lastInboundAt` posterior ao envio) e o link para a conversa no Inbox.
-   - **Quem confirma o agendamento é a pessoa**, pela agenda.
-   - **Os botões de resposta rápida ficam fora**, porque dependem do template aprovado e do formato do webhook, ainda não validados.
-8. **Conversão a partir do pipeline.**
-   - **Recomendação:** sem ponto de composição novo. No agendamento, a pessoa escolhe, se quiser, o deal aberto do contato.
-   - **O vínculo fica em tabela do vertical**, com FKs compostas para o agendamento e para o `Deal`.
-   - **Para o `Deal`, a FK é `RESTRICT`.** Excluir um deal que originou um agendamento é recusado (409), como a exclusão do contato com perfil de paciente (§9.1, provisório). Isso porque o vínculo é S e nada de S se apaga antes da decisão jurídica.
-   - **O vertical nunca escreve no deal.**
-   - **A métrica:** dos deals criados no período, quantos têm um agendamento vinculado `attended`.
-   - **Alternativa descartada:** inferir a conversão pelo contato, sem vínculo, porque contaria upsell e agendamento anterior ao deal.
-9. **Métricas (H6, definições provisórias).** O período é em datas locais da unidade, pela regra da F3.3a.
-   - **Faltas:** a da F3.3a, com o recorte "com e sem confirmação".
-   - **Conversão:** a do item 8.
-   - **Pacientes recuperados:** das reativações enviadas no período, quantas tiveram atendimento `attended` em até N dias. O N é fixo e fica documentado.
-   - **"Apuráveis com dados do piloto"** continua dependendo do piloto. A F4 entrega a apuração sobre dados fictícios.
+**O caminho para resolver antes do uso real:**
 
-**Entregas propostas.**
+- **(A) Restrição de leitura das conversas no Core** (recomendado como o caminho do B1). É a primeira opção do §6.7, estendida às conversas: num workspace com o Clinics, ler conversas, mensagens, a lista do Inbox, a busca, as notificações e a timeline de um contato restrito exigiria uma permissão a mais, contribuída pelo vertical.
+  - A forma seria uma extensão do E6 para um consumidor de leitura, com uma porta neutra.
+  - Isso cobre o que a F4 deixa e também o texto que a equipe já digita hoje (notas e tarefas).
+  - Exige um ADR próprio, alterando o ADR-047, e a bateria de testes da fronteira.
+- **(B) Minimização, complementar a (A):**
+  - os parâmetros do despacho são apagados depois de um resultado final, `sent` ou `failed_permanent`. O `unknown_after_dispatch` não apaga, porque é preciso resolver o caso;
+  - a prévia guardada se limita à lista fechada.
 
-- **F4.0:** os ADRs das decisões, sem código.
-- **F4.1, no Core:**
-  - o consentimento, com número e finalidade;
-  - os templates, com categoria e a CLI;
-  - a conversa iniciada pelo negócio;
-  - as migrations conforme o ADR-051.
-- **F4.2, na API do Clinics:**
-  - as solicitações de confirmação e de reativação, com entidade S própria, idempotência, allowlist de parâmetros e fronteira;
-  - o sinal "respondeu".
-- **F4.3, na API do Clinics:** o vínculo com o pipeline e as métricas.
-- **F4.4:** as telas e o e2e, com o transporte falso.
-- **F4.5, externa:** a validação na WABA real, com o roteiro do `WABA_VALIDATION.md` mais os itens novos da F4.
+  Isso reduz o resíduo, mas sozinho não resolve: as respostas do paciente continuam lá.
 
-**O que se desenvolve e testa aqui, com o transporte falso e dados fictícios.** Tudo das F4.1 a F4.4:
+- **(C) Um Inbox próprio do vertical:** descartado, porque duplicaria o Inbox do Core (CLAUDE.md §3.8 e §4).
+- **(D) Jurídico:**
+  - a política do WhatsApp proíbe "enviar ou solicitar informações relacionadas à saúde se as leis aplicáveis proibirem a distribuição dessas informações a sistemas que não cumprem os requisitos necessários" (ADR-052, Contexto);
+  - se e com que conteúdo uma clínica de estética pode confirmar horário pelo WhatsApp é pergunta para a avaliação jurídica do §9.2, e não conclusão de engenharia.
 
-- a política nova (número e finalidade);
-- o roteamento da resposta para a conversa iniciada pelo negócio, simulado pelo webhook assinado;
-- a idempotência e a concorrência do envio;
-- a fronteira de conteúdo S;
-- as permissões e o isolamento (P0);
-- as métricas com bordas de fuso e "sem dados";
-- as mutações e o e2e.
+**[ABERTA V1]** Adotar (A) mais (B) como o caminho do B1, com o ADR próprio de (A) antes do uso real, ou outro caminho. **Até isso ser decidido e implementado, a F4 só corre com o transporte falso e dados fictícios.**
 
-**O que depende da WABA e de configuração externa.**
+**2. As finalidades do Clinics e o conteúdo.**
 
-- **As credenciais e a conta:** WABA, `phone_number_id`, token, app secret e verify token.
-- **O webhook alcançável pela Meta.** Staging está bloqueado para deploy pela barreira de manutenção.
-- **Os templates aprovados pela Meta:** o texto, a categoria (utility e marketing), o idioma e a ordem dos parâmetros. É a maior incógnita, o item 6 do roteiro.
-- **O envio a um número que nunca escreveu:** se a Meta aceita, e os códigos reais de erro (número sem WhatsApp, por exemplo) para o `meta-errors.ts`.
-- **A operação do número:** os limites de envio, a qualidade e a verificação do negócio.
-- **O preço por mensagem de template**, que afeta a quota e o custo.
-- **A coleta real de opt-in na clínica e a base legal** (jurídico, §9.2).
-- **As métricas com dados do piloto**, que dependem de B1, B3, B4, H1–H7 e da autorização de ativação.
+O vertical cria duas finalidades na ativação (catálogo do ADR-052, item 2), cada uma com sua descrição e sua lista fechada de campos:
+
+| Finalidade            | Uso                                 | Campos permitidos                          | Categoria na Meta      |
+| --------------------- | ----------------------------------- | ------------------------------------------ | ---------------------- |
+| `clinics.confirmacao` | pedir confirmação de um horário     | primeiro nome, data, hora, nome da unidade | utility                |
+| `clinics.reativacao`  | convidar a marcar o retorno vencido | primeiro nome, nome da unidade             | marketing, por cautela |
+
+- **Nunca entram:** serviço, procedimento, profissional, estado de atendimento, pacote ou saldo.
+- **A conferência de apoio:** quando uma versão de template é ligada a uma finalidade do Clinics, o vertical compara o texto fixo com os nomes do próprio catálogo (serviços e profissionais) e recusa se encontrar algum.
+  - Quem libera de fato é a revisão humana da versão (ADR-052, item 1).
+  - A conferência automática só pega o óbvio.
+
+**[ABERTA V2]** A categoria da reativação. Um convite de retorno pode ser tratado como utility ("específico do usuário") ou como marketing. A engenharia trata como **marketing** até a revisão real da Meta (F4.5), porque marketing é o caso mais restrito: limite por usuário (erro 131049) e opt-in próprio.
+
+**3. O pedido de envio (entidade S do Clinics).**
+
+- **A entidade:** `ClinicsOutreachRequest`, com workspace, tipo (confirmação ou reativação) e o alvo (o agendamento, ou o retorno vencido). Guarda também a fotografia do que valia na aprovação:
+  - o horário do agendamento;
+  - o contato e o número;
+  - o consentimento usado;
+  - a versão do template;
+  - a mensagem do Core;
+  - quem aprovou e o lote.
+- **Os estados:**
+  - `aguardando_envio`: o despacho do Core está `reserved`, ou em nova tentativa depois de `failed_before_send`;
+  - `enviado`: o provedor aceitou;
+  - `nao_enviado`: comprovadamente não saiu, com o motivo. Cobre a recusa no worker, o `failed_permanent` e o cancelamento antes do envio;
+  - `incerto`: `unknown_after_dispatch`.
+
+  Entrega e leitura não são estados do pedido. São sinais do provedor, que o Core guarda.
+
+- **A idempotência:**
+  - na confirmação, no máximo um pedido não encerrado por (agendamento, horário). Remarcar abre uma chave nova;
+  - na reativação, no máximo um pedido não encerrado por retorno;
+  - um pedido novo para o mesmo alvo só depois de `nao_enviado`, e por ato explícito;
+  - depois de `incerto`, só pelo reenvio explícito do ADR-052 [C5], marcado como possível duplicata.
+
+**4. A validade dos pedidos que ainda não saíram.**
+
+| Evento antes do envio                                    | Efeito no pedido                                                                                                                                          |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agendamento cancelado, marcado como falta ou atendido    | Cancelado na mesma transação do evento, pelo serviço do Core de cancelar despacho não iniciado (ADR-052, item 4). Fica `nao_enviado (agendamento mudou)`. |
+| Agendamento remarcado                                    | O pedido do horário antigo é cancelado. Um pedido para o horário novo exige aprovação nova.                                                               |
+| Retorno concluído, cancelado ou vinculado a uma consulta | A reativação pendente é cancelada.                                                                                                                        |
+| Consentimento revogado                                   | O Core recusa no worker. Fica `nao_enviado (consentimento revogado)`, sem nova tentativa.                                                                 |
+| Número alterado, removido ou passado a outro contato     | O Core recusa no worker (ADR-052, item 3). Fica `nao_enviado (número mudou)`.                                                                             |
+| Versão do template pausada, desabilitada ou alterada     | O Core recusa. Fica `nao_enviado (template)`.                                                                                                             |
+
+- **A corrida:** o cancelamento e o worker disputam a trava da linha do despacho, e quem chega primeiro vence.
+- **Se o envio já tinha saído:** o pedido fica `enviado`, e a tela diz "enviado antes do cancelamento" ou "enviado com o horário anterior". Uma mensagem de correção automática fica fora da F4.
+- **Nova tentativa e reenvio não se confundem:**
+  - a nova tentativa é do Core, e só depois de falha comprovadamente anterior ao envio (ADR-039);
+  - o reenvio de `incerto` nunca é automático.
+
+**5. O lote.**
+
+- **A lista de candidatos:**
+  - confirmações: os agendamentos dos próximos dias;
+  - reativações: os retornos vencidos da lista operacional da F3.2.
+
+  Para cada candidato, a lista mostra se ele pode receber e, se não pode, por quê: sem consentimento para a finalidade, número ambíguo ou ausente, já tem pedido (com o estado), ou template indisponível.
+
+- **Antes de aprovar,** a pessoa vê a prévia fiel de cada destinatário (ADR-052, item 1).
+- **A aprovação** vai com uma chave de idempotência. A resposta traz o resultado de cada destinatário: criado, já existente (com o estado) ou recusado (com o motivo).
+- **Repetir o lote não duplica ninguém,** e quem já foi processado aparece com o estado atual.
+
+**6. Permissões e vínculos.**
+
+- **Enviar confirmação ou reativação** exige:
+  - `clinics:schedule:write`;
+  - `conversations:write`;
+  - `consents:read`, porque a lista mostra a situação do consentimento.
+
+  O `Profissional` não envia, porque não tem `conversations:*`. **A D7 não é reaberta para a F4.**
+
+- **O sinal "respondeu" e o link para a conversa** só aparecem com `conversations:read` e com o acesso àquela conversa, conforme as regras do Core. Sem isso, nada aparece, nem o sinal. Depois de (A), vale também a permissão de leitura restrita.
+- **O deal:**
+  - **listar e escolher** o deal no agendamento exige `pipelines:read` (a chave do Core que dá a leitura de deals) e `clinics:schedule:write`. Só aparecem os deals do mesmo contato do paciente;
+  - **ver o vínculo depois** exige `pipelines:read` e `clinics:schedule:read`;
+  - **o vínculo fica numa tabela do Clinics,** com FK composta para o agendamento e para o `Deal`, e é **`RESTRICT` para o `Deal`**. Nada de S se apaga antes da decisão jurídica (§9.1).
+- **O efeito novo no Core,** a documentar em `docs/DOMAIN_MODEL.md` como regra neutra ("um registro de extensão pode impedir a exclusão de um deal"):
+  - excluir um deal que originou um agendamento dá 409, com a mensagem genérica que o Core já usa para FK violada: "Registro em uso por outros dados";
+  - a mensagem não nomeia o Clinics, o agendamento nem o paciente;
+  - **resíduo:** quem não vê o Clinics fica sabendo que "algo" impede a exclusão. A alternativa para a pessoa é marcar o deal como perdido.
+
+**[ABERTA V3]** Aceitar o 409 genérico como o efeito no Core, ou trocar por outra regra. Uma opção seria desfazer o vínculo antes da exclusão, mas isso apagaria um registro S, o que o §9.1 não permite.
+
+**[ABERTA V4]** As contagens agregadas de "resposta recebida" nas métricas: mostrar com a permissão da métrica (recomendado, porque não identificam pessoa nem conteúdo) ou exigir também `conversations:read`.
+
+**7. Métricas: associação, não causa.**
+
+O período é em datas locais da unidade, intervalo [de, até), pela regra da F3.3a. "Sem dados" é diferente de 0 %.
+
+- **O funil da confirmação.** A unidade de contagem é o agendamento, contado uma vez.
+  - **Base:** os agendamentos com início no período, sem os cancelados, que ficam à parte, como na F3.3a.
+  - **Solicitação enviada:** a base com pedido `enviado` **para o horário final** do agendamento. Os enviados para um horário anterior aparecem à parte.
+  - **Entrega confirmada pelo provedor:** das enviadas, as com status `delivered` ou `read` da Meta.
+  - **Resposta recebida:** das enviadas, as com mensagem do paciente na conversa daquele número, depois do envio e antes do início. Conta só o fato, sem conteúdo.
+  - **Confirmado pela equipe:** das enviadas, as levadas a `confirmed` depois do envio e antes do início. O instante da transição precisa de fonte própria, que se decide na F4.3.
+  - **Falta por grupo:** a taxa de faltas da F3.3a para quem teve solicitação enviada e para quem não teve, lado a lado. **Isso é associação.**
+- **Conversão:**
+  - **Base:** os deals criados no período, no pipeline escolhido, com contato.
+  - **Numerador:** os deals com pelo menos um agendamento vinculado `attended`, contando cada deal uma vez.
+  - **O número pode subir depois.** O período fica "em apuração" até uma data de corte, a decidir.
+- **Pacientes com retorno depois da reativação** (associação temporal provisória, **não prova de que a mensagem causou o retorno**):
+  - **Base:** os pacientes com pelo menos uma reativação `enviado` no período.
+  - **Âncora:** a primeira reativação enviada ao paciente no período. As seguintes não criam âncora nova.
+  - **Numerador:** os pacientes com um atendimento `attended` cujo agendamento foi **criado depois da âncora** e começa em até **N = 60 dias** depois dela. O agendamento que já existia não conta. Cada paciente conta uma vez, com qualquer número de atendimentos.
+  - **O período fica "em apuração"** até N dias depois do fim.
+  - **O rótulo na tela diz** "associação temporal, não causa".
+- **Deduplicação:** o reenvio de um `incerto` não conta como nova solicitação. A unidade é sempre o agendamento, o deal ou o paciente, nunca a mensagem.
+
+**[ABERTA V5]** O N (60 dias) e a data de corte da conversão. Os dois são provisórios sob H6, e a validação operacional (D6) pode mudá-los.
+
+**8. As entregas.**
+
+| Entrega | O que inclui                                                                                                                                                                                                  | Testável aqui?                                               |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| F4.0    | ADR-052 e esta revisão, só documentação                                                                                                                                                                       | —                                                            |
+| F4.1    | Core, pelo ADR-052: template versionado e revisado, finalidades, consentimento, destinatário e ingestão sem ambiguidade (com o BSUID), cancelamento de despacho não iniciado, lote e as migrations do ADR-051 | sim, com o transporte falso e um catálogo de templates falso |
+| F4.2    | Clinics: os pedidos, a validade, o lote e a conferência do texto contra o catálogo                                                                                                                            | sim                                                          |
+| F4.3    | Clinics: o vínculo com o deal e as métricas                                                                                                                                                                   | sim                                                          |
+| F4.4    | As telas e o e2e                                                                                                                                                                                              | sim, com o transporte falso                                  |
+| F4.5    | Externa (ver abaixo)                                                                                                                                                                                          | não                                                          |
+
+- **O ADR de (A), o caminho do B1,** é independente da F4.1–F4.4, mas vem **antes do uso real**.
+- **O que se desenvolve e testa aqui,** sempre com o transporte falso e dados fictícios:
+  - a política nova;
+  - a ingestão de número ambíguo e de mensagem sem `from` (o BSUID), simulada pelo webhook assinado;
+  - a idempotência e a concorrência entre cancelamento e worker;
+  - o lote;
+  - a prévia fiel;
+  - a fronteira;
+  - as permissões e o isolamento (P0);
+  - as métricas com as bordas de fuso;
+  - as mutações e o e2e.
+- **O que depende da WABA e de configuração externa (F4.5):**
+  - as credenciais e o webhook alcançável. Staging segue bloqueado para deploy;
+  - os templates aprovados, e a leitura deles pela API (o formato real dos componentes);
+  - a categoria que a Meta der à reativação;
+  - o envio a quem nunca escreveu, e os códigos reais de erro;
+  - o comportamento do BSUID e do `from` omitido com pessoas reais;
+  - os limites do portfólio e o limite por usuário para marketing;
+  - o preço;
+  - a coleta real de opt-in e a base legal (§9.2);
+  - a resposta da política do WhatsApp sobre informação de saúde;
+  - as métricas com dados do piloto.
 
 **Fora da F4:**
 
 - o envio automático;
 - a IA nos contatos da clínica;
 - os botões de resposta rápida;
-- a interpretação do conteúdo da resposta;
+- a leitura do conteúdo das respostas;
 - e-mail e SMS;
-- as campanhas;
-- a sincronização e a tela de templates.
+- campanhas;
+- o envio por BSUID;
+- a mensagem de correção depois de um cancelamento;
+- a tela de templates, que fica na CLI.
+
+**Continuam bloqueados** deploy, ativação do Clinics, envio real e dados reais.
 
 ## ADR-049 — Relógio de agendamento: quem compara define o relógio, e filas e leases usam o do banco
 
@@ -4595,3 +4671,194 @@ O dump só de schema não prova o rollback de um backfill, e o "inventário zero
 A skill `create-migration` traz o bloco de ensaio com as três evidências: os ganchos de dados são opcionais, e a diferença de definições sai sempre, para conferência. O bloco foi ensaiado na `20261021120000_clinics_packages` (objetos novos) e numa migration sintética de dados, numa cópia temporária do repositório: a falha deixou os dados intactos, e o resultado esperado errado interrompeu o ensaio.
 
 **Definition of Done:** o `CLAUDE.md` (§6) ganha a linha aprovada: "migration nova conforme ADR-051, com atomicidade ou exceção justificada e recuperação ensaiada".
+
+## ADR-052 — Mensagem iniciada pelo negócio: template com conteúdo verificável, consentimento por finalidade e destinatário sem ambiguidade
+
+**Status:** PROPOSTO (F4.0, 2026-10-23). Nenhum código está autorizado. · **Data:** 2026-10-23
+
+**Contexto.** A F4 do Clinics (ADR-048, adendo 8) precisa que a empresa escreva primeiro. O Core da Entrega 9.1 foi desenhado para responder, e o que falta é universal: serve a qualquer workspace que envie aviso ou convite pelo WhatsApp. Por isso a decisão é do Core, com nomes neutros.
+
+**Conferido no código em 2026-10-23:**
+
+- **Envio:**
+  - o envio só vai ao `Conversation.externalAddress` de quem escreveu (ADR-038), e não escolhe um número de `Contact.phones`;
+  - o template é "registrado manualmente" com nome, idioma e quantidade de parâmetros. Não há versão, texto nem categoria;
+  - o corpo da `Message` de template é o que quem chama gravar, e é append-only.
+- **Consentimento:** o `ContactChannelConsent` vale por contato e canal, sem número da pessoa nem finalidade. A `evidence` é texto livre, e nenhuma API o cria.
+- **Ingestão:**
+  - **o campo `messages[].from` é exigido** (`channels/whatsapp.types.ts`);
+  - **o contato é achado com `findFirst` por telefone, sem ordem** (`resolveContact`). Um número de dois contatos cai em um deles, sem aviso;
+  - a conversa aberta é escolhida por canal e contato, não por número (`resolveConversation`).
+
+**As regras externas, conferidas na documentação oficial em 2026-10-23.** As próprias páginas avisam que mudam. Reconferir na F4.5.
+
+- **[Política do WhatsApp Business](https://whatsappbusiness.com/pt-br/policy/)** (última atualização: 23/09/2026):
+  - só se contata quem forneceu número ou nome de usuário e deu opt-in;
+  - boa prática: opt-in separado por categoria de mensagem;
+  - respeitar todo pedido de bloqueio ou de parar, dentro e fora do WhatsApp;
+  - fora da janela de 24 h, só template aprovado;
+  - e: "Não utilize o WhatsApp para fornecer telemedicina nem enviar ou solicitar informações relacionadas à saúde se as leis aplicáveis proibirem a distribuição dessas informações a sistemas que não cumprem os requisitos necessários para processar informações relacionadas à saúde."
+- **[Opt-in](https://developers.facebook.com/documentation/business-messaging/whatsapp/getting-opt-in):**
+  - deixar claro que a pessoa aceita mensagens **daquela empresa, com o nome dela**;
+  - o método é responsabilidade da empresa, conforme a lei aplicável;
+  - a página não fala de guarda de registros.
+- **[Categorias](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/template-categorization):**
+  - são marketing, utility e authentication;
+  - utility só quando não é promocional e é específica do usuário;
+  - conteúdo misto é marketing;
+  - a Meta reclassifica.
+- **[Templates](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/overview) e o [webhook de status](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/message_template_status_update):**
+  - só sai template `APPROVED`. Pausado e desabilitado não saem;
+  - os parâmetros são posicionais ou nomeados;
+  - a edição de **conteúdo** de um aprovado é limitada a 1 por dia e 10 por 30 dias, e o template editado volta à revisão. Isso está na [página de preço máximo de marketing](https://developers.facebook.com/documentation/business-messaging/whatsapp/marketing-messages/pricing/) e não nas páginas gerais de template, então fica para reconferir na F4.5. **Uma versão aprovada pode, portanto, mudar de texto depois de registrada;**
+  - o webhook informa status e categoria. Não encontramos webhook de mudança de **conteúdo**.
+- **[Identidade (BSUID)](https://developers.facebook.com/documentation/business-messaging/whatsapp/business-scoped-user-ids/):**
+  - o `user_id` é por portfólio e vem em todo webhook desde abril de 2026;
+  - **com nome de usuário, `from` e `wa_id` podem ser omitidos**, exceto se houve interação nos últimos 30 dias por aquele número da empresa ou se a pessoa está no contact book da Meta;
+  - o BSUID muda quando a pessoa troca de número (`previous_user_id`);
+  - o envio por BSUID estava previsto para julho de 2026.
+- **[Limites](https://developers.facebook.com/documentation/business-messaging/whatsapp/messaging-limits):**
+  - por portfólio, em 24 h móveis, de 250 a ilimitado;
+  - há um [limite por usuário para marketing](https://developers.facebook.com/documentation/business-messaging/whatsapp/templates/marketing-templates/per-user-limits/) (erro 131049).
+- **[Preço](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing):** por mensagem de template, por categoria e mercado, com mudanças a partir de 01/10/2026.
+- **[LGPD (Lei 13.709/2018)](https://www.planalto.gov.br/ccivil_03/_ato2015-2018/2018/lei/l13709.htm)**, para a avaliação jurídica, **não como conclusão de engenharia**:
+  - o art. 8º, §4º, diz que o consentimento vale para finalidades determinadas e que a autorização genérica é nula;
+  - o art. 11 trata do dado sensível.
+
+  A base legal de cada finalidade (se é consentimento ou outra) é do jurídico (ADR-048, §9.2).
+
+**Decisão proposta.**
+
+**1. O template tem conteúdo registrado e verificável, com prévia fiel.**
+
+- **O registro é por versão.** Cada versão guarda:
+  - o id do template na Meta, o nome, o idioma, a categoria e o formato dos parâmetros;
+  - os componentes com o texto fixo: cabeçalho, corpo, rodapé e botões;
+  - o hash do conteúdo canônico.
+
+  Mudou o conteúdo ou a categoria, nasce uma versão nova. A anterior fica, append-only.
+
+- **A fonte do conteúdo é a Meta** (o template como a API o devolve), e não um texto digitado no Veyra. O cadastro é por CLI administrativa, como o do canal (ADR-037). Com o transporte falso, um catálogo falso do transporte faz o papel da Meta.
+- **Cada versão passa por uma revisão humana.** Ela só é usada depois que alguém com a permissão de revisão marca que o texto fixo respeita a fronteira de conteúdo da finalidade.
+  - A revisão registra quem, quando e o hash revisado.
+  - Se o hash muda, a revisão deixa de valer.
+- **Os parâmetros são ligados a campos.** Na versão, cada parâmetro é ligado a um campo da **lista fechada da finalidade** (item 2). Quem envia não manda texto livre: manda os valores desses campos, validados em tamanho e sem quebra de linha nem tabulação.
+- **A prévia fiel:**
+  - o servidor monta a prévia com a versão revisada e os valores;
+  - é essa prévia que a pessoa vê antes de aprovar;
+  - o despacho grava a versão e o hash usados.
+- **A reconferência acontece em dois momentos:** na aprovação e no worker, antes de chamar o provedor.
+  - Nos dois, a versão tem de estar revisada, e o status e a categoria na Meta têm de bater. A fonte é o webhook de status mais uma releitura com validade curta.
+  - Se houver divergência, o envio é bloqueado, e nenhuma outra versão é usada no lugar.
+- **O limite do que isso prova:**
+  - o Veyra só pede o envio de uma versão revisada, cujo conteúdo, segundo a Meta, tinha aquele hash;
+  - **não prova o texto entregue**, porque quem o monta é a Meta;
+  - também não substitui a revisão de categoria da Meta.
+
+**2. O consentimento é por finalidade, canal e número, com histórico.**
+
+- **A finalidade fica num catálogo por workspace.** É dado, não código. Cada finalidade tem:
+  - uma chave;
+  - a descrição mostrada à pessoa;
+  - a categoria de template permitida;
+  - a lista fechada de campos.
+
+  O vertical cria as suas na ativação, como cria o papel `Profissional`.
+
+- **O escopo do consentimento:**
+  - workspace e contato;
+  - o canal, isto é, o número da empresa, porque o opt-in nomeia a empresa;
+  - o número da pessoa, em E.164;
+  - a finalidade.
+
+  **Duas finalidades não compartilham autorização, e não existe consentimento "geral".**
+
+- **O registro guarda:**
+  - quem registrou e quando;
+  - a origem, de uma lista fechada: presencial, telefone, formulário ou importação;
+  - uma referência opcional, como o id de um formulário;
+  - a fotografia da descrição da finalidade naquele momento, que é o que a pessoa aceitou.
+
+  O campo de texto livre de hoje não é usado no fluxo novo. **[ABERTA C9]**
+
+- **O histórico:**
+  - a concessão é imutável;
+  - a revogação é registrada uma vez, com quem, quando e a origem: pedido da pessoa pelo WhatsApp, por telefone ou presencial;
+  - nada se apaga, exceto pela exclusão do contato, pelas regras do Core;
+  - um gatilho no banco garante isso, como nos modelos append-only.
+- **As permissões são duas chaves novas do Core:**
+  - `consents:read`: ver a situação e o histórico;
+  - `consents:manage`: registrar e revogar.
+
+  Pelo template de papéis, vão para o Owner e o Admin. **[ABERTA C2]**
+
+- **A reconferência no despacho:** na aprovação e no worker, logo antes do provedor, tem de haver consentimento vigente para (canal, contato, número, finalidade do template).
+  - Se foi revogado no meio, a mensagem não sai. O despacho fica `failed_permanent`, com motivo próprio, e não tenta de novo.
+  - A política já é revalidada no worker (ADR-038). O consentimento passa a fazer parte dela.
+- **O pedido de parar:** o mínimo é uma ação explícita no Inbox, "registrar pedido de parar", que revoga as finalidades daquele número e canal. **[ABERTA C4]**
+- **Sobre a evidência já existente:** não se registra como conclusão jurídica que guardar a finalidade agora evita recolher a evidência depois. Isso depende da validação jurídica e operacional.
+
+**3. O destinatário é sem ambiguidade, no envio e na resposta.**
+
+- **O envio iniciado pelo negócio só vai a um (contato, número)** que cumpra três condições, conferidas na aprovação e de novo no worker:
+  - o número está entre os do contato, normalizado em E.164;
+  - pertence a **um só** contato do workspace;
+  - tem consentimento vigente (item 2).
+
+  Se alguma condição falha, a mensagem não sai, e o motivo aparece por destinatário. **Nada escolhe outro número nem outro contato.**
+
+- **Número compartilhado ou duplicado** (mais de um contato com o mesmo número): o envio é recusado (`address_ambiguous`) até uma pessoa resolver, unindo os contatos ou tirando o número de um deles. Sem exceção no MVP.
+- **Número alterado, removido ou passado a outro contato** entre a aprovação e o worker: recusado no worker. O pedido aparece como não enviado, e um novo pedido exige nova aprovação.
+- **A conversa passa a ser por número.** A conversa iniciada pelo negócio é por (canal, contato, número), e a resposta entra na conversa daquele número.
+- **A ingestão, corrigida para todo workspace:**
+  - **número de mais de um contato:** a mensagem entra numa conversa **sem contato definido** ("remetente a identificar"), sem se ligar a nenhum dos dois, até uma pessoa decidir. O `findFirst` sem ordem sai;
+  - **mensagem sem `from` (só o BSUID):** é aceita e não se perde. Ela só se liga a um contato se aquele BSUID já tiver chegado junto com um número desse contato. Fora isso, vira "remetente a identificar". **Nunca se liga pelo nome do perfil**;
+  - **troca de número** (BSUID novo, com `previous_user_id`): o contato não muda sozinho, e o consentimento do número antigo não passa para o novo.
+- **O envio por BSUID fica fora.**
+
+**[ABERTA C6]** Onde fica o "remetente a identificar": numa conversa sem contato, dentro do Inbox (recomendado), ou numa fila separada.
+
+**4. A validade e o resultado do envio.**
+
+- **Cancelar despacho não iniciado:** um serviço neutro do Core cancela, sob a trava da linha, um despacho `reserved` ou um `failed_before_send` que aguarda nova tentativa.
+  - Com o despacho em `sending`, `sent` ou `unknown_after_dispatch`, não cancela e devolve o estado.
+  - Quem usa é o vertical, na mesma transação do evento que invalida o pedido.
+- **Nova tentativa não é reenvio.** A regra continua a do ADR-039:
+  - `failed_before_send` é comprovadamente não enviado, e o outbox tenta de novo;
+  - `unknown_after_dispatch` não reenvia.
+
+  O que se acrescenta: reenviar um incerto só por ato humano explícito e auditado, como mensagem nova marcada como possível duplicata. **[ABERTA C5]**
+
+- **O lote:**
+  - o pedido de lote tem chave de idempotência;
+  - a resposta traz o resultado de cada destinatário: criado, já existente (com o estado) ou recusado (com o motivo);
+  - repetir o lote não duplica.
+
+**Alternativas consideradas:**
+
+- **Confirmar só quem já escreveu, sem conversa iniciada pelo negócio:** descartada como padrão, porque a recepção cadastra a maioria das pessoas fora do WhatsApp. Fica como modo degradado.
+- **Template só pelo nome, como hoje:** descartada. Não demonstra que a mensagem respeita a fronteira.
+- **Texto do template digitado no Veyra:** descartado como fonte, porque pode divergir do que a Meta aprovou.
+- **Um consentimento por canal:** descartado. Juntaria finalidades diferentes numa autorização genérica.
+- **Escolher o contato mais recente quando o número é compartilhado:** descartada. Seria escolher em silêncio.
+
+**Consequências:**
+
+- **O Core passa a iniciar conversa.** As garantias novas de ingestão (ambiguidade e BSUID) valem para todo workspace, não só para o Clinics. A ingestão atual tem dois defeitos que a 9.1 não cobria:
+  - o número compartilhado cai num contato arbitrário;
+  - a mensagem sem `from` é recusada pelo schema.
+- **Há migrations no Core,** conforme o ADR-051: finalidade, consentimento com número e finalidade, templates versionados e revisados, e conversa por número.
+- **Os consentimentos da 9.1,** que não têm número nem finalidade, não autorizam o envio novo e ficam só como histórico. **[ABERTA C7]**
+- **O template no Inbox também passa a exigir** versão revisada e finalidade. É uma mudança de comportamento da 9.1.
+
+**Decisões abertas para a revisão:**
+
+- **[ABERTA C1]** As finalidades: catálogo por workspace (recomendado) ou lista fechada do Core.
+- **[ABERTA C2]** Quem recebe `consents:manage` além de Owner e Admin. A recomendação é o Member, porque é a recepção que colhe o opt-in.
+- **[ABERTA C3]** A permissão de revisão de template: uma chave nova, `templates:review`, só para Owner e Admin (recomendado), ou uma chave existente.
+- **[ABERTA C4]** O pedido de parar: só a ação humana no Inbox (recomendado no MVP) ou também detecção por palavra-chave. A detecção exigiria ler o conteúdo, com risco de falso positivo.
+- **[ABERTA C5]** Reenviar um incerto por ato humano: permitido com aviso e auditoria (recomendado), ou proibido.
+- **[ABERTA C6]** Onde fica o "remetente a identificar" (item 3).
+- **[ABERTA C7]** Os consentimentos antigos. A recomendação é que não valham para o envio novo. Migrá-los com uma finalidade padrão está descartado, porque criaria a autorização genérica.
+- **[ABERTA C8]** A base legal de cada finalidade, e se ela é o consentimento: decisão do jurídico (ADR-048, §9.2), não da engenharia.
+- **[ABERTA C9]** A origem do consentimento só por lista fechada mais referência (recomendado), ou também uma nota curta. Texto livre no Core pode receber dado de saúde (ADR-048, §6.7).
