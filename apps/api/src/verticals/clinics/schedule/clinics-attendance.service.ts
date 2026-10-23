@@ -60,10 +60,16 @@ export class ClinicsAttendanceService {
     appointmentId: string,
     input: RecordClinicsAttendanceInput,
   ): Promise<ClinicsAttendanceDto> {
+    // a escolha é EXPLÍCITA (ajuste A1): só `null` é avulso. A ausência já é
+    // recusada no controller; aqui de novo, antes de qualquer consulta, para
+    // valer a qualquer chamador futuro que contorne o tipo
+    if (input.packageId === undefined) {
+      throw new BadRequestException('Escolha explícita exigida: avulso ou um pacote');
+    }
     const workspaceId = auth.workspaceId as string;
-    // `null` e ausente são a MESMA escolha: avulso. O id vai em minúsculas,
-    // como o banco o devolve, para a repetição idêntica não virar 409
-    const escolha = input.packageId?.toLowerCase() ?? null;
+    // o id vai em minúsculas, como o banco o devolve, para a repetição
+    // idêntica não virar 409
+    const escolha = input.packageId === null ? null : input.packageId.toLowerCase();
     // consumir pacote revela o estado dele (as recusas dizem por quê): quem
     // escolhe pacote precisa poder lê-lo. A regra mora AQUI, e não na rota,
     // para valer a qualquer chamador futuro (ADR-048 adendo 7)

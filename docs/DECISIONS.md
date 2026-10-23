@@ -3742,6 +3742,64 @@ Sem deploy, sem ativação do Clinics e sem dados reais. Os bloqueios operaciona
   - um teste prova que o número mostrado é o do servidor, mesmo quando difere de "antes − 1".
 - **O processo:** `reviewer`, `security` e bateria completa, com commit local e parada para revisão antes do push.
 
+**Implementação do A1 (notas, 2026-10-23).**
+
+- **API:**
+  - **o contrato** é o registrado acima;
+  - **o controller** recebe o corpo ausente só para escolher a recusa: 400 com o vazio provado e 415 sem a prova. O serviço não chega a ser chamado;
+  - **o serviço também recusa** o `packageId` ausente, antes de qualquer consulta. Hoje isso só é alcançável contornando o tipo, mas a regra vale para qualquer chamador futuro (uma tool ou um job), como a exigência de `care:read`;
+  - **a mensagem do 400** é fixa e diz o que fazer: "Escolha explícita exigida: avulso ou um pacote. Atualize a página e escolha de novo." Quem a vê na prática é a aba aberta com a tela de antes da F3.3b.
+- **O resíduo aceito na F3.1** ("repetisse sem corpo") continua o mesmo em substância, só que agora com `packageId: null`. Um papel com `care:write` e sem `care:read` que repete com `null` um registro feito com pacote recebe 409 e descobre que houve pacote. Esse papel continua não existindo pelo produto.
+- **A interface:**
+  - **o aviso:** "O saldo mostrado foi lido agora e não é uma reserva: pode mudar até a confirmação. Ao registrar, o servidor confere de novo e, sem sessão, recusa; nenhum outro pacote é usado no lugar, e nada vira avulso." Ele só aparece quando há pacote elegível. A primeira versão dizia "o saldo desta consulta", e na clínica "consulta" é o agendamento;
+  - **depois do sucesso, o painel não fecha:**
+    - ele mostra "registrado como avulso" ou "registrado, com 1 sessão do pacote escolhido";
+    - para o pacote, mostra "Conferindo o saldo no servidor…" e então o saldo relido, com "(Concluído)" quando o pacote se encerra;
+    - "Concluir" fecha o painel.
+  - **O saldo só aparece com uma leitura POSTERIOR ao registro.** No sucesso, o painel guarda quantas leituras da consulta de pacotes havia (`dataUpdateCount`, um contador que não depende do relógio) e só mostra o saldo com uma leitura a mais e sem erro. Fora disso, aparece o alerta "Não foi possível conferir o saldo atualizado. O atendimento já está registrado." e o botão "Conferir de novo". Isso cobre três casos:
+    - a releitura que falha;
+    - a releitura cancelada em voo, em que o cache volta ao dado de antes com `isSuccess`;
+    - a consulta que deixou de ser relida.
+  - **Se `care:read` deixa de valer durante o registro** (a sessão relida na mesma membership mantém o mesmo cache, ADR-050), o painel diz que os pacotes deixaram de estar visíveis e não mostra saldo. As opções também deixam de mostrar os pacotes do cache.
+
+**Revisão do A1 (`reviewer` e `security`, 2026-10-23).** Os dois aprovaram com ressalvas, sem P0 nem P1. Tudo foi corrigido antes do commit:
+
+- **Achado dos dois:** o comentário do serviço ainda dizia "`null` e ausente são a mesma escolha", e o serviço tratava `undefined` como avulso. O comentário foi corrigido, e o serviço passou a recusar a ausência.
+- **Achado do `security` (P2):** sem `care:read` no instante do sucesso, a consulta desabilitada não seria relida, e o saldo de antes apareceria como "do servidor". A correção é a guarda da leitura posterior e o ramo sem `care:read`, descritos acima.
+- **Achado dos dois:** o "desta consulta" do aviso, corrigido.
+- **Achado do `reviewer`, sobre a mensagem do 400:** dizia "packageId: null", que é jargão; ela agora diz o que fazer.
+- **Achados sobre os testes:**
+  - dois dos corpos do teste "sem escolha" já eram recusados pelo `.strict()`. No lugar deles entrou o JSON de zero bytes, que o parser transforma em `{}` sem passar pelo middleware;
+  - a repetição agora prova que o pedido sem corpo também não chega a 201 nem a 409;
+  - a checagem "sem aviso, sem pacote elegível" passou para antes do clique.
+- **Achado sobre a documentação:** os comentários dos helpers foram ajustados (o `api.post(path)` sem corpo vale para as outras ações), e o roadmap foi atualizado.
+- **Confirmação do delta:** os dois aprovaram, sem achado novo.
+
+**Resultados do A1 (2026-10-23).**
+
+- **A bateria b61 foi completa e verde**, sobre a versão anterior às correções da revisão:
+  - lint, formatação e build;
+  - unitários (268) e web (130);
+  - integração em duas rodadas (835/835 em cada);
+  - drift, migração do zero e check:fk;
+  - e2e (49);
+  - nenhuma lacuna de relógio.
+- **A b61b foi complementar e verde**, sobre a versão final. Repetiu o que as correções afetam:
+  - lint, formatação e build;
+  - unitários (268) e web (132);
+  - uma rodada completa de integração (836/836);
+  - e2e (49).
+
+  Drift, migração do zero e check:fk ficaram como na b61, porque nenhum schema nem migration mudou. Depois da b61b, só este bloco de docs mudou, e a formatação foi conferida de novo.
+
+- **Mutações:**
+  - 8 no web, todas mortas: a releitura ignorada, o saldo antigo no erro, o saldo sem leitura posterior, o ramo e o cache sem `care:read`, o aviso, o estado do pacote e o painel que fecha no sucesso;
+  - 1 na API, morta: a recusa no serviço.
+
+  Duas guardas da primeira versão foram tiradas por serem equivalentes, porque o ramo que vinha antes já as cobria.
+
+- **Sem deploy e sem ativação do Clinics; só dados fictícios.**
+
 **Implementação da F3.1 (notas, 2026-10-21).**
 
 - **O `dealId` do pacote fica fora da F3.1.** Uma FK composta para o `Deal` do Core travaria a exclusão de deals. A alternativa seria `SET NULL` só na coluna (`ON DELETE SET NULL ("dealId")`), que o Prisma não modela sem drift. Como o vínculo só serve ao fluxo comercial, ele volta com a F4, por ADR.

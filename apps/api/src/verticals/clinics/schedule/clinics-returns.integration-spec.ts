@@ -110,7 +110,8 @@ describe('Clinics — retornos (integração, F3.2)', () => {
     const cookieHeader = cookies.map((c) => c.split(';')[0]).join('; ');
     return { cookieHeader, csrf: /veyra_csrf=([^;]+)/.exec(cookieHeader)?.[1] ?? '' };
   };
-  // sem `body`, a requisição vai SEM corpo, como o `api.post(path)` da tela
+  // sem `body`, a requisição vai SEM corpo, como o `api.post(path)` da tela nas
+  // ações sem corpo (o registro de atendimento exige a escolha desde o A1)
   const enviar = (method: 'post' | 'put', path: string, s: Session, body?: unknown) => {
     const r = request(http)
       [method](path)
@@ -164,9 +165,9 @@ describe('Clinics — retornos (integração, F3.2)', () => {
       }).expect(201)
     ).body.id as string;
   };
-  /** Registra o atendimento (avulso), como a tela: sem corpo. */
+  /** Registra o atendimento avulso, com a escolha explícita (ajuste A1). */
   const atender = (agendamento: string, s: Session = owner) =>
-    post(`/api/clinics/appointments/${agendamento}/attendance`, s);
+    post(`/api/clinics/appointments/${agendamento}/attendance`, s, { packageId: null });
   const criarRetorno = async (body: Record<string, unknown> = {}, s: Session = profissional) =>
     (
       await post('/api/clinics/returns', s, {

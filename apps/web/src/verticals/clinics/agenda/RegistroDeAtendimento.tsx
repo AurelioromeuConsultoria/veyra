@@ -4,10 +4,13 @@ import { useState } from 'react';
 import { Button } from '../../../components/ui/button';
 import { api, ApiError } from '../../../lib/api';
 import { hasPermission, useSession } from '../../../lib/session';
-import { PACKAGES_KEY, RETURNS_KEY, quandoLocal } from '../continuidade';
+import { PACKAGES_KEY, RETURNS_KEY, ROTULO_DO_PACOTE, quandoLocal } from '../continuidade';
 
 /** A escolha: `undefined` = nada escolhido; `null` = avulso; texto = o pacote. */
 type Escolha = string | null | undefined;
+
+/** O registro feito, e quantas leituras dos pacotes havia ANTES dele. */
+type Registrado = { packageId: string | null; leiturasAntes: number };
 
 /**
  * Registro de atendimento com o consumo EXPLÍCITO (ADR-048 adendo 7, item 4, e
@@ -18,7 +21,12 @@ type Escolha = string | null | undefined;
  *   falha nunca vira "avulso";
  * - a recusa do servidor aparece como veio, as opções são recarregadas e a
  *   escolha é desfeita: nada troca de pacote nem vira "avulso" em silêncio;
- * - sem `care:read`, nenhuma consulta a pacotes: só "avulso", com o aviso.
+ * - sem `care:read`, nenhuma consulta a pacotes: só "avulso", com o aviso;
+ * - o saldo mostrado é o lido agora, não uma reserva, e o painel diz isso
+ *   (ajuste A1, decisão 2): a confirmação autoriza uma sessão do pacote
+ *   escolhido, o servidor confere o saldo e nada é substituído;
+ * - depois do sucesso, o saldo é o de uma leitura POSTERIOR ao registro, por
+ *   quem ainda lê pacotes; nunca o de antes nem "antes − 1".
  */
 export function RegistroDeAtendimento({
   agendamento,
@@ -37,15 +45,20 @@ export function RegistroDeAtendimento({
   const lePacotes = hasPermission(user, 'clinics:care:read');
   const queryClient = useQueryClient();
   const [escolha, setEscolha] = useState<Escolha>(undefined);
+  const [registrado, setRegistrado] = useState<Registrado | undefined>(undefined);
+  const chaveDosPacotes = [...PACKAGES_KEY, agendamento.patientId];
+  /** Leituras bem-sucedidas desta consulta (o contador não depende do relógio). */
+  const leiturasDosPacotes = () => queryClient.getQueryState(chaveDosPacotes)?.dataUpdateCount ?? 0;
   const pacotes = useQuery({
-    queryKey: [...PACKAGES_KEY, agendamento.patientId],
+    queryKey: chaveDosPacotes,
     queryFn: () =>
       api.get<ClinicsPackageDto[]>(
         `/api/clinics/packages?patientId=${encodeURIComponent(agendamento.patientId)}`,
       ),
     enabled: lePacotes,
   });
-  const elegiveis = (pacotes.isError ? [] : (pacotes.data ?? [])).filter(
+  // sem `care:read` (inclusive se deixou de valer agora), nenhum pacote do cache
+  const elegiveis = (lePacotes && !pacotes.isError ? (pacotes.data ?? []) : []).filter(
     (p) =>
       p.status === 'active' && p.serviceId === agendamento.serviceId && p.remainingSessions > 0,
   );
@@ -53,11 +66,13 @@ export function RegistroDeAtendimento({
   const registrar = useMutation({
     mutationFn: (packageId: string | null) =>
       api.post(`/api/clinics/appointments/${agendamento.id}/attendance`, { packageId }),
-    onSuccess: () => {
+    onSuccess: (_registro, packageId) => {
+      setRegistrado({ packageId, leiturasAntes: leiturasDosPacotes() });
+      // a invalidação cancela a leitura em curso e refaz a deste painel: o
+      // saldo mostrado a seguir é o que o servidor devolve DEPOIS do registro
       void queryClient.invalidateQueries({ queryKey: PACKAGES_KEY });
       // o registro pode criar ou concluir retornos
       void queryClient.invalidateQueries({ queryKey: RETURNS_KEY });
-      onDone();
     },
     onSettled: () => onAgendaMudou(),
     onError: () => {
@@ -81,12 +96,62 @@ export function RegistroDeAtendimento({
     !registrar.isPending &&
     (escolha === null || (typeof escolha === 'string' && escolhido !== undefined));
   const nome = `escolha-${agendamento.id}`;
+  const cabecalho = (
+    <p className="text-body-sm">
+      {agendamento.localStart} · {agendamento.patientName} · {agendamento.serviceName}
+    </p>
+  );
+
+  if (registrado !== undefined) {
+    // só uma leitura POSTERIOR ao registro. Sem `care:read` e durante a
+    // releitura (os ramos abaixo vêm antes), com erro, ou sem releitura (uma
+    // leitura cancelada volta ao dado de antes), nenhum saldo: nem o antigo
+    // nem um calculado aqui
+    const relido = pacotes.isSuccess && leiturasDosPacotes() > registrado.leiturasAntes;
+    const atual =
+      registrado.packageId !== null && relido
+        ? pacotes.data.find((p) => p.id === registrado.packageId)
+        : undefined;
+    return (
+      <div className="space-y-3 p-5">
+        {cabecalho}
+        <p role="status" className="text-body-sm font-medium">
+          {registrado.packageId === null
+            ? 'Atendimento registrado como avulso.'
+            : 'Atendimento registrado, com 1 sessão do pacote escolhido.'}
+        </p>
+        {registrado.packageId === null ? null : !lePacotes ? (
+          <p className="text-data text-muted-fg">
+            Os pacotes deste paciente deixaram de estar visíveis para você: o saldo não é mostrado.
+          </p>
+        ) : pacotes.isFetching ? (
+          <p className="text-data text-muted-fg">Conferindo o saldo no servidor…</p>
+        ) : !atual ? (
+          <div className="space-y-2">
+            <p role="alert" className="text-data text-negative">
+              Não foi possível conferir o saldo atualizado. O atendimento já está registrado.
+            </p>
+            <Button size="sm" variant="ghost" onClick={() => void pacotes.refetch()}>
+              Conferir de novo
+            </Button>
+          </div>
+        ) : (
+          <p className="text-body-sm">
+            Saldo no servidor: pacote de {atual.totalSessions} sessões, criado em {criadoEm(atual)}:
+            restam {atual.remainingSessions}
+            {atual.status === 'active' ? '' : ` (${ROTULO_DO_PACOTE[atual.status]})`}.
+          </p>
+        )}
+        <Button variant="primary" size="sm" onClick={onDone}>
+          Concluir
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3 p-5">
-      <p className="text-body-sm">
-        {agendamento.localStart} · {agendamento.patientName} · {agendamento.serviceName}
-      </p>
+      {cabecalho}
       {registrar.error ? (
         <p role="alert" className="text-data text-negative">
           {registrar.error instanceof ApiError
@@ -138,6 +203,13 @@ export function RegistroDeAtendimento({
             />
             <span>Avulso (sem pacote)</span>
           </label>
+          {elegiveis.length > 0 ? (
+            <p className="text-data text-muted-fg">
+              O saldo mostrado foi lido agora e não é uma reserva: pode mudar até a confirmação. Ao
+              registrar, o servidor confere de novo e, sem sessão, recusa; nenhum outro pacote é
+              usado no lugar, e nada vira avulso.
+            </p>
+          ) : null}
         </fieldset>
       ) : null}
       <Button

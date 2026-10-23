@@ -144,7 +144,7 @@ async function registrarNaAgenda(
   c: Cenario,
   dia: string,
   hora: string,
-  escolha: { pacote: RegExp; botao: RegExp } | 'avulso',
+  escolha: { pacote: RegExp; botao: RegExp; saldo: RegExp } | 'avulso',
 ) {
   await page.goto(`/clinics/agenda?dia=${dia}`);
   const cartao = page.getByRole('article', { name: `Agendamento ${quem(hora, c)}` });
@@ -156,10 +156,19 @@ async function registrarNaAgenda(
   if (escolha === 'avulso') {
     await painel.getByLabel('Avulso (sem pacote)').check();
     await painel.getByRole('button', { name: 'Registrar atendimento avulso' }).click();
+    await expect(painel.getByRole('status')).toHaveText('Atendimento registrado como avulso.');
   } else {
+    await expect(painel).toContainText('não é uma reserva: pode mudar até a confirmação');
     await painel.getByLabel(escolha.pacote).check();
     await painel.getByRole('button', { name: escolha.botao }).click();
+    await expect(painel.getByRole('status')).toHaveText(
+      'Atendimento registrado, com 1 sessão do pacote escolhido.',
+    );
+    // o saldo depois do registro é o RELIDO do servidor (ajuste A1, decisão 2)
+    await expect(painel.getByText(escolha.saldo)).toBeVisible();
   }
+  await painel.getByRole('button', { name: 'Concluir' }).click();
+  await expect(painel).toBeHidden();
   await expect(cartao).toContainText('Atendido');
 }
 
@@ -189,6 +198,7 @@ test.describe('Clinics — continuidade (pacotes, retornos e faltas)', () => {
       await registrarNaAgenda(page, c, c.dia, '22:00', {
         pacote: /^Pacote de 10 sessões, criado em .+: restam 10, ficam 9 depois deste atendimento$/,
         botao: /^Registrar e consumir 1 sessão do pacote criado em .+ \(restam 10 → 9\)$/,
+        saldo: /^Saldo no servidor: pacote de 10 sessões, criado em .+: restam 9\.$/,
       });
       await page.goto(`/clinics/patient?id=${c.pacienteId}`);
       await expect(linha).toContainText('1 de 10');

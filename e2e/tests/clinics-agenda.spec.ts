@@ -221,6 +221,8 @@ test.describe('Clinics — agenda da clínica', () => {
       const escolha = page.getByRole('dialog', { name: 'Registrar atendimento' });
       await escolha.getByLabel('Avulso (sem pacote)').check();
       await escolha.getByRole('button', { name: 'Registrar atendimento avulso' }).click();
+      await expect(escolha.getByRole('status')).toHaveText('Atendimento registrado como avulso.');
+      await escolha.getByRole('button', { name: 'Concluir' }).click();
       await expect(doProfissional).toContainText('Atendido');
       await comVinculo;
 

@@ -56,9 +56,9 @@ import { ClinicsReturnsService } from './schedule/clinics-returns.service';
 })
 export class ClinicsModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
-    // o registro de atendimento aceita corpo AUSENTE (a tela registra sem
-    // corpo): a ausência é provada pelos bytes, antes do controller, e o
-    // controller não aceita a ausência sem essa prova (ADR-048 adendo 7)
+    // o registro de atendimento: os bytes que ninguém interpretou são recusados
+    // (415) antes do controller, e a ausência PROVADA de corpo responde 400 no
+    // controller, porque a escolha é obrigatória (ADR-048 adendo 7, ajuste A1)
     consumer
       .apply(CorpoOpcionalMiddleware)
       .forRoutes({ path: 'clinics/appointments/:id/attendance', method: RequestMethod.POST });

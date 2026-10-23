@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -101,18 +102,24 @@ export class ClinicsAppointmentsController {
     @CurrentAuth() auth: AuthContext,
     @Param('id', new ParseUUIDPipe()) id: string,
     @Req() req: Request,
-    // o corpo é OPCIONAL: a tela registra SEM corpo, e a ausência é o avulso
-    // (ADR-048 adendo 7). Corpo JSON passa pelo contrato estrito
+    // a escolha é OBRIGATÓRIA (ajuste A1): com corpo, o contrato exige
+    // `packageId` (`null` = avulso). O pipe só deixa passar a AUSÊNCIA total
+    // de corpo, que a conferência abaixo recusa
     @Body(new ZodPipe(recordClinicsAttendanceSchema.optional()))
     body: RecordClinicsAttendanceInput | undefined,
   ): Promise<ClinicsAttendanceDto> {
-    // `undefined` só é "sem corpo" com a PROVA da camada de leitura (zero
-    // bytes, `CorpoOpcionalMiddleware`). Sem a prova, um corpo que ninguém
-    // interpretou poderia virar avulso em silêncio, quando escolhia um pacote
-    if (body === undefined && !corpoVazioProvado(req)) {
+    // sem corpo nenhum, nada decide pela pessoa. Com o vazio PROVADO pela
+    // camada de leitura (zero bytes, `CorpoOpcionalMiddleware`), é a escolha
+    // que faltou (400); sem a prova, são bytes que ninguém interpretou (415)
+    if (body === undefined) {
+      if (corpoVazioProvado(req)) {
+        throw new BadRequestException(
+          'Escolha explícita exigida: avulso ou um pacote. Atualize a página e escolha de novo.',
+        );
+      }
       throw new UnsupportedMediaTypeException('O corpo do registro de atendimento é JSON');
     }
-    return this.attendance.record(auth, id, body ?? {});
+    return this.attendance.record(auth, id, body);
   }
 
   @RequireClinicsPermissions('clinics:care:read')

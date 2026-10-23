@@ -490,15 +490,16 @@ export interface ClinicsAttendanceDto {
 }
 
 /**
- * Registro de atendimento (ADR-048 adendo 7, F3.1). O consumo de pacote é
- * EXPLÍCITO: sem `packageId` (ou com `null`), o atendimento é avulso. O corpo
- * inteiro também pode faltar (a tela registra sem corpo): é o avulso. Um corpo
- * que não seja JSON é recusado (415), nunca lido como avulso. Repetir o mesmo
- * pedido devolve o registro existente; repetir com escolha diferente é 409.
+ * Registro de atendimento (ADR-048 adendo 7, F3.1 e ajuste A1). A escolha é
+ * EXPLÍCITA e obrigatória: `packageId: null` é avulso, e o id é o pacote. O
+ * corpo vazio e `{}` são recusados (400), e o corpo que não é JSON também
+ * (415): nada decide pela pessoa. Repetir o mesmo pedido devolve o registro
+ * existente; repetir com escolha diferente é 409.
  */
 export const recordClinicsAttendanceSchema = z
   .object({
-    packageId: z.uuid().nullable().optional(),
+    /** obrigatória: `null` = avulso (ajuste A1) */
+    packageId: z.uuid().nullable(),
   })
   .strict();
 export type RecordClinicsAttendanceInput = z.infer<typeof recordClinicsAttendanceSchema>;

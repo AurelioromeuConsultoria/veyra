@@ -20,6 +20,8 @@ import { esperarBloqueadosPor } from '../../../../test/integration/locks';
 import { ClinicsActivationService } from '../clinics-activation.service';
 
 const ORIGIN = process.env.WEB_ORIGIN ?? 'http://localhost:5175';
+/** A escolha explícita de avulso (ajuste A1): sem ela, o registro é recusado. */
+const AVULSO = { packageId: null };
 
 interface Session {
   cookieHeader: string;
@@ -78,7 +80,8 @@ describe('Clinics — agenda e atendimento (integração, F2.2)', () => {
     const cookieHeader = cookies.map((c) => c.split(';')[0]).join('; ');
     return { cookieHeader, csrf: /veyra_csrf=([^;]+)/.exec(cookieHeader)?.[1] ?? '' };
   };
-  // sem `body`, a requisição vai SEM corpo, como o `api.post(path)` da tela: um
+  // sem `body`, a requisição vai SEM corpo, como o `api.post(path)` da tela nas
+  // ações sem corpo (o registro de atendimento exige a escolha desde o A1): um
   // helper que sempre manda `{}` esconderia a rota que recusa a ausência
   const send = (method: 'post' | 'patch' | 'put', path: string, s: Session, body?: unknown) => {
     const r = request(http)
@@ -318,7 +321,7 @@ describe('Clinics — agenda e atendimento (integração, F2.2)', () => {
       }
       if (estado === 'no_show') await status(id, { to: 'no_show' }).expect(201);
       if (estado === 'attended')
-        await post(`/api/clinics/appointments/${id}/attendance`, owner).expect(201);
+        await post(`/api/clinics/appointments/${id}/attendance`, owner, AVULSO).expect(201);
       return id as string;
     };
     const PERMITIDAS: Record<string, string[]> = {
@@ -450,11 +453,13 @@ describe('Clinics — agenda e atendimento (integração, F2.2)', () => {
   describe('registro de atendimento', () => {
     it('leva o agendamento a `attended` na mesma transação; repetir devolve o mesmo registro e audita uma vez', async () => {
       const id = (await agendar().expect(201)).body.id;
-      const primeiro = (await post(`/api/clinics/appointments/${id}/attendance`, owner).expect(201))
-        .body;
+      const primeiro = (
+        await post(`/api/clinics/appointments/${id}/attendance`, owner, AVULSO).expect(201)
+      ).body;
       expect(primeiro).toMatchObject({ appointmentId: id, professionalId: ana });
-      const segundo = (await post(`/api/clinics/appointments/${id}/attendance`, owner).expect(201))
-        .body;
+      const segundo = (
+        await post(`/api/clinics/appointments/${id}/attendance`, owner, AVULSO).expect(201)
+      ).body;
       expect(segundo.id).toBe(primeiro.id);
       expect((await prisma.raw.clinicsAppointment.findFirst({ where: { id } }))!.status).toBe(
         'attended',
@@ -472,7 +477,9 @@ describe('Clinics — agenda e atendimento (integração, F2.2)', () => {
     it('registros SIMULTÂNEOS resultam em um só', async () => {
       const id = (await agendar().expect(201)).body.id;
       const respostas = await Promise.all(
-        [1, 2, 3, 4, 5].map(() => post(`/api/clinics/appointments/${id}/attendance`, owner)),
+        [1, 2, 3, 4, 5].map(() =>
+          post(`/api/clinics/appointments/${id}/attendance`, owner, AVULSO),
+        ),
       );
       expect(respostas.map((r) => r.status)).toEqual([201, 201, 201, 201, 201]);
       expect(new Set(respostas.map((r) => r.body.id)).size).toBe(1);
@@ -490,7 +497,7 @@ describe('Clinics — agenda e atendimento (integração, F2.2)', () => {
           return real(db, ws, action, input);
         });
       try {
-        await post(`/api/clinics/appointments/${id}/attendance`, owner).expect(500);
+        await post(`/api/clinics/appointments/${id}/attendance`, owner, AVULSO).expect(500);
       } finally {
         espia.mockRestore();
       }
@@ -504,12 +511,12 @@ describe('Clinics — agenda e atendimento (integração, F2.2)', () => {
       const chegou = (await agendar().expect(201)).body.id;
       await status(chegou, { to: 'confirmed' }).expect(201);
       await status(chegou, { to: 'arrived' }).expect(201);
-      await post(`/api/clinics/appointments/${chegou}/attendance`, owner).expect(201);
+      await post(`/api/clinics/appointments/${chegou}/attendance`, owner, AVULSO).expect(201);
       const faltou = (await agendar({ time: '11:00' }).expect(201)).body.id;
       await status(faltou, { to: 'no_show' }).expect(201);
       expect(
-        (await post(`/api/clinics/appointments/${faltou}/attendance`, owner).expect(409)).body
-          .message,
+        (await post(`/api/clinics/appointments/${faltou}/attendance`, owner, AVULSO).expect(409))
+          .body.message,
       ).toBe('Agendamento com estado Faltou não aceita registro de atendimento');
     });
 
@@ -517,8 +524,8 @@ describe('Clinics — agenda e atendimento (integração, F2.2)', () => {
       const id = (await agendar().expect(201)).body.id;
       await get(`/api/clinics/appointments/${id}/attendance`, owner).expect(404);
       await status(id, { to: 'canceled', cancelReason: 'scheduling_error' }).expect(201);
-      await post(`/api/clinics/appointments/${id}/attendance`, owner).expect(409);
-      await post(`/api/clinics/appointments/${randomUUID()}/attendance`, owner).expect(404);
+      await post(`/api/clinics/appointments/${id}/attendance`, owner, AVULSO).expect(409);
+      await post(`/api/clinics/appointments/${randomUUID()}/attendance`, owner, AVULSO).expect(404);
     });
   });
 
@@ -529,8 +536,8 @@ describe('Clinics — agenda e atendimento (integração, F2.2)', () => {
       const recepcao = await loginAs('member-a@veyra.test');
       const id = (await agendar({}, recepcao).expect(201)).body.id;
       await status(id, { to: 'confirmed' }, recepcao).expect(201);
-      await post(`/api/clinics/appointments/${id}/attendance`, recepcao).expect(403);
-      await post(`/api/clinics/appointments/${id}/attendance`, owner).expect(201);
+      await post(`/api/clinics/appointments/${id}/attendance`, recepcao, AVULSO).expect(403);
+      await post(`/api/clinics/appointments/${id}/attendance`, owner, AVULSO).expect(201);
       await get(`/api/clinics/appointments/${id}/attendance`, recepcao).expect(403);
       const lista = (await dia(SEGUNDA, recepcao)).body;
       expect(lista).toHaveLength(1);
@@ -552,7 +559,7 @@ describe('Clinics — agenda e atendimento (integração, F2.2)', () => {
         time: '11:00',
       }).expect(403);
       await status(id, { to: 'confirmed' }, prof).expect(403);
-      await post(`/api/clinics/appointments/${id}/attendance`, prof).expect(201);
+      await post(`/api/clinics/appointments/${id}/attendance`, prof, AVULSO).expect(201);
       await get(`/api/clinics/appointments/${id}/attendance`, prof).expect(200);
       await get('/api/contacts', prof).expect(403);
     });
@@ -588,7 +595,7 @@ describe('Clinics — agenda e atendimento (integração, F2.2)', () => {
   describe('isolamento', () => {
     it('P0: B (com o Clinics ativo) não vê nem mexe na agenda de A, nem por ids de A no corpo ou na consulta', async () => {
       const id = (await agendar().expect(201)).body.id;
-      await post(`/api/clinics/appointments/${id}/attendance`, owner).expect(201);
+      await post(`/api/clinics/appointments/${id}/attendance`, owner, AVULSO).expect(201);
       await app.get(ClinicsActivationService).enable('beta');
       const donoB = await loginAs('owner-b@veyra.test');
       expect((await dia(SEGUNDA, donoB)).body).toEqual([]);
@@ -606,7 +613,7 @@ describe('Clinics — agenda e atendimento (integração, F2.2)', () => {
         date: SEGUNDA,
         time: '10:00',
       }).expect(404);
-      await post(`/api/clinics/appointments/${id}/attendance`, donoB).expect(404);
+      await post(`/api/clinics/appointments/${id}/attendance`, donoB, AVULSO).expect(404);
       await get(`/api/clinics/appointments/${id}/attendance`, donoB).expect(404);
       await agendar({}, donoB).expect(404); // o paciente de A não existe para B
       // paciente PRÓPRIO de B, com profissional e serviço de A: 404
@@ -699,7 +706,7 @@ describe('Clinics — agenda e atendimento (integração, F2.2)', () => {
 
     it('excluir o WORKSPACE leva agenda e atendimento em cascata, passando pelas FKs NO ACTION', async () => {
       const id = (await agendar().expect(201)).body.id;
-      await post(`/api/clinics/appointments/${id}/attendance`, owner).expect(201);
+      await post(`/api/clinics/appointments/${id}/attendance`, owner, AVULSO).expect(201);
       await prisma.raw.workspace.deleteMany({ where: { id: wsA.workspaceId } });
       expect(await prisma.raw.clinicsAppointment.count()).toBe(0);
       expect(await prisma.raw.clinicsAttendance.count()).toBe(0);
@@ -821,7 +828,7 @@ describe('Clinics — agenda e atendimento (integração, F2.2)', () => {
       date: SEGUNDA,
       time: '10:00',
     }).expect(201);
-    await post(`/api/clinics/appointments/${id}/attendance`, owner).expect(201);
+    await post(`/api/clinics/appointments/${id}/attendance`, owner, AVULSO).expect(201);
     expect(await contar()).toEqual(antes);
     // e a trilha só tem ids, status, instantes e motivo — nenhum nome
     const trilhas = await prisma.raw.auditLog.findMany({

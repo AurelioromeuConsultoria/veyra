@@ -18,7 +18,8 @@ const CORPO_VAZIO_PROVADO = Symbol('corpo-vazio-provado');
  * Quando o parser não leu nada, esta camada lê o resto do corpo com limite
  * ZERO:
  * - o fim sem nenhum byte é o pedido vazio (também em `chunked`). A requisição
- *   ganha a marca que o controller exige para tratar a ausência como "nada";
+ *   ganha a marca com que o controller distingue a ausência (desde o ajuste A1,
+ *   a escolha que faltou: 400) do conteúdo não interpretado;
  * - o primeiro byte é conteúdo que ninguém interpretou. A resposta é 415, sem
  *   guardar o conteúdo e antes de qualquer efeito.
  *

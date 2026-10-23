@@ -17,7 +17,9 @@ import {
 } from '../../../../test/integration/fixtures';
 import { TEST_DATABASE_URL } from '../../../../test/integration/db-url';
 import { resetDb } from '../../../../test/integration/harness';
+import type { AuthContext } from '../../../common/decorators';
 import { ClinicsActivationService } from '../clinics-activation.service';
+import { ClinicsAttendanceService } from '../schedule/clinics-attendance.service';
 
 const ORIGIN = process.env.WEB_ORIGIN ?? 'http://localhost:5175';
 
@@ -83,7 +85,8 @@ describe('Clinics — pacote de sessões e consumo no atendimento (integração,
     const cookieHeader = cookies.map((c) => c.split(';')[0]).join('; ');
     return { cookieHeader, csrf: /veyra_csrf=([^;]+)/.exec(cookieHeader)?.[1] ?? '' };
   };
-  // sem `body`, a requisição vai SEM corpo, como o `api.post(path)` da tela: o
+  // sem `body`, a requisição vai SEM corpo, como o `api.post(path)` da tela nas
+  // ações sem corpo (o registro de atendimento exige a escolha desde o A1): o
   // helper que sempre mandava `{}` escondeu a regressão da b48/b49
   const enviar = (method: 'post' | 'put', path: string, s: Session, body?: unknown) => {
     const r = request(http)
@@ -152,12 +155,9 @@ describe('Clinics — pacote de sessões e consumo no atendimento (integração,
       currency: string;
       status: string;
     };
-  const atender = (agendamento: string, packageId?: string | null, s: Session = owner) =>
-    post(
-      `/api/clinics/appointments/${agendamento}/attendance`,
-      s,
-      packageId === undefined ? {} : { packageId },
-    );
+  /** Sem `packageId`, o avulso EXPLÍCITO (`null`): a escolha é obrigatória (ajuste A1). */
+  const atender = (agendamento: string, packageId: string | null = null, s: Session = owner) =>
+    post(`/api/clinics/appointments/${agendamento}/attendance`, s, { packageId });
   const pacote = (id: string) => prisma.raw.clinicsPackage.findFirst({ where: { id } });
   const estadoDo = async (agendamento: string) =>
     (await prisma.raw.clinicsAppointment.findFirst({ where: { id: agendamento } }))?.status;
@@ -307,7 +307,7 @@ describe('Clinics — pacote de sessões e consumo no atendimento (integração,
   // ── O consumo ─────────────────────────────────────────────────────────────
 
   describe('o consumo explícito no registro de atendimento', () => {
-    it('com o pacote: consome UMA sessão, na mesma transação, com o vínculo e a trilha; sem ele, o atendimento é avulso', async () => {
+    it('com o pacote: consome UMA sessão, na mesma transação, com o vínculo e a trilha; com `packageId: null`, o atendimento é avulso', async () => {
       const p = await criarPacote({ totalSessions: 2 });
       const comPacote = await agendar();
       const r = await atender(comPacote, p.id).expect(201);
@@ -445,22 +445,38 @@ describe('Clinics — pacote de sessões e consumo no atendimento (integração,
       ).toBe(0);
     };
 
-    it('VAZIO de verdade, por `Content-Length: 0` (a tela) ou por `chunked` sem nenhum byte (um proxy): avulso, sem consumo', async () => {
+    it('VAZIO de verdade, por `Content-Length: 0` ou por `chunked` sem nenhum byte: NÃO decide pela pessoa (400, a escolha que faltou), sem efeito nenhum (ajuste A1)', async () => {
       const p = await criarPacote();
-      const pelaTela = await agendar();
-      const peloProxy = await agendar();
-      const a = await cru(pelaTela);
-      expect(a.status).toBe(201);
-      expect(JSON.parse(a.corpo).packageId).toBeNull();
-      const b = await cru(peloProxy, { chunked: true });
-      expect(b.status).toBe(201);
-      expect(JSON.parse(b.corpo).packageId).toBeNull();
-      expect((await pacote(p.id))?.consumedSessions).toBe(0);
-      const registros = await prisma.raw.clinicsAttendance.findMany({
-        where: { appointmentId: { in: [pelaTela, peloProxy] } },
-      });
-      expect(registros.map((r) => r.packageId)).toEqual([null, null]);
+      const ag = await agendar();
+      const antes = await estadoDo(ag);
+      const a = await cru(ag);
+      expect(a.status).toBe(400);
+      expect(JSON.parse(a.corpo).message).toMatch(/Escolha explícita exigida/);
+      expect((await cru(ag, { chunked: true })).status).toBe(400);
+      await semEfeito(ag, antes, p.id);
+      // e a escolha explícita, depois, passa
+      expect((await cru(ag, { headers: json, corpo: '{"packageId":null}' })).status).toBe(201);
+    });
+
+    it('JSON SEM a escolha (`{}`, ou JSON de zero bytes, que o parser faz `{}` sem passar pelo middleware): 400, sem atendimento, consumo, transição nem trilha (ajuste A1)', async () => {
+      const p = await criarPacote();
+      const ag = await agendar();
+      const antes = await estadoDo(ag);
+      expect((await cru(ag, { headers: json, corpo: '{}' })).status).toBe(400);
+      expect((await cru(ag, { headers: json })).status).toBe(400);
+      await semEfeito(ag, antes, p.id);
       expect(await igualdadeVale()).toBe(true);
+    });
+
+    it('o SERVIÇO também recusa a ausência, antes de qualquer consulta: um chamador futuro que contorne o tipo não registra avulso (ajuste A1)', async () => {
+      const p = await criarPacote();
+      const ag = await agendar();
+      const antes = await estadoDo(ag);
+      const auth = { workspaceId: wsA.workspaceId } as AuthContext;
+      await expect(
+        app.get(ClinicsAttendanceService).record(auth, ag, {} as { packageId: null }),
+      ).rejects.toThrow('Escolha explícita exigida');
+      await semEfeito(ag, antes, p.id);
     });
 
     it('`chunked` COM bytes e sem `Content-Type` — inclusive a escolha de um pacote, ou um byte só — é recusado (415), sem efeito nenhum', async () => {
@@ -498,8 +514,8 @@ describe('Clinics — pacote de sessões e consumo no atendimento (integração,
       // aceitar a queda como vazio registraria em poucos ms; a janela dá folga
       await new Promise((r) => setTimeout(r, 1000));
       await semEfeito(ag, antes, p.id);
-      // e o mesmo agendamento segue aceitando o pedido vazio de verdade
-      expect((await cru(ag)).status).toBe(201);
+      // e o mesmo agendamento segue aceitando o pedido com a escolha explícita
+      expect((await cru(ag, { headers: json, corpo: '{"packageId":null}' })).status).toBe(201);
     });
 
     it('JSON válido com o pacote, pelo transporte real (com `Content-Length` ou `chunked`): consumo explícito', async () => {
@@ -595,7 +611,8 @@ describe('Clinics — pacote de sessões e consumo no atendimento (integração,
       await atender(avulso, p1.id).expect(409);
       const comPacote = await agendar();
       await atender(comPacote, p1.id).expect(201);
-      await atender(comPacote).expect(409);
+      // a ausência não chega à repetição: nem 201 nem 409, a escolha que faltou
+      await post(`/api/clinics/appointments/${comPacote}/attendance`, owner).expect(400);
       await atender(comPacote, null).expect(409);
       await atender(comPacote, p2.id).expect(409);
       expect((await pacote(p1.id))?.consumedSessions).toBe(1);
@@ -894,7 +911,7 @@ describe('Clinics — pacote de sessões e consumo no atendimento (integração,
         totalSessions: 2,
       }).expect(403);
       await post(`/api/clinics/packages/${p.id}/cancel`, semLeitura).expect(403);
-      expect((await atender(ag, undefined, semLeitura).expect(201)).body.packageId).toBeNull();
+      expect((await atender(ag, null, semLeitura).expect(201)).body.packageId).toBeNull();
       expect((await pacote(p.id))?.consumedSessions).toBe(0);
     });
 

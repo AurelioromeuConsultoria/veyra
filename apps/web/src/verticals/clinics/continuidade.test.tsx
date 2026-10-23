@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
 import { NavContributionsProvider } from '../../lib/nav';
+import { ME_KEY } from '../../lib/session';
 import { criarQueryClient } from '../../lib/session-query';
 import { ClinicsAgendaPage } from './AgendaPage';
 import { ClinicsNoShowPage, taxaLegivel } from './NoShowPage';
@@ -19,7 +20,8 @@ import { useClinicsNavGroups } from './nav';
  * dado antigo e 0 % distinto de "sem dados".
  */
 
-type Resposta = { status?: number; body?: unknown; pendente?: boolean };
+/** `espera`: a resposta só sai quando a promessa resolve (para segurar um pedido). */
+type Resposta = { status?: number; body?: unknown; pendente?: boolean; espera?: Promise<unknown> };
 type Rota = Resposta | ((corpo: unknown) => Resposta);
 
 /** fetch falso por rota ("GET /api/…", prefixo mais longo vence); registra toda chamada. */
@@ -40,6 +42,7 @@ function mockApi(rotas: Record<string, Rota>) {
         : { status: 404, body: { message: `sem mock: ${chave}` } };
       const resposta = typeof definida === 'function' ? definida(corpo) : definida;
       if (resposta.pendente) return new Promise<Response>(() => undefined);
+      if (resposta.espera) await resposta.espera;
       return new Response(JSON.stringify(resposta.body ?? {}), {
         status: resposta.status ?? 200,
         headers: { 'Content-Type': 'application/json' },
@@ -247,6 +250,10 @@ describe('registro de atendimento: a escolha EXPLÍCITA entre avulso e pacote', 
     );
     expect(within(painel).getAllByRole('radio')).toHaveLength(2);
     for (const r of within(painel).getAllByRole('radio')) expect(r).not.toBeChecked();
+    // o saldo é consulta, não reserva (ajuste A1, decisão 2)
+    expect(
+      within(painel).getByText(/não é uma reserva: pode mudar até a confirmação/),
+    ).toBeInTheDocument();
     const confirmar = within(painel).getByRole('button', { name: 'Escolha avulso ou um pacote' });
     expect(confirmar).toBeDisabled();
     fireEvent.click(opcao);
@@ -414,6 +421,8 @@ describe('registro de atendimento: a escolha EXPLÍCITA entre avulso e pacote', 
     renderizar(<ClinicsAgendaPage />, `/clinics/agenda?dia=${DIA}`);
     const painel = await abrirRegistro();
     expect(within(painel).getByText(/não estão visíveis para você/)).toBeInTheDocument();
+    // sem pacote elegível, sem o aviso do saldo
+    expect(within(painel).queryByText(/não é uma reserva/)).toBeNull();
     const avulso = within(painel).getByLabelText('Avulso (sem pacote)');
     expect(avulso).not.toBeChecked();
     expect(
@@ -427,7 +436,209 @@ describe('registro de atendimento: a escolha EXPLÍCITA entre avulso e pacote', 
         corpo: { packageId: null },
       }),
     );
+    expect(await within(painel).findByRole('status')).toHaveTextContent(
+      'Atendimento registrado como avulso.',
+    );
     expect(aPacotes(chamadas)).toEqual([]);
+  });
+
+  it('depois do sucesso, o saldo é o RELIDO do servidor, mesmo quando difere de "antes − 1"; durante a releitura, nenhum saldo; "Concluir" fecha', async () => {
+    let saldo = 7;
+    let segurar = false;
+    const chamadas = mockApi({
+      'GET /api/auth/me': { body: usuario(PROFISSIONAL) },
+      ...catalogo,
+      'GET /api/clinics/appointments': { body: [agendamento] },
+      'GET /api/clinics/packages': () =>
+        segurar
+          ? { pendente: true }
+          : { body: [pacote(P1, { remainingSessions: saldo, consumedSessions: 10 - saldo })] },
+      // outra sessão consumiu no meio: o servidor fica com 5, não com 6
+      [`POST /api/clinics/appointments/${AG}/attendance`]: () => {
+        saldo = 5;
+        segurar = true;
+        return { status: 201, body: { id: 'x' } };
+      },
+    });
+    renderizar(<ClinicsAgendaPage />, `/clinics/agenda?dia=${DIA}`);
+    const painel = await abrirRegistro();
+    fireEvent.click(
+      await within(painel).findByLabelText(
+        'Pacote de 10 sessões, criado em 31/12/2029 21:00: restam 7, ficam 6 depois deste atendimento',
+      ),
+    );
+    fireEvent.click(
+      within(painel).getByRole('button', {
+        name: 'Registrar e consumir 1 sessão do pacote criado em 31/12/2029 21:00 (restam 7 → 6)',
+      }),
+    );
+    expect(await within(painel).findByRole('status')).toHaveTextContent(
+      'Atendimento registrado, com 1 sessão do pacote escolhido.',
+    );
+    // a releitura está pendente: nenhum saldo, nem o antigo nem o calculado
+    expect(within(painel).getByText('Conferindo o saldo no servidor…')).toBeInTheDocument();
+    expect(within(painel).queryByText(/restam/)).toBeNull();
+    segurar = false;
+    recarregar();
+    expect(
+      await within(painel).findByText(
+        'Saldo no servidor: pacote de 10 sessões, criado em 31/12/2029 21:00: restam 5.',
+      ),
+    ).toBeInTheDocument();
+    expect(within(painel).queryByText(/restam 6/)).toBeNull();
+    expect(chamadas.filter((c) => c.chave.startsWith('POST'))).toHaveLength(1);
+    fireEvent.click(within(painel).getByRole('button', { name: 'Concluir' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Registrar atendimento' })).toBeNull(),
+    );
+  });
+
+  it('se `care:read` deixa de valer DURANTE o registro, nenhum saldo aparece como do servidor: nem o antigo, nem uma consulta nova', async () => {
+    let permissoes = PROFISSIONAL;
+    let liberar: () => void = () => undefined;
+    const resposta = new Promise<void>((r) => (liberar = r));
+    const chamadas = mockApi({
+      'GET /api/auth/me': () => ({ body: usuario(permissoes) }),
+      ...catalogo,
+      'GET /api/clinics/appointments': { body: [agendamento] },
+      'GET /api/clinics/packages': { body: [pacote(P1)] },
+      [`POST /api/clinics/appointments/${AG}/attendance`]: {
+        status: 201,
+        body: { id: 'x' },
+        espera: resposta,
+      },
+    });
+    renderizar(<ClinicsAgendaPage />, `/clinics/agenda?dia=${DIA}`);
+    const painel = await abrirRegistro();
+    fireEvent.click(
+      await within(painel).findByLabelText(
+        'Pacote de 10 sessões, criado em 31/12/2029 21:00: restam 7, ficam 6 depois deste atendimento',
+      ),
+    );
+    fireEvent.click(
+      within(painel).getByRole('button', {
+        name: 'Registrar e consumir 1 sessão do pacote criado em 31/12/2029 21:00 (restam 7 → 6)',
+      }),
+    );
+    // a sessão é relida SEM `care:read` antes de a resposta do registro chegar
+    permissoes = ESCREVE_SEM_LER;
+    act(() => {
+      void client.invalidateQueries({ queryKey: ME_KEY });
+    });
+    expect(await within(painel).findByText(/não estão visíveis para você/)).toBeInTheDocument();
+    // e o pacote do cache some das opções
+    expect(within(painel).queryByText(/Pacote de 10 sessões/)).toBeNull();
+    const lidas = aPacotes(chamadas).length;
+    act(() => liberar());
+    expect(await within(painel).findByRole('status')).toHaveTextContent(
+      'Atendimento registrado, com 1 sessão do pacote escolhido.',
+    );
+    expect(within(painel).getByText(/deixaram de estar visíveis para você/)).toBeInTheDocument();
+    expect(within(painel).queryByText(/Saldo no servidor/)).toBeNull();
+    expect(within(painel).queryByText(/restam/)).toBeNull();
+    expect(aPacotes(chamadas)).toHaveLength(lidas);
+  });
+
+  it('a releitura CANCELADA em voo volta ao dado de antes do registro: ele NÃO aparece como saldo do servidor; "conferir de novo" traz o relido', async () => {
+    let saldo = 7;
+    let segurar = false;
+    mockApi({
+      'GET /api/auth/me': { body: usuario(PROFISSIONAL) },
+      ...catalogo,
+      'GET /api/clinics/appointments': { body: [agendamento] },
+      'GET /api/clinics/packages': () =>
+        segurar
+          ? { pendente: true }
+          : { body: [pacote(P1, { remainingSessions: saldo, consumedSessions: 10 - saldo })] },
+      [`POST /api/clinics/appointments/${AG}/attendance`]: () => {
+        saldo = 6;
+        segurar = true;
+        return { status: 201, body: { id: 'x' } };
+      },
+    });
+    renderizar(<ClinicsAgendaPage />, `/clinics/agenda?dia=${DIA}`);
+    const painel = await abrirRegistro();
+    fireEvent.click(
+      await within(painel).findByLabelText(
+        'Pacote de 10 sessões, criado em 31/12/2029 21:00: restam 7, ficam 6 depois deste atendimento',
+      ),
+    );
+    fireEvent.click(
+      within(painel).getByRole('button', {
+        name: 'Registrar e consumir 1 sessão do pacote criado em 31/12/2029 21:00 (restam 7 → 6)',
+      }),
+    );
+    expect(await within(painel).findByText('Conferindo o saldo no servidor…')).toBeInTheDocument();
+    // outra parte da tela cancela a releitura: o cache volta ao de ANTES
+    act(() => {
+      void client.cancelQueries({ queryKey: ['clinics', 'packages'] });
+    });
+    expect(await within(painel).findByRole('alert')).toHaveTextContent(
+      'Não foi possível conferir o saldo atualizado. O atendimento já está registrado.',
+    );
+    expect(within(painel).queryByText(/restam/)).toBeNull();
+    segurar = false;
+    fireEvent.click(within(painel).getByRole('button', { name: 'Conferir de novo' }));
+    expect(
+      await within(painel).findByText(
+        'Saldo no servidor: pacote de 10 sessões, criado em 31/12/2029 21:00: restam 6.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('a releitura do saldo que FALHA não mostra saldo antigo: o alerta, e "conferir de novo" traz o do servidor; o pacote esgotado aparece concluído', async () => {
+    // antes do registro, 1 sessão; depois, a releitura falha e, na seguinte, o
+    // pacote vem concluído
+    let fase: 'antes' | 'falha' | 'depois' = 'antes';
+    mockApi({
+      'GET /api/auth/me': { body: usuario(PROFISSIONAL) },
+      ...catalogo,
+      'GET /api/clinics/appointments': { body: [agendamento] },
+      'GET /api/clinics/packages': () =>
+        fase === 'falha'
+          ? { status: 500, body: { message: 'x' } }
+          : {
+              body: [
+                fase === 'antes'
+                  ? pacote(P1, { remainingSessions: 1, consumedSessions: 9 })
+                  : pacote(P1, { remainingSessions: 0, consumedSessions: 10, status: 'completed' }),
+              ],
+            },
+      [`POST /api/clinics/appointments/${AG}/attendance`]: () => {
+        fase = 'falha';
+        return { status: 201, body: { id: 'x' } };
+      },
+    });
+    renderizar(<ClinicsAgendaPage />, `/clinics/agenda?dia=${DIA}`);
+    const painel = await abrirRegistro();
+    fireEvent.click(
+      await within(painel).findByLabelText(
+        'Pacote de 10 sessões, criado em 31/12/2029 21:00: restam 1, ficam 0 depois deste atendimento',
+      ),
+    );
+    fireEvent.click(
+      within(painel).getByRole('button', {
+        name: 'Registrar e consumir 1 sessão do pacote criado em 31/12/2029 21:00 (restam 1 → 0)',
+      }),
+    );
+    expect(await within(painel).findByRole('alert')).toHaveTextContent(
+      'Não foi possível conferir o saldo atualizado. O atendimento já está registrado.',
+    );
+    expect(within(painel).queryByText(/restam/)).toBeNull();
+    fase = 'depois';
+    fireEvent.click(within(painel).getByRole('button', { name: 'Conferir de novo' }));
+    expect(
+      await within(painel).findByText(
+        'Saldo no servidor: pacote de 10 sessões, criado em 31/12/2029 21:00: restam 0 (Concluído).',
+      ),
+    ).toBeInTheDocument();
+    // uma recarga seguinte que falha: com erro, nenhum saldo, nem o já relido
+    fase = 'falha';
+    recarregar();
+    expect(await within(painel).findByRole('alert')).toHaveTextContent(
+      'Não foi possível conferir o saldo atualizado.',
+    );
+    expect(within(painel).queryByText(/restam/)).toBeNull();
   });
 });
 
