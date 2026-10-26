@@ -5453,7 +5453,7 @@ Se alguma condição falha, a mensagem não sai, com o motivo por destinatário 
    - Criar na tela continua travando: é um número só, e a espera fica uniforme com a edição.
    - Um teste estático fixa que a importação só cria: sem atualizar, fundir ou buscar contato por telefone.
    - **A F4.1c reabre o ponto:** o item 6 dela ("um só candidato", conferido sob o `address:` compartilhado) supõe que todo escritor de telefone espera o endereço. A alternativa que mantém a serialização é a trava de endereço por **balde** (o HMAC módulo 256, por workspace): a importação pega no máximo 256 travas, e a colisão só causa espera a mais. Ela muda a chave de todos os caminhos, e por isso não entrou aqui.
-   - **Pede a sua confirmação**, porque muda uma linha aprovada, agora com a demonstração da tabela acima. Os baldes ficam como proposta para a F4.1c.
+   - **Pede a sua confirmação**, porque muda uma linha aprovada, agora com a demonstração da tabela acima. Os baldes ficam como proposta para a F4.1c. _(Decidido na aprovação do estado final, em 2026-10-26: aceito no escopo atual, com o limite demonstrado, e sem valer para a F4.1c — bloco no fim deste ADR.)_
 8. **A classificação ganhou dois casos** (confirmado pelo usuário em 2026-10-23, nos limites abaixo), os dois sem completar nem adivinhar número (C17):
    - **exata** também quando um telefone do contato é o MESMO número internacional, dígito a dígito, escrito com "+". É o `wa_id` que a biblioteca não valida (o celular brasileiro sem o 9º dígito): o lead nasce com ele assim. Sem isso, toda mensagem seguinte do mesmo número seria RAI, uma regressão diante do `has` exato de antes;
    - **possível** também quando o telefone tem a chave do número e nenhuma forma guardada o explica (o 00 de operadora, o formato antigo, a forma ainda não preenchida), e com os zeros da frente ignorados no sufixo. Antes, "011 9876-5432" e "0021 11 98765-4321" davam `nenhuma`, e outro contato exato receberia a mensagem em silêncio (achado 4 da segurança);
@@ -5546,3 +5546,17 @@ Se alguma condição falha, a mensagem não sai, com o motivo por destinatário 
 **A conclusão dos testes determinísticos da importação (desvio 7).** Os seis passam, com a leitura dos candidatos e o commit da importação controlados por espião. O resultado de cada ordem é o da tabela do desvio: quando a importação comita antes da leitura, quem decide a vê (ordem lógica: importação, depois o outro); quando comita depois da leitura e antes do commit de quem decide, a decisão é a dos candidatos lidos (ordem lógica: o outro, depois a importação) — inclusive a mensagem que vai ao contato exato já existente, com o importado chegando no meio. Em nenhuma ordem a importação funde contatos ou muda uma decisão já tomada; a ambiguidade criada por ela aparece na mensagem seguinte, como RAI. Isso sustenta o desvio 7 no limite registrado, sem garantia absoluta; a decisão continua sendo sua.
 
 **O que fica para depois** (ADR-052, sem aprovação): o BSUID, as finalidades, o consentimento, o bloqueio de parar, os templates, o envio iniciado pelo negócio, o E7 e o estado `canceled`. A F4.1a não abre envio nenhum.
+
+**Aprovação do estado final da F4.1a (2026-10-26).** O usuário aprovou o estado final em `25e819c`, publicado como o commit consolidado `2b6d6fd`, descrito abaixo.
+
+- **Desvio 7, a importação sem trava de endereço: aceito no escopo atual, com o limite demonstrado.** Numa operação sobreposta, a decisão da ingestão ou da identificação usa os candidatos que leu e pode manter a atribuição ao contato exato que já existia; a ambiguidade criada pela importação aparece na mensagem seguinte.
+  - **Não é garantia de unicidade no instante do commit.**
+  - **Não vale automaticamente para a F4.1c:** antes de ligar o envio iniciado pelo negócio, a coordenação de **todos** os escritores de telefone, inclusive a importação, precisa ser resolvida e testada.
+  - **Os baldes** de endereço (o HMAC módulo 256 por workspace) continuam sendo uma **proposta**, não uma solução aprovada.
+- **As pendências de metadados continuam abertas:** o nome do arquivo na trilha (`file.quarantined`, `file.deleted`) e os ids de conversa RAI na trilha e nos runs, visíveis a quem tem `audit:read` ou gere o workspace. Seguem vinculadas ao **B1** do ADR-048 §10 e à liberação para dados reais; nenhuma é risco aceito.
+- **A consolidação, autorizada antes do push:**
+  - o `1ad1bcd`, com as decisões anteriores ao código, ficou separado;
+  - os commits locais `53c59b9` e `25e819c` viraram um único commit de implementação sobre ele, o `2b6d6fd`, com a **árvore idêntica** à do `25e819c` (o mesmo hash de árvore, `9b352a5b…`, inclusive o arquivo final da migration). O histórico publicado tem só a versão final da migration `20261023120000`;
+  - os commits anteriores ficaram numa referência local recuperável (a branch `backup/f41a-antes-da-consolidacao`), que não é publicada;
+  - a bateria local não foi repetida pela mudança de histórico, porque o conteúdo é o mesmo da b65.
+- **Os limites não mudam:** continuam bloqueados deploy, ativação do Clinics, envio real e dados reais.
