@@ -5562,3 +5562,106 @@ Se alguma condição falha, a mensagem não sai, com o motivo por destinatário 
 - **Os limites não mudam:** continuam bloqueados deploy, ativação do Clinics, envio real e dados reais.
 
 **F4.1a publicada e validada (2026-10-26).** O push de `1ad1bcd`, `2b6d6fd` e `59535e9`, nessa ordem, foi um avanço simples de `14e7d54` (sem force-push nem reescrita do histórico remoto). O CI no `59535e9` ficou verde nos quatro jobs: Lint & format, Typecheck & build, Testes e E2E (Playwright). A única anotação foi o aviso do GitHub sobre a migração do rótulo `ubuntu-latest` para o Ubuntu 26, que não é falha. As decisões abertas que não entraram na F4.1a (C10, C14, C15, C16 e C18), as pendências de metadados (B1) e os bloqueios de deploy, ativação, envio real e dados reais continuam como estavam.
+
+**F4.1b — as decisões do usuário (2026-10-26) e o plano consolidado, para revisão antes do código.** Escopo, pela tabela de entregas do ADR-048 adendo 8: no Core, finalidades versionadas, consentimento, pedido de parar e as chaves de permissão com o preenchimento. As telas ficam na F4.4; o vínculo do template com a finalidade e o envio iniciado pelo negócio, na F4.1c; as finalidades do vertical, na F4.2.
+
+**1. As decisões, com as condições do usuário.**
+
+- **C15 — desbloquear:** a chave `consents:unblock`, só Owner e Admin por padrão. Ter a chave **não basta** para ignorar um pedido de parar: o desbloqueio exige registrar a **nova solicitação da pessoa**, com origem da lista fechada e o recibo emitido pelo servidor, sem nota livre. É auditado e **nunca restaura** consentimentos anteriores.
+- **C16 — o alcance do bloqueio:** (workspace, número), para **todos os canais** do workspace, e nenhum outro contato com o mesmo número o contorna. **Pressuposto:** o workspace representa a empresa; empresas distribuídas em vários workspaces não ficam resolvidas por isso.
+- **O número:** a correspondência exata da F4.1a — a forma normalizada, ou o mesmo número internacional com "+", com todos os dígitos —, gravada como "+dígitos". Nenhum consentimento, pedido de parar ou desbloqueio vale por aproximação, sufixo ou variante do 9º dígito.
+- **A resposta depois do pedido de parar, com limite:** uma mensagem nova da pessoa, recebida **depois** do bloqueio, permite a resposta **humana** dentro da janela dessa mensagem, com o bloqueio visível. A janela aberta por mensagem anterior ao bloqueio não basta. Receber a mensagem não tira o bloqueio nem cria consentimento. Não autoriza template, campanha, reativação nem mensagem de origem da IA. O servidor confere no envio e no despacho (item 4).
+- **Os templates na transição:** a partir da F4.1b, consentimento antigo não autoriza template. Enquanto faltar a finalidade verificável, o template é recusado no compositor, na API e no worker, inclusive os pedidos antigos pendentes, com um motivo próprio de **indisponibilidade do fluxo** — nunca como se a pessoa tivesse revogado (item 5).
+- **O recibo:** `CON-000001`, único no workspace, sem reutilização e sem truncar depois de seis dígitos; **sem** garantia de sequência contínua. O registro é atômico e idempotente: repetir o mesmo pedido devolve o mesmo consentimento e o mesmo recibo. O recibo identifica o registro no sistema; **não prova sozinho** que a pessoa consentiu.
+
+**2. As permissões, ato por ato.** A chave nova sempre se soma às que a rota já exige.
+
+| Ato                                             | Permissões                                                                                                      | Condições                                                                                                                                                                                                        |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Consultar consentimentos e bloqueio             | `consents:read` + `contacts:read` (pelo contato); ou `consents:read` + `conversations:read` (pela conversa)     | Pela conversa RAI, também `contacts:write` (C13). O número aparece completo só com `contacts:read`                                                                                                               |
+| Conceder                                        | `consents:manage` + `contacts:read`                                                                             | Só contato identificado, só um número exato dele; **recusado sob bloqueio** (409). Exige `Idempotency-Key`                                                                                                       |
+| Revogar                                         | `consents:manage` + `contacts:read`                                                                             | Uma vez só; motivo da lista fechada                                                                                                                                                                              |
+| Registrar o pedido de parar                     | `consents:manage` + `contacts:read` (pelo contato); ou `consents:manage` + `conversations:read` (pela conversa) | O número vem do contato (um número exato dele) ou do endereço da conversa, **nunca digitado**. Na conversa RAI, também `contacts:write` (C13), **sem precisar atribuí-la a um contato**. Exige `Idempotency-Key` |
+| Desbloquear                                     | `consents:unblock` + a visibilidade da rota (contato ou conversa)                                               | Registra a nova solicitação (origem e recibo); auditado; não restaura consentimento. Exige `Idempotency-Key`                                                                                                     |
+| Revisar versão de template (`templates:review`) | criada agora, usada na F4.1c e na F4.4                                                                          | —                                                                                                                                                                                                                |
+
+**3. O modelo**, todo com `workspaceId`, em `WORKSPACE_MODELS`, com índices liderados por `workspaceId` e FKs compostas:
+
+- **`ConsentPurpose`:** a versão da finalidade (chave, versão, descrição mostrada à pessoa, categoria permitida e a lista fechada de campos). Imutável; versão nova só pela CLI administrativa, com auditoria. O Core não cria finalidade nenhuma nesta entrega.
+- **`Consent`:** (contato, canal, número, versão da finalidade). O **canal** é o canal do negócio (`Channel`), como no item 5; o bloqueio, por C16, é do workspace.
+  - Origem da lista fechada (`in_person`, `phone`, `paper_form`), recibo, fotografia da descrição aceita, quem concedeu e quando (relógio do banco).
+  - Revogação uma vez só, com quem, quando e o motivo: `manual`, `number_removed` ou `stop_requested`.
+  - Imutável pelo padrão do Core (append-only no `PrismaService`) mais um gatilho de `UPDATE` que só permite preencher a revogação uma vez. A cascata da exclusão do contato continua permitida.
+  - No máximo um consentimento ativo por (contato, canal, número, versão), garantido por único com marca.
+- **`StopBlock`:** (workspace, número), com o instante (relógio do banco), quem registrou, a origem e o recibo, e o desbloqueio (quem, quando, a origem e o recibo da nova solicitação). **Sem contato e sem nome:** guarda só o necessário para impedir contato novo, e sobrevive à exclusão do contato sem preservar o cadastro. No máximo um ativo por (workspace, número). A retenção fica pendente do jurídico.
+- **O recibo:** um contador por workspace, incrementado na transação do registro, com os prefixos `CON-` (consentimento), `PAR-` (pedido de parar) e `DES-` (desbloqueio). Único por (workspace, recibo).
+- **`Message.stopBlockId`:** o bloqueio em vigor quando a mensagem **entrou**, gravado pela ingestão sob a trava do endereço (item 4).
+- **`MessageDispatch.stopBlockId`:** o bloqueio sob o qual a resposta foi aprovada, nulo sem bloqueio (item 4).
+- **O livro do preenchimento das permissões** (item 6).
+- **Os consentimentos da 9.1** (`ContactChannelConsent`) ficam como histórico (C7) e não autorizam nada novo; não são migrados.
+
+**4. A resposta depois do pedido de parar.**
+
+- **"Recebida depois do bloqueio"** é decidido pela ingestão, sem comparar relógios: o pedido de parar pega o `address:` exclusivo e a ingestão o compartilhado, então os dois se serializam, e a ingestão grava em `Message.stopBlockId` o bloqueio que estava ativo quando a mensagem entrou.
+- **Mensagem fora de ordem:** além disso, o instante do provedor precisa passar do instante do bloqueio, com uma **margem de 60 s**. A mensagem escrita antes do pedido e entregue depois não abre a resposta. O erro de relógio só deixa a regra mais estrita, nunca mais solta.
+- **A janela** conta de 24 h a partir do instante do provedor dessa mensagem.
+- **Os despachos pendentes:** o pedido de parar cancela, na mesma transação, todo despacho **não iniciado** para o número no workspace, em qualquer canal, com o motivo `stop_requested`. O que já está em voo, com o marcador de despacho, não volta, e a trilha diz isso.
+- **No worker:** a resposta só sai sob bloqueio se for de pessoa (nunca da IA, nunca template) e se `MessageDispatch.stopBlockId` for o bloqueio ativo agora. Isso fecha a corrida em que uma resposta preparada antes do pedido escapa do cancelamento, e o bloqueio retirado e criado de novo não aproveita aprovação antiga.
+
+**5. Os templates na transição.** O motivo é `template_flow_unavailable`: "O envio por template está indisponível nesta versão, até a finalidade verificável (F4.1c)".
+
+- No compositor, a janela fechada mostra o motivo em vez dos templates.
+- A API o recusa antes de mensagem, despacho ou reserva.
+- O worker leva o despacho de template ainda pendente a `failed_permanent` com esse motivo.
+- Nada disso revoga ou altera consentimento. A F4.1c só restaura o envio com o contrato completo.
+
+**6. O preenchimento das permissões.** O `systemKey` identifica o papel, mas não prova que ele não foi personalizado; e hoje não há API de edição de papel: personalização só acontece pela CLI de ativação de um vertical ou direto no banco. Por isso:
+
+- **só acréscimo:** a migration põe as chaves novas no catálogo e insere concessões; nunca remove nem altera nada;
+- **pelo pré-requisito, não pelo nome:** cada chave só entra no papel que já tem a capacidade que ela estende — `consents:read` só onde há `contacts:read`; `consents:manage` só onde há `contacts:write`; `consents:unblock` e `templates:review` só no `owner` e no `admin`, e também só onde há `contacts:write`. Um papel de sistema que alguém restringiu não ganha chave nova por cima da restrição;
+- **o livro do preenchimento:** cada concessão feita fica registrada (workspace, papel, chave, quando), e a reaplicação pula o que já foi feito. Uma revogação posterior pelo workspace **não é desfeita** por uma reaplicação;
+- **auditoria** de cada concessão, com o ator da migration;
+- **o `Profissional` e todo papel sem `systemKey` ficam fora**, assim como o Guest;
+- **o modelo de papéis do Core:** Owner e Admin recebem as chaves novas pelo próprio modelo (todas as chaves, menos `billing:manage` no Admin); o Member, `consents:read` e `consents:manage`.
+
+**7. A concorrência.** Um consentimento não se torna utilizável sob bloqueio por causa da ordem das operações.
+
+- **Por construção:** o uso confere, no envio e no despacho, o consentimento ativo **e** a ausência de bloqueio para (workspace, número).
+- **Pelas travas:** conceder, revogar, registrar parar, desbloquear e tirar número (editar, rejeitar com retirada) pegam o contato exclusivo e o `address:` do número exclusivo, numa passada.
+  - O pedido de parar pega todos os contatos que têm o número, relê o conjunto sob as travas e tenta de novo, com limite, se ele cresceu.
+  - Conceder relê o bloqueio sob as travas e recusa se ele existe.
+- **A importação** (que não trava, desvio 7) não cria consentimento, e o bloqueio é por número: o contato importado já nasce coberto. Isso não resolve a coordenação de todos os escritores, exigida para a F4.1c.
+- **Os testes determinísticos,** com travadores e espiões, nas duas ordens:
+  - parar × conceder;
+  - parar × importação;
+  - parar × tirar o número;
+  - conceder × tirar o número;
+  - desbloquear × conceder.
+
+**8. Fora desta entrega:**
+
+- ampliar a origem da evidência;
+- qualquer automação de desbloqueio ou de leitura do texto ("pare");
+- as telas (F4.4);
+- os templates e o envio iniciado pelo negócio (F4.1c);
+- as finalidades do vertical (F4.2);
+- o BSUID.
+
+**9. A verificação:**
+
+- contratos → API → web (só o necessário para o compositor explicar as recusas);
+- a migration conforme o ADR-051, ensaiada com schema e dados (o preenchimento e o livro);
+- testes da imutabilidade, da revogação única, da cascata, do bloqueio depois da exclusão, da resposta depois do bloqueio (inclusive fora de ordem e despacho pendente), dos templates recusados nos três pontos, do preenchimento (acréscimo, pré-requisito, livro, `Profissional` fora) e do isolamento entre workspaces (P0);
+- mutações, reviewer e security, e a bateria completa;
+- commit local, parando antes do push.
+
+**10. O que este plano decide e pede a sua revisão:**
+
+- o canal do consentimento é o `Channel` do negócio, com o bloqueio por workspace;
+- o preenchimento por pré-requisito e com o livro, em vez de tentar detectar personalização;
+- os prefixos `PAR-` e `DES-` no mesmo contador do `CON-`;
+- a concessão sob bloqueio recusada com 409;
+- a margem de 60 s para o instante do provedor;
+- as colunas `Message.stopBlockId` e `MessageDispatch.stopBlockId`.
+
+Continuam bloqueados deploy, ativação do Clinics, envio real e dados reais.
