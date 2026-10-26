@@ -4,8 +4,14 @@ import { ConfigService } from '@nestjs/config';
 import { chaveDeCoincidencia } from '../contacts/phone-identity';
 import type { Db } from '../prisma/prisma.service';
 import { CONFIG_DA_GUARDA, type ConfigDaGuarda } from './content-use.pools';
+import { COORDENACAO } from './coordination-sql';
 import { MudancasDeRestricao } from './restriction-changes';
-import { prazoDeTrava, travarIngestao, travarParaUso } from './restriction-locks';
+import {
+  prazoDeTrava,
+  travarIngestao,
+  travarParaUso,
+  travarTelefonesEmMassa,
+} from './restriction-locks';
 
 type Coordenavel = Pick<Db, '$executeRaw' | '$queryRaw'>;
 
@@ -20,20 +26,27 @@ export const MENSAGEM_LOTE_SEM_PRAZO =
  *
  * | Operação                         | Travas                                          |
  * | -------------------------------- | ----------------------------------------------- |
- * | ingestão                         | nível 0; workspace e `address:` compartilhadas  |
- * | identificar, desfazer e rejeitar | nível 0; a mudança por contato (os contatos,    |
+ * | ingestão                         | nível 0; workspace, escritores em massa e       |
+ * |                                  | `address:` compartilhadas                       |
+ * | identificar, desfazer e rejeitar | nível 0; a mudança por contato (os escritores   |
+ * |                                  | em massa compartilhada; os contatos,            |
  * |                                  | `conversation:` e `address:` exclusivos)        |
- * | escritor de telefone de contato  | a mudança por contato: o contato e o `address:` |
- * | (criar na tela, editar, excluir) | de cada NÚMERO acrescentado ou removido         |
- * | consentimento e pedido de parar  | a mudança por contato: os contatos do número e  |
- * | (F4.1b)                          | o `address:` dele                               |
+ * | escritor de telefone de contato  | a mudança por contato: os escritores em massa   |
+ * | (criar na tela, editar, excluir) | compartilhada; o contato e o `address:` de cada |
+ * |                                  | NÚMERO acrescentado ou removido                 |
+ * | consentimento e pedido de parar  | a mudança por contato: os escritores em massa   |
+ * | (F4.1b)                          | compartilhada; os contatos do número e o        |
+ * |                                  | `address:` dele                                 |
+ * | o marcador da resposta de pessoa | escritores em massa e `address:` compartilhadas |
+ * | importação (F4.1c-1)             | escritores em massa EXCLUSIVA (uma trava só)    |
  *
- * O contato criado na própria transação (o lead da ingestão, o novo da
- * identificação) tem id fresco, que ninguém mais conhece: ele não pega o nível
- * 2 depois do 3. Isso NÃO vale para contato existente — editar sempre passa por
- * `paraTelefones`. A importação não trava endereço (ADR-052, resultados da
- * F4.1a): só cria contatos, e um lote de até mil números ocuparia a tabela de
- * travas compartilhada do Postgres.
+ * A tabela completa, com a normalização, está no ADR-052 ("a matriz dos
+ * participantes"). O contato criado na própria transação (o lead da ingestão,
+ * o novo da identificação) tem id fresco, que ninguém mais conhece: ele não
+ * pega o nível 2 depois do 3. Isso NÃO vale para contato existente — editar
+ * sempre passa por `paraTelefones`. A importação não trava endereço: pega o
+ * nível 1b exclusivo, uma trava só para o lote, e com isso espera — e é
+ * esperada por — todo escritor de telefone e todo leitor de candidatos.
  *
  * Nenhuma chave leva o telefone em claro: o nível 0 e o `address:` passam pelo
  * HMAC da `ADDRESS_LOCK_KEY` — o texto da chave vai como parâmetro ao SQL, e
@@ -105,10 +118,12 @@ export class TravasDeIdentidade {
     await repor(1);
     if (!chaveDeCoincidencia) return;
     await travarIngestao(tx, workspaceId, [this.nivelZero(workspaceId, chaveDeCoincidencia)]);
-    // o workspace e o endereço: duas esperas, que somadas não passam do resto
-    await repor(2);
+    // o workspace, os escritores em massa e o endereço: três esperas, que
+    // somadas não passam do resto
+    await repor(3);
     await travarParaUso(tx, {
       workspaceId,
+      telefones: true,
       entityKeys: [this.endereco(workspaceId, chaveDeCoincidencia)],
     });
     await repor(1);
@@ -140,6 +155,7 @@ export class TravasDeIdentidade {
     await this.mudancas.porContato(tx, {
       workspaceId: escopo.workspaceId,
       contactIds: escopo.contactIds,
+      telefones: true,
       entityKeys: [
         this.conversa(escopo.conversationId),
         ...[
@@ -164,8 +180,40 @@ export class TravasDeIdentidade {
     await prazoDeTrava(tx, this.guarda.mudancaTravaMs);
     await travarParaUso(tx, {
       workspaceId,
+      telefones: true,
       entityKeys: chave ? [this.endereco(workspaceId, chave)] : [],
     });
+  }
+
+  /**
+   * A importação de contatos (F4.1c-1): a trava dos escritores em massa,
+   * exclusiva, com o prazo CURTO da importação — enquanto ela espera, os
+   * pedidos novos da compartilhada do workspace esperam atrás dela. Sem a
+   * trava no prazo, a transação inteira é desfeita, e nada é importado (409).
+   * Obtida a trava, o resto da transação volta ao prazo das mudanças.
+   */
+  async paraImportacao(tx: Db, workspaceId: string): Promise<void> {
+    await prazoDeTrava(tx, this.guarda.importacaoTravaMs);
+    await travarTelefonesEmMassa(tx, workspaceId);
+    await prazoDeTrava(tx, this.guarda.mudancaTravaMs);
+  }
+
+  /**
+   * A normalização (CLI `phones:normalize`, F4.1c-1): a mesma trava, exclusiva,
+   * com o prazo da CLI, numa transação `raw` cross-workspace. É a ÚNICA trava
+   * consultiva da passada inteira do workspace; o `lock_timeout` vale também
+   * para as linhas. O prazo de ociosidade encerra a sessão da CLI que parou
+   * no meio, e com ela a trava exclusiva.
+   */
+  async paraNormalizacao(
+    tx: Coordenavel,
+    workspaceId: string,
+    travaMs: number,
+    ociosoMs: number,
+  ): Promise<void> {
+    await tx.$executeRaw(COORDENACAO.prazoOcioso(`${Math.max(1, Math.round(ociosoMs))}ms`));
+    await prazoDeTrava(tx, travaMs);
+    await travarTelefonesEmMassa(tx, workspaceId);
   }
 
   /**
@@ -183,6 +231,7 @@ export class TravasDeIdentidade {
     await this.mudancas.porContato(tx, {
       workspaceId: escopo.workspaceId,
       contactIds: escopo.contactIds,
+      telefones: true,
       entityKeys: chave ? [this.endereco(escopo.workspaceId, chave)] : [],
     });
   }
@@ -202,6 +251,7 @@ export class TravasDeIdentidade {
     await this.mudancas.porContato(tx, {
       workspaceId: escopo.workspaceId,
       contactIds: escopo.contactId ? [escopo.contactId] : [],
+      telefones: true,
       entityKeys: [...new Set(escopo.chaves)].map((c) => this.endereco(escopo.workspaceId, c)),
     });
   }

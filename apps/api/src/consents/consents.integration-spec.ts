@@ -883,13 +883,17 @@ describe('F4.1b — consentimento, pedido de parar e templates na transição (i
       const ana = (await prisma.raw.contact.findFirstOrThrow({ where: { name: 'Ana Fictícia' } }))
         .id;
       await parar(ana).expect(201);
+      // o cancelamento neutro (F4.1c-1): `canceled`, comprovadamente não enviado
       expect(await despachoDe(pendente)).toMatchObject({
-        state: 'failed_permanent',
+        state: 'canceled',
         errorCode: 'stop_requested',
         reservationId: null,
         claimToken: null,
       });
-      expect(await despachoDe(emVoo)).toMatchObject({ state: 'sending' });
+      // o em voo não volta: recebe o pedido, que a guarda da IA ainda veria
+      const voo = await despachoDe(emVoo);
+      expect(voo).toMatchObject({ state: 'sending' });
+      expect(voo.cancelRequestedAt).not.toBeNull();
       // só a reserva do cancelado voltou
       expect(await prisma.raw.usageReservation.count()).toBe(1);
       const [registro] = await prisma.raw.auditLog.findMany({
@@ -926,7 +930,7 @@ describe('F4.1b — consentimento, pedido de parar e templates na transição (i
       await parar(ana).expect(201);
       for (const id of [reivindicado, aRetentar]) {
         expect(await despachoDe(id)).toMatchObject({
-          state: 'failed_permanent',
+          state: 'canceled',
           errorCode: 'stop_requested',
           claimToken: null,
           reservationId: null,
@@ -1902,21 +1906,27 @@ describe('F4.1b — consentimento, pedido de parar e templates na transição (i
       });
     });
 
-    it('parar × importação: o contato importado no meio é relido, o pedido tenta de novo e vale para ele', async () => {
+    it('parar × importação: a importação espera o pedido (F4.1c-1), e a importada nasce coberta pelo número', async () => {
       const ana = await contato('Ana Fictícia', [N_E164]);
       const travas = jest.spyOn(app.get(TravasDeIdentidade), 'paraNumero');
       const t = await travar(endereco(N_E164));
       let pedido;
+      let importacao;
       let travados: string[][];
       try {
         const p = parar(ana).then((r) => r);
         await esperarBloqueadosPor(t, 1, { descricao: 'o pedido de parar' });
-        // a importação não trava endereço (desvio 7): termina com o pedido preso
-        await registrar('/api/contacts/import', owner, {
+        // a importação pega os escritores em massa EXCLUSIVA, e o pedido os
+        // segura compartilhada: ela espera, em vez de comitar no meio (o
+        // desvio 7 da F4.1a deixou de existir)
+        const i = registrar('/api/contacts/import', owner, {
           rows: [{ name: 'Importada Fictícia', phone: N_E164 }],
-        }).expect(201);
+        }).then((r) => r);
+        await esperarBloqueadosPor(t, 2, { descricao: 'o pedido e a importação' });
+        expect(await prisma.raw.contact.count({ where: { name: 'Importada Fictícia' } })).toBe(0);
         await t.query('ROLLBACK');
         pedido = await p;
+        importacao = await i;
       } finally {
         await soltar(t);
         // as chamadas ANTES de restaurar: o restore as apaga
@@ -1924,11 +1934,12 @@ describe('F4.1b — consentimento, pedido de parar e templates na transição (i
         travas.mockRestore();
       }
       expect(pedido.status).toBe(201);
+      expect(importacao.status).toBe(201);
+      // uma passada só, com a Ana: a importada só entrou depois do commit do pedido
+      expect(travados).toEqual([[ana]]);
       const importada = await prisma.raw.contact.findFirstOrThrow({
         where: { name: 'Importada Fictícia' },
       });
-      // a primeira passada travou só a Ana, releu o conjunto e recomeçou com as duas
-      expect(travados).toEqual([[ana], [ana, importada.id].sort()]);
       // a importação não cria consentimento, e o pedido é por número: ela nasce coberta
       expect(await prisma.raw.consent.count({ where: { contactId: importada.id } })).toBe(0);
       expect(await bloqueiosAtivos()).toHaveLength(1);

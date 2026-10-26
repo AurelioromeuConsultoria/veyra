@@ -6,6 +6,7 @@ import { FilesModule } from '../files/files.module';
 import { UsageModule } from '../usage/usage.module';
 import { FakeMetaTransport } from './fake.transport';
 import { GraphApiTransport, META_TRANSPORT } from './meta.transport';
+import { CancelamentoDeDespachos } from './dispatch-cancellation.service';
 import { MediaCollectorService } from './media-collector.service';
 import { WhatsappSendService } from './whatsapp-send.service';
 import { WhatsappController } from './whatsapp.controller';
@@ -19,6 +20,7 @@ import { WhatsappService } from './whatsapp.service';
     WhatsappService,
     WhatsappSendService,
     MediaCollectorService,
+    CancelamentoDeDespachos,
     CryptoService,
     /**
      * Transporte real por padrão; o falso SÓ quando `META_TRANSPORT_MODE=fake`,
@@ -42,6 +44,6 @@ import { WhatsappService } from './whatsapp.service';
           : new GraphApiTransport(config),
     },
   ],
-  exports: [WhatsappService, WhatsappSendService, MediaCollectorService],
+  exports: [WhatsappService, WhatsappSendService, MediaCollectorService, CancelamentoDeDespachos],
 })
 export class ChannelsModule {}

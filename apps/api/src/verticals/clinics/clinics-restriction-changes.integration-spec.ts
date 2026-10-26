@@ -61,6 +61,7 @@ const CONFIG: ConfigDaGuarda = {
   // ativação terminar o catálogo e a matriz com a bateria no mesmo banco
   mudancaTravaMs: 3_000,
   mudancaTransacaoMs: 15_000,
+  importacaoTravaMs: 3_000,
   ingestaoTravaMs: 2_000,
   ingestaoLoteMs: 10_000,
   workspaceTravaMs: 3_000,

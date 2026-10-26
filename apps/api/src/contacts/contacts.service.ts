@@ -452,7 +452,14 @@ export class ContactsService {
             name: input.name,
             emails: input.emails,
             phones: input.phones,
-            ...(derivados
+            /**
+             * As formas derivadas só mudam com algum telefone mudando, sob as
+             * travas dele (F4.1c-1). Os MESMOS telefones não regravam: com a
+             * região ou a biblioteca mudadas, a escrita mudaria o conjunto
+             * exato sem trava nem revogação — recalcular é da normalização,
+             * que revoga sob a trava de massa.
+             */
+            ...(chaves && derivados
               ? {
                   phonesNormalized: derivados.phonesNormalized,
                   phoneMatchKeys: derivados.phoneMatchKeys,
@@ -625,15 +632,17 @@ export class ContactsService {
       this.prisma.db as unknown as TxRunner,
       async (tx) => {
         /**
-         * SEM travas de endereço (ADR-052, resultados da F4.1a, desvio 7). A
-         * importação só CRIA contatos: uma ingestão ou identificação concorrente
-         * do mesmo número decide pelos candidatos que leu — se leu antes deste
-         * commit, como se viesse antes da importação (um lead a mais, ou a
-         * mensagem com o contato exato que já havia, e a próxima vira RAI). Não é
-         * garantia absoluta contra atribuição; as ordens estão testadas. Com a
-         * trava por número, um lote de até mil números ocuparia a tabela de
-         * travas compartilhada do Postgres, que é de todos os workspaces.
+         * A trava dos escritores em massa, EXCLUSIVA (ADR-052, F4.1c-1): uma
+         * só para o lote, em vez de uma por número — um lote de até mil números
+         * ocuparia a tabela de travas compartilhada do Postgres, que é de todos
+         * os workspaces. Todo escritor de telefone e todo leitor de candidatos
+         * pega a mesma trava compartilhada, então a importação é SERIAL com a
+         * ingestão, a identificação, os registros de consentimento e o envio:
+         * ninguém decide por candidatos com a importação no meio (o resíduo do
+         * desvio 7 da F4.1a deixa de existir). Sem a trava no prazo, 409, e nada
+         * é importado.
          */
+        await this.travas.paraImportacao(tx, auth.workspaceId as string);
         const created = await tx.contact.createMany({
           data: linhas.map(({ row, phones, derivados }) => ({
             name: row.name,

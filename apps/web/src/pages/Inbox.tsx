@@ -45,6 +45,8 @@ const DISPATCH_LABEL: Record<MessageDispatchState, { texto: string; tom: string 
   failed_before_send: { texto: 'Aguardando nova tentativa', tom: 'text-muted-fg' },
   failed_permanent: { texto: 'Não enviada', tom: 'text-negative' },
   unknown_after_dispatch: { texto: 'Entrega não confirmada', tom: 'text-warning' },
+  // cancelado antes de sair (o pedido de parar, por exemplo): comprovadamente não enviado
+  canceled: { texto: 'Cancelada', tom: 'text-muted-fg' },
 };
 
 /**
@@ -103,6 +105,7 @@ const DISPATCH_ERROR_LABEL: Record<string, string> = {
   template_params_mismatch: 'parâmetros não correspondem ao template',
   template_flow_unavailable: 'envio por template indisponível nesta versão',
   stop_requested: 'a pessoa pediu para parar: nada é enviado a este número',
+  cancel_requested: 'cancelado antes de sair',
   quota_exceeded: 'limite do plano atingido',
   no_credential: 'canal sem credencial configurada',
   conversation_missing: 'conversa não encontrada',

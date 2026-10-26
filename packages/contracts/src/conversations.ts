@@ -205,7 +205,9 @@ export type MessageDispatchState =
   | 'sent'
   | 'failed_before_send'
   | 'failed_permanent'
-  | 'unknown_after_dispatch';
+  | 'unknown_after_dispatch'
+  /** cancelado antes de iniciar (F4.1c-1): comprovadamente não enviado */
+  | 'canceled';
 
 export interface MessageDto {
   id: string;

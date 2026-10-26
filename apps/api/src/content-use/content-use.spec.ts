@@ -153,18 +153,28 @@ describe('a transação interativa das mudanças e aprovações', () => {
     },
   });
 
-  it('usa o prazo da transação interativa (30 s)', async () => {
+  it('usa o prazo da transação interativa (30 s), com o `lock_timeout` desde o BEGIN (também para as linhas)', async () => {
     let opcoes: unknown;
+    const ordem: string[] = [];
     await restricao.naTransacaoInterativa(
       {
         $transaction: async (fn: (tx: never) => Promise<unknown>, o?: unknown) => {
           opcoes = o;
-          return fn({} as never);
+          return fn({
+            $executeRaw: async (sql: { values: unknown[] }) => {
+              ordem.push(`prazo:${String(sql.values[0])}`);
+              return 1;
+            },
+          } as never);
         },
       } as never,
-      async () => 1,
+      async () => {
+        ordem.push('mudanca');
+        return 1;
+      },
     );
     expect(opcoes).toEqual({ timeout: CONFIG_PADRAO_DA_GUARDA.mudancaTransacaoMs });
+    expect(ordem).toEqual([`prazo:${CONFIG_PADRAO_DA_GUARDA.mudancaTravaMs}ms`, 'mudanca']);
   });
 
   it('o prazo da transação vencido (P2028) vira 409, como a espera de trava; outro erro passa como veio', async () => {

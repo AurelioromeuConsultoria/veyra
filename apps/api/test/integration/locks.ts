@@ -1,4 +1,4 @@
-import type { Client } from 'pg';
+import { Client } from 'pg';
 
 /**
  * Sessões bloqueadas, direta ou indiretamente, pela transação desta conexão —
@@ -57,4 +57,34 @@ export async function esperarBloqueadosPor(
   throw new Error(
     `esperava ${quantos} ${descricao} bloqueada(s) pela trava e não houve; sessões: ${JSON.stringify(sessoes)}`,
   );
+}
+
+/**
+ * Espera haver `quantas` travas CONSULTIVAS pendentes (pedidas e não obtidas)
+ * no banco de teste, lidas ao vivo em `pg_locks`. Serve às corridas em que quem
+ * segura a trava é a própria aplicação, e não um travador do teste — por
+ * exemplo, a importação esperando a ingestão pausada por um portão (F4.1c-1).
+ * Abre e fecha a própria conexão; nunca dentro de transação.
+ */
+export async function esperarTravasPendentes(
+  connectionString: string,
+  quantas: number,
+  descricao: string,
+): Promise<void> {
+  const c = new Client({ connectionString });
+  await c.connect();
+  try {
+    for (let tentativa = 0; tentativa <= 400; tentativa += 1) {
+      const { rows } = await c.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM pg_locks
+          WHERE locktype = 'advisory' AND NOT granted AND database = (
+            SELECT oid FROM pg_database WHERE datname = current_database())`,
+      );
+      if (Number(rows[0].n) >= quantas) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error(`esperava ${quantas} trava(s) consultiva(s) pendente(s): ${descricao}`);
+  } finally {
+    await c.end();
+  }
 }

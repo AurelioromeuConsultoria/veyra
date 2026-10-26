@@ -412,6 +412,68 @@ muda o registro da migration e não desfaz nenhum objeto.
    ORDER BY 1, 2;
    ```
 
+   Para a `20261026150000_dispatch_canceled` (F4.1c-1, ADR-052), com **4
+   objetos**: o valor `canceled` do tipo `DispatchState`, as colunas
+   `MessageDispatch.cancelRequestedAt` e `MessageDispatch.cancelReason` e a
+   restrição `MessageDispatch_cancel_check`. Nenhum estado gravado muda. Junto com
+   ela, a partir desta versão:
+
+   - **o `phones:normalize` passa a revogar** o consentimento ativo de número
+     que não é exato do contato (`number_removed`), na mesma transação,
+     inclusive o deixado pela versão anterior da CLI, que não revogava; e
+     normaliza cada workspace numa transação só, com a trava dos escritores em
+     massa exclusiva. **Durante a passada de um workspace**, nada espera sem
+     limite, mas quase tudo que mexe com telefone daquele workspace desiste:
+     - a ingestão espera só o prazo dela e falha: a Meta reentrega, e os
+       outros workspaces do mesmo POST seguem;
+     - a resposta de pessoa e o envio da IA não começam e voltam pela
+       retentativa do outbox;
+     - importar (em até 2 s), criar ou editar contato com telefone, excluir
+       contato, identificar, conceder, parar e desbloquear respondem 409 em
+       até 10 s, sem efeito. **Um pedido de parar recusado assim precisa ser
+       registrado de novo**;
+     - editar um contato sem telefone e excluir uma empresa também dão 409 em
+       até 10 s, porque a passada segura as linhas dos contatos.
+
+     A medida no ambiente de teste foi de algumas centenas de milissegundos por
+     mil contatos. É uma medida, não uma garantia: medir no staging antes da
+     produção.
+
+     **Rodar na janela de manutenção, sem ativar nem desativar vertical
+     durante a passada.** A ativação entra na fila da trava do workspace e
+     amplia a espera de todos os pedidos dele.
+
+     A guarda do envio da IA segura a trava compartilhada pela chamada
+     inteira (até uns 23 s), mais que a espera de 10 s da passada. **No
+     deploy, a passada roda com `DISABLE_JOBS=true`** (passo 4 da manutenção),
+     sem envio nenhum. Fora dele, num workspace com envio da IA contínuo, a
+     passada pode falhar seguidas vezes: pause os envios antes. Um workspace
+     sem a trava no prazo é relatado só com o tipo e o código do erro e
+     pulado, sem nada mudar; a CLI segue para o próximo e sai com erro, e
+     rodar de novo retoma. A transação tem 60 s de prazo de ociosidade: a CLI
+     que cai não segura a trava;
+
+   - **a importação de contatos** espera os escritores e leitores de telefone
+     do workspace por até **2 s** (depois, 409 sem efeito, e a pessoa tenta de
+     novo). O prazo é curto porque, enquanto ela espera a trava exclusiva, os
+     pedidos novos da compartilhada do workspace esperam atrás dela — e a
+     guarda do envio da IA segura a compartilhada pela chamada inteira.
+
+   ```sql
+   -- inventário da 20261026150000_dispatch_canceled: 0 linhas = nada ficou;
+   -- 4 = inteira; qualquer outro número = estado parcial
+   SELECT 'valor' AS k, e.enumlabel::text AS nome FROM pg_enum e
+     JOIN pg_type t ON t.oid = e.enumtypid
+     WHERE t.typname = 'DispatchState' AND e.enumlabel = 'canceled'
+   UNION ALL SELECT 'coluna', c.relname || '.' || a.attname FROM pg_attribute a
+     JOIN pg_class c ON c.oid = a.attrelid
+     WHERE NOT a.attisdropped AND c.relname = 'MessageDispatch'
+       AND a.attname IN ('cancelRequestedAt', 'cancelReason')
+   UNION ALL SELECT 'restricao', co.conname::text FROM pg_constraint co
+     WHERE co.conname = 'MessageDispatch_cancel_check'
+   ORDER BY 1, 2;
+   ```
+
    Para outra migration, monte o inventário do mesmo jeito, a partir das
    instruções do arquivo: cada `CREATE` e cada `ADD CONSTRAINT`.
 

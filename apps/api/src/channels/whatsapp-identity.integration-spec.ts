@@ -18,6 +18,7 @@ import { Prisma } from '../generated/prisma/client';
 import { JobsService } from '../jobs/jobs.service';
 import { ConversationSenderService } from '../conversations/conversation-sender.service';
 import { WhatsappService } from './whatsapp.service';
+import { AuditService } from '../audit/audit.service';
 import { CryptoService } from '../common/crypto.service';
 import { FilesService } from '../files/files.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -32,7 +33,7 @@ import {
   type WorkspaceFixture,
 } from '../../test/integration/fixtures';
 import { resetDb } from '../../test/integration/harness';
-import { esperarBloqueadosPor } from '../../test/integration/locks';
+import { esperarBloqueadosPor, esperarTravasPendentes } from '../../test/integration/locks';
 import { META_TRANSPORT, type MetaTransport, type SendOutcome } from './meta.transport';
 
 /**
@@ -1782,19 +1783,35 @@ describe('F4.1a — identidade sem atribuição silenciosa (integração)', () =
     });
 
     /**
-     * A IMPORTAÇÃO não trava endereço (desvio 7). Ela só cria contatos, então
-     * o que importa é QUANDO o commit dela cai diante da leitura dos candidatos
-     * de quem decide. Um espião para o serviço depois de um passo real — as
-     * travas, ou a leitura dos candidatos —, a importação comita, e o portão
-     * abre. Cada teste diz a ordem lógica que o desfecho representa.
+     * A IMPORTAÇÃO pega a trava dos escritores em massa EXCLUSIVA, e quem decide
+     * pelos candidatos a pega compartilhada (F4.1c-1). Um espião para o serviço
+     * depois de um passo real — as travas, ou a decisão —, a outra operação fica
+     * ESPERANDO a trava (lida ao vivo no `pg_locks`), e o portão abre. Cada
+     * teste diz a ordem que o desfecho representa.
      */
-    describe('a importação, sem trava de endereço (desvio 7), contra quem decide pelos candidatos', () => {
-      afterEach(() => jest.restoreAllMocks());
+    describe('a importação SERIAL com quem decide pelos candidatos (F4.1c-1; antes, o desvio 7)', () => {
+      /**
+       * Os portões e as requisições de cada teste: o que falha no meio não deixa
+       * operação pausada nem requisição em voo para o próximo (nem segura o
+       * processo do jest aberto).
+       */
+      const abertos: (() => void)[] = [];
+      const emCurso: Promise<unknown>[] = [];
+      afterEach(async () => {
+        for (const abrir of abertos.splice(0)) abrir();
+        await Promise.allSettled(emCurso.splice(0));
+        jest.restoreAllMocks();
+      });
+      const disparar = <T>(p: Promise<T>): Promise<T> => {
+        emCurso.push(p);
+        return p;
+      };
 
       /** Para `metodo` de `servico` DEPOIS do original, na primeira chamada, até o portão abrir. */
       const pausarDepois = (servico: object, metodo: string) => {
         const chegou = portao();
         const segue = portao();
+        abertos.push(segue.abrir);
         const alvo = servico as Record<string, (...args: unknown[]) => Promise<unknown>>;
         const original = alvo[metodo].bind(servico);
         jest.spyOn(alvo, metodo).mockImplementationOnce(async (...args: unknown[]) => {
@@ -1805,119 +1822,89 @@ describe('F4.1a — identidade sem atribuição silenciosa (integração)', () =
         });
         return { chegou: chegou.aberto, segue: segue.abrir };
       };
-      const importar = (nome: string) =>
-        enviar('post', '/api/contacts/import', owner, { rows: [{ name: nome, phone: N_E164 }] });
+      const importar = (nome: string, s = owner) =>
+        enviar('post', '/api/contacts/import', s, { rows: [{ name: nome, phone: N_E164 }] });
       const contatosDoNumero = () =>
         prisma.raw.contact.findMany({
           where: { workspaceId: wsA.workspaceId, phoneMatchKeys: { has: '87654321' } },
           orderBy: { createdAt: 'asc' },
         });
+      /** A outra operação está ESPERANDO a trava dos escritores em massa, lida ao vivo. */
+      const esperando = (descricao: string) =>
+        esperarTravasPendentes(TEST_DATABASE_URL, 1, descricao);
 
-      it('a importação comita ANTES de a ingestão ler os candidatos: a ingestão a vê (ordem lógica: importação, depois ingestão)', async () => {
-        const pausa = pausarDepois(app.get(TravasDeIdentidade), 'paraIngestao');
-        // o `.then` dispara a requisição: sem ele, o supertest não a envia
-        const ingestao = chega().then((r) => r);
-        await pausa.chegou;
-        await importar('Yara Fictícia').expect(201);
-        pausa.segue();
-        await ingestao;
-        const contatos = await contatosDoNumero();
-        expect(contatos.map((c) => c.name)).toEqual(['Yara Fictícia']);
-        const [conversa] = await conversasDoNumero();
-        expect(conversa).toMatchObject({ contactId: contatos[0].id, senderStatus: 'identified' });
-      });
-
-      it('a importação comita DEPOIS da leitura e ANTES do commit da ingestão, sem candidato: um lead a mais, e a próxima é RAI (ordem lógica: ingestão, depois importação)', async () => {
+      it('a ingestão primeiro, pausada depois de decidir: a importação espera, e só comita depois (ordem: ingestão, depois importação)', async () => {
         const pausa = pausarDepois(app.get(WhatsappService), 'decidirRemetente');
         // o `.then` dispara a requisição: sem ele, o supertest não a envia
-        const ingestao = chega().then((r) => r);
+        const ingestao = disparar(chega().then((r) => r));
         await pausa.chegou;
-        await importar('Yara Fictícia').expect(201);
+        const importacao = disparar(importar('Yara Fictícia').then((r) => r));
+        await esperando('a importação, atrás da ingestão');
+        // a importação não comitou no meio: antes, ela entrava aqui (o desvio 7)
+        expect((await contatosDoNumero()).map((c) => c.name)).toEqual([]);
         pausa.segue();
         await ingestao;
+        expect((await importacao).status).toBe(201);
         const contatos = await contatosDoNumero();
         expect(contatos.map((c) => c.name).sort()).toEqual([N_E164, 'Yara Fictícia'].sort());
         const lead = contatos.find((c) => c.name === N_E164);
         const [conversa] = await conversasDoNumero();
-        // a mensagem foi ao lead que ela mesma criou, como se viesse antes da importação
         expect(conversa).toMatchObject({ contactId: lead?.id, senderStatus: 'identified' });
         await chega();
         expect(await rai()).toBeDefined();
       });
 
-      it('a importação comita DEPOIS da leitura, com um contato EXATO: a mensagem vai a ele, embora o importado também tenha o número (ordem lógica: ingestão, depois importação)', async () => {
+      it('com a Ana exata e a ingestão primeiro: a mensagem vai à Ana, e a Yara só entra depois do commit dela', async () => {
         const ana = await contato('Ana Fictícia', [N_E164]);
         const pausa = pausarDepois(app.get(WhatsappService), 'decidirRemetente');
-        // o `.then` dispara a requisição: sem ele, o supertest não a envia
-        const ingestao = chega().then((r) => r);
+        const ingestao = disparar(chega().then((r) => r));
         await pausa.chegou;
-        await importar('Yara Fictícia').expect(201);
+        const importacao = disparar(importar('Yara Fictícia').then((r) => r));
+        await esperando('a importação, atrás da ingestão');
+        expect((await contatosDoNumero()).map((c) => c.name)).toEqual(['Ana Fictícia']);
         pausa.segue();
         await ingestao;
+        expect((await importacao).status).toBe(201);
         const [conversa] = await conversasDoNumero();
-        // NÃO é garantia absoluta: no commit, a Yara já tinha o número; a
-        // atribuição à Ana é a da ordem em que a ingestão veio antes
+        // agora É a ordem real: no commit da ingestão, a Yara ainda não existia
         expect(conversa).toMatchObject({ contactId: ana, senderStatus: 'identified' });
-        expect((await contatosDoNumero()).map((c) => c.name)).toEqual([
-          'Ana Fictícia',
-          'Yara Fictícia',
-        ]);
         await chega();
         expect(await rai()).toBeDefined();
       });
 
-      it('com um contato exato e a importação ANTES da leitura: dois candidatos, e a mensagem é RAI (ordem lógica: importação, depois ingestão)', async () => {
+      it('a importação primeiro, pausada com a trava: a ingestão espera e vê a importada — com a Ana, RAI (ordem: importação, depois ingestão)', async () => {
         await contato('Ana Fictícia', [N_E164]);
-        const pausa = pausarDepois(app.get(TravasDeIdentidade), 'paraIngestao');
-        // o `.then` dispara a requisição: sem ele, o supertest não a envia
-        const ingestao = chega().then((r) => r);
+        const pausa = pausarDepois(app.get(TravasDeIdentidade), 'paraImportacao');
+        const importacao = disparar(importar('Yara Fictícia').then((r) => r));
         await pausa.chegou;
-        await importar('Yara Fictícia').expect(201);
+        const ingestao = disparar(chega().then((r) => r));
+        await esperando('a ingestão, atrás da importação');
+        expect(
+          await prisma.raw.conversation.count({ where: { workspaceId: wsA.workspaceId } }),
+        ).toBe(0);
         pausa.segue();
+        expect((await importacao).status).toBe(201);
         await ingestao;
         expect(await rai()).toBeDefined();
-        expect(
-          await prisma.raw.conversation.count({
-            where: { workspaceId: wsA.workspaceId, contactId: { not: null } },
-          }),
-        ).toBe(0);
       });
 
-      it('identificar com a importação ANTES da leitura dos candidatos: o importado é candidato, e a trilha conta três (ordem lógica: importação, depois identificação)', async () => {
-        const ana = await contato('Ana Fictícia', [N_E164]);
-        await contato('Bia Fictícia', [N_E164]);
-        await chega();
-        const r1 = await rai();
-        const pausa = pausarDepois(app.get(ConversationSenderService), 'travarERelear');
-        const ato = identificar(r1.id, ana).then((r) => r);
-        await pausa.chegou;
-        await importar('Cora Fictícia').expect(201);
-        pausa.segue();
-        expect((await ato).status).toBe(201);
-        const trilha = await prisma.raw.auditLog.findFirstOrThrow({
-          where: { action: 'conversation.sender_identified' },
-        });
-        expect(trilha.after).toMatchObject({ contactId: ana, candidates: 3 });
-      });
-
-      it('identificar com a importação DEPOIS da leitura dos candidatos: a escolha vale pelos lidos, e a trilha conta dois (ordem lógica: identificação, depois importação)', async () => {
+      it('a identificação primeiro, pausada com as travas: a importação espera, e a escolha vale pelos dois que existiam', async () => {
         const ana = await contato('Ana Fictícia', [N_E164]);
         await contato('Bia Fictícia', [N_E164]);
         await chega();
         const r1 = await rai();
         const pausa = pausarDepois(app.get(ConversationSenderService), 'classificar');
-        const ato = identificar(r1.id, ana).then((r) => r);
+        const ato = disparar(identificar(r1.id, ana).then((r) => r));
         await pausa.chegou;
-        await importar('Cora Fictícia').expect(201);
+        const importacao = disparar(importar('Cora Fictícia').then((r) => r));
+        await esperando('a importação, atrás da identificação');
         pausa.segue();
         expect((await ato).status).toBe(201);
+        expect((await importacao).status).toBe(201);
         const trilha = await prisma.raw.auditLog.findFirstOrThrow({
           where: { action: 'conversation.sender_identified' },
         });
         expect(trilha.after).toMatchObject({ contactId: ana, candidates: 2 });
-        expect(
-          (await prisma.raw.conversation.findFirstOrThrow({ where: { id: r1.id } })).contactId,
-        ).toBe(ana);
         // a próxima mensagem vê os três
         await chega();
         const r2 = await rai();
@@ -1925,9 +1912,44 @@ describe('F4.1a — identidade sem atribuição silenciosa (integração)', () =
           (await get(`/api/conversations/${r2.id}/sender/candidates`, owner).expect(200)).body,
         ).toHaveLength(3);
       });
+
+      it('a importação primeiro, pausada com a trava: a identificação espera e conta a importada (três candidatos)', async () => {
+        const ana = await contato('Ana Fictícia', [N_E164]);
+        await contato('Bia Fictícia', [N_E164]);
+        await chega();
+        const r1 = await rai();
+        const pausa = pausarDepois(app.get(TravasDeIdentidade), 'paraImportacao');
+        const importacao = disparar(importar('Cora Fictícia').then((r) => r));
+        await pausa.chegou;
+        const ato = disparar(identificar(r1.id, ana).then((r) => r));
+        await esperando('a identificação, atrás da importação');
+        pausa.segue();
+        expect((await importacao).status).toBe(201);
+        expect((await ato).status).toBe(201);
+        const trilha = await prisma.raw.auditLog.findFirstOrThrow({
+          where: { action: 'conversation.sender_identified' },
+        });
+        expect(trilha.after).toMatchObject({ contactId: ana, candidates: 3 });
+      });
+
+      it('a trava é do workspace: a importação de OUTRO workspace não espera a ingestão pausada (P0)', async () => {
+        const pausa = pausarDepois(app.get(WhatsappService), 'decidirRemetente');
+        const ingestao = disparar(chega().then((r) => r));
+        await pausa.chegou;
+        const donoB = await login('dono-b@veyra.test');
+        // termina com a ingestão do A ainda pausada
+        await importar('Yara Fictícia B', donoB).expect(201);
+        expect(
+          await prisma.raw.contact.count({
+            where: { workspaceId: wsB.workspaceId, name: 'Yara Fictícia B' },
+          }),
+        ).toBe(1);
+        pausa.segue();
+        await ingestao;
+      });
     });
 
-    it('fumaça: ingestão por dois canais, os três atos, os escritores de telefone, a importação e um uso de IA, juntos, terminam sem deadlock e com desfechos previstos', async () => {
+    it('fumaça: ingestão por dois canais, os três atos, os escritores de telefone, a importação, a normalização e um uso de IA, juntos, terminam sem deadlock e com desfechos previstos', async () => {
       const ana = await contato('Ana Fictícia', [N_E164]);
       const bia = await contato('Bia Fictícia', [N_E164]);
       await contato('Cora Fictícia', ['+5531955556666']);
@@ -1943,6 +1965,15 @@ describe('F4.1a — identidade sem atribuição silenciosa (integração)', () =
       llm.portao = p.aberto;
       llm.nextText = RESUMO;
       setTimeout(() => p.abrir(), 150);
+      // a normalização do workspace, junto: pega a trava de massa EXCLUSIVA no meio
+      // de todos (F4.1c-1)
+      const normalizacao = normalizarWorkspace(
+        prisma,
+        app.get(AuditService),
+        app.get(TravasDeIdentidade),
+        { id: wsA.workspaceId, phoneRegion: 'BR' },
+        { travaMs: 10_000, transacaoMs: 20_000 },
+      );
       const respostas = await Promise.all([
         webhook(payload({ messages: [mensagem(N)] }, NUMERO_A1)),
         webhook(payload({ messages: [mensagem(N)] }, NUMERO_A2)),
@@ -1962,6 +1993,7 @@ describe('F4.1a — identidade sem atribuição silenciosa (integração)', () =
       // nenhum 500 (o deadlock, 40P01, sairia como 500): só sucesso ou as recusas
       // do protocolo — a espera estourada (409), o ato que perdeu a corrida (400/404)
       for (const r of respostas) expect([200, 201, 400, 404, 409]).toContain(r.status);
+      await expect(normalizacao).resolves.toMatchObject({ pulados: 0 });
       expect(await usosAutorizados()).toBe(0);
       // e as garantias do banco seguem: no máximo uma RAI aberta por (canal, número)
       const raisAbertas = await prisma.raw.conversation.groupBy({
@@ -2563,7 +2595,7 @@ describe('F4.1a — identidade sem atribuição silenciosa (integração)', () =
       );
       expect(
         await gravarSeOsTelefonesSaoOsLidos(
-          prisma,
+          prisma.raw,
           wsA.workspaceId,
           lido,
           derivadosDosTelefones(lido.phones, 'BR'),
@@ -2575,7 +2607,10 @@ describe('F4.1a — identidade sem atribuição silenciosa (integração)', () =
       });
       // e a passada inteira acha tudo em dia
       expect(
-        await normalizarWorkspace(prisma, { id: wsA.workspaceId, phoneRegion: 'BR' }),
+        await normalizarWorkspace(prisma, app.get(AuditService), app.get(TravasDeIdentidade), {
+          id: wsA.workspaceId,
+          phoneRegion: 'BR',
+        }),
       ).toMatchObject({ lidos: 1, alterados: 0, pulados: 0 });
     });
 

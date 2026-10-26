@@ -23,6 +23,7 @@ import type { ClaimedEvent } from '../outbox/outbox.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { UsageService } from '../usage/usage.service';
+import { ehMotivoDoCancelamento } from './dispatch-cancellation.service';
 import { classifyFailure } from './meta-errors';
 import { META_TRANSPORT, type MetaTransport, type SendOutcome } from './meta.transport';
 import { coincideExatamente } from '../contacts/phone-identity';
@@ -295,8 +296,10 @@ export class WhatsappSendService implements OnModuleInit {
     workspaceId: string,
     messageId: string,
     claimToken: string,
+    conversationId: string,
     numero: string,
-  ): Promise<'marcou' | 'perdeu' | 'bloqueado'> {
+    contatosConferidos: readonly string[],
+  ): Promise<'marcou' | 'perdeu' | 'bloqueado' | 'religada' | 'numero'> {
     const db = this.prisma.db as unknown as {
       $transaction: <T>(fn: (tx: Db) => Promise<T>, options?: { timeout?: number }) => Promise<T>;
     };
@@ -304,6 +307,20 @@ export class WhatsappSendService implements OnModuleInit {
       async (tx) => {
         await this.travas.paraMarcarEnvio(tx, workspaceId, numero);
         if (await bloqueioAtivo(tx, numero)) return 'bloqueado';
+        /**
+         * O número EXATO do cadastro, relido sob as mesmas travas (F4.1c-1): a
+         * edição do telefone pega o `address:` exclusivo e os escritores em
+         * massa, e a normalização a trava de massa exclusiva. Ou a mudança
+         * comita antes, e a releitura a vê; ou espera o marcador.
+         */
+        const atual = await tx.conversation.findFirst({
+          where: { id: conversationId },
+          select: { contactId: true, senderStatus: true, externalAddress: true },
+        });
+        // a religação também, sob o `address:` que a identificação pega
+        // exclusivo: a da checagem rápida pode ter comitado depois dela
+        if (!atual || religadaDesdeOEnvio(atual, contatosConferidos)) return 'religada';
+        if ((await this.remetenteDoEnvio(atual, tx)) !== 'confere') return 'numero';
         const { count } = await tx.messageDispatch.updateMany({
           where: { messageId, claimToken, state: 'sending' },
           data: { dispatchedAt: new Date() },
@@ -317,56 +334,6 @@ export class WhatsappSendService implements OnModuleInit {
   /** Desfaz o preparo quando a escrita não aconteceu. */
   async releaseReservation(prepared: PreparedOutbound): Promise<void> {
     await this.usage.release(prepared.reservationId);
-  }
-
-  /**
-   * O pedido de parar (ADR-052 item 5, F4.1b), na transação dele: todo despacho
-   * NÃO INICIADO para o número, no workspace e em qualquer canal, vai a
-   * `failed_permanent` com `stop_requested`, e a reserva volta. Não iniciado é
-   * o que ainda não tem o marcador de despacho — reservado, a retentar, ou
-   * reivindicado por um worker que ainda não marcou: esse perde a posse (o
-   * marcador exige o `claimToken`) e não chama a Meta. O que já tem o marcador
-   * não volta; só é contado, para a trilha — inclusive o da IA à espera da
-   * guarda, que ainda reconfere o pedido e o recusa.
-   */
-  async cancelarNaoIniciadosDoNumero(
-    tx: Db,
-    workspaceId: string,
-    numero: string,
-  ): Promise<{ cancelados: number; emVoo: number }> {
-    const doNumero = { message: { conversation: { externalAddress: numero } } };
-    const cancelados = await tx.messageDispatch.updateManyAndReturn({
-      where: {
-        ...doNumero,
-        OR: [
-          { state: { in: ['reserved', 'failed_before_send'] } },
-          { state: 'sending', dispatchedAt: null },
-        ],
-      },
-      data: {
-        state: 'failed_permanent',
-        errorCode: 'stop_requested',
-        claimToken: null,
-        leaseExpiresAt: null,
-      },
-      select: { messageId: true, reservationId: true },
-    });
-    if (cancelados.length > 0) {
-      // a reserva sai do despacho DEPOIS de lida: o RETURNING entrega o valor
-      // pós-escrita, e zerá-la no mesmo comando a perderia. As linhas já estão
-      // presas por esta transação, e `failed_permanent` não é reivindicável
-      await tx.messageDispatch.updateMany({
-        where: { messageId: { in: cancelados.map((c) => c.messageId) } },
-        data: { reservationId: null },
-      });
-      for (const { reservationId } of cancelados) {
-        if (reservationId) await this.usage.releaseWithin(tx, workspaceId, reservationId);
-      }
-    }
-    const emVoo = await tx.messageDispatch.count({
-      where: { ...doNumero, state: 'sending', dispatchedAt: { not: null } },
-    });
-    return { cancelados: cancelados.length, emVoo };
   }
 
   /**
@@ -418,6 +385,8 @@ export class WhatsappSendService implements OnModuleInit {
         claimToken: string;
         approvalContactIds: string[] | null;
         fromAiProposal: boolean;
+        cancelRequestedAt: Date | null;
+        cancelReason: string | null;
       }[]
     >(
       `UPDATE "MessageDispatch"
@@ -436,7 +405,7 @@ export class WhatsappSendService implements OnModuleInit {
             OR ("state" = 'sending' AND "leaseExpiresAt" < now() AND "dispatchedAt" IS NULL)
           )
       RETURNING "reservationId", "templateName", "templateLanguage", "templateParams", "claimToken",
-                "approvalContactIds", "fromAiProposal"`,
+                "approvalContactIds", "fromAiProposal", "cancelRequestedAt", "cancelReason"`,
       workspaceId,
       messageId,
       DISPATCH_LEASE_MS,
@@ -444,6 +413,22 @@ export class WhatsappSendService implements OnModuleInit {
     const dispatch = claimed[0];
     // outro worker tem a posse, ou o envio já terminou: não reenviar
     if (!dispatch) return 'done';
+    /**
+     * O pedido de cancelamento gravado nunca chega ao transporte (F4.1c-1). O
+     * `finish` da falha que prova o não envio já leva o despacho com o pedido a
+     * `canceled`; esta é a segunda camada: reivindicado com o pedido, ele é
+     * cancelado aqui, com a reserva devolvida.
+     */
+    if (dispatch.cancelRequestedAt) {
+      if (dispatch.reservationId) await this.usage.release(dispatch.reservationId);
+      await this.finish(messageId, dispatch.claimToken, 'canceled', {
+        errorCode: ehMotivoDoCancelamento(dispatch.cancelReason)
+          ? dispatch.cancelReason
+          : 'cancel_requested',
+        naoSaiu: true,
+      });
+      return 'done';
+    }
 
     const message = (await this.prisma.db.message.findFirst({
       where: { id: messageId },
@@ -593,7 +578,7 @@ export class WhatsappSendService implements OnModuleInit {
     // mensagem de PESSOA sai sob o `address:` do número, relendo o pedido de
     // parar (F4.1b); o da IA, antes da guarda, que reconfere o pedido sob as
     // travas dela
-    let marcou: 'marcou' | 'perdeu' | 'bloqueado';
+    let marcou: 'marcou' | 'perdeu' | 'bloqueado' | 'religada' | 'numero';
     try {
       marcou = origemDaIa
         ? (
@@ -608,7 +593,9 @@ export class WhatsappSendService implements OnModuleInit {
             workspaceId,
             messageId,
             dispatch.claimToken,
+            conversation.id,
             conversation.externalAddress as string,
+            dispatch.approvalContactIds ?? [],
           );
     } catch (erro) {
       // a trava do endereço não veio no prazo: nada saiu, e a nova tentativa
@@ -625,10 +612,14 @@ export class WhatsappSendService implements OnModuleInit {
       });
       return 'retry';
     }
-    if (marcou === 'bloqueado') {
+    if (marcou === 'bloqueado' || marcou === 'religada' || marcou === 'numero') {
       await this.usage.release(reservationId);
       await this.finish(messageId, dispatch.claimToken, 'failed_permanent', {
-        errorCode: 'stop_requested',
+        errorCode: {
+          bloqueado: 'stop_requested',
+          religada: 'conversation_relinked',
+          numero: 'number_not_exact',
+        }[marcou],
       });
       return 'done';
     }
@@ -788,7 +779,12 @@ export class WhatsappSendService implements OnModuleInit {
     let resultado: ResultadoDoUso<'done' | 'retry'>;
     // a reconferência viu a conversa religada, o número que não confere ou o
     // pedido de parar: o motivo é esse, não a restrição
-    let recusa: 'conversation_relinked' | 'number_not_exact' | 'stop_requested' | null = null;
+    let recusa:
+      'conversation_relinked' | 'number_not_exact' | 'stop_requested' | 'cancel_requested' | null =
+      null;
+    // o pedido de cancelamento visto na reconferência: o despacho que não
+    // começou vai a `canceled`, com o motivo do pedido
+    let cancelado = false;
     try {
       // a linha do período precisa existir ANTES: a cobrança acima do teto, dentro
       // da transação da guarda, não pode criá-la
@@ -797,16 +793,37 @@ export class WhatsappSendService implements OnModuleInit {
         workspaceId,
         kind: 'ai_message_dispatch',
         contactIds: escopo.contatos,
+        // o envio decide pelo número exato: espera a importação e a
+        // normalização, como todo leitor de telefone (F4.1c-1)
+        telefones: true,
         prazoMs: this.configDaGuarda.prazoDaMetaMs,
         origem: { messageId, claimToken },
         reservas: [reservationId],
         reconferir: async () => {
-          // a conversa RELIDA sob as travas (ADR-052 item 2): religada depois
-          // da aprovação, o rascunho foi escrito para outra pessoa
+          /**
+           * O pedido de cancelamento do despacho já marcado (F4.1c-1), PRIMEIRO:
+           * o cancelamento neutro não desfaz o marcador da IA — ela o grava
+           * antes da guarda —, e é aqui, antes de a chamada começar, que o
+           * pedido vale, com o motivo gravado junto (o do pedido de parar é
+           * `stop_requested`). Depois do início, o desfecho é o da chamada.
+           */
+          const despacho = await this.prisma.db.messageDispatch.findFirst({
+            where: { messageId },
+            select: { cancelRequestedAt: true, cancelReason: true },
+          });
+          if (despacho?.cancelRequestedAt) {
+            cancelado = true;
+            recusa = ehMotivoDoCancelamento(despacho.cancelReason)
+              ? despacho.cancelReason
+              : 'cancel_requested';
+            return 'restrito';
+          }
           const atual = await this.prisma.db.conversation.findFirst({
             where: { id: escopo.conversationId },
             select: { contactId: true, senderStatus: true, externalAddress: true },
           });
+          // a conversa RELIDA sob as travas (ADR-052 item 2): religada depois
+          // da aprovação, o rascunho foi escrito para outra pessoa
           if (!atual || religadaDesdeOEnvio(atual, escopo.contatosDaAprovacao)) {
             recusa = 'conversation_relinked';
             return 'restrito';
@@ -822,10 +839,9 @@ export class WhatsappSendService implements OnModuleInit {
             return 'restrito';
           }
           /**
-           * O pedido de parar, de novo, sob as travas (F4.1b): o despacho da IA
-           * já tem o marcador quando chega aqui, e o pedido não o cancela —
-           * quem o recusa é esta reconferência. O pedido trava os contatos do
-           * número, que a guarda segura compartilhados.
+           * O pedido de parar, de novo, sob as travas (F4.1b): o bloqueio que
+           * existia antes do claim, sem pedido no despacho. O pedido trava os
+           * contatos do número, que a guarda segura compartilhados.
            */
           if (await bloqueioAtivo(this.prisma.db, atual.externalAddress)) {
             recusa = 'stop_requested';
@@ -891,8 +907,9 @@ export class WhatsappSendService implements OnModuleInit {
       case 'nao_comecou':
         // nada saiu e a guarda devolveu a reserva
         if (resultado.motivo === 'restrito') {
-          // o marcador sai: a mensagem comprovadamente não foi despachada
-          await this.finish(messageId, claimToken, 'failed_permanent', {
+          // o marcador sai: a mensagem comprovadamente não foi despachada. O
+          // pedido de cancelamento leva a `canceled`; o resto, a recusa
+          await this.finish(messageId, claimToken, cancelado ? 'canceled' : 'failed_permanent', {
             errorCode: recusa ?? 'content_restricted',
             naoSaiu: true,
           });
@@ -1407,6 +1424,53 @@ export class WhatsappSendService implements OnModuleInit {
     // a transação da guarda, no envio da IA; senão, o client protegido
     db: Db = this.prisma.db,
   ): Promise<boolean> {
+    if (state === 'failed_before_send') {
+      /**
+       * A falha que PROVA o não envio volta a ser elegível — salvo com o pedido
+       * de cancelamento (F4.1c-1), que o leva a `canceled`: o em voo que recebeu
+       * o pedido e voltou não é reivindicado de novo. Primeiro sem o pedido:
+       * se o pedido comitar enquanto este comando espera a linha, a
+       * qualificação refeita o exclui, e o segundo comando o vê. A reserva quem
+       * chama já devolveu.
+       *
+       * O marcador é zerado: é o único estado que volta a ser elegível ao
+       * claim, e herdado por uma tentativa nova ele mentia — morrer antes de
+       * chamar viraria `unknown_after_dispatch` com cobrança de mensagem que
+       * provadamente nunca saiu.
+       */
+      const { count: semPedido } = await db.messageDispatch.updateMany({
+        where: { messageId, claimToken, state: 'sending', cancelRequestedAt: null },
+        data: {
+          state: 'failed_before_send',
+          claimToken: null,
+          leaseExpiresAt: null,
+          reservationId: null,
+          dispatchedAt: null,
+          ...(extra.errorCode !== undefined ? { errorCode: extra.errorCode } : {}),
+        },
+      });
+      if (semPedido > 0) return true;
+      // o motivo é o gravado com o pedido, que nunca muda depois de gravado
+      const comPedido = await db.messageDispatch.findFirst({
+        where: { messageId, claimToken, state: 'sending', cancelRequestedAt: { not: null } },
+        select: { cancelReason: true },
+      });
+      if (!comPedido) return false;
+      const { count: cancelado } = await db.messageDispatch.updateMany({
+        where: { messageId, claimToken, state: 'sending', cancelRequestedAt: { not: null } },
+        data: {
+          state: 'canceled',
+          errorCode: ehMotivoDoCancelamento(comPedido.cancelReason)
+            ? comPedido.cancelReason
+            : 'cancel_requested',
+          claimToken: null,
+          leaseExpiresAt: null,
+          reservationId: null,
+          dispatchedAt: null,
+        },
+      });
+      return cancelado > 0;
+    }
     const { count } = await db.messageDispatch.updateMany({
       where: { messageId, claimToken, state: 'sending' },
       data: {
@@ -1415,17 +1479,12 @@ export class WhatsappSendService implements OnModuleInit {
         leaseExpiresAt: null,
         reservationId: null,
         /**
-         * O marcador é zerado APENAS em `failed_before_send`, o único estado que
-         * volta a ser elegível ao claim: herdado por uma tentativa nova, ele
-         * mentia — morrer antes de chamar viraria `unknown_after_dispatch` com
-         * cobrança de mensagem que provadamente nunca saiu.
-         *
          * Nos estados terminais o marcador FICA: é o instante do despacho, e é
          * dele que depende quem for triar a fila de casos incertos depois. A
          * exceção é `naoSaiu`: a guarda provou que o envio não começou (o
          * marcador da IA vem antes dela), e manter o marcador mentiria.
          */
-        ...(state === 'failed_before_send' || extra.naoSaiu ? { dispatchedAt: null } : {}),
+        ...(extra.naoSaiu ? { dispatchedAt: null } : {}),
         ...(extra.errorCode !== undefined ? { errorCode: extra.errorCode } : {}),
         ...(extra.externalId !== undefined ? { externalId: extra.externalId } : {}),
       },
@@ -1445,17 +1504,20 @@ export class WhatsappSendService implements OnModuleInit {
    * É o MESMO predicado no compositor (`sendPolicy`), no envio, na aprovação do
    * rascunho e no worker — nunca uma segunda cópia (ADR-038).
    */
-  async remetenteDoEnvio(conversation: {
-    contactId: string | null;
-    senderStatus: string;
-    externalAddress: string | null;
-  }): Promise<RemetenteDoEnvio> {
+  async remetenteDoEnvio(
+    conversation: {
+      contactId: string | null;
+      senderStatus: string;
+      externalAddress: string | null;
+    },
+    db: Db = this.prisma.db,
+  ): Promise<RemetenteDoEnvio> {
     if (conversation.senderStatus === 'unidentified') return 'a_identificar';
     // sem número, a política recusa adiante (`no_external_address`)
     if (!conversation.externalAddress) return 'confere';
     // identificada, com número e sem contato: nada com que conferir (fail-closed)
     if (!conversation.contactId) return 'numero_nao_confere';
-    const contato = (await this.prisma.db.contact.findFirst({
+    const contato = (await db.contact.findFirst({
       where: { id: conversation.contactId },
       select: { phones: true, phonesNormalized: true },
     })) as unknown as { phones: string[]; phonesNormalized: string[] } | null;

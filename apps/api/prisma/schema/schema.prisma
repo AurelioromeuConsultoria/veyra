@@ -1590,6 +1590,9 @@ enum DispatchState {
   failed_permanent
   /// timeout/queda após possível despacho: NÃO reenviar, resolver com humano
   unknown_after_dispatch
+  /// CANCELADO antes de iniciar (ADR-052, F4.1c-1), pelo serviço neutro de
+  /// cancelamento: comprovadamente não enviado, a reserva devolvida, terminal
+  canceled
 }
 
 /**
@@ -1639,6 +1642,14 @@ model MessageDispatch {
   externalId         String?
   /// código curto do provedor — nunca corpo de resposta nem stack trace
   errorCode          String?
+  /// o PEDIDO de cancelamento (ADR-052, F4.1c-1), gravado pelo cancelamento
+  /// neutro: vale enquanto a chamada não começou — a reconferência sob a
+  /// guarda e a falha que prova o não envio levam o despacho a `canceled`. Só
+  /// a presença decide; o instante é informativo
+  cancelRequestedAt  DateTime?
+  /// o motivo do pedido, gravado junto com ele (lista fechada do serviço): é o
+  /// `errorCode` do despacho que termina `canceled` por qualquer caminho
+  cancelReason       String?
   attempts           Int           @default(0)
   createdAt          DateTime      @default(now())
   /// Mantido pelo BANCO (ADR-049): DEFAULT na criação e trigger que grava

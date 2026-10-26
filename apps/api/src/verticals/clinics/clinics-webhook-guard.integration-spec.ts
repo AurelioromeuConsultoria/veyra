@@ -50,6 +50,7 @@ const CONFIG: ConfigDaGuarda = {
   reconciliacaoMs: 1_000,
   mudancaTravaMs: 4_000,
   mudancaTransacaoMs: 15_000,
+  importacaoTravaMs: 4_000,
   ingestaoTravaMs: 2_000,
   ingestaoLoteMs: 10_000,
   workspaceTravaMs: 4_000,

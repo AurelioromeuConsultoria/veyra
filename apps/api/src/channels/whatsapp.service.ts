@@ -57,7 +57,8 @@ export class WhatsappService {
    *
    * Falha TRANSITÓRIA não é conteúdo desconhecido (ADR-052, C11): erro de banco,
    * prazo ou trava não obtida PROPAGA, o webhook responde erro e a Meta
-   * reentrega. Cada mensagem é a sua transação, então o que já entrou fica, e a
+   * reentrega — no fim do lote, depois dos itens dos outros workspaces
+   * (F4.1c-1). Cada mensagem é a sua transação, então o que já entrou fica, e a
    * reentrega é deduplicada (mensagens pelo `externalId`, recibos pelo único).
    */
   async ingest(payload: unknown): Promise<{ messages: number; statuses: number; ignored: number }> {
@@ -78,6 +79,32 @@ export class WhatsappService {
     const fimDoLote = this.travas.fimDoLote();
     const dentroDoPrazo = () => {
       if (Date.now() >= fimDoLote) throw new ServiceUnavailableException(MENSAGEM_LOTE_SEM_PRAZO);
+    };
+    /**
+     * A falha de um item — a trava que não veio no prazo durante a importação
+     * ou a normalização de um workspace, por exemplo — não segura os OUTROS
+     * workspaces do mesmo POST (F4.1c-1). Os itens seguintes do workspace que
+     * falhou ficam para a reentrega, na ordem; os outros seguem; e o webhook
+     * responde o erro no fim. A reentrega é deduplicada.
+     */
+    const adiados = new Set<string>();
+    let primeiraFalha: unknown = null;
+    const noWorkspace = async (workspaceId: string, item: () => Promise<boolean>) => {
+      if (adiados.has(workspaceId)) return null;
+      dentroDoPrazo();
+      try {
+        return await item();
+      } catch (erro) {
+        adiados.add(workspaceId);
+        primeiraFalha ??= erro;
+        // só o tipo e o código: a mensagem de um erro do Prisma traria valores,
+        // e entre eles o número
+        const { name, code } = (erro ?? {}) as { name?: string; code?: string };
+        this.logger.warn(
+          `Ingestão do workspace ${workspaceId} adiada para a reentrega (${name ?? 'Error'} ${code ?? 'sem código'})`,
+        );
+        return null;
+      }
     };
 
     for (const entry of parsed.data.entry) {
@@ -111,10 +138,11 @@ export class WhatsappService {
             continue;
           }
           const nome = contatos.find((c) => c.wa_id === message.data.from)?.profile?.name;
-          dentroDoPrazo();
-          const feito = await this.ingestMessage(credential, message.data, fimDoLote, nome);
+          const feito = await noWorkspace(credential.workspaceId, () =>
+            this.ingestMessage(credential, message.data, fimDoLote, nome),
+          );
           if (feito) messages += 1;
-          else ignored += 1;
+          else if (feito === false) ignored += 1;
         }
         for (const item of value.statuses ?? []) {
           const status = statusSchema.safeParse(item);
@@ -123,13 +151,15 @@ export class WhatsappService {
             ignored += 1;
             continue;
           }
-          dentroDoPrazo();
-          const feito = await this.ingestStatus(credential, status.data);
+          const feito = await noWorkspace(credential.workspaceId, () =>
+            this.ingestStatus(credential, status.data),
+          );
           if (feito) statuses += 1;
-          else ignored += 1;
+          else if (feito === false) ignored += 1;
         }
       }
     }
+    if (primeiraFalha) throw primeiraFalha;
     return { messages, statuses, ignored };
   }
 

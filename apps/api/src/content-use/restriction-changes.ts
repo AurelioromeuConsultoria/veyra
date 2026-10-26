@@ -48,10 +48,22 @@ export class MudancasDeRestricao {
    * 10 s de espera por trava, 30 s de transação. O prazo da transação vencido
    * (P2028) volta como 409, como a espera de trava — a transação inteira foi
    * desfeita.
+   *
+   * O `lock_timeout` vale desde o BEGIN, também para as LINHAS (F4.1c-1): a
+   * normalização segura as linhas dos contatos do workspace pela passada
+   * inteira, e uma edição sem telefone, que não pega a trava de massa, esperaria
+   * a linha sem limite — o prazo do Prisma não cancela a instrução no banco, e a
+   * conexão do pool ficaria presa.
    */
   async naTransacaoInterativa<T>(db: ExecutorDeTransacao, fn: (tx: Db) => Promise<T>): Promise<T> {
     try {
-      return await db.$transaction(fn, { timeout: this.config.mudancaTransacaoMs });
+      return await db.$transaction(
+        async (tx) => {
+          await prazoDeTrava(tx, this.config.mudancaTravaMs);
+          return fn(tx);
+        },
+        { timeout: this.config.mudancaTransacaoMs },
+      );
     } catch (erro) {
       if ((erro as { code?: unknown } | null)?.code === 'P2028') {
         throw new ConflictException(MENSAGEM_DE_ESPERA);

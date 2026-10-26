@@ -35,6 +35,15 @@ export interface ConfigDaGuarda {
   /** ... e o prazo da transação dela */
   mudancaTransacaoMs: number;
   /**
+   * a importação de contatos: espera pela trava dos escritores em massa
+   * EXCLUSIVA (ADR-052, F4.1c-1). Curto: enquanto ela espera na fila, todo
+   * pedido novo da trava compartilhada do workspace (a ingestão, os registros,
+   * o envio) espera atrás dela — e a guarda do envio da IA segura a
+   * compartilhada pela chamada inteira. Sem a trava no prazo, 409, e a pessoa
+   * tenta de novo
+   */
+  importacaoTravaMs: number;
+  /**
    * a ingestão do WhatsApp: espera por TODAS as travas da mensagem (ADR-052
    * item 3). Curto, porque roda dentro da requisição do webhook; sem a trava,
    * a Meta reentrega
@@ -78,6 +87,7 @@ export const CONFIG_PADRAO_DA_GUARDA: ConfigDaGuarda = {
   reconciliacaoMs: 5_000,
   mudancaTravaMs: 10_000,
   mudancaTransacaoMs: 30_000,
+  importacaoTravaMs: 2_000,
   ingestaoTravaMs: 2_000,
   ingestaoLoteMs: 10_000,
   workspaceTravaMs: 90_000,

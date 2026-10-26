@@ -6,6 +6,7 @@ import type {
   Paginated,
   UpdateCompanyInput,
 } from '@veyra/contracts';
+import { MudancasDeRestricao } from '../content-use/restriction-changes';
 import { CustomFieldsService } from '../custom-fields/custom-fields.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { TagsService } from '../tags/tags.service';
@@ -33,6 +34,7 @@ export class CompaniesService {
     private readonly prisma: PrismaService,
     private readonly tags: TagsService,
     private readonly customFields: CustomFieldsService,
+    private readonly restricao: MudancasDeRestricao,
   ) {}
 
   async list(input: ListCompaniesInput): Promise<Paginated<CompanyDto>> {
@@ -141,10 +143,12 @@ export class CompaniesService {
   async remove(id: string): Promise<void> {
     const existing = await this.prisma.db.company.findFirst({ where: { id } });
     if (!existing) throw new NotFoundException('Empresa não encontrada');
+    // a transação interativa das mudanças: a espera pelas linhas dos contatos
+    // tem prazo (a normalização as segura pela passada inteira) e vira 409
     const db = this.prisma.db as unknown as {
-      $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T>;
+      $transaction: <T>(fn: (tx: Db) => Promise<T>, options?: { timeout: number }) => Promise<T>;
     };
-    await db.$transaction(async (tx) => {
+    await this.restricao.naTransacaoInterativa(db, async (tx) => {
       // FK Contact→Company é Restrict (SET NULL em FK composta anularia o
       // workspaceId): desvincula os contatos explicitamente antes de excluir.
       // Um a um, em ORDEM DE ID (ADR-047 adendo 6 §3.2): o lote travaria as

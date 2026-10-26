@@ -23,6 +23,13 @@ describe('selo do despacho na triagem', () => {
     ).toBeInTheDocument();
   });
 
+  it('o cancelado antes de sair aparece como "Cancelada", com o motivo (F4.1c-1)', () => {
+    render(<DispatchBadge state="canceled" error="stop_requested" />);
+    expect(
+      screen.getByText('Cancelada · a pessoa pediu para parar: nada é enviado a este número'),
+    ).toBeInTheDocument();
+  });
+
   it('o código "não saiu" só muda o selo do incerto', () => {
     render(<DispatchBadge state="failed_permanent" error="not_sent_guard_aborted" />);
     expect(screen.getByText(/^Não enviada/)).toBeInTheDocument();

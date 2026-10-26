@@ -4714,7 +4714,7 @@ A skill `create-migration` traz o bloco de ensaio com as três evidências: os g
 
 ## ADR-052 — Mensagem iniciada pelo negócio: telefones normalizados, remetente sem atribuição silenciosa, template verificável, consentimento por finalidade e aprovação vinculada à prévia
 
-**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). **A F4.1a foi aprovada para implementação em 2026-10-23**, com as condições registradas no fim deste ADR, e publicada em 2026-10-26. **A F4.1b foi parcialmente aprovada em 2026-10-26:** finalidades, consentimentos, bloqueio, permissões e a recusa transitória dos templates estão liberados, e foram publicados e validados no mesmo dia, com a decisão 19 (ver o fechamento no fim deste ADR); a regra temporal da resposta depois do pedido de parar continua proposta. **A F4.1c tem plano consolidado para revisão**, sem código. O resto continua PROPOSTO, e nenhum outro código da F4 está autorizado. · **Data:** 2026-10-23
+**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). **A F4.1a foi aprovada para implementação em 2026-10-23**, com as condições registradas no fim deste ADR, e publicada em 2026-10-26. **A F4.1b foi parcialmente aprovada em 2026-10-26:** finalidades, consentimentos, bloqueio, permissões e a recusa transitória dos templates estão liberados, e foram publicados e validados no mesmo dia, com a decisão 19 (ver o fechamento no fim deste ADR); a regra temporal da resposta depois do pedido de parar continua proposta. **A F4.1c foi aprovada em três subentregas em 2026-10-26**; a F4.1c-1 está implementada, revisada e validada em commit local, sem push (ver o fim deste ADR). O resto continua PROPOSTO, e nenhum outro código da F4 está autorizado. · **Data:** 2026-10-23
 
 A revisão 0 está no `0eb4038`. A revisão 1 não foi comitada; ela passou pelo `reviewer` (mudanças necessárias) e pelo `security` (bloqueado, sem P0), e os achados dos dois estão incorporados aqui. A confirmação desta revisão 2 aprovou com ressalvas (o `reviewer`, com quatro achados importantes; o `security`, com dois P1 novos, os mesmos do `reviewer`), e as correções dela também estão no texto. A conferência final dessas correções aprovou: o `security`, sem ressalva bloqueante, e o `reviewer`, com uma ressalva importante (a regra ao reabrir conversa) e duas de qualidade. As três estão no texto, e os dois disseram que não é preciso nova rodada. Nenhum ADR aceito é alterado antes da aprovação deste; as emendas que ele implicaria estão listadas no fim, em "Emendas propostas".
 
@@ -5454,6 +5454,7 @@ Se alguma condição falha, a mensagem não sai, com o motivo por destinatário 
    - Criar na tela continua travando: é um número só, e a espera fica uniforme com a edição.
    - Um teste estático fixa que a importação só cria: sem atualizar, fundir ou buscar contato por telefone.
    - **A F4.1c reabre o ponto:** o item 6 dela ("um só candidato", conferido sob o `address:` compartilhado) supõe que todo escritor de telefone espera o endereço. A alternativa que mantém a serialização é a trava de endereço por **balde** (o HMAC módulo 256, por workspace): a importação pega no máximo 256 travas, e a colisão só causa espera a mais. Ela muda a chave de todos os caminhos, e por isso não entrou aqui.
+   - **Resolvido na F4.1c-1 (2026-10-26):** a importação pega a trava dos escritores em massa, exclusiva, e todo escritor de telefone e todo leitor de candidatos a pega compartilhada; a importação passou a ser serial com quem decide, e a tabela acima descreve só o comportamento anterior. Os testes que a fixavam foram reescritos para a ordem serial.
    - **Pede a sua confirmação**, porque muda uma linha aprovada, agora com a demonstração da tabela acima. Os baldes ficam como proposta para a F4.1c. _(Decidido na aprovação do estado final, em 2026-10-26: aceito no escopo atual, com o limite demonstrado, e sem valer para a F4.1c — bloco no fim deste ADR.)_
 8. **A classificação ganhou dois casos** (confirmado pelo usuário em 2026-10-23, nos limites abaixo), os dois sem completar nem adivinhar número (C17):
    - **exata** também quando um telefone do contato é o MESMO número internacional, dígito a dígito, escrito com "+". É o `wa_id` que a biblioteca não valida (o celular brasileiro sem o 9º dígito): o lead nasce com ele assim. Sem isso, toda mensagem seguinte do mesmo número seria RAI, uma regressão diante do `has` exato de antes;
@@ -6028,3 +6029,162 @@ Cada uma com o ADR antes do código, a migration conforme o ADR-051 com o ensaio
 - a ordem das subentregas, com o template no Inbox por último.
 
 **10. Separado e pendente:** a exceção da resposta depois do pedido de parar, com a regra temporal ainda em proposta (o item 4 da F4.1b). As colunas `stopBlockId` entram com ela, numa migration própria.
+
+**F4.1c — as decisões do usuário sobre o plano (2026-10-26) e as condições, antes do código.** A divisão F4.1c-1 → F4.1c-2 → F4.1c-3 está aprovada, e a F4.1c-1 liberada para implementar. Cada subentrega tem as próprias revisões, o ensaio das migrations e a bateria, e para no commit local antes de pedir push. A exceção da resposta depois do pedido de parar continua separada e pendente. Continuam bloqueados deploy, ativação do Clinics, envio real e dados reais.
+
+1. **A trava dos escritores em massa (`phones-bulk:<workspace>`): aprovada**, no lugar dos baldes, na posição proposta da ordem global (o nível 1b, entre o workspace e os contatos). As condições:
+   - a matriz completa dos participantes, abaixo, com as travas que coordenam cada caminho;
+   - a normalização mantém a trava exclusiva durante todo o trecho em que leitores poderiam observar um conjunto parcialmente atualizado, e não espera por uma trava enquanto impede quem poderia liberá-la, nem entre conexões e transações da CLI;
+   - testes nas duas ordens, isolamento entre workspaces e falha por prazo sem efeitos parciais;
+   - "leva poucos segundos" é expectativa a medir, não garantia.
+2. **A normalização com `number_removed`: aprovada.** A atualização dos números de cada contato e a revogação correspondente ocorrem na mesma transação. Só mudar a apresentação do mesmo número não revoga; o número que deixa de ser exato revoga. Falha e retomada da CLI não deixam número atualizado com consentimento antigo utilizável.
+3. **O estado `canceled` e o cancelamento neutro: aprovados**, preservando as garantias do pedido de parar, e não só trocando o estado:
+   - o despacho reivindicado e ainda não iniciado não chama o transporte;
+   - a reserva é devolvida uma única vez;
+   - `sending` não é tratado automaticamente como prova de chamada iniciada;
+   - o enviado ou incerto não volta a ficar elegível;
+   - o cancelamento repetido não altera cobrança nem auditoria indevidamente;
+   - os testes determinísticos da F4.1b são reaproveitados, com os do serviço neutro; os estados históricos não são reescritos.
+4. **O campo do Core: aprovado somente `contato.nome`.** O valor vem do servidor e da lista permitida pela finalidade: sem parâmetro livre, texto clínico, conteúdo de conversa ou resultado de IA. A mudança do valor aprovado exige nova aprovação, pelo contrato do hash.
+5. **C10, o E7: aprovado.** A porta é neutra, só de leitura, isolada por workspace, com valores validados e as chaves de validade fixadas no pedido. A ausência da implementação exigida, o prefixo desconhecido ou a indisponibilidade **nunca** autorizam envio. As mudanças do vertical participam do protocolo das chaves de validade; a porta sozinha não garante isso.
+6. **C14, não consultar o E6: aprovado estritamente para o `business_outbound`** com template revisado, finalidade e consentimento verificáveis, valores permitidos, aprovação humana e reconferência sob a guarda. Não é dispensa genérica por "autoria humana": o rascunho da IA, mesmo editado ou aprovado por pessoa, mantém a origem e as proteções, e nenhum caminho converte conteúdo de IA nesse fluxo para escapar do E6.
+7. **C18, `not_sent_guard_aborted`: aprovado com prova.** O Clinics pode tratá-lo como não enviado quando houver evidência persistida de que a chamada não começou — não basta interpretar um texto de erro ou um timeout. O pedido novo exige nova aprovação e novas verificações; o despacho anterior permanece terminal e auditável; o caso realmente incerto continua sem reenvio.
+8. **Os pushes documentais em sequência** não precisam esperar cada CI intermediário: o essencial é identificar a árvore final validada e distinguir cancelamento de falha.
+
+**A matriz dos participantes (F4.1c-1).** A ordem global passa a ser: nível 0 (a ingestão, por HMAC da chave de coincidência); nível 1, o workspace; **nível 1b, `phones-bulk:<workspace>`**; nível 2, os contatos; nível 3, as entidades (`address:`, `conversation:`, `deal:`, `task:`, `validity:`); nível 4, as linhas. C = compartilhada, X = exclusiva.
+
+| Caminho                                          | Travas, na ordem                                                                         | O que coordena                                                                                                                                                                                                                                                                          |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Importação de contatos                           | workspace C; **phones-bulk X**, com espera curta (2 s; revisão do delta)                 | Serial com todo escritor de telefone e todo leitor de candidatos do workspace, com uma trava só. Fecha o resíduo do desvio 7. A espera é curta porque, enquanto ela espera, os pedidos novos da compartilhada esperam atrás dela                                                        |
+| Normalização (CLI `phones:normalize`)            | por workspace, numa transação e numa conexão só: workspace C; **phones-bulk X**; linhas  | Ninguém observa o conjunto parcial; a atualização e a revogação `number_removed` na mesma transação; a CLI não pega trava de contato nem de endereço, e por isso não espera outra trava consultiva segurando a dela (as linhas, espera com o mesmo `lock_timeout`); prazo de ociosidade |
+| Criar contato na tela                            | workspace C; **phones-bulk C**; `address:` X dos números (o contato novo tem id fresco)  | Com a ingestão, a identificação e os registros de consentimento do mesmo número                                                                                                                                                                                                         |
+| Editar os telefones                              | workspace C; **phones-bulk C**; o contato X; `address:` X dos números que entram ou saem | Revoga `number_removed` na mesma transação; serial com conceder e parar do mesmo número. Os MESMOS telefones não regravam as formas derivadas (revisão)                                                                                                                                 |
+| Editar sem telefone; excluir a empresa (revisão) | nenhuma trava consultiva; a linha do contato, com `lock_timeout` desde o BEGIN           | Não decide por telefone; durante a normalização, que segura as linhas, 409 no prazo, sem efeito                                                                                                                                                                                         |
+| Excluir o contato                                | workspace C; **phones-bulk C**; o contato X; `address:` X de todos os números            | A cascata do consentimento; o pedido de parar fica                                                                                                                                                                                                                                      |
+| Rejeitar o remetente com a retirada do número    | nível 0; workspace C; **phones-bulk C**; os contatos X; `conversation:` X; `address:` X  | Revoga `number_removed`                                                                                                                                                                                                                                                                 |
+| Identificar e desfazer (e o contato novo dela)   | nível 0; workspace C; **phones-bulk C**; os contatos X; `conversation:` X; `address:` X  | Relê os candidatos sob as travas                                                                                                                                                                                                                                                        |
+| Ingestão (e o lead que ela cria)                 | nível 0; workspace C; **phones-bulk C**; `address:` C                                    | Decide pelos candidatos lidos sob as travas; espera a importação e a normalização até o prazo da ingestão; sem a trava, o item e os seguintes do workspace ficam para a reentrega da Meta, e os outros workspaces do mesmo POST seguem (revisão)                                        |
+| Conceder e revogar o consentimento               | workspace C; **phones-bulk C**; o contato X; `address:` X                                | Relê o número exato e o pedido de parar                                                                                                                                                                                                                                                 |
+| Registrar o pedido de parar e desbloquear        | workspace C; **phones-bulk C**; todos os contatos do número X (relidos); `address:` X    | Cancela os despachos não iniciados pelo serviço neutro                                                                                                                                                                                                                                  |
+| O marcador da resposta de pessoa (worker)        | workspace C; **phones-bulk C**; `address:` C                                             | Relê o pedido de parar, a religação (revisão) e o número exato do cadastro antes do marcador                                                                                                                                                                                            |
+| O despacho da IA (sob a guarda)                  | as travas da guarda: o workspace C; **phones-bulk C** (revisão); os contatos C           | A reconferência do pedido de cancelamento, da religação, do número exato e do bloqueio; serial com a edição do contato da conversa pela trava dele, e com a importação e a normalização pela de massa                                                                                   |
+| O `business_outbound` (F4.1c-3)                  | workspace C; **phones-bulk C**; o contato C; `address:` C; `validity:` C                 | Um só candidato, sob as travas                                                                                                                                                                                                                                                          |
+
+- **O prazo:** a importação e a normalização esperam a trava exclusiva com prazo; sem ela, nada muda (a transação é desfeita) — a importação responde 409 e a CLI relata o workspace pulado e sai com erro.
+- **O que a matriz não muda:** os outros usos da IA (resumo, sugestão, classificação) e as entregas de webhook não pegam a trava de massa: não decidem pelo número. A aprovação do rascunho também não: a conferência do número exato nela é a rápida, e a garantia é a reconferência sob a guarda do envio, que pega a trava.
+- _(Ajustada na revisão da F4.1c-1, 2026-10-26: o despacho da IA passou a pegar a trava de massa; a edição sem telefone e a exclusão da empresa entraram na matriz, com o `lock_timeout` nas linhas; a ingestão adia só o workspace dela. Ver o bloco da revisão, adiante.)_
+
+**Implementação da F4.1c-1 (2026-10-26).** A coordenação dos escritores de telefone, a revogação na normalização, o estado `canceled` e o cancelamento neutro. Não abre envio nenhum: a recusa transitória dos templates continua, e nada sai sob o pedido de parar. Dados fictícios. Este bloco descreve o estado final; as medidas e a validação estão no fim do ADR.
+
+- **A trava dos escritores em massa** (`phones-bulk:<workspace>`, o nível 1b da primitiva única), pela matriz dos participantes, acima:
+  - os caminhos pegam a trava pelas portas existentes (`TravasDeIdentidade`, `MudancasDeRestricao`, a guarda), com o escopo `telefones: true` no modo compartilhado;
+  - a importação a pega exclusiva (`paraImportacao`), e a normalização também (`paraNormalizacao`); a regra estática de que, fora de `content-use/`, as travas só se pegam pela primitiva das mudanças continua valendo;
+  - sem a trava no prazo, a importação responde 409 e nada é importado nem cobrado.
+- **O marcador da resposta de pessoa relê o número exato do cadastro e a religação** sob a trava de massa e o `address:` compartilhados: a edição de telefone, a normalização ou a identificação que comitam antes são vistas (`number_not_exact`, `conversation_relinked`), e as que chegam depois esperam o marcador.
+- **A normalização** (`phones:normalize`):
+  - cada workspace numa transação e numa conexão, com a trava de massa exclusiva do começo ao fim e o `lock_timeout` valendo também para as linhas; ela não pega trava de contato nem de endereço, e por isso não espera outra trava consultiva segurando a dela;
+  - a atualização de cada contato e a revogação `number_removed` vão juntas. A revogação olha todo contato do lote, não só os que mudam: o consentimento ativo de um número que não é exato sai, inclusive o deixado pela CLI anterior, que não revogava. A trilha leva o ator `cli:phones-normalize`, sem membership e sem o número;
+  - só a apresentação mudando não revoga, e rodar de novo não revoga nada;
+  - a falha no meio, ou a trava que não vem no prazo, desfaz o workspace inteiro; a CLI relata o workspace pulado (só o tipo e o código do erro), segue para o próximo e sai com erro, e rodar de novo retoma;
+  - os prazos padrão: 10 s para a trava, 10 min para a transação, 60 s de ociosidade (a CLI que cai não segura a trava até o keepalive do TCP).
+- **O estado `canceled` e o cancelamento neutro** (`CancelamentoDeDespachos`, no Core):
+  - a migration `20261026150000_dispatch_canceled` (ADR-051, 4 objetos: o valor do tipo, as colunas `cancelRequestedAt` e `cancelReason` e a restrição `MessageDispatch_cancel_check`, que amarra o pedido ao motivo da lista fechada), sem uso do valor na mesma transação;
+  - **dois comandos, e a ordem é a garantia:** o primeiro prende, num comando só, todas as candidatas (`reserved`, `failed_before_send` e `sending`, com ou sem o marcador, ainda sem pedido) e grava nelas o pedido e o motivo; daqui ao commit, nenhuma muda por fora — o marcador da IA (que não pega trava) e a falha transitória esperam a linha. O segundo leva os não iniciados do alvo (`reserved`, `failed_before_send` ou `sending` sem o marcador) a `canceled`, inclusive o que entrou entre os dois comandos, sem pedido gravado; o worker que já tinha reivindicado perde a posse. O chamador precisa das travas exclusivas da pré-condição também para não cair em impasse de linhas com outro cancelamento de conjunto que se cruze;
+  - a reserva volta uma vez só; o enviado, o incerto e o recusado não mudam; repetir não muda nada; o motivo é de uma lista fechada (`stop_requested`), e o `workspaceId` vai explícito em cada comando;
+  - **o pedido vale enquanto a chamada não começou, com o motivo gravado junto:** a reconferência sob a guarda da IA o vê primeiro e leva a `canceled`, com o marcador zerado; a falha que prova o não envio (`failed_before_send`) leva o despacho com o pedido a `canceled`, e não de volta à fila; e o claim que achar um despacho com o pedido o cancela, como segunda camada. Por qualquer caminho, o `errorCode` é o motivo gravado (`stop_requested`, no pedido de parar). Começada a chamada, o desfecho é o dela;
+  - o pedido de parar passa a usá-lo: o despacho não iniciado vai a `canceled` com `stop_requested`, e o da IA à espera da guarda também; os estados já gravados não mudam;
+  - **o instante do `cancelRequestedAt` vem do Node e é informativo**: só a presença decide, e nada o compara com `now()`.
+- **Os testes:**
+  - a suíte nova `phone-writers.integration-spec.ts`:
+    - a trava de massa: a importação sem a trava no prazo; conceder primeiro e a importação depois; a importação primeiro e o pedido de parar com a releitura do conjunto; o isolamento entre workspaces (P0); a medida dos mil números;
+    - a normalização: só a apresentação; o número que deixa de ser exato; a falha no meio com a retomada; o prazo; as duas ordens com conceder; o isolamento; a medida dos mil contatos; editar sem telefone e excluir a empresa durante a passada (409 no prazo); os mesmos telefones no PATCH; o consentimento deixado pela CLI anterior; o relato da CLI; a ingestão durante a passada, com outro workspace no mesmo POST; o marcador e o envio da IA que esperam a passada;
+    - o cancelamento neutro: a reserva uma vez; a repetição; os estados que não voltam; o reivindicado sem marcador; o em voo, o esgotamento e as varreduras; dois cancelamentos ao mesmo tempo; o em voo com o pedido que falha antes de sair; o pedido achado no claim; o worker REAL parado entre o claim e o marcador, na resposta de pessoa e na da IA, com o pedido de parar real; o envio da IA com o marcador, antes da guarda, e o pedido de parar real; e a guarda da IA com o pedido;
+    - o marcador que relê o número;
+  - a suíte da identidade: o bloco da importação reescrito para a ordem serial, nas duas ordens, com a ingestão e com a identificação, e o isolamento; a normalização na fumaça da ordem global;
+  - a da F4.1b: o cancelamento esperado como `canceled`, e "parar × importação" na ordem serial;
+  - a unidade: a transação interativa fixa o `lock_timeout` antes da mudança;
+  - o web: o selo `Cancelada`.
+
+**Revisão da F4.1c-1 (`reviewer` e `security`, 2026-10-26) e as correções.** Os dois aprovaram com ajustes, sem item bloqueante nem P0. _(A ordem dos comandos do cancelamento e a escolha do motivo descritas aqui foram substituídas pela revisão do delta, adiante.)_ O que mudou, por achado:
+
+- **O pedido de cancelamento se perdia na resposta de pessoa** (os dois). O em voo que recebia o pedido e voltava a `failed_before_send` por falha transitória era reivindicado de novo, e o marcador de pessoa não olhava o pedido. **Corrigido:**
+  - a falha que prova o não envio leva o despacho com o pedido a `canceled`;
+  - o cancelamento grava o pedido do em voo antes de cancelar os não iniciados;
+  - o claim que achar o pedido cancela.
+    Hoje o pedido de parar escapava pelo bloqueio relido; a correção vale para os chamadores futuros (F4.1c-3).
+- **O despacho da IA sob o pedido de parar terminava `failed_permanent`**, e não `canceled` (`reviewer`), porque a reconferência testava o bloqueio antes do pedido. **Corrigido:** o pedido vem primeiro, e o motivo é `stop_requested` quando há bloqueio. O teste usa o pedido de parar real.
+- **Um PATCH com os mesmos telefones regravava as formas derivadas** com a região de agora, sem trava nem revogação (`reviewer`). **Corrigido:** as formas só mudam com algum telefone mudando. A normalização passou a revogar também nos contatos que não mudam (o achado 7 do `security`).
+- **As esperas por linha sem prazo durante a passada** (`security`, médio). A edição sem telefone e a exclusão da empresa esperavam a linha do contato sem limite, e a conexão do pool ficava presa. **Corrigido:** a transação interativa das mudanças fixa o `lock_timeout` desde o BEGIN, e a exclusão da empresa passou a usá-la (409 no prazo).
+- **No webhook, a falha de um workspace interrompia o resto do POST** (`security`, médio). **Corrigido:** os itens seguintes daquele workspace ficam para a reentrega, na ordem; os outros workspaces seguem; e o erro sai no fim.
+- **O cancelamento dependia só do filtro do CLS** (`security`). **Corrigido:** o `workspaceId` vai explícito em cada comando, e o motivo é de uma lista fechada.
+- **A IA fora da trava de massa** (`security`, baixo). **Corrigido:** a guarda do envio da IA pega a trava compartilhada, e a reconferência do número exato fica serial com a importação e a normalização. O pedido de parar continua esperando a guarda pela trava do contato, como antes. **O custo:** a guarda segura a compartilhada pela chamada inteira (até uns 23 s). A normalização espera os envios da IA em curso até o prazo dela; sem a trava, o workspace é pulado e a CLI sai com erro, para rodar de novo. A importação ganhou espera curta (a revisão do delta, adiante).
+- **A CLI sem prazo de ociosidade** (`security`, baixo). **Corrigido:** 60 s.
+- **O marcador de pessoa não relia a religação** (`reviewer`, menor). **Corrigido:** relê sob o `address:`.
+- **A ativação de um vertical durante a passada** (`reviewer`, menor) entra na fila da trava do workspace e amplia a espera dos pedidos do workspace. Não é impasse. Fica registrada no runbook (não ativar nem desativar vertical durante a passada).
+- **Os testes e os docs** (os dois):
+  - o worker real parado, na resposta de pessoa e na da IA;
+  - a varredura exercida com o cancelado e com o em voo abandonado;
+  - dois cancelamentos concorrentes;
+  - a normalização contra a ingestão, contra o marcador, contra o envio da IA e na fumaça da ordem global;
+  - o relato da CLI;
+  - a numeração do SECURITY §7-D (o item 9 voltou a ser a ingestão, e a trava de massa é o 13);
+  - a descrição do runbook.
+
+**Revisão do delta da F4.1c-1 (`reviewer` e `security`, 2026-10-26) e as correções.** Os dois aprovaram com ajustes, sem item bloqueante nem P0. As correções da primeira rodada resolveram os dez achados dela. O que mudou de novo:
+
+- **A troca de ordem do cancelamento abria a corrida simétrica** (`security`, médio). O comando do pedido só prendia o em voo. O marcador da IA, que não pega trava, comitava entre os dois comandos, e o despacho escapava dos dois. Pelo pedido de parar, nada saía, porque o bloqueio é relido; mas terminava `failed_permanent`, contado como "pode ter saído". **Corrigido:**
+  - o primeiro comando prende todas as candidatas, com ou sem o marcador, e grava o pedido e o motivo;
+  - o segundo cancela os não iniciados entre as presas.
+    Os testes param a transação entre os dois comandos e provam que o marcador espera a linha. A ordem contra a falha transitória também ganhou teste determinístico, com a primeira escrita do `finish` sem commit.
+- **A importação comum podia segurar o telefone do workspace inteiro** (os dois). Enquanto ela esperava a exclusiva atrás de um envio da IA lento, a fila do Postgres punha atrás dela todo pedido novo da compartilhada. **Corrigido:** a importação espera a trava por no máximo 2 s (`importacaoTravaMs`) e depois volta ao prazo das mudanças. Um teste faz a importação dar 409 com a IA parada na guarda, e a ingestão do mesmo workspace entra logo depois.
+- **O mesmo pedido de parar gravava motivos diferentes** (`reviewer`): `cancel_requested` na resposta de pessoa e `stop_requested` na IA. **Corrigido:** o motivo é gravado junto com o pedido, na coluna `cancelReason` da migration ainda não publicada, e é o `errorCode` de todo despacho que o pedido cancela. A migration foi ensaiada de novo, com 3 objetos.
+- **O webhook não registrava as falhas além da primeira** (`security`). **Corrigido:** um aviso por workspace adiado, só com o tipo e o código do erro.
+- **O contato pulado decidia revogação por telefones velhos** (`reviewer`, inalcançável sob a trava exclusiva). **Corrigido:** o pulado não revoga, e a próxima passada o confere.
+- **O `workspaceId` explícito do cancelamento** ganhou teste com uma transação `raw` e o mesmo número noutro workspace (P0).
+- **Os docs:**
+  - o §7-D.13 do SECURITY, sem prometer a trava a quem só faz a checagem rápida;
+  - o "nunca chega ao transporte" do §7-E.3;
+  - o runbook com a importação de 2 s, a passada com os envios pausados e o inventário de 3 objetos;
+  - a frase sobre o pedido de parar e a IA neste ADR.
+- **Fica declarado, sem teste:** o contato pulado (inalcançável sob a trava exclusiva).
+
+**A segunda rodada do delta (2026-10-26).** O `security` aprovou; o `reviewer` aprovou com ajustes; nenhum dos dois achou problema de correção no código. O que mudou:
+
+- **O motivo amarrado no banco:** a restrição `MessageDispatch_cancel_check` (a migration ainda não publicada, ensaiada de novo com 4 objetos). O pedido e o motivo andam juntos, e o motivo é da lista fechada; nem uma escrita `raw` grava texto livre num `errorCode` que o Inbox mostra. O teste novo pegou a primeira versão da restrição, em que `IN` com o motivo nulo dava NULL e passava; o `IS NOT NULL` ficou explícito. O motivo lido do banco é conferido por tipo antes de virar `errorCode`.
+- **Os docs que prometiam demais:** "nunca chega ao transporte" só vale para o despacho reivindicado com o pedido; o que já tem o marcador pode sair, e o desfecho é o da chamada (SECURITY §7-E.3 e DOMAIN_MODEL). O segundo comando do cancelamento também cancela o despacho que entrou entre os dois, sem pedido gravado.
+- **O impasse de linhas entre cancelamentos que se cruzam:** a pré-condição das travas exclusivas também o evita. **Fica para a F4.1c-3:** o chamador por `messageIds` precisa serializar antes, pela trava do contato ou do número, ou tratar o 40P01 como 409.
+- **Os testes:**
+  - o marcador entre os dois comandos espera de fato e depois não acha a posse (`rowCount` 0);
+  - o título do teste da importação não promete o prazo curto, que é provado pela unidade;
+  - o banco recusa o pedido sem motivo, o motivo sem pedido e o motivo fora da lista.
+
+**A validação da F4.1c-1 (2026-10-26).** Commit local sobre o `efba211`, sem push. Dados fictícios.
+
+- **A bateria completa** (b68, no Mac na tomada, sem sono na janela, sem lacuna de relógio):
+  - lint, formatação e build: OK;
+  - a unidade: 302 testes;
+  - o web: 142;
+  - a integração: 999, duas rodadas;
+  - o `migrate diff` contra o schema, as migrations do zero e o `check:fk`: OK;
+  - o e2e: 49.
+- **Depois da bateria**, só o comentário de locks da migration mudou, a pedido do `reviewer`. É texto, sem efeito no schema, e a verificação que depende do arquivo foi repetida: o ensaio.
+- **O ensaio da `20261026150000_dispatch_canceled`:**
+  - a falha forçada antes do COMMIT deixa o schema e os dados intactos (inventário 0);
+  - a aplicação limpa dá o inventário 4 e o `migrate diff` vazio;
+  - os estados gravados não mudam.
+- **As mutações:** 36 casos, todos mortos por teste que falha na suíte alvo, nenhum por compilação. Cobrem:
+  - a trava de massa em cada participante e na primitiva;
+  - o marcador;
+  - a guarda da IA;
+  - as esperas com prazo;
+  - o webhook;
+  - o PATCH;
+  - a normalização;
+  - o cancelamento em cada comando, ordem e motivo;
+  - a restrição do banco.
+- **As medidas, no ambiente de teste**, são medidas, não garantias:
+  - importar mil números levou de 145 a 173 ms;
+  - normalizar mil contatos levou de 331 a 590 ms, nas várias rodadas.
+- **Fica declarado:**
+  - **sem teste:** o contato pulado da normalização, inalcançável sob a trava exclusiva;
+  - **para a F4.1c-3:** a serialização do chamador do cancelamento por `messageIds`.

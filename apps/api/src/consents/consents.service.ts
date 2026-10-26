@@ -14,7 +14,7 @@ import type {
   StopBlockDto,
 } from '@veyra/contracts';
 import { AuditService } from '../audit/audit.service';
-import { WhatsappSendService } from '../channels/whatsapp-send.service';
+import { CancelamentoDeDespachos } from '../channels/dispatch-cancellation.service';
 import { AuthContext } from '../common/decorators';
 import { chaveDeCoincidencia, coincideExatamente, numerosExatos } from '../contacts/phone-identity';
 import { TravasDeIdentidade } from '../content-use/identity-locks';
@@ -94,7 +94,7 @@ export class ConsentsService {
     private readonly audit: AuditService,
     private readonly restricao: MudancasDeRestricao,
     private readonly travas: TravasDeIdentidade,
-    private readonly send: WhatsappSendService,
+    private readonly cancelamento: CancelamentoDeDespachos,
     private readonly conversations: ConversationsService,
   ) {}
 
@@ -392,7 +392,14 @@ export class ConsentsService {
           after: { receipt: consentimento.receipt, revocationReason: 'stop_requested' },
         });
       }
-      const despachos = await this.send.cancelarNaoIniciadosDoNumero(tx, workspaceId, numero);
+      // o cancelamento neutro (F4.1c-1): o não iniciado vai a `canceled`, o em
+      // voo recebe o pedido; esta transação segura o `address:` exclusivo
+      const despachos = await this.cancelamento.cancelarNaTransacao(
+        tx,
+        workspaceId,
+        { numero },
+        'stop_requested',
+      );
       await this.audit.record(tx, workspaceId, 'stop.registered', {
         entityType: 'stopBlock',
         entityId: bloqueio.id,

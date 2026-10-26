@@ -12,6 +12,9 @@ import { COORDENACAO } from './coordination-sql';
  *    número (ou de números que podem coincidir) se serializam aqui;
  * 1. workspace — compartilhada para usos, aprovações e mudanças por contato;
  *    exclusiva para mudanças do workspace inteiro;
+ * 1b. os escritores de telefone EM MASSA, por workspace (ADR-052, F4.1c-1) —
+ *    exclusiva para a importação e a normalização; compartilhada para todo
+ *    escritor de telefone e todo leitor de candidatos (`telefones: true`);
  * 2. contatos, em ordem crescente de id, sem repetição — compartilhadas para
  *    usos e aprovações, exclusivas para mudanças;
  * 3. entidades que determinam a quem um conteúdo pertence ('deal:<id>',
@@ -37,6 +40,7 @@ export const CHAVE = {
   // SQL e apareceria num log de instruções
   ingestao: (workspaceId: string, ficha: string) =>
     `veyra.restriction.ingest:${workspaceId}:${ficha}`,
+  telefones: (workspaceId: string) => `veyra.restriction.phones-bulk:${workspaceId}`,
   uso: (useId: string) => `veyra.content_use:${useId}`,
 } as const;
 
@@ -45,6 +49,11 @@ export interface EscopoDeTravas {
   contactIds?: readonly (string | null | undefined)[];
   /** 'deal:<id>', 'task:<id>', 'conversation:<id>' ou 'address:<HMAC>' */
   entityKeys?: readonly string[];
+  /**
+   * O nível 1b, compartilhado: quem escreve telefone ou decide por candidatos
+   * de telefone espera a importação e a normalização (F4.1c-1).
+   */
+  telefones?: boolean;
 }
 
 type Coordenavel = Pick<Db, '$executeRaw' | '$queryRaw'>;
@@ -79,6 +88,9 @@ export async function travarIngestao(
 /** Uso e aprovação: tudo compartilhado, na ordem. */
 export async function travarParaUso(tx: Coordenavel, escopo: EscopoDeTravas): Promise<void> {
   await tx.$executeRaw(COORDENACAO.travaCompartilhada(CHAVE.workspace(escopo.workspaceId)));
+  if (escopo.telefones) {
+    await tx.$executeRaw(COORDENACAO.travaCompartilhada(CHAVE.telefones(escopo.workspaceId)));
+  }
   for (const id of ordenados(escopo.contactIds)) {
     await tx.$executeRaw(COORDENACAO.travaCompartilhada(CHAVE.contato(escopo.workspaceId, id)));
   }
@@ -90,12 +102,26 @@ export async function travarParaUso(tx: Coordenavel, escopo: EscopoDeTravas): Pr
 /** Mudança por contato ou de titularidade: workspace compartilhada, o resto exclusivo. */
 export async function travarParaMudanca(tx: Coordenavel, escopo: EscopoDeTravas): Promise<void> {
   await tx.$executeRaw(COORDENACAO.travaCompartilhada(CHAVE.workspace(escopo.workspaceId)));
+  if (escopo.telefones) {
+    await tx.$executeRaw(COORDENACAO.travaCompartilhada(CHAVE.telefones(escopo.workspaceId)));
+  }
   for (const id of ordenados(escopo.contactIds)) {
     await tx.$executeRaw(COORDENACAO.travaExclusiva(CHAVE.contato(escopo.workspaceId, id)));
   }
   for (const chave of ordenados(escopo.entityKeys)) {
     await tx.$executeRaw(COORDENACAO.travaExclusiva(CHAVE.entidade(escopo.workspaceId, chave)));
   }
+}
+
+/**
+ * Os escritores de telefone EM MASSA — a importação e a normalização (ADR-052,
+ * F4.1c-1): o workspace compartilhado e o nível 1b EXCLUSIVO. Uma trava só por
+ * importação, em vez de uma por número; serial com todo escritor de telefone e
+ * todo leitor de candidatos do workspace, que pegam o 1b compartilhado.
+ */
+export async function travarTelefonesEmMassa(tx: Coordenavel, workspaceId: string): Promise<void> {
+  await tx.$executeRaw(COORDENACAO.travaCompartilhada(CHAVE.workspace(workspaceId)));
+  await tx.$executeRaw(COORDENACAO.travaExclusiva(CHAVE.telefones(workspaceId)));
 }
 
 /** Mudança do workspace inteiro (ativar e desativar um vertical): exclusiva. */

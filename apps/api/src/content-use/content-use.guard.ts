@@ -40,6 +40,11 @@ export interface UsoExterno<D, R> {
   contactIds: readonly string[];
   /** 'deal:<uuid>' ou 'task:<uuid>' */
   entityKeys?: readonly string[];
+  /**
+   * O nível 1b, compartilhado (ADR-052, F4.1c-1): o uso que decide pelo número
+   * exato do contato — o envio da IA — espera a importação e a normalização.
+   */
+  telefones?: boolean;
   /** prazo ABSOLUTO do tipo (60 s IA, 20 s Meta, 10 s webhook) */
   prazoMs: number;
   /** ids do registro de origem: pré-gerados (run, entrega) ou o despacho que já existe */
@@ -312,7 +317,8 @@ export class ContentUseGuard {
     };
     const prazoDoRegistro = uso.prazoMs + cfg.margemDoPrazoMs;
     // o prazo da transação cobre TUDO desde o BEGIN (adendo 7 §3.1)
-    const travas = 1 + registrado.contactIds.length + registrado.entityKeys.length;
+    const travas =
+      1 + (uso.telefones ? 1 : 0) + registrado.contactIds.length + registrado.entityKeys.length;
     const orcamento = orcamentoDaGuarda(cfg, uso.prazoMs, travas);
 
     let fase: Fase = 'antes';
@@ -342,6 +348,7 @@ export class ContentUseGuard {
           try {
             await travarParaUso(tx, {
               workspaceId: uso.workspaceId,
+              telefones: uso.telefones === true,
               contactIds: registrado.contactIds,
               entityKeys: registrado.entityKeys,
             });
