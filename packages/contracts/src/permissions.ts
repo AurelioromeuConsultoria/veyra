@@ -28,6 +28,11 @@ export const PERMISSION_CATALOG = {
   'billing:manage': 'Gerir plano, assinatura e limites',
   'intelligence:use': 'Usar capacidades de IA (leitura, sinais, insights)',
   'intelligence:approve': 'Aprovar ações externas propostas pela IA',
+  // F4.1b (ADR-052 item 5): o consentimento por finalidade e o pedido de parar
+  'consents:read': 'Ver consentimentos e pedidos de parar de contatos e conversas',
+  'consents:manage': 'Registrar e revogar consentimentos e registrar pedidos de parar',
+  'consents:unblock': 'Retirar um pedido de parar, com a nova solicitação da pessoa',
+  'templates:review': 'Revisar versões de template antes do uso (F4.1c)',
 } as const;
 
 export type PermissionKey = keyof typeof PERMISSION_CATALOG;
@@ -61,6 +66,8 @@ export const SYSTEM_ROLE_TEMPLATES: Record<string, readonly PermissionKey[]> = {
     'files:read',
     'files:write',
     'intelligence:use',
+    'consents:read',
+    'consents:manage',
   ],
   Guest: [
     'workspace:read',

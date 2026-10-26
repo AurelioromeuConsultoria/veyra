@@ -23,7 +23,8 @@ export const AUDIT_FIELDS: Record<string, readonly string[]> = {
   note: [], // nada do corpo — só o fato de ter existido
   membership: ['roleId', 'status'],
   invite: ['email', 'roleId'],
-  role: ['name', 'description'],
+  // `permissionKey`: a chave que o preenchimento da F4.1b concedeu (ADR-052 item 5)
+  role: ['name', 'description', 'permissionKey'],
   customField: ['label', 'required', 'options'],
   pipeline: ['name', 'defaultMark'],
   stage: ['name', 'order', 'probability', 'type'],
@@ -67,4 +68,28 @@ export const AUDIT_FIELDS: Record<string, readonly string[]> = {
     'replacedBy',
     'unassigned',
   ],
+  /**
+   * O consentimento por finalidade, o pedido de parar e a finalidade (ADR-052
+   * item 5, F4.1b): ids, a origem da lista fechada, o recibo, o motivo e as
+   * contagens — NUNCA o número.
+   */
+  consent: [
+    'contactId',
+    'channelId',
+    'purposeId',
+    'origin',
+    'receipt',
+    'revocationReason',
+    'revocationOrigin',
+  ],
+  stopBlock: [
+    'origin',
+    'receipt',
+    'liftOrigin',
+    'liftReceipt',
+    'consentsRevoked',
+    'dispatchesCanceled',
+    'dispatchesInFlight',
+  ],
+  consentPurpose: ['key', 'version', 'category', 'fields'],
 };

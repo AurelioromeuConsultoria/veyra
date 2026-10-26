@@ -25,6 +25,9 @@ const UNSAFE_OPERATIONS = new Set<string>([
   'upsert',
 ]);
 
+/** As criações: no modelo de desfecho, o registro nasce ativo (F4.1b). */
+const CREATE_OPERATIONS = new Set<string>(['create', 'createMany', 'createManyAndReturn']);
+
 /** Mutações proibidas em modelos append-only (histórico não se reescreve). */
 const MUTATING_OPERATIONS = new Set<string>([
   'update',
@@ -229,6 +232,38 @@ export function createWorkspaceClient(
 
           // clona: o hook nunca muta o objeto args do chamador
           const a = { ...((args ?? {}) as Record<string, unknown>) };
+
+          // só o desfecho se preenche (F4.1b): updateMany nos campos da lista;
+          // o registro nasce ativo, sem desfecho e sem instante vindo daqui, e a
+          // exclusão vem só pela cascata
+          const desfecho = reg.outcomeOnlyModels[model];
+          if (desfecho && MUTATING_OPERATIONS.has(operation)) {
+            const fora = isPlainObject(a.data)
+              ? Object.keys(a.data).filter((key) => !desfecho.desfecho.includes(key))
+              : ['data'];
+            if (
+              (operation !== 'updateMany' && operation !== 'updateManyAndReturn') ||
+              fora.length
+            ) {
+              throw new Error(
+                `${model} só aceita o preenchimento do desfecho (${desfecho.desfecho.join(', ')}) ` +
+                  `por updateMany: ${operation}${fora.length ? ` em ${fora.join(', ')}` : ''} é proibido.`,
+              );
+            }
+          }
+          if (desfecho && CREATE_OPERATIONS.has(operation)) {
+            const linhas = Array.isArray(a.data) ? a.data : [a.data];
+            const proibidos = [...desfecho.desfecho, ...desfecho.doBanco];
+            const fora = linhas.flatMap((linha) =>
+              isPlainObject(linha) ? Object.keys(linha).filter((k) => proibidos.includes(k)) : [],
+            );
+            if (fora.length) {
+              throw new Error(
+                `${model} nasce ativo, sem desfecho e com os instantes do banco: ` +
+                  `${operation} em ${[...new Set(fora)].join(', ')} é proibido.`,
+              );
+            }
+          }
 
           assertSafeSelection(reg, model, a.include);
           assertSafeSelection(reg, model, a.select);

@@ -16,6 +16,7 @@ import {
   type ResultadoDoUso,
 } from '../content-use/content-use.guard';
 import { OrigensDosUsos } from '../content-use/content-use.orphans';
+import { TravasDeIdentidade } from '../content-use/identity-locks';
 import { CONFIG_DA_GUARDA, type ConfigDaGuarda } from '../content-use/content-use.pools';
 import { ContentRestrictionService } from '../extensions/content-restriction';
 import type { ClaimedEvent } from '../outbox/outbox.service';
@@ -25,10 +26,12 @@ import { UsageService } from '../usage/usage.service';
 import { classifyFailure } from './meta-errors';
 import { META_TRANSPORT, type MetaTransport, type SendOutcome } from './meta.transport';
 import { coincideExatamente } from '../contacts/phone-identity';
+import { bloqueioAtivo, MENSAGEM_PEDIDO_DE_PARAR } from '../consents/consent-records';
 import {
   decideSend,
   MENSAGEM_NUMERO_NAO_CONFERE,
   MENSAGEM_REMETENTE_A_IDENTIFICAR,
+  MENSAGEM_TEMPLATE_INDISPONIVEL,
   type RemetenteDoEnvio,
   type SendDecision,
 } from './send-policy';
@@ -140,6 +143,7 @@ export class WhatsappSendService implements OnModuleInit {
     private readonly guarda: ContentUseGuard,
     private readonly origens: OrigensDosUsos,
     @Inject(CONFIG_DA_GUARDA) private readonly configDaGuarda: ConfigDaGuarda,
+    private readonly travas: TravasDeIdentidade,
   ) {}
 
   /** Chamado pelo caminho HTTP (atendente). Roda com CLS da request. */
@@ -179,7 +183,7 @@ export class WhatsappSendService implements OnModuleInit {
     input: Pick<OutboundRequest, 'conversationId' | 'template'>,
   ): Promise<PreparedOutbound> {
     const conversation = await this.loadConversation(input.conversationId);
-    const decision = await this.evaluate(workspaceId, conversation, input.template);
+    const decision = await this.evaluate(workspaceId, conversation, input.template !== undefined);
     if (!decision.allowed) throw new BadRequestException(this.explain(decision.reason));
 
     await this.usage.ensureCounterRow(workspaceId, 'messages_sent');
@@ -280,9 +284,89 @@ export class WhatsappSendService implements OnModuleInit {
     return { messageId };
   }
 
+  /**
+   * O marcador da mensagem de PESSOA (F4.1b), numa transação curta com o
+   * `address:` do número compartilhado — o pedido de parar o pega exclusivo:
+   * ou o marcador comita antes do pedido, que o conta como em voo, ou o pedido
+   * comita antes, e a releitura aqui o vê. Sem isto, um despacho gravado entre
+   * o cancelamento do pedido e o commit dele sairia depois, fora da trilha.
+   */
+  private async marcarSobOEndereco(
+    workspaceId: string,
+    messageId: string,
+    claimToken: string,
+    numero: string,
+  ): Promise<'marcou' | 'perdeu' | 'bloqueado'> {
+    const db = this.prisma.db as unknown as {
+      $transaction: <T>(fn: (tx: Db) => Promise<T>, options?: { timeout?: number }) => Promise<T>;
+    };
+    return db.$transaction(
+      async (tx) => {
+        await this.travas.paraMarcarEnvio(tx, workspaceId, numero);
+        if (await bloqueioAtivo(tx, numero)) return 'bloqueado';
+        const { count } = await tx.messageDispatch.updateMany({
+          where: { messageId, claimToken, state: 'sending' },
+          data: { dispatchedAt: new Date() },
+        });
+        return count > 0 ? 'marcou' : 'perdeu';
+      },
+      { timeout: this.configDaGuarda.mudancaTransacaoMs },
+    );
+  }
+
   /** Desfaz o preparo quando a escrita não aconteceu. */
   async releaseReservation(prepared: PreparedOutbound): Promise<void> {
     await this.usage.release(prepared.reservationId);
+  }
+
+  /**
+   * O pedido de parar (ADR-052 item 5, F4.1b), na transação dele: todo despacho
+   * NÃO INICIADO para o número, no workspace e em qualquer canal, vai a
+   * `failed_permanent` com `stop_requested`, e a reserva volta. Não iniciado é
+   * o que ainda não tem o marcador de despacho — reservado, a retentar, ou
+   * reivindicado por um worker que ainda não marcou: esse perde a posse (o
+   * marcador exige o `claimToken`) e não chama a Meta. O que já tem o marcador
+   * não volta; só é contado, para a trilha — inclusive o da IA à espera da
+   * guarda, que ainda reconfere o pedido e o recusa.
+   */
+  async cancelarNaoIniciadosDoNumero(
+    tx: Db,
+    workspaceId: string,
+    numero: string,
+  ): Promise<{ cancelados: number; emVoo: number }> {
+    const doNumero = { message: { conversation: { externalAddress: numero } } };
+    const cancelados = await tx.messageDispatch.updateManyAndReturn({
+      where: {
+        ...doNumero,
+        OR: [
+          { state: { in: ['reserved', 'failed_before_send'] } },
+          { state: 'sending', dispatchedAt: null },
+        ],
+      },
+      data: {
+        state: 'failed_permanent',
+        errorCode: 'stop_requested',
+        claimToken: null,
+        leaseExpiresAt: null,
+      },
+      select: { messageId: true, reservationId: true },
+    });
+    if (cancelados.length > 0) {
+      // a reserva sai do despacho DEPOIS de lida: o RETURNING entrega o valor
+      // pós-escrita, e zerá-la no mesmo comando a perderia. As linhas já estão
+      // presas por esta transação, e `failed_permanent` não é reivindicável
+      await tx.messageDispatch.updateMany({
+        where: { messageId: { in: cancelados.map((c) => c.messageId) } },
+        data: { reservationId: null },
+      });
+      for (const { reservationId } of cancelados) {
+        if (reservationId) await this.usage.releaseWithin(tx, workspaceId, reservationId);
+      }
+    }
+    const emVoo = await tx.messageDispatch.count({
+      where: { ...doNumero, state: 'sending', dispatchedAt: { not: null } },
+    });
+    return { cancelados: cancelados.length, emVoo };
   }
 
   /**
@@ -452,16 +536,14 @@ export class WhatsappSendService implements OnModuleInit {
     }
 
     // REVALIDAÇÃO imediatamente antes de enviar: a janela pode ter fechado e o
-    // consentimento pode ter sido revogado desde a criação
-    const template =
-      dispatch.templateName && dispatch.templateLanguage
-        ? {
-            name: dispatch.templateName,
-            language: dispatch.templateLanguage,
-            params: (dispatch.templateParams as string[] | null) ?? [],
-          }
-        : null;
-    const decision = await this.evaluate(workspaceId, conversation, template ?? undefined);
+    // pedido de parar pode ter chegado desde a criação. O despacho de template
+    // ainda pendente vai a `failed_permanent` com `template_flow_unavailable`
+    // (F4.1b): consentimento antigo não autoriza template
+    const decision = await this.evaluate(
+      workspaceId,
+      conversation,
+      dispatch.templateName !== null || dispatch.templateLanguage !== null,
+    );
     if (!decision.allowed) {
       if (dispatch.reservationId) await this.usage.release(dispatch.reservationId);
       await this.finish(messageId, dispatch.claimToken, 'failed_permanent', {
@@ -507,12 +589,50 @@ export class WhatsappSendService implements OnModuleInit {
     }
 
     // MARCADOR DE DESPACHO, gravado com fencing imediatamente antes de chamar:
-    // é o que impede outro worker de reenviar se morrermos na chamada
-    const marcou = await this.prisma.db.messageDispatch.updateMany({
-      where: { messageId, claimToken: dispatch.claimToken, state: 'sending' },
-      data: { dispatchedAt: new Date() },
-    });
-    if (marcou.count === 0) {
+    // é o que impede outro worker de reenviar se morrermos na chamada. O da
+    // mensagem de PESSOA sai sob o `address:` do número, relendo o pedido de
+    // parar (F4.1b); o da IA, antes da guarda, que reconfere o pedido sob as
+    // travas dela
+    let marcou: 'marcou' | 'perdeu' | 'bloqueado';
+    try {
+      marcou = origemDaIa
+        ? (
+            await this.prisma.db.messageDispatch.updateMany({
+              where: { messageId, claimToken: dispatch.claimToken, state: 'sending' },
+              data: { dispatchedAt: new Date() },
+            })
+          ).count > 0
+          ? 'marcou'
+          : 'perdeu'
+        : await this.marcarSobOEndereco(
+            workspaceId,
+            messageId,
+            dispatch.claimToken,
+            conversation.externalAddress as string,
+          );
+    } catch (erro) {
+      // a trava do endereço não veio no prazo: nada saiu, e a nova tentativa
+      // é do outbox — que relê tudo
+      // só o tipo e o código: a mensagem de um erro do Prisma traria os
+      // argumentos da chamada, e entre eles o número
+      const { name, code } = (erro ?? {}) as { name?: string; code?: string };
+      this.logger.warn(
+        `Marcador do envio ${messageId} sem a trava do endereço (${name ?? 'Error'} ${code ?? 'sem código'})`,
+      );
+      await this.usage.release(reservationId);
+      await this.finish(messageId, dispatch.claimToken, 'failed_before_send', {
+        errorCode: 'not_started',
+      });
+      return 'retry';
+    }
+    if (marcou === 'bloqueado') {
+      await this.usage.release(reservationId);
+      await this.finish(messageId, dispatch.claimToken, 'failed_permanent', {
+        errorCode: 'stop_requested',
+      });
+      return 'done';
+    }
+    if (marcou === 'perdeu') {
       // perdemos a posse antes de despachar: quem tem a posse decide, e a
       // reserva desta tentativa é liberada em vez de ficar pendurada até o TTL
       this.logger.warn(`Lease de envio ${messageId} perdido antes do despacho`);
@@ -521,21 +641,14 @@ export class WhatsappSendService implements OnModuleInit {
     }
 
     const token = this.crypto.decrypt(credential.tokenCipher);
+    // só o texto livre passa pela política na transição da F4.1b
     const enviar = (signal?: AbortSignal): Promise<SendOutcome> =>
-      decision.kind === 'template' && template
-        ? this.transport.sendTemplate(
-            { phoneNumberId: credential.phoneNumberId, token },
-            conversation.externalAddress as string,
-            { name: template.name, language: template.language },
-            template.params,
-            signal,
-          )
-        : this.transport.sendText(
-            { phoneNumberId: credential.phoneNumberId, token },
-            conversation.externalAddress as string,
-            message.body,
-            signal,
-          );
+      this.transport.sendText(
+        { phoneNumberId: credential.phoneNumberId, token },
+        conversation.externalAddress as string,
+        message.body,
+        signal,
+      );
 
     // a mensagem de origem da IA (editada ou não) é USO de conteúdo do
     // contato: sai sob a guarda
@@ -673,9 +786,9 @@ export class WhatsappSendService implements OnModuleInit {
       emDuvida: false,
     };
     let resultado: ResultadoDoUso<'done' | 'retry'>;
-    // a reconferência viu a conversa religada, ou o número que não confere: o
-    // motivo é esse, não a restrição
-    let recusa: 'conversation_relinked' | 'number_not_exact' | null = null;
+    // a reconferência viu a conversa religada, o número que não confere ou o
+    // pedido de parar: o motivo é esse, não a restrição
+    let recusa: 'conversation_relinked' | 'number_not_exact' | 'stop_requested' | null = null;
     try {
       // a linha do período precisa existir ANTES: a cobrança acima do teto, dentro
       // da transação da guarda, não pode criá-la
@@ -706,6 +819,16 @@ export class WhatsappSendService implements OnModuleInit {
            */
           if ((await this.remetenteDoEnvio(atual)) !== 'confere') {
             recusa = 'number_not_exact';
+            return 'restrito';
+          }
+          /**
+           * O pedido de parar, de novo, sob as travas (F4.1b): o despacho da IA
+           * já tem o marcador quando chega aqui, e o pedido não o cancela —
+           * quem o recusa é esta reconferência. O pedido trava os contatos do
+           * número, que a guarda segura compartilhados.
+           */
+          if (await bloqueioAtivo(this.prisma.db, atual.externalAddress)) {
+            recusa = 'stop_requested';
             return 'restrito';
           }
           const veredito = await this.restriction.check(workspaceId, 'ai', escopo.sujeitos);
@@ -1352,35 +1475,18 @@ export class WhatsappSendService implements OnModuleInit {
       lastInboundAt: Date | null;
       externalAddress: string | null;
     },
-    template?: { name: string; language: string; params: string[] },
+    templatePedido: boolean,
   ): Promise<SendDecision> {
-    const registered = template
-      ? ((await this.prisma.db.messageTemplate.findFirst({
-          where: {
-            channelId: conversation.channelId,
-            name: template.name,
-            language: template.language,
-            status: 'approved',
-          },
-        })) as unknown as { paramCount: number } | null)
-      : null;
-    if (template && !registered) return { allowed: false, reason: 'template_unknown' };
-
-    const consent = conversation.contactId
-      ? await this.prisma.db.contactChannelConsent.findFirst({
-          where: { contactId: conversation.contactId, channelType: 'whatsapp', activeMark: true },
-          select: { id: true },
-        })
-      : null;
-
+    /**
+     * O consentimento da 9.1 (`ContactChannelConsent`) não autoriza mais nada:
+     * é histórico (C7). O template é indisponível na transição, e o pedido de
+     * parar é conferido por (workspace, número), em qualquer canal (F4.1b).
+     */
     return decideSend({
       lastInboundAt: conversation.lastInboundAt,
       remetente: await this.remetenteDoEnvio(conversation),
-      hasActiveConsent: consent !== null,
-      template: registered
-        ? { name: template!.name, language: template!.language, paramCount: registered.paramCount }
-        : null,
-      templateParams: template?.params ?? [],
+      bloqueado: (await bloqueioAtivo(this.prisma.db, conversation.externalAddress)) !== null,
+      templatePedido,
       externalAddress: conversation.externalAddress,
       now: new Date(),
     });
@@ -1419,13 +1525,11 @@ export class WhatsappSendService implements OnModuleInit {
   private explain(reason: string): string {
     switch (reason) {
       case 'window_closed_needs_template':
-        return 'A janela de 24h fechou: use um template aprovado para retomar o contato';
-      case 'template_requires_consent':
-        return 'Envio por template exige consentimento registrado do contato';
-      case 'template_unknown':
-        return 'Template não registrado ou não aprovado';
-      case 'template_params_mismatch':
-        return 'Quantidade de parâmetros não corresponde ao template';
+        return `A janela de 24h fechou. ${MENSAGEM_TEMPLATE_INDISPONIVEL}`;
+      case 'template_flow_unavailable':
+        return MENSAGEM_TEMPLATE_INDISPONIVEL;
+      case 'stop_requested':
+        return MENSAGEM_PEDIDO_DE_PARAR;
       case 'no_external_address':
         return 'Conversa sem endereço externo: não há destinatário para o envio';
       case 'sender_unidentified':

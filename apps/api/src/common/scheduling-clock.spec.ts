@@ -18,6 +18,11 @@ const DO_BANCO: Record<string, string> = {
   clinicsReturn: 'createdAt',
   // e a conclusão compara a prova (o registro de atendimento) com a criação
   clinicsAttendance: 'recordedAt',
+  // o consentimento e o pedido de parar (F4.1b): os instantes são do banco, e o
+  // do pedido é o `tb` da regra temporal ainda proposta (ADR-052 item 4). A
+  // revogação e o desbloqueio, o gatilho grava, e o client nem aceita o campo
+  consent: 'grantedAt',
+  stopBlock: 'createdAt',
 };
 
 function arquivosDeProducao(dir: string): string[] {

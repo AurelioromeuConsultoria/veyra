@@ -5,6 +5,7 @@ export * from './automations';
 export * from './calendar';
 export * from './common';
 export * from './companies';
+export * from './consents';
 export * from './contacts';
 export * from './conversations';
 export * from './custom-fields';

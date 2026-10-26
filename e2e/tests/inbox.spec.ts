@@ -85,11 +85,13 @@ test.describe('Inbox (UI)', () => {
     await expect(page.getByText(nome).first()).toBeVisible();
   });
 
-  test('canal externo: janela, opt-in e compositor trocando para template', async ({ page }) => {
+  test('canal externo: janela fechada, template indisponível e o pedido de parar (F4.1b)', async ({
+    page,
+  }) => {
     const db = await openE2eDb();
     try {
-      const { rows } = await db.query<{ workspace_id: string }>(
-        `SELECT m."workspaceId" AS workspace_id
+      const { rows } = await db.query<{ workspace_id: string; membership_id: string }>(
+        `SELECT m."workspaceId" AS workspace_id, m."id" AS membership_id
            FROM "Membership" m
            JOIN "User" u ON u."id" = m."userId"
           WHERE u."email" = $1
@@ -105,13 +107,15 @@ test.describe('Inbox (UI)', () => {
        *
        * O contato tem o número da conversa, com as colunas derivadas, como a
        * ingestão o deixaria (ADR-052): sem ele, a resposta é bloqueada por
-       * "o número saiu do contato", e a tela não chega à janela nem ao opt-in.
+       * "o número saiu do contato", e a tela não chega à janela. O número é
+       * único deste teste: o pedido de parar abaixo vale para o workspace.
        */
+      const numero = `+55119${String(Date.now()).slice(-8)}`;
       const contatoRow = await db.query<{ id: string }>(
         `INSERT INTO "Contact" ("id","workspaceId","name","phones","phonesNormalized","phoneMatchKeys","updatedAt")
-         VALUES (gen_random_uuid(), $1, 'Paciente Externo', ARRAY['+5511999990000'],
-                 ARRAY['+5511999990000'], ARRAY['99990000'], now()) RETURNING "id"`,
-        [ws],
+         VALUES (gen_random_uuid(), $1, 'Paciente Externo', ARRAY[$2], ARRAY[$2], ARRAY[right($2, 8)], now())
+         RETURNING "id"`,
+        [ws, numero],
       );
       const contato = contatoRow.rows[0].id;
 
@@ -125,9 +129,26 @@ test.describe('Inbox (UI)', () => {
       await db.query(
         `INSERT INTO "Conversation"
            ("id","workspaceId","channelId","contactId","subject","externalAddress","lastInboundAt","lastMessageAt")
-         VALUES (gen_random_uuid(), $1, $2, $3, $4, '+5511999990000',
-                 now() - interval '25 hours', now())`,
-        [ws, canal.rows[0].id, contato, assunto],
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, now() - interval '25 hours', now())`,
+        [ws, canal.rows[0].id, contato, assunto, numero],
+      );
+      /**
+       * O consentimento da 9.1 e templates aprovados — MESMO NOME em dois
+       * idiomas, o caso que já expôs um defeito do compositor. Na transição da
+       * F4.1b, nada disso autoriza template: a tela explica a indisponibilidade
+       * e não oferece o compositor de template.
+       */
+      await db.query(
+        `INSERT INTO "ContactChannelConsent"
+           ("id","workspaceId","contactId","channelType","source","activeMark")
+         VALUES (gen_random_uuid(), $1, $2, 'whatsapp', 'agent', TRUE)`,
+        [ws, contato],
+      );
+      await db.query(
+        `INSERT INTO "MessageTemplate" ("id","workspaceId","channelId","name","language","paramCount","updatedAt")
+         VALUES (gen_random_uuid(), $1, $2, 'retorno_consulta', 'pt_BR', 1, now()),
+                (gen_random_uuid(), $1, $2, 'retorno_consulta', 'en_US', 2, now())`,
+        [ws, canal.rows[0].id],
       );
 
       await login(page, OWNER_A);
@@ -139,51 +160,26 @@ test.describe('Inbox (UI)', () => {
 
       // selo do canal na LISTA (triagem) e o veredito acima do compositor
       await expect(page.getByText('whatsapp', { exact: true }).first()).toBeVisible();
-      await expect(page.getByTestId('send-policy')).toContainText('janela fechada');
-      await expect(page.getByTestId('send-policy')).toContainText('sem opt-in');
-      await expect(page.getByTestId('send-policy')).toContainText(/consentimento/i);
+      const veredito = page.getByTestId('send-policy');
+      await expect(veredito).toContainText('janela fechada');
+      await expect(veredito).toContainText(/template está indisponível/);
+      // o estado da 9.1 não aparece mais: ele não autoriza nada (C7)
+      await expect(veredito).not.toContainText('opt-in');
+      await expect(page.getByTestId('template-composer')).toHaveCount(0);
       // bloqueado: o botão não envia, em vez de deixar o atendente descobrir pelo erro
       await page.getByLabel('Corpo da mensagem').fill('Podemos reagendar?');
       await expect(page.getByRole('button', { name: /Enviada|Enviar template/ })).toBeDisabled();
 
-      // com opt-in e template aprovado, o compositor TROCA para template
+      // o pedido de parar do número: a tela mostra o bloqueio, antes da janela
       await db.query(
-        `INSERT INTO "ContactChannelConsent"
-           ("id","workspaceId","contactId","channelType","source","activeMark")
-         VALUES (gen_random_uuid(), $1, $2, 'whatsapp', 'agent', TRUE)`,
-        [ws, contato],
-      );
-      /**
-       * MESMO NOME em dois idiomas — caso normal no catálogo da Meta, e o que
-       * expôs o defeito: resolver o template só pelo nome tornava a segunda
-       * opção inselecionável e mandava o idioma errado, podendo renderizar a
-       * quantidade errada de parâmetros.
-       */
-      await db.query(
-        `INSERT INTO "MessageTemplate" ("id","workspaceId","channelId","name","language","paramCount","updatedAt")
-         VALUES (gen_random_uuid(), $1, $2, 'retorno_consulta', 'pt_BR', 1, now()),
-                (gen_random_uuid(), $1, $2, 'retorno_consulta', 'en_US', 2, now())`,
-        [ws, canal.rows[0].id],
+        `INSERT INTO "StopBlock" ("id","workspaceId","number","origin","receipt","createdByMembershipId")
+         VALUES (gen_random_uuid(), $1, $2, 'phone', $3, $4)`,
+        [ws, numero, `PAR-E2E-${Date.now()}`, rows[0].membership_id],
       );
       await page.reload();
       await page.getByRole('button', { name: new RegExp(assunto.slice(0, 12)) }).click();
-
-      await expect(page.getByTestId('send-policy')).toContainText('opt-in registrado');
-      const compositor = page.getByTestId('template-composer');
-      await expect(compositor).toBeVisible();
-      // a versão en_US tem DOIS parâmetros: escolher por (nome, idioma) é o que
-      // faz a tela pedir a quantidade certa
-      await page.getByLabel('Template aprovado').selectOption('retorno_consulta:en_US');
-      await page.getByLabel('Corpo da mensagem').fill('Retorno de consulta');
-      await expect(page.getByLabel('Parâmetro 2')).toBeVisible();
-      await expect(page.getByRole('button', { name: 'Enviar template' })).toBeDisabled();
-
-      await page.getByLabel('Template aprovado').selectOption('retorno_consulta:pt_BR');
-      // trocar de template zera os parâmetros: um parâmetro só, e obrigatório
-      await expect(page.getByLabel('Parâmetro 2')).toHaveCount(0);
-      await expect(page.getByRole('button', { name: 'Enviar template' })).toBeDisabled();
-      await page.getByLabel('Parâmetro 1').fill('quinta às 10h');
-      await expect(page.getByRole('button', { name: 'Enviar template' })).toBeEnabled();
+      await expect(veredito).toContainText('pediu para não receber mensagens');
+      await expect(page.getByTestId('template-composer')).toHaveCount(0);
     } finally {
       await db.end();
     }

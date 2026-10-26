@@ -3,9 +3,11 @@ import {
   chavesDoTelefone,
   coincidencia,
   coincidenciaEstrita,
+  coincideExatamente,
   decidirRemetente,
   derivadosDosTelefones,
   formaNormalizada,
+  numerosExatos,
 } from './phone-identity';
 
 /** Números FICTÍCIOS, no formato brasileiro. */
@@ -117,6 +119,25 @@ describe('identidade de telefone (ADR-052 item 1)', () => {
     it('nenhuma: outro DDD que só divide os últimos 8 dígitos não é candidato', () => {
       expect(coincidencia(CELULAR, contato(['(21) 98765-4321']))).toBe('nenhuma');
       expect(coincidencia(CELULAR, contato(['4321']))).toBe('nenhuma');
+    });
+  });
+
+  describe('os números exatos do contato (F4.1b)', () => {
+    it('as formas normalizadas e os telefones com "+", sem aproximação', () => {
+      const contato = {
+        phones: ['+55 (11) 98765-4321', '11 3333-4444', '(21) 99999-0000'],
+        phonesNormalized: ['+5511987654321', '+551133334444'],
+      };
+      // o "(21) …" não se normalizou e não tem "+": não é número exato
+      expect(numerosExatos(contato).sort()).toEqual(['+551133334444', '+5511987654321']);
+    });
+
+    it('é o mesmo critério da coincidência exata', () => {
+      const contato = { phones: ['+1 202 555 0100', '11 98765-4321'], phonesNormalized: [] };
+      expect(numerosExatos(contato)).toEqual(['+12025550100']);
+      for (const numero of ['+12025550100', '+5511987654321', '+11987654321']) {
+        expect(numerosExatos(contato).includes(numero)).toBe(coincideExatamente(numero, contato));
+      }
     });
   });
 

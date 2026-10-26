@@ -4,6 +4,7 @@ import { Prisma } from '../generated/prisma/client';
 import {
   APPEND_ONLY_MODELS,
   CORE_GLOBAL_MODELS,
+  OUTCOME_ONLY_MODELS,
   RELATION_TARGETS,
   WORKSPACE_MODELS,
 } from '../prisma/workspace-models';
@@ -17,6 +18,8 @@ export interface ComposedRegistry {
   readonly extensionNames: readonly string[];
   readonly workspaceModels: ReadonlySet<string>;
   readonly appendOnlyModels: ReadonlySet<string>;
+  /** só o Core declara: o modelo, os campos do desfecho e os instantes do banco */
+  readonly outcomeOnlyModels: typeof OUTCOME_ONLY_MODELS;
   readonly relationTargets: Readonly<Record<string, Readonly<Record<string, string>>>>;
   readonly permissionKeys: ReadonlySet<string>;
   readonly auditFields: Readonly<Record<string, readonly string[]>>;
@@ -152,6 +155,7 @@ export function composeRegistry(
     extensionNames: names,
     workspaceModels,
     appendOnlyModels,
+    outcomeOnlyModels: OUTCOME_ONLY_MODELS,
     relationTargets,
     permissionKeys,
     auditFields,

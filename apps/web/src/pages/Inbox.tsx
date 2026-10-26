@@ -96,10 +96,13 @@ function ConsentBadge({ status }: { status: ConsentStatus | null }) {
 
 /** Código do provedor não é mensagem: quem atende lê a frase, não o número. */
 const DISPATCH_ERROR_LABEL: Record<string, string> = {
-  window_closed_needs_template: 'janela de 24h fechada — use um template',
+  window_closed_needs_template: 'janela de 24h fechada',
+  // os três seguintes só aparecem em despacho anterior à F4.1b
   template_requires_consent: 'falta consentimento registrado',
   template_unknown: 'template não aprovado',
   template_params_mismatch: 'parâmetros não correspondem ao template',
+  template_flow_unavailable: 'envio por template indisponível nesta versão',
+  stop_requested: 'a pessoa pediu para parar: nada é enviado a este número',
   quota_exceeded: 'limite do plano atingido',
   no_credential: 'canal sem credencial configurada',
   conversation_missing: 'conversa não encontrada',

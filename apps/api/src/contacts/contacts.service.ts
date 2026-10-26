@@ -24,11 +24,13 @@ import { CustomFieldsService } from '../custom-fields/custom-fields.service';
 import { FilesService } from '../files/files.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { TagsService } from '../tags/tags.service';
+import { revogarNumerosQueSairam } from '../consents/consent-records';
 import {
   chavesQueMudam,
   coincidenciaEstrita,
   derivadosDosTelefones,
   mesmosTelefones,
+  numerosExatos,
 } from './phone-identity';
 
 /**
@@ -346,11 +348,13 @@ export class ContactsService {
    * escrito, na transação de quem já segura o contato e os endereços dos
    * telefones que saem, exclusivos — o rejeitar do remetente (ADR-052 item 2).
    * Não é atalho de edição: quem não segura essas travas edita por `update`.
-   * Telefones diferentes dos lidos antes das travas são 409. Devolve se algo
+   * Telefones diferentes dos lidos antes das travas são 409. O consentimento do
+   * número que saiu é revogado (`number_removed`, F4.1b). Devolve se algo
    * mudou.
    */
   async tirarNumeroNaTransacao(
     tx: Db,
+    auth: AuthContext,
     contactId: string,
     numero: string,
     regiao: string,
@@ -372,6 +376,13 @@ export class ContactsService {
         phoneMatchKeys: derivados.phoneMatchKeys,
       },
     });
+    await revogarNumerosQueSairam(
+      tx,
+      this.audit,
+      auth,
+      contactId,
+      numerosExatos({ phones: ficam, phonesNormalized: derivados.phonesNormalized }),
+    );
     return true;
   }
 
@@ -453,6 +464,17 @@ export class ContactsService {
             source: input.source,
           },
         });
+        // o número que deixou de ser exato leva o consentimento junto (F4.1b),
+        // sob as mesmas travas da escrita: o contato e o `address:` dele
+        if (chaves && input.phones && derivados) {
+          await revogarNumerosQueSairam(
+            tx,
+            this.audit,
+            auth,
+            id,
+            numerosExatos({ phones: input.phones, phonesNormalized: derivados.phonesNormalized }),
+          );
+        }
         if (input.tagIds) {
           await tx.contactTag.deleteMany({ where: { contactId: id } });
           if (input.tagIds.length > 0) {

@@ -17,7 +17,9 @@ import { AuthContext } from './decorators';
 import {
   IDEMPOTENT_KEY,
   IDEMPOTENT_REPLAY_GUARD_KEY,
+  IDEMPOTENT_REQUIRED_KEY,
   type IdempotentReplayGuard,
+  type ReplayVerdict,
 } from './idempotency.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -30,11 +32,17 @@ const PROCESSING_LEASE_MS = 60_000;
 /**
  * Idempotência HTTP com RESERVA ATÔMICA (ajuste #3 da revisão do plano):
  *
- *  1. hash = sha256(método + rota CANÔNICA + query ordenada + body normalizado);
+ *  1. hash = sha256(método + rota CANÔNICA + params + query ordenada + body
+ *     normalizado + a membership AUTENTICADA de quem pede — outro membro com a
+ *     mesma chave recebe 409, nunca a resposta guardada de outra pessoa;
+ *     emenda do ADR-020, aceita na F4.1b, ADR-052 decisão 14);
  *  2. RESERVA a chave (`processing`) com um INSERT único — se o insert falhar
- *     (P2002), já existe registro: mesmo hash `completed` → replay da resposta;
- *     mesmo hash `processing` → 409 + Retry-After (execução em curso); hash
- *     diferente → 409 (mesma chave para request diferente);
+ *     (P2002), já existe registro: mesmo hash `completed` → a guarda de replay
+ *     da rota decide (sem guarda, replay da resposta): devolver, descartar e
+ *     executar de novo, 503 sem apagar, ou RECUSAR sem apagar e sem executar
+ *     (o acesso de quem pede mudou, F4.1b); mesmo hash `processing` → 409 +
+ *     Retry-After (execução em curso); hash diferente → 409 (mesma chave para
+ *     request diferente, ou de outro membro);
  *  3. sucesso (2xx) → grava status+body e marca `completed`;
  *  4. erro/5xx/rollback → APAGA a reserva, liberando nova tentativa.
  *
@@ -64,6 +72,13 @@ export class IdempotencyInterceptor implements NestInterceptor {
     ]);
     const rawKey = request.headers[HEADER];
     const key = Array.isArray(rawKey) ? rawKey[0] : rawKey;
+    const required = this.reflector.getAllAndOverride<boolean>(IDEMPOTENT_REQUIRED_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (enabled && required && !key && !SAFE_METHODS.has(request.method)) {
+      return throwError(() => new BadRequestException('Idempotency-Key obrigatória nesta rota'));
+    }
     if (!enabled || !key || SAFE_METHODS.has(request.method) || !request.auth?.workspaceId) {
       return next.handle();
     }
@@ -74,13 +89,14 @@ export class IdempotencyInterceptor implements NestInterceptor {
 
     const workspaceId = request.auth.workspaceId;
     const endpoint = `${request.method} ${this.canonicalRoute(request)}`;
-    const requestHash = this.hash(request, endpoint);
+    const requestHash = this.hash(request, endpoint, request.auth.membershipId);
     const guardType = this.reflector.getAllAndOverride<Type<IdempotentReplayGuard> | undefined>(
       IDEMPOTENT_REPLAY_GUARD_KEY,
       [context.getHandler(), context.getClass()],
     );
     const canReplay = guardType
-      ? () => this.moduleRef.get(guardType, { strict: false }).verdict(request)
+      ? (guardado: { status: number; body: unknown }) =>
+          this.moduleRef.get(guardType, { strict: false }).verdict(request, guardado)
       : undefined;
 
     return from(this.reserve(workspaceId, key, endpoint, requestHash, canReplay)).pipe(
@@ -125,7 +141,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
     return request.route?.path ?? request.path;
   }
 
-  private hash(request: Request, endpoint: string): string {
+  private hash(request: Request, endpoint: string, membershipId: string | null): string {
     const query = Object.entries(request.query as Record<string, unknown>)
       .map(([k, v]) => [k, JSON.stringify(v)] as const)
       .sort(([a], [b]) => a.localeCompare(b));
@@ -135,8 +151,14 @@ export class IdempotencyInterceptor implements NestInterceptor {
       a.localeCompare(b),
     );
     const body = this.normalize(request.body);
+    /**
+     * QUEM pede também é identidade (F4.1b): a resposta pode depender da
+     * permissão de quem chamou — o número mascarado, a RAI que só alguns veem.
+     * Outro membro com a mesma chave recebe 409, nunca a resposta guardada de
+     * outra pessoa.
+     */
     return createHash('sha256')
-      .update(JSON.stringify({ endpoint, params, query, body }))
+      .update(JSON.stringify({ endpoint, params, query, body, membershipId }))
       .digest('hex');
   }
 
@@ -156,7 +178,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
     key: string,
     endpoint: string,
     requestHash: string,
-    canReplay?: () => Promise<'replay' | 'discard' | 'unavailable'>,
+    canReplay?: (guardado: { status: number; body: unknown }) => Promise<ReplayVerdict>,
     retried = false,
   ): Promise<{ replay: false } | { replay: true; status: number; body: unknown }> {
     const expiresAt = new Date(Date.now() + TTL_HOURS * 60 * 60 * 1000);
@@ -187,7 +209,13 @@ export class IdempotencyInterceptor implements NestInterceptor {
         }
         throw new ConflictException('Requisição idêntica em processamento, tente novamente');
       }
-      const verdict = canReplay ? await canReplay() : 'replay';
+      const guardado = { status: existing.responseStatus ?? 200, body: existing.responseBody };
+      const verdict = canReplay ? await canReplay(guardado) : 'replay';
+      if (typeof verdict === 'object') {
+        // nem devolve, nem apaga, nem executa de novo: o acesso de agora não
+        // permite este corpo, e o efeito da rota não se repete (F4.1b)
+        throw verdict.refuse;
+      }
       if (verdict === 'unavailable') {
         // nem devolve nem descarta: a guarda não conseguiu decidir agora
         throw new ServiceUnavailableException(
@@ -207,11 +235,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
         if (retried) throw new ConflictException('Conflito de idempotência, tente novamente');
         return this.reserve(workspaceId, key, endpoint, requestHash, canReplay, true);
       }
-      return {
-        replay: true,
-        status: existing.responseStatus ?? 200,
-        body: existing.responseBody,
-      };
+      return { replay: true, ...guardado };
     }
   }
 

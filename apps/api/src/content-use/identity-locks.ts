@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { Inject, Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { chaveDeCoincidencia } from '../contacts/phone-identity';
 import type { Db } from '../prisma/prisma.service';
 import { CONFIG_DA_GUARDA, type ConfigDaGuarda } from './content-use.pools';
 import { MudancasDeRestricao } from './restriction-changes';
@@ -24,6 +25,8 @@ export const MENSAGEM_LOTE_SEM_PRAZO =
  * |                                  | `conversation:` e `address:` exclusivos)        |
  * | escritor de telefone de contato  | a mudança por contato: o contato e o `address:` |
  * | (criar na tela, editar, excluir) | de cada NÚMERO acrescentado ou removido         |
+ * | consentimento e pedido de parar  | a mudança por contato: os contatos do número e  |
+ * | (F4.1b)                          | o `address:` dele                               |
  *
  * O contato criado na própria transação (o lead da ingestão, o novo da
  * identificação) tem id fresco, que ninguém mais conhece: ele não pega o nível
@@ -146,6 +149,41 @@ export class TravasDeIdentidade {
           ]),
         ].map((c) => this.endereco(escopo.workspaceId, c)),
       ],
+    });
+  }
+
+  /**
+   * O marcador do envio de PESSOA (F4.1b): o `address:` do número,
+   * COMPARTILHADO — o pedido de parar o pega exclusivo. Ou o marcador comita
+   * antes do pedido, que o conta como em voo, ou o pedido comita antes, e a
+   * releitura de quem envia o vê. Sem trava, um despacho gravado entre o
+   * cancelamento do pedido e o commit dele sairia depois, fora da trilha.
+   */
+  async paraMarcarEnvio(tx: Db, workspaceId: string, numero: string): Promise<void> {
+    const chave = chaveDeCoincidencia(numero);
+    await prazoDeTrava(tx, this.guarda.mudancaTravaMs);
+    await travarParaUso(tx, {
+      workspaceId,
+      entityKeys: chave ? [this.endereco(workspaceId, chave)] : [],
+    });
+  }
+
+  /**
+   * Conceder, revogar, registrar o pedido de parar e desbloquear (ADR-052 item
+   * 5, F4.1b): os contatos envolvidos e o `address:` do número, exclusivos,
+   * numa passada — o mesmo `address:` que quem tira o número pega. É o que
+   * impede um consentimento de ficar utilizável sob bloqueio, ou para um
+   * número que saiu do contato, pela ordem das operações.
+   */
+  async paraNumero(
+    tx: Db,
+    escopo: { workspaceId: string; contactIds: readonly string[]; numero: string },
+  ): Promise<void> {
+    const chave = chaveDeCoincidencia(escopo.numero);
+    await this.mudancas.porContato(tx, {
+      workspaceId: escopo.workspaceId,
+      contactIds: escopo.contactIds,
+      entityKeys: chave ? [this.endereco(escopo.workspaceId, chave)] : [],
     });
   }
 

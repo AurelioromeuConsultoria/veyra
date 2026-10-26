@@ -71,6 +71,12 @@ export const WORKSPACE_MODELS = new Set<string>([
   'MessageStatusEvent',
   'InboundMedia',
   'MessageTemplate',
+  // Finalidades, consentimentos e o pedido de parar (F4.1b, ADR-052 item 5)
+  'ConsentPurpose',
+  'Consent',
+  'StopBlock',
+  'ConsentReceiptCounter',
+  'PermissionBackfill',
 ]);
 
 /**
@@ -97,7 +103,41 @@ export const CORE_GLOBAL_MODELS = new Set<string>([
  * legítima acontece só por cascade do dono (LGPD) ou pelo job de retenção, que
  * usa `raw` com justificativa.
  */
-export const APPEND_ONLY_MODELS = new Set<string>(['Activity', 'AuditLog', 'Message']);
+export const APPEND_ONLY_MODELS = new Set<string>([
+  'Activity',
+  'AuditLog',
+  'Message',
+  // F4.1b: a finalidade é imutável (versão nova é linha nova), e o livro do
+  // preenchimento só é escrito pela migration
+  'ConsentPurpose',
+  'PermissionBackfill',
+]);
+
+/**
+ * Modelos em que o registro é imutável e só o DESFECHO se preenche (F4.1b,
+ * ADR-052 item 5): a revogação do consentimento e o desbloqueio do pedido de
+ * parar.
+ *
+ * - `desfecho`: os únicos campos que o `updateMany` aceita; na criação, são
+ *   recusados — o registro nasce ativo;
+ * - `doBanco`: os instantes, que o gatilho grava pelo relógio do banco depois
+ *   das travas (ADR-049); recusados na criação e no desfecho.
+ *
+ * `update`, `delete*` e `upsert` ficam proibidos; a exclusão vem só pela
+ * cascata. O gatilho e o CHECK de coerência garantem o mesmo no banco.
+ */
+export const OUTCOME_ONLY_MODELS: Readonly<
+  Record<string, { readonly desfecho: readonly string[]; readonly doBanco: readonly string[] }>
+> = {
+  Consent: {
+    desfecho: ['revokedByMembershipId', 'revocationReason', 'revocationOrigin', 'activeMark'],
+    doBanco: ['grantedAt', 'revokedAt'],
+  },
+  StopBlock: {
+    desfecho: ['liftedByMembershipId', 'liftOrigin', 'liftReceipt', 'activeMark'],
+    doBanco: ['createdAt', 'liftedAt'],
+  },
+};
 
 /**
  * Mapa campo-de-relação → modelo alvo, para os modelos protegidos. Usado pelo
@@ -114,6 +154,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     permissions: 'RolePermission',
     memberships: 'Membership',
     invites: 'Invite',
+    backfills: 'PermissionBackfill',
   },
   RolePermission: {
     role: 'Role',
@@ -139,6 +180,10 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     reviewedProposals: 'AiProposal',
     consentChanges: 'AiConsent',
     grantedConsents: 'ContactChannelConsent',
+    purposeConsentsGranted: 'Consent',
+    purposeConsentsRevoked: 'Consent',
+    stopBlocksCreated: 'StopBlock',
+    stopBlocksLifted: 'StopBlock',
     // alvo fora do perímetro: travessia via db é bloqueada (sessões só via raw)
     activeSessions: 'RefreshToken',
   },
@@ -170,6 +215,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     aiProposals: 'AiProposal',
     aiRuns: 'AiRun',
     contactChannelConsents: 'ContactChannelConsent',
+    consents: 'Consent',
   },
   Tag: {
     workspace: 'Workspace',
@@ -265,6 +311,32 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     contact: 'Contact',
     grantedBy: 'Membership',
   },
+  ConsentPurpose: {
+    workspace: 'Workspace',
+    consents: 'Consent',
+  },
+  Consent: {
+    workspace: 'Workspace',
+    contact: 'Contact',
+    channel: 'Channel',
+    purpose: 'ConsentPurpose',
+    grantedBy: 'Membership',
+    revokedBy: 'Membership',
+  },
+  StopBlock: {
+    workspace: 'Workspace',
+    createdBy: 'Membership',
+    liftedBy: 'Membership',
+  },
+  ConsentReceiptCounter: {
+    workspace: 'Workspace',
+  },
+  PermissionBackfill: {
+    workspace: 'Workspace',
+    role: 'Role',
+    // alvo fora do perímetro: o catálogo global
+    permission: 'Permission',
+  },
   MessageDispatch: {
     workspace: 'Workspace',
     message: 'Message',
@@ -302,6 +374,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     messages: 'Message',
     credential: 'ChannelCredential',
     messageTemplates: 'MessageTemplate',
+    consents: 'Consent',
   },
   Conversation: {
     workspace: 'Workspace',

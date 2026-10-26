@@ -86,7 +86,9 @@ export const createMessageSchema = z.object({
   attachmentIds: z.array(z.string().uuid()).max(5).optional(),
   /**
    * Template aprovado, obrigatório para enviar FORA da janela de atendimento de
-   * 24h em canal externo (ADR-038). Ignorado no canal interno.
+   * 24h em canal externo (ADR-038). Ignorado no canal interno. Na transição da
+   * F4.1b (ADR-052 item 5), recusado com `template_flow_unavailable` até a
+   * finalidade verificável (F4.1c).
    */
   template: z
     .object({
@@ -164,13 +166,22 @@ export interface MessageTemplateDto {
  */
 export interface SendPolicyDto {
   channelType: 'internal' | 'email' | 'whatsapp';
-  /** `free_form` = texto livre; `template` = fora da janela, exige aprovado */
+  /**
+   * `free_form` = texto livre; `template` = fora da janela, exige aprovado. Na
+   * transição da F4.1b (ADR-052 item 5) o servidor não devolve `template`: o
+   * fluxo está indisponível até a finalidade verificável (F4.1c)
+   */
   mode: 'free_form' | 'template' | 'blocked';
   /** motivo curto quando `blocked` ou `template` — texto já em pt-BR */
   reason: string | null;
   windowExpiresAt: string | null;
+  /**
+   * o consentimento da 9.1, que desde a F4.1b é histórico e não autoriza nada
+   * (C7): `null` no WhatsApp. O consentimento por finalidade é lido com
+   * `consents:read`, nas rotas próprias
+   */
   consentStatus: ConsentStatus | null;
-  /** vazio quando o canal não usa template (interno) */
+  /** vazio quando o canal não usa template (interno) e na transição da F4.1b */
   templates: MessageTemplateDto[];
 }
 

@@ -2,7 +2,12 @@ import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { COMPOSITION } from '../composition';
 import { composeRegistry } from '../extensions/registry';
-import { CORE_GLOBAL_MODELS, WORKSPACE_MODELS as CORE_WORKSPACE_MODELS } from './workspace-models';
+import {
+  APPEND_ONLY_MODELS,
+  CORE_GLOBAL_MODELS,
+  OUTCOME_ONLY_MODELS,
+  WORKSPACE_MODELS as CORE_WORKSPACE_MODELS,
+} from './workspace-models';
 
 /**
  * Teste de DRIFT (unit, sem banco): o registro de modelos protegidos é mantido
@@ -97,6 +102,22 @@ describe('registro de modelos protegidos — drift contra o schema', () => {
       const model = models.find((m) => m.name === name);
       expect(model).toBeDefined();
       expect(RELATION_TARGETS[name]).toEqual(relationFields(model as ParsedModel));
+    }
+  });
+
+  it('os modelos de desfecho (F4.1b): de workspace, não append-only, e só campos opcionais do schema', () => {
+    for (const [name, { desfecho, doBanco }] of Object.entries(OUTCOME_ONLY_MODELS)) {
+      expect(CORE_WORKSPACE_MODELS.has(name)).toBe(true);
+      expect(APPEND_ONLY_MODELS.has(name)).toBe(false);
+      const model = models.find((m) => m.name === name) as ParsedModel;
+      // os instantes existem no modelo (o gatilho os grava)
+      for (const campo of doBanco) {
+        expect(model.body).toMatch(new RegExp(`^\\s*${campo}\\s+DateTime`, 'm'));
+      }
+      for (const campo of desfecho) {
+        // opcional: o desfecho nasce vazio, e o registro em si não está na lista
+        expect(model.body).toMatch(new RegExp(`^\\s*${campo}\\s+\\w+\\?`, 'm'));
+      }
     }
   });
 

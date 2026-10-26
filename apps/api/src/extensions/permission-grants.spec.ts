@@ -42,6 +42,9 @@ const CORE_NAMESPACES = [
   'audit',
   'billing',
   'intelligence',
+  // F4.1b (ADR-052 item 5): o consentimento por finalidade e a revisão de template
+  'consents',
+  'templates',
 ];
 
 function walk(dir: string): string[] {

@@ -190,6 +190,7 @@ Toda decisão arquitetural vira ADR **antes** do código. Formato abaixo. ADRs s
 **Contexto:** retry de cliente/integração não pode duplicar mutação, e "grava a resposta depois de executar" não impede duas execuções concorrentes.
 **Decisão:** `IdempotencyKey` com estado `processing|completed`. A chave é **reservada antes** de executar (INSERT no unique `(workspaceId, key, endpoint)`): mesmo hash concluído → replay; hash diferente → 409; em processamento → 409 (com lease de 60s para reserva abandonada); erro → reserva liberada. O hash cobre método + rota canônica + **path params** + query ordenada + body normalizado. **Opt-in por `@Idempotent()`**: rota cuja resposta contém segredo (ex.: criação de webhook) nunca entra no cache — caso contrário o segredo ficaria em claro por 24h numa coluna JSONB.
 **Consequências:** integração ganha retry seguro; rotas idempotentes são uma lista explícita e revisável.
+**Emenda (F4.1b, aceita pelo usuário em 2026-10-26):** a membership AUTENTICADA de quem pede — a da sessão, nunca um identificador informado pelo cliente — entra no hash, em todas as rotas idempotentes, e a opção `required` faz a rota recusar (400) a mutação sem chave. A resposta pode depender da permissão de quem chamou (o número mascarado, a RAI que só alguns veem); com a membership no hash, outro membro com a mesma chave recebe 409, nunca a resposta guardada de outra pessoa. Uma chave gravada antes do deploy pode responder 409 durante a retenção (24 h); isso **não** deve provocar repetição automática com uma chave nova — o cliente que recebe 409 não troca a chave sozinho. A guarda de replay ganhou a recusa sem reexecução (`{ refuse }`), para a mesma pessoa cujo acesso mudou. Detalhes no ADR-052, decisões 14 e 18 da implementação da F4.1b.
 **Adendo (revisão do push):** a gravação do replay é **aguardada antes de concluir a resposta**. Com fire-and-forget o cliente podia receber 2xx e um retry imediato encontrar a chave ainda em `processing` (409). Falha ao gravar é best-effort: a operação já aconteceu, então libera-se a reserva e registra-se o incidente, sem esconder a resposta do cliente.
 
 ## ADR-021 — Outbox transacional + webhooks assinados com defesa SSRF por pinning
@@ -4713,7 +4714,7 @@ A skill `create-migration` traz o bloco de ensaio com as três evidências: os g
 
 ## ADR-052 — Mensagem iniciada pelo negócio: telefones normalizados, remetente sem atribuição silenciosa, template verificável, consentimento por finalidade e aprovação vinculada à prévia
 
-**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). **A F4.1a foi aprovada para implementação em 2026-10-23**, com as condições registradas no fim deste ADR. O resto continua PROPOSTO, e nenhum outro código da F4 está autorizado. · **Data:** 2026-10-23
+**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). **A F4.1a foi aprovada para implementação em 2026-10-23**, com as condições registradas no fim deste ADR, e publicada em 2026-10-26. **A F4.1b foi parcialmente aprovada em 2026-10-26:** finalidades, consentimentos, bloqueio, permissões e a recusa transitória dos templates estão liberados; a regra temporal da resposta depois do pedido de parar continua proposta. O resto continua PROPOSTO, e nenhum outro código da F4 está autorizado. · **Data:** 2026-10-23
 
 A revisão 0 está no `0eb4038`. A revisão 1 não foi comitada; ela passou pelo `reviewer` (mudanças necessárias) e pelo `security` (bloqueado, sem P0), e os achados dos dois estão incorporados aqui. A confirmação desta revisão 2 aprovou com ressalvas (o `reviewer`, com quatro achados importantes; o `security`, com dois P1 novos, os mesmos do `reviewer`), e as correções dela também estão no texto. A conferência final dessas correções aprovou: o `security`, sem ressalva bloqueante, e o `reviewer`, com uma ressalva importante (a regra ao reabrir conversa) e duas de qualidade. As três estão no texto, e os dois disseram que não é preciso nova rodada. Nenhum ADR aceito é alterado antes da aprovação deste; as emendas que ele implicaria estão listadas no fim, em "Emendas propostas".
 
@@ -5717,3 +5718,113 @@ Continuam bloqueados deploy, ativação do Clinics, envio real e dados reais.
 - **Pendente, ainda como proposta:** a regra temporal da resposta depois do pedido de parar (item 4). Até a decisão, nada sai sob bloqueio.
 - **Liberado para implementar:** finalidades, consentimentos, bloqueio, permissões e a recusa transitória dos templates.
 - **Antes do commit final da implementação:** revisão, ensaio da migration e bateria completa, parando antes do push do código.
+
+**Implementação da F4.1b: as partes liberadas (2026-10-26).** Implementadas no Core: as finalidades, o consentimento, o pedido de parar, as permissões com o preenchimento e a recusa transitória dos templates. A exceção da resposta depois do pedido de parar continua proposta (item 4): até a decisão, **nada sai sob bloqueio**. Dados fictícios; nada é enviado de verdade, nada é ativado. Continuam bloqueados deploy, ativação do Clinics, envio real e dados reais.
+
+- **A migration `20261026120000_consents_and_stop_block`** (ADR-051, transacional, 52 objetos: 3 tipos, 5 tabelas, 17 índices, 23 restrições — 5 chaves primárias, 14 FKs e 4 CHECKs —, 2 funções e 2 gatilhos):
+  - as chaves novas entram no catálogo (`ON CONFLICT DO NOTHING`);
+  - o preenchimento roda pela matriz do item 6, entre os marcadores `PREENCHIMENTO:INICIO` e `PREENCHIMENTO:FIM`, e o teste de integração executa exatamente esse trecho;
+  - o cabeçalho declara os locks, inclusive o SHARE ROW EXCLUSIVE que as FKs novas pegam em `Workspace`, `Contact`, `Channel`, `Membership`, `Role` e `Permission` até o COMMIT;
+  - o ensaio fez a falha forçada (sem alteração parcial, nem de schema nem de dados) e a aplicação limpa: inventário 52, os dados de uma base fictícia com os papéis da matriz conferidos e o `migrate diff` vazio.
+- **As rotas, ato por ato** (item 2). O `@RequirePermissions` é estático; por isso cada alvo tem rota própria, e a chave nova sempre se soma à visibilidade da rota:
+
+  | Rota                                                                 | Permissões                                                          |
+  | -------------------------------------------------------------------- | ------------------------------------------------------------------- |
+  | `GET /consent-purposes`                                              | `consents:read`                                                     |
+  | `GET /contacts/:id/consents`                                         | `consents:read` + `contacts:read`                                   |
+  | `GET /conversations/:id/consents`                                    | `consents:read` + `conversations:read` (RAI: `contacts:write`, C13) |
+  | `POST /contacts/:id/consents` e `.../consents/:consentId/revoke`     | `consents:manage` + `contacts:read`                                 |
+  | `POST /contacts/:id/stop` e `POST /conversations/:id/stop`           | `consents:manage` + a visibilidade da rota                          |
+  | `POST /contacts/:id/stop/lift` e `POST /conversations/:id/stop/lift` | `consents:unblock` + a visibilidade da rota                         |
+  - Pela conversa, o número completo só aparece com `contacts:read`; para os outros, os 4 últimos. Na RAI, sem `contacts:write`, a conversa não existe (404), mesmo com a chave do ato.
+  - Os registros exigem `Idempotency-Key`: sem ela, a resposta é 400 (`@Idempotent({ required: true })`).
+  - **A repetição:**
+    - **conceder** com a mesma tupla e a mesma origem devolve o mesmo consentimento e o mesmo recibo, pela chave natural relida sob as travas; com outra origem é 409, porque devolver o antigo esconderia que a origem nova não ficou;
+    - **parar** devolve o pedido ativo, com o recibo dele, qualquer que seja a origem nova: o efeito protetor já vale, e a origem registrada é a do primeiro;
+    - **desbloquear** sem pedido ativo é 409; a mesma `Idempotency-Key` devolve a resposta guardada.
+
+**As decisões tomadas na implementação, para a revisão** (com os achados do `reviewer` e da `security`, tratados):
+
+1. **A imutabilidade é "só o desfecho", e não append-only puro.** Append-only no client impediria a própria revogação pelo `db`. O registro composto ganhou `OUTCOME_ONLY_MODELS`, e o banco garante o mesmo em três camadas:
+   - **no client:** no `Consent` e no `StopBlock`, o `updateMany` só aceita os campos do desfecho (`revokedByMembershipId`, `revocationReason`, `revocationOrigin` e `activeMark`; `liftedByMembershipId`, `liftOrigin`, `liftReceipt` e `activeMark`). Na criação, o client recusa os campos do desfecho e os instantes (`grantedAt`, `revokedAt`, `createdAt` e `liftedAt`). `update`, `delete`, `deleteMany` e `upsert` ficam proibidos, e a exclusão vem só pela cascata do contato, do canal ou do workspace;
+   - **no gatilho (`BEFORE INSERT OR UPDATE`):** o registro nasce ativo e sem desfecho; só o desfecho completo se preenche, uma vez; o resto não muda;
+   - **no CHECK de coerência:** ativo é a marca `TRUE` sem desfecho, e desfeito é a marca `NULL` com o desfecho. Sem ele, uma linha com a marca `FALSE` conviveria com a ativa e furaria o "um ativo por tupla" — o mesmo motivo do `ContactChannelConsent_activeMark_coerente`. Um CHECK confere também o formato "+dígitos" do número;
+   - **os instantes são do relógio do banco e de DEPOIS das travas** (`clock_timestamp()`, gravado pelo gatilho na criação e no desfecho, como o `recordedAt` do atendimento). O que vier na escrita é descartado. Com o início da transação, uma revogação que esperou a trava podia ficar antes da concessão; há teste da ordem;
+   - a finalidade e o livro do preenchimento são append-only.
+2. **O pedido de parar guarda quem registrou e quem desbloqueou** (`createdByMembershipId` e `liftedByMembershipId`, com FK composta para a membership). O item 3 do plano dizia "quem registrou"; o rascunho do schema não tinha. Continua sem contato e sem nome. O DTO não leva a membership: ela fica no registro e na trilha.
+3. **As colunas `Message.stopBlockId` e `MessageDispatch.stopBlockId` ficam para a implementação da exceção — desvio do plano, aprovado pelo usuário em 2026-10-26.** Entram com a exceção, numa migration própria. Nesta entrega, o pedido de parar ativo impede qualquer resposta, inclusive humana, mesmo depois de nova mensagem recebida. **A exceção continua pendente:** o adiamento não aprova a margem de 60 s nem resolve a discussão dos relógios (item 4).
+4. **O canal do consentimento é só de WhatsApp.** O consentimento é por número; num canal sem número ele não faz sentido. Outro tipo é recusado com 400.
+5. **O compositor na transição:**
+   - o `consentStatus` da 9.1 sai como `null` no WhatsApp: ele não autoriza nada (C7), e mostrar "opt-in registrado" afirmaria uma evidência que já não vale;
+   - os templates não são oferecidos;
+   - a janela fechada mostra "Janela de 24h fechada. O envio por template está indisponível nesta versão, até a finalidade verificável (F4.1c)";
+   - o formato do DTO não mudou: o modo `template` fica para a F4.1c, e o consentimento por finalidade é lido nas rotas próprias, com `consents:read`.
+6. **A ordem da política:** sem endereço; depois o pedido de parar; depois o remetente; depois o template; por último, a janela.
+   - O pedido de parar vem antes para a tela mostrar o bloqueio, como a C4 pede ("o bloqueio visível").
+   - **Quem fica sabendo que existe um pedido ativo, e só isso:** quem pode enviar (`conversations:write`), pela política e pela recusa do envio; e quem lê a conversa (`conversations:read`), pelo motivo `stop_requested` do despacho cancelado ou recusado, que aparece no histórico de mensagens como os outros motivos de despacho e fica mesmo depois do desbloqueio. O recibo e a data ficam com `consents:read`; quem registrou, no registro e na trilha.
+   - A sugestão de resposta da IA consulta a mesma política: sob o pedido, ela responde `send_blocked` sem chamar o LLM, e a aprovação de um rascunho anterior é recusada, com a proposta ainda pendente.
+7. **Os despachos.** O pedido cancela, na transação dele, todo despacho não iniciado para o número, em qualquer canal: `reserved`, `failed_before_send`, ou `sending` sem o marcador.
+   - O worker que já tinha reivindicado e ainda não marcou perde a posse: o marcador exige o `claimToken`, e ele não chama a Meta. A reserva volta.
+   - O que já tem o marcador não volta; só é contado na trilha (`dispatchesInFlight`). A contagem inclui o despacho da IA à espera da guarda, que grava o marcador antes dela: esse ainda passa pela reconferência e é recusado com `stop_requested`, sem sair. A trilha diz "pode ter saído", nunca menos do que saiu.
+   - **O marcador da mensagem de PESSOA é gravado sob o `address:` do número, compartilhado, relendo o pedido** (achado da `security`). O pedido o pega exclusivo: ou o marcador comita antes, e o pedido o conta como em voo, ou o pedido comita antes, e o worker o vê e recusa com `stop_requested`. Sem isso, um despacho gravado pela API entre o cancelamento do pedido e o commit dele sairia depois, fora da trilha — resíduo que quebraria o contrato, e por isso não foi aceito.
+   - O despacho da IA grava o marcador antes da guarda; a reconferência sob a guarda também confere o pedido e recusa com `stop_requested`.
+8. **Os números e os contatos do número:**
+   - `numerosExatos` dá os números de um contato pelas mesmas regras da `coincideExatamente`;
+   - os contatos que têm um número são os candidatos da chave de coincidência (o índice GIN), conferidos pela coincidência exata;
+   - o pedido de parar e o desbloqueio travam todos esses contatos e o `address:`, releem o conjunto sob as travas e tentam de novo, até 3 vezes, se ele cresceu; depois, 409.
+9. **O número que sai do contato:** a edição e o rejeitar com retirada revogam, na mesma transação e sob as mesmas travas, os consentimentos ativos cujo número deixou de ser exato do contato (`number_removed`). Só a formatação mudando não revoga.
+10. **O recibo.** O contador por workspace fica preso até o fim da transação do registro. Os registros do mesmo workspace se enfileiram nele, sempre depois das travas consultivas, sem inversão de ordem. Custo aceito no volume atual; ele não garante sequência contínua.
+11. **Os defaults usam `transaction_timestamp()`**, a convenção do ADR-049. Com `now()`, o Prisma lê o default como o dele e acusa drift; o ensaio pegou, como já tinha pegado na F3.3. O gatilho sobrescreve o valor com `clock_timestamp()` (decisão 1). O `Consent.grantedAt` e o `StopBlock.createdAt` entraram na regra estática do relógio: o Prisma nunca os escreve. **Para o item 4:** o `tb` (o `createdAt` do pedido) já é o instante de depois das travas.
+12. **O módulo `consents` no grafo** (docs/ARCHITECTURE.md §5): ele depende da conversa e do canal. O envio e os escritores de telefone usam as funções de `consent-records.ts` na própria transação, sem importar o módulo, e por isso não há ciclo.
+13. **A CLI das finalidades:** `pnpm --filter @veyra/api consents:purpose --slug … --key … --category … --description … [--fields …]`.
+    - A versão é a seguinte à maior da mesma chave, e a criação é auditada (`consent_purpose.created`).
+    - O workspace é resolvido pelo slug via `raw`, com justificativa (rotina administrativa); a escrita vai pelo client protegido, no contexto dele. O serviço não é exportado pelo módulo: a CLI o pega pelo contexto.
+14. **A idempotência considera quem pede** (achado das duas revisões; **emenda do ADR-020, aceita pelo usuário em 2026-10-26**). A resposta das rotas pela conversa depende da permissão de quem chamou (o número mascarado, a RAI). Por isso a membership autenticada — a da sessão, nunca informada pelo cliente — entra no hash da requisição, em todas as rotas idempotentes: outro membro com a mesma chave recebe 409, nunca a resposta guardada de outra pessoa. Uma chave gravada antes do deploy pode responder 409 durante a retenção (24 h); isso não deve provocar repetição automática com uma chave nova.
+15. **A FK do consentimento para a finalidade é `NO ACTION`**, e não `RESTRICT`. A `RESTRICT` é conferida linha a linha; na cascata da exclusão do workspace, sem ordem garantida, ela poderia barrar a exclusão. A `NO ACTION` é conferida no fim do comando, e continua impedindo apagar uma finalidade com consentimento. Há teste.
+16. **Os índices:** saíram os que eram prefixo de um único (`Consent(workspaceId, contactId)` e `StopBlock(workspaceId, number)`); entraram os das FKs do canal e da finalidade.
+17. **O livro do preenchimento registra todo alvo**, inclusive o papel que já tinha a chave. É mais estrito que o texto do item 6 ("cada concessão feita"): a reaplicação não toca nem o papel que já tinha a chave e a perdeu depois. A auditoria registra só o que foi concedido de fato.
+18. **O replay pela conversa refaz o acesso de agora, sem reexecutar** (correção pedida pelo usuário em 2026-10-26). A membership no hash não protege a MESMA pessoa que perdeu o acesso: as rotas de parar e desbloquear pela conversa não exigem `contacts:read`, que decide entre o número completo e o mascarado, e a RAI depende de `contacts:write`. A `ConversationConsentReplayGuard` refaz, em cada repetição, a leitura da conversa com a visibilidade de agora e a projeção do número:
+    - sem acesso à conversa (a RAI sem `contacts:write`), a mesma recusa da rota, 404;
+    - com o número completo guardado e sem `contacts:read` agora, 403;
+    - com o acesso mantido, o mesmo corpo — o mesmo registro e o mesmo recibo —, sem operação nova;
+    - em nenhum caso a operação executa de novo, e a resposta guardada não é apagada: a guarda ganhou a decisão `{ refuse }`, ao lado de `replay`, `discard` e `unavailable`;
+    - pelo contato, a rota já exige `contacts:read`, e o guard de permissões confere isso em toda repetição.
+19. **O registro devolve o registro, mesmo sem `consents:read`** (achado da `security` no delta 2; decisão do usuário pendente). As rotas de registro exigem a chave do ato (`consents:manage` ou `consents:unblock`) e a visibilidade, como no item 2 aprovado, mas não `consents:read`. Pela chave natural, a repetição devolve o registro existente — o pedido de parar ativo de outra pessoa, ou o consentimento já concedido —, com recibo e data. O alcance é de papel personalizado: a matriz do Core dá as duas chaves juntas. **Recomendação:** somar `consents:read` às seis rotas de registro (quem registra precisa ver o que existe), o que muda a matriz aprovada e por isso espera a decisão do usuário; até lá, o comportamento fica registrado aqui e no SECURITY §7-E.
+
+**Pendências registradas, sem risco aceito:**
+
+- **A CLI `phones:normalize` recalcula as formas normalizadas sem revogar consentimento.** Um consentimento pode ficar ativo para um número que deixou de ser exato do contato por mudança de normalização (por exemplo, da região). Hoje o consentimento não autoriza envio nenhum. **Requisito da F4.1c, antes de consentimentos autorizarem envios:** a normalização revoga o consentimento do número que deixa de ser exato.
+- **A imagem anterior não serve de rollback operacional** (decisão do usuário, 2026-10-26). Ela desliga o pedido de parar — o código anterior não conhece o `StopBlock`, e tudo sairia para os números bloqueados, inclusive a IA — e volta a aceitar template com o consentimento da 9.1. **Em falha, permanece a manutenção**: a correção vem para a frente, nunca pela imagem antiga (docs/DEPLOY_STAGING.md §4).
+- **Os testes do caminho de template** (o registro aprovado, os parâmetros, o consentimento por canal e o compositor por nome e idioma) saíram com o fluxo; a F4.1c os restaura com o contrato novo.
+- **O web ainda não envia `Idempotency-Key`:** as telas da F4.4 que registrarem consentimento ou pedido de parar precisam mandá-la, ou recebem 400.
+- **A retenção do pedido de parar** continua pendente do jurídico.
+
+**Os testes desta entrega, como rodaram:**
+
+- **Bateria b67**, sobre o estado com a guarda do replay e antes dos últimos ajustes da revisão, toda verde: lint, formatação, build, unidade 299, web 141, integração 954 nas duas rodadas, e2e 49, drift, migrations do zero e `check:fk`, sem lacuna de relógio. A b66, anterior à guarda, também ficou toda verde (integração 950 nas duas rodadas).
+- **Depois da b67, a validação proporcional ao que mudou** — a mensagem do 403 da guarda, o comentário do interceptor e três testes do replay:
+  - as suítes da F4.1b, com 53 testes;
+  - unidade 299;
+  - lint, formatação e build.
+- **53 mutações nas garantias, todas mortas por teste que falha**, nenhuma por erro de compilação. Elas cobrem o trecho do preenchimento, os gatilhos e os CHECKs (aplicados só no banco de teste), o marcador sob o endereço, a idempotência sem a membership e a guarda do replay nas duas rotas pela conversa.
+- **Ensaio da migration**, com falha forçada sem alteração parcial e aplicação limpa: inventário 52, os dados da matriz conferidos e o `migrate diff` vazio. A migration não mudou depois dele.
+- **Revisões:** `reviewer` e `security`, três rodadas cada (o código e dois deltas), sem P0, com o P1 da criação corrigido.
+- **Um incidente, com causa comprovada:** uma rodada das suítes da F4.1b falhou com o `beforeEach` estourando 30 s, e o teste seguinte caiu em cascata. O `pmset -g log` mostrou o Mac em sono ("Maintenance Sleep", um de 98 s) dentro da janela, na tomada: o `caffeinate -i` começou com o sistema já dormindo. A rodada seguinte, com a máquina acordada e o sono do sistema travado (`caffeinate -s`), passou sem evento de sono.
+- **Ausência de evidência:** a medição auxiliar do desvio de relógio entre o Node e o banco (`desvio.js`) não rodou na b66 nem na b67, porque o script não existe mais. Isso fica registrado como ausência de evidência; não invalida os testes que passaram.
+
+- **a suíte nova `consents.integration-spec.ts`:**
+  - o client (o desfecho, a criação) e o gatilho, cada ramo com a sua recusa;
+  - o CHECK de coerência sozinho, com o gatilho desligado numa transação desfeita;
+  - os instantes do banco, e a revogação nunca antes da concessão;
+  - a cascata, o pedido que sobrevive à exclusão do contato, e a exclusão do workspace;
+  - as permissões, ato por ato, com a RAI (404 mesmo com a chave do ato) e o número mascarado;
+  - conceder (número exato, canal, finalidade de outro workspace, idempotência, recibo, outra origem e a chave de outro membro);
+  - revogar uma vez;
+  - o pedido de parar: o número em todo contato e canal, o pedido pela RAI, a repetição, o desbloqueio sem restaurar, os despachos cancelados (reservado, reivindicado sem marcador, a retentar) e em voo, o marcador sob o endereço, o worker, a guarda e a IA;
+  - o replay pela conversa com o acesso de agora: sem `contacts:read` (403, no pedido e no desbloqueio), sem a RAI (404, antes da projeção), a leitura indisponível (503, sem apagar nem executar), o acesso mantido (o mesmo registro e recibo, completo e mascarado) e outro membro (409);
+  - os templates nos três pontos;
+  - o número que sai do contato;
+  - o isolamento entre workspaces (P0), inclusive as rotas pela conversa e o despacho do outro workspace;
+  - as corridas, nas duas ordens e controladas pela trava do endereço: parar × conceder, parar × importação (com a releitura provada por espião), parar × tirar o número, conceder × tirar o número e desbloquear × conceder; e a trava do contato exclusiva, provada contra uma trava compartilhada;
+- **a suíte nova `permission-backfill.integration-spec.ts`:** a matriz, os pré-requisitos, quem fica de fora (o guest, o `Profissional`, um papel de sistema de vertical e um personalizado), o livro, a auditoria só do que foi concedido, a reaplicação sem devolver a chave revogada, e nada removido;
+- **os testes antigos que mudaram:** a política e o envio de template recusados (`whatsapp-send`), o drift da categoria nova, o catálogo com os namespaces `consents` e `templates`, e o e2e do Inbox, com a janela fechada, o template indisponível e o pedido de parar.

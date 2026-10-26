@@ -19,6 +19,15 @@ export const MENSAGEM_NUMERO_NAO_CONFERE =
   'O número desta conversa não confere, de forma exata, com um telefone do cadastro do contato. Confira o contato antes de responder.';
 
 /**
+ * Os templates na transição (ADR-052 item 5, F4.1b): consentimento antigo não
+ * autoriza template, e a finalidade verificável só chega na F4.1c. Até lá, o
+ * template é recusado no compositor, na API e no worker — com um motivo de
+ * indisponibilidade do fluxo, nunca como se a pessoa tivesse revogado.
+ */
+export const MENSAGEM_TEMPLATE_INDISPONIVEL =
+  'O envio por template está indisponível nesta versão, até a finalidade verificável (F4.1c)';
+
+/**
  * O remetente diante do envio: a conversa RAI, a identificada cujo número não
  * confere de forma exata com o cadastro do contato, ou a que confere.
  */
@@ -29,12 +38,10 @@ export interface SendContext {
   lastInboundAt: Date | null;
   /** o remetente da conversa (ADR-052 item 2) */
   remetente: RemetenteDoEnvio;
-  /** consentimento vigente para este contato e canal */
-  hasActiveConsent: boolean;
-  /** template pedido no envio, se houver */
-  template: { name: string; language: string; paramCount: number } | null;
-  /** parâmetros informados para o template */
-  templateParams: string[];
+  /** há pedido de parar ATIVO para o número, no workspace (C16, F4.1b) */
+  bloqueado: boolean;
+  /** o envio pede template — indisponível na transição da F4.1b */
+  templatePedido: boolean;
   /** endereço externo do destinatário (E.164 que falou com a gente) */
   externalAddress: string | null;
   now: Date;
@@ -42,15 +49,13 @@ export interface SendContext {
 
 export type SendDecision =
   | { allowed: true; kind: 'free_form' }
-  | { allowed: true; kind: 'template' }
   | {
       allowed: false;
       reason:
         | 'window_closed_needs_template'
-        | 'template_requires_consent'
-        | 'template_unknown'
-        | 'template_params_mismatch'
+        | 'template_flow_unavailable'
         | 'no_external_address'
+        | 'stop_requested'
         | 'sender_unidentified'
         | 'number_not_exact';
     };
@@ -59,6 +64,10 @@ export function decideSend(context: SendContext): SendDecision {
   // sem endereço não há para onde enviar — e escolher um telefone qualquer do
   // contato seria responder para quem não falou com a gente
   if (!context.externalAddress) return { allowed: false, reason: 'no_external_address' };
+  // a pessoa pediu para parar: nada sai para o número, em canal nenhum, por
+  // contato nenhum (C16). Vem antes do resto para a tela mostrar o bloqueio. A
+  // resposta depois do pedido ainda é proposta (ADR-052, F4.1b item 4)
+  if (context.bloqueado) return { allowed: false, reason: 'stop_requested' };
   // nem template: sem saber quem escreveu, ou sem o número EXATO no cadastro do
   // contato, responder pode ir a outra pessoa. Aproximação não autoriza envio
   if (context.remetente === 'a_identificar') {
@@ -68,23 +77,17 @@ export function decideSend(context: SendContext): SendDecision {
     return { allowed: false, reason: 'number_not_exact' };
   }
 
+  // template, dentro ou fora da janela: indisponível na transição (F4.1b)
+  if (context.templatePedido) return { allowed: false, reason: 'template_flow_unavailable' };
+
   const insideWindow =
     context.lastInboundAt !== null &&
     context.now.getTime() - context.lastInboundAt.getTime() < SERVICE_WINDOW_MS;
 
   // dentro da janela, resposta livre é permitida — e não exige consentimento:
   // o contato acabou de falar com a gente (ADR-038)
-  if (insideWindow && !context.template) return { allowed: true, kind: 'free_form' };
-
-  if (!context.template) return { allowed: false, reason: 'window_closed_needs_template' };
-
-  // com template: exige consentimento, mesmo dentro da janela — template é
-  // formato de mensagem iniciada pelo negócio
-  if (!context.hasActiveConsent) return { allowed: false, reason: 'template_requires_consent' };
-  if (context.templateParams.length !== context.template.paramCount) {
-    return { allowed: false, reason: 'template_params_mismatch' };
-  }
-  return { allowed: true, kind: 'template' };
+  if (insideWindow) return { allowed: true, kind: 'free_form' };
+  return { allowed: false, reason: 'window_closed_needs_template' };
 }
 
 /** Tempo restante da janela, para a interface mostrar antes de o usuário digitar. */

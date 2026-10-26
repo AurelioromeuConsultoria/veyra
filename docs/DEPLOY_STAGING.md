@@ -362,6 +362,56 @@ muda o registro da migration e não desfaz nenhum objeto.
    ORDER BY 1, 2;
    ```
 
+   Para a `20261026120000_consents_and_stop_block` (F4.1b, ADR-052 item 5),
+   com **52 objetos**. As tabelas são novas e vazias; o que ela escreve em
+   dado existente é o preenchimento das chaves novas nos papéis `owner`,
+   `admin` e `member` do Core, com os pré-requisitos, o livro
+   (`PermissionBackfill`) e a auditoria (`role.permission_backfilled`). Só
+   acréscimo: nenhuma concessão é removida. Depois dela:
+
+   - **o envio por template fica indisponível** (`template_flow_unavailable`)
+     até a F4.1c, e um despacho de template pendente vai a `failed_permanent`
+     com esse motivo; o consentimento da 9.1 não autoriza mais nada;
+   - **nenhuma finalidade existe**: elas são criadas, quando houver, pela CLI
+     `pnpm --filter @veyra/api consents:purpose`;
+   - **a conferência**: o inventário abaixo, e o número de linhas do livro
+     igual ao das concessões auditadas, somado ao das chaves que o papel já
+     tinha;
+   - **a imagem anterior NÃO serve de rollback operacional** (decisão do
+     usuário, ADR-052): ela desliga o pedido de parar — o código anterior não
+     conhece o `StopBlock`, e tudo voltaria a sair para os números bloqueados,
+     inclusive a IA — e volta a aceitar template com o consentimento da 9.1.
+     **Em falha depois desta migration, permanece a manutenção**: a correção
+     vem para a frente, numa imagem nova, nunca pela anterior;
+   - **a idempotência** passa a considerar a membership no hash: uma
+     `Idempotency-Key` gravada antes do deploy pode dar 409 durante a retenção
+     (24 h). O cliente que recebe 409 não troca a chave sozinho para repetir.
+
+   ```sql
+   -- inventário da 20261026120000_consents_and_stop_block: 0 linhas = nada ficou;
+   -- 52 = inteira; qualquer outro número = estado parcial. As chaves do catálogo
+   -- são DADO (a semeadura também as escreve) e ficam fora: confira-as à parte
+   SELECT 'tipo' AS k, t.typname::text AS nome FROM pg_type t
+     WHERE t.typname IN ('ConsentOrigin', 'ConsentPurposeCategory', 'ConsentRevocationReason')
+   UNION ALL SELECT 'tabela', c.relname::text FROM pg_class c
+     WHERE c.relkind = 'r' AND c.relname IN (
+       'ConsentPurpose', 'Consent', 'StopBlock', 'ConsentReceiptCounter', 'PermissionBackfill')
+   UNION ALL SELECT 'indice', c.relname::text FROM pg_class c
+     WHERE c.relkind = 'i' AND (c.relname LIKE 'ConsentPurpose\_%' OR c.relname LIKE 'Consent\_%'
+       OR c.relname LIKE 'StopBlock\_%' OR c.relname LIKE 'ConsentReceiptCounter\_%'
+       OR c.relname LIKE 'PermissionBackfill\_%')
+   UNION ALL SELECT 'restricao', co.conname::text FROM pg_constraint co
+     WHERE (co.conname LIKE 'ConsentPurpose\_%' OR co.conname LIKE 'Consent\_%'
+       OR co.conname LIKE 'StopBlock\_%' OR co.conname LIKE 'ConsentReceiptCounter\_%'
+       OR co.conname LIKE 'PermissionBackfill\_%')
+       AND co.contype <> 'n'  -- no Postgres 18, cada NOT NULL também vira restrição
+   UNION ALL SELECT 'funcao', p.proname::text FROM pg_proc p
+     WHERE p.proname IN ('consent_guard', 'stop_block_guard')
+   UNION ALL SELECT 'gatilho', tg.tgname::text FROM pg_trigger tg
+     WHERE tg.tgname IN ('consent_guard', 'stop_block_guard')
+   ORDER BY 1, 2;
+   ```
+
    Para outra migration, monte o inventário do mesmo jeito, a partir das
    instruções do arquivo: cada `CREATE` e cada `ADD CONSTRAINT`.
 

@@ -5,7 +5,6 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type {
-  ConsentStatus,
   ConversationDto,
   ConversationPageDto,
   CreateConversationInput,
@@ -15,7 +14,6 @@ import type {
   MessageAttachmentDto,
   MessageDto,
   MessagePageDto,
-  MessageTemplateDto,
   SendPolicyDto,
   UpdateConversationInput,
 } from '@veyra/contracts';
@@ -25,8 +23,10 @@ import {
   decideSend,
   MENSAGEM_NUMERO_NAO_CONFERE,
   MENSAGEM_REMETENTE_A_IDENTIFICAR,
+  MENSAGEM_TEMPLATE_INDISPONIVEL,
   SERVICE_WINDOW_MS,
 } from '../channels/send-policy';
+import { bloqueioAtivo, MENSAGEM_PEDIDO_DE_PARAR } from '../consents/consent-records';
 import { WhatsappSendService } from '../channels/whatsapp-send.service';
 import { FilesService } from '../files/files.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -35,14 +35,6 @@ import { AuthContext } from '../common/decorators';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 
 type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
-
-/**
- * Consentimento é por (contato, canal). Chave única para os dois lugares que o
- * consultam, para nenhum deles esquecer o canal — foi o defeito que a revisão
- * pegou: a tela dizia "opt-in registrado" com base em outro canal.
- */
-const consentKey = (contactId: string, channelType: string): string =>
-  `${contactId}:${channelType}`;
 
 type ConversationRow = {
   id: string;
@@ -490,11 +482,11 @@ export class ConversationsService {
   }
 
   /**
-   * Veredito do SERVIDOR sobre o que o compositor pode enviar agora, com os
-   * templates aprovados quando o texto livre não é permitido.
+   * Veredito do SERVIDOR sobre o que o compositor pode enviar agora. Na
+   * transição da F4.1b, só o texto livre: os templates não são oferecidos.
    *
-   * Existe para que a UI não recalcule política: ela não vê consentimento
-   * revogado nem recibo atrasado, e uma segunda implementação da regra
+   * Existe para que a UI não recalcule política: ela não vê o pedido de parar
+   * nem recibo atrasado, e uma segunda implementação da regra
    * divergiria da que o worker aplica de fato (ADR-038, ADR-039).
    */
   async sendPolicy(auth: AuthContext, id: string): Promise<SendPolicyDto> {
@@ -545,6 +537,22 @@ export class ConversationsService {
     }
 
     /**
+     * O pedido de parar vem primeiro (C16, F4.1b): nada sai para o número, e a
+     * tela mostra o bloqueio — a mesma recusa do envio e do worker. O recibo,
+     * a data e quem registrou ficam com `consents:read`.
+     */
+    if (await bloqueioAtivo(this.prisma.db, row.externalAddress)) {
+      return {
+        channelType,
+        mode: 'blocked',
+        reason: MENSAGEM_PEDIDO_DE_PARAR,
+        windowExpiresAt,
+        consentStatus: null,
+        templates: [],
+      };
+    }
+
+    /**
      * O MESMO predicado do envio (ADR-052 item 2), para a tela não prometer o
      * que o envio nega — e antes da cota: a RAI não recebe resposta, e a
      * identificada só com o número exato do cadastro do contato.
@@ -564,25 +572,13 @@ export class ConversationsService {
       };
     }
 
-    const [consents, templates, cotaEsgotada] = await Promise.all([
-      this.resolveConsents([row]),
-      this.prisma.db.messageTemplate.findMany({
-        where: { channelId: row.channelId, status: 'approved' },
-        select: { name: true, language: true, paramCount: true },
-        orderBy: { name: 'asc' },
-      }),
-      this.usage.isExhausted(workspaceId, 'messages_sent'),
-    ]);
-    const consentStatus: ConsentStatus = row.contactId
-      ? (consents.get(consentKey(row.contactId, channelType)) ?? 'none')
-      : 'none';
-    if (cotaEsgotada) {
+    if (await this.usage.isExhausted(workspaceId, 'messages_sent')) {
       return {
         channelType,
         mode: 'blocked',
         reason: 'Cota de mensagens do plano esgotada neste período',
         windowExpiresAt,
-        consentStatus,
+        consentStatus: null,
         templates: [],
       };
     }
@@ -590,13 +586,16 @@ export class ConversationsService {
      * A MESMA função pura que o worker usa, consultada sem template: se ela
      * permite texto livre, a janela está aberta; se recusa, o motivo já é a
      * explicação que a tela mostra.
+     *
+     * Na transição da F4.1b, o consentimento da 9.1 é histórico e não autoriza
+     * nada (C7): o estado dele não aparece mais aqui, e os templates não são
+     * oferecidos — a janela fechada mostra a indisponibilidade do fluxo.
      */
     const decision = decideSend({
       lastInboundAt: row.lastInboundAt,
       remetente,
-      hasActiveConsent: consentStatus === 'granted',
-      template: null,
-      templateParams: [],
+      bloqueado: false,
+      templatePedido: false,
       externalAddress: row.externalAddress,
       now: new Date(),
     });
@@ -607,8 +606,8 @@ export class ConversationsService {
         mode: 'free_form',
         reason: null,
         windowExpiresAt,
-        consentStatus,
-        templates: templates as MessageTemplateDto[],
+        consentStatus: null,
+        templates: [],
       };
     }
     /**
@@ -622,39 +621,40 @@ export class ConversationsService {
         mode: 'blocked',
         reason: 'Esta conversa não tem endereço externo: só é possível enviar após o contato falar',
         windowExpiresAt,
-        consentStatus,
-        templates: [],
-      };
-    }
-    // janela fechada: template é o caminho, e ele exige consentimento vigente
-    if (consentStatus !== 'granted') {
-      return {
-        channelType,
-        mode: 'blocked',
-        reason:
-          'Janela de 24h fechada e sem consentimento registrado: registre o opt-in do contato para retomar por template',
-        windowExpiresAt,
-        consentStatus,
-        templates: templates as MessageTemplateDto[],
-      };
-    }
-    if (templates.length === 0) {
-      return {
-        channelType,
-        mode: 'blocked',
-        reason: 'Janela de 24h fechada e nenhum template aprovado cadastrado neste canal',
-        windowExpiresAt,
-        consentStatus,
+        consentStatus: null,
         templates: [],
       };
     }
     return {
       channelType,
-      mode: 'template',
-      reason: 'Janela de 24h fechada: use um template aprovado',
+      mode: 'blocked',
+      reason: `Janela de 24h fechada. ${MENSAGEM_TEMPLATE_INDISPONIVEL}`,
       windowExpiresAt,
-      consentStatus,
-      templates: templates as MessageTemplateDto[],
+      consentStatus: null,
+      templates: [],
+    };
+  }
+
+  /**
+   * A conversa para o consentimento e o pedido de parar (ADR-052 item 5,
+   * F4.1b), com a MESMA visibilidade das outras rotas: a RAI só para quem tem
+   * `contacts:write` (C13), e o número completo só com `contacts:read`.
+   */
+  async alvoDoConsentimento(
+    auth: AuthContext,
+    id: string,
+  ): Promise<{
+    contactId: string | null;
+    senderStatus: string;
+    externalAddress: string | null;
+    mostraNumero: boolean;
+  }> {
+    const { row, visao } = await this.lerVisivel(auth, id);
+    return {
+      contactId: row.contactId,
+      senderStatus: row.senderStatus,
+      externalAddress: row.externalAddress,
+      mostraNumero: visao.mostraNumero,
     };
   }
 
@@ -745,33 +745,6 @@ export class ConversationsService {
         (r) => (r as unknown as { conversationId: string }).conversationId,
       ),
     );
-  }
-
-  /**
-   * Estado do consentimento por (contato, CANAL), em UMA consulta. `granted`
-   * exige marca ativa; `revoked` distingue "nunca houve" de "houve e foi
-   * retirado" — a diferença muda o que o atendente faz em seguida.
-   *
-   * A chave inclui o TIPO DE CANAL porque o consentimento é por canal
-   * (`@@unique(workspaceId, contactId, channelType, activeMark)`) e é assim que
-   * o envio o verifica. Sem isso, um opt-in de e-mail apareceria como opt-in de
-   * WhatsApp: a tela afirmaria a existência de uma evidência que nunca foi dada
-   * — exatamente a fusão que o ADR-038 proíbe, e com peso de LGPD.
-   */
-  private async resolveConsents(rows: ConversationRow[]): Promise<Map<string, ConsentStatus>> {
-    const contactIds = [...new Set(rows.map((r) => r.contactId).filter(Boolean))] as string[];
-    if (contactIds.length === 0) return new Map();
-    const consents = await this.prisma.db.contactChannelConsent.findMany({
-      where: { contactId: { in: contactIds } },
-      select: { contactId: true, channelType: true, activeMark: true },
-    });
-    const estado = new Map<string, ConsentStatus>();
-    for (const consent of consents) {
-      const chave = consentKey(consent.contactId, consent.channelType);
-      if (consent.activeMark === true) estado.set(chave, 'granted');
-      else if (!estado.has(chave)) estado.set(chave, 'revoked');
-    }
-    return estado;
   }
 
   /**

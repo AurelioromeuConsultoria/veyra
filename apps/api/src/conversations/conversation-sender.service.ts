@@ -230,7 +230,14 @@ export class ConversationSenderService {
         const endereco = this.enderecoDe(conversa);
         const candidatos = (await this.classificar(tx, endereco)).length;
         const numeroTirado = saida
-          ? await this.contacts.tirarNumeroNaTransacao(tx, anterior, endereco, regiao, saida.lidos)
+          ? await this.contacts.tirarNumeroNaTransacao(
+              tx,
+              auth,
+              anterior,
+              endereco,
+              regiao,
+              saida.lidos,
+            )
           : false;
         /**
          * Quem não tem `contacts:write` não vê a RAI (C13): o responsável assim

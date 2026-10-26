@@ -18,6 +18,7 @@
     "provision": "nest build && node dist/cli/provision.js",
     "phones:normalize": "nest build && node dist/cli/phones-normalize.js",
     "identity:diagnose": "nest build && node dist/cli/identity-diagnose.js",
+    "consents:purpose": "nest build && node dist/cli/consent-purpose.js",
     "clinics:enable": "nest build && node dist/verticals/clinics/cli/clinics.js enable",
     "clinics:disable": "nest build && node dist/verticals/clinics/cli/clinics.js disable",
     "plan": "tsx scripts/set-plan.ts",

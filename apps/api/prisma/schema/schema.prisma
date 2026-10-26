@@ -114,6 +114,11 @@ model Workspace {
   channelCredentials     ChannelCredential[]
   messageTemplates       MessageTemplate[]
   channelConsents        ContactChannelConsent[]
+  consentPurposes        ConsentPurpose[]
+  consents               Consent[]
+  stopBlocks             StopBlock[]
+  consentReceiptCounter  ConsentReceiptCounter?
+  permissionBackfills    PermissionBackfill[]
   messageDispatches      MessageDispatch[]
   messageStatusEvents    MessageStatusEvent[]
   inboundMedia           InboundMedia[]
@@ -143,6 +148,7 @@ model Permission {
   description String
 
   rolePermissions RolePermission[]
+  backfills       PermissionBackfill[]
 }
 
 // ─── Dados de acesso por workspace (tenant-scoped, em WORKSPACE_MODELS) ─────
@@ -164,10 +170,11 @@ model Role {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  workspace   Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace   Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   permissions RolePermission[]
   memberships Membership[]
   invites     Invite[]
+  backfills   PermissionBackfill[]
 
   // Alvo de FK composta (ADR-010): quem referencia Role referencia (workspaceId, id)
   @@unique([workspaceId, id])
@@ -224,6 +231,10 @@ model Membership {
   reviewedProposals          AiProposal[]            @relation("ProposalReviewer")
   consentChanges             AiConsent[]             @relation("ConsentAuthor")
   grantedConsents            ContactChannelConsent[] @relation("ConsentGranter")
+  purposeConsentsGranted     Consent[]               @relation("PurposeConsentGrantedBy")
+  purposeConsentsRevoked     Consent[]               @relation("PurposeConsentRevokedBy")
+  stopBlocksCreated          StopBlock[]             @relation("StopBlockCreatedBy")
+  stopBlocksLifted           StopBlock[]             @relation("StopBlockLiftedBy")
   // lado reverso do vertical Clinics (ADR-047 adendo 2, item 1)
   clinicsReleasesGranted     ClinicsContactRelease[] @relation("ClinicsReleaseGrantedBy")
   clinicsProfessional        ClinicsProfessional?    @relation("ClinicsProfessionalAccount")
@@ -367,6 +378,7 @@ model Contact {
   aiProposals            AiProposal[]
   aiRuns                 AiRun[]
   contactChannelConsents ContactChannelConsent[]
+  consents               Consent[]
   // lado reverso do vertical Clinics (ADR-047 adendo 2, item 1)
   clinicsContactReleases ClinicsContactRelease[]
   clinicsPatient         ClinicsPatient?
@@ -902,6 +914,7 @@ model Channel {
   messages         Message[]
   credential       ChannelCredential?
   messageTemplates MessageTemplate[]
+  consents         Consent[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, systemMark])
@@ -1753,4 +1766,157 @@ model MessageTemplate {
 
   @@unique([workspaceId, channelId, name, language])
   @@index([workspaceId, channelId])
+}
+
+// ── F4.1b: finalidades, consentimentos e o pedido de parar (ADR-052 item 5) ──
+
+enum ConsentOrigin {
+  /// a pessoa, presente
+  in_person
+  /// por telefone
+  phone
+  /// formulário em papel
+  paper_form
+}
+
+enum ConsentPurposeCategory {
+  utility
+  marketing
+}
+
+enum ConsentRevocationReason {
+  /// a pessoa pediu a revogação
+  manual
+  /// o número saiu do cadastro do contato
+  number_removed
+  /// o pedido de parar daquele número
+  stop_requested
+}
+
+/// A FINALIDADE versionada (ADR-052 item 5, C1): o que a pessoa consente.
+/// Imutável (append-only no client); qualquer mudança é versão nova, criada só
+/// pela CLI administrativa, com auditoria. Um consentimento de versão anterior
+/// não autoriza a versão nova.
+model ConsentPurpose {
+  id          String                 @id @default(uuid()) @db.Uuid
+  workspaceId String                 @db.Uuid
+  key         String
+  version     Int
+  /// a descrição mostrada à pessoa
+  description String
+  category    ConsentPurposeCategory
+  /// a lista FECHADA de campos que um envio desta finalidade pode usar
+  fields      String[]
+  createdAt   DateTime               @default(dbgenerated("transaction_timestamp()"))
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  consents  Consent[]
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, key, version])
+}
+
+/// O CONSENTIMENTO por (contato, canal do negócio, número exato, versão da
+/// finalidade) — ADR-052 item 5, decisões de 2026-10-26. A concessão é
+/// imutável; nasce ativa e só a revogação se preenche, uma vez, garantido no
+/// client (só esses campos) e no banco (gatilho e CHECK de coerência). Os
+/// instantes são do banco, gravados pelo gatilho depois das travas. A cascata
+/// da exclusão do contato apaga.
+model Consent {
+  id                    String                   @id @default(uuid()) @db.Uuid
+  workspaceId           String                   @db.Uuid
+  contactId             String                   @db.Uuid
+  channelId             String                   @db.Uuid
+  /// "+dígitos": a forma exata do número (a normalizada, ou o mesmo número
+  /// internacional com "+"), igual ao endereço da conversa
+  number                String
+  purposeId             String                   @db.Uuid
+  origin                ConsentOrigin
+  /// `CON-000001`: emitido pelo servidor; identifica o registro, não prova sozinho o consentimento
+  receipt               String
+  /// a fotografia da descrição aceita
+  purposeDescription    String
+  grantedAt             DateTime                 @default(dbgenerated("transaction_timestamp()"))
+  grantedByMembershipId String                   @db.Uuid
+  revokedAt             DateTime?
+  revokedByMembershipId String?                  @db.Uuid
+  revocationReason      ConsentRevocationReason?
+  /// a origem da manifestação na revogação manual
+  revocationOrigin      ConsentOrigin?
+  /// true enquanto ativo, NULL depois da revogação: o único por tupla só vale para o ativo
+  activeMark            Boolean?                 @default(true)
+
+  workspace Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contact   Contact        @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  channel   Channel        @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  purpose   ConsentPurpose @relation(fields: [workspaceId, purposeId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  grantedBy Membership     @relation("PurposeConsentGrantedBy", fields: [workspaceId, grantedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  revokedBy Membership?    @relation("PurposeConsentRevokedBy", fields: [workspaceId, revokedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([workspaceId, receipt])
+  @@unique([workspaceId, contactId, channelId, number, purposeId, activeMark])
+  @@index([workspaceId, number])
+  @@index([workspaceId, channelId])
+  @@index([workspaceId, purposeId])
+}
+
+/// O PEDIDO DE PARAR (ADR-052 item 5, C4 e C16): por (workspace, número), para
+/// todos os canais do workspace. Guarda só o necessário para impedir contato
+/// novo — sem contato nem nome — e sobrevive à exclusão do contato. Guarda a
+/// membership de quem registrou e de quem desbloqueou. Nasce ativo e só o
+/// desbloqueio se preenche, uma vez (client, gatilho e CHECK), e ele não
+/// restaura consentimento. Os instantes são do banco, depois das travas.
+model StopBlock {
+  id                    String         @id @default(uuid()) @db.Uuid
+  workspaceId           String         @db.Uuid
+  /// "+dígitos": a forma exata do número
+  number                String
+  origin                ConsentOrigin
+  /// `PAR-000001`
+  receipt               String
+  createdAt             DateTime       @default(dbgenerated("transaction_timestamp()"))
+  createdByMembershipId String         @db.Uuid
+  liftedAt              DateTime?
+  liftedByMembershipId  String?        @db.Uuid
+  /// a origem da NOVA solicitação da pessoa
+  liftOrigin            ConsentOrigin?
+  /// `DES-000001`
+  liftReceipt           String?
+  activeMark            Boolean?       @default(true)
+
+  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy Membership  @relation("StopBlockCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  liftedBy  Membership? @relation("StopBlockLiftedBy", fields: [workspaceId, liftedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, receipt])
+  @@unique([workspaceId, liftReceipt])
+  @@unique([workspaceId, number, activeMark])
+}
+
+/// O contador dos recibos (`CON-`, `PAR-`, `DES-`) por workspace: único, sem
+/// reutilização e sem truncar; não promete sequência contínua.
+model ConsentReceiptCounter {
+  workspaceId String @id @db.Uuid
+  next        BigInt @default(1)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+/// O LIVRO do preenchimento de permissões (ADR-052 item 6 do plano da F4.1b):
+/// cada concessão feita por uma migration fica registrada, e a reaplicação
+/// pula o que já foi feito — uma revogação posterior não é desfeita. Ele não
+/// prova que a concessão inicial respeita toda intenção anterior.
+model PermissionBackfill {
+  id            String   @id @default(uuid()) @db.Uuid
+  workspaceId   String   @db.Uuid
+  roleId        String   @db.Uuid
+  permissionKey String
+  appliedAt     DateTime @default(dbgenerated("transaction_timestamp()"))
+
+  workspace  Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  role       Role       @relation(fields: [workspaceId, roleId], references: [workspaceId, id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionKey], references: [key])
+
+  @@unique([workspaceId, roleId, permissionKey])
 }

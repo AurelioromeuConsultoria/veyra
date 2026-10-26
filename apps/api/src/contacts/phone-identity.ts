@@ -186,6 +186,23 @@ export function coincideExatamente(
   return contato.phones.some((t) => t.trim().startsWith('+') && digitosDe(t) === doNumero);
 }
 
+/**
+ * Os números EXATOS do contato, em "+dígitos": as formas normalizadas e os
+ * telefones escritos com "+", dígito a dígito — os mesmos que
+ * `coincideExatamente` aceita. É por eles, e só por eles, que um consentimento
+ * ou um pedido de parar se liga a um contato (F4.1b, decisão de 2026-10-26).
+ */
+export function numerosExatos(contato: {
+  phones: readonly string[];
+  phonesNormalized: readonly string[];
+}): string[] {
+  const numeros = new Set(contato.phonesNormalized);
+  for (const telefone of contato.phones) {
+    if (telefone.trim().startsWith('+')) numeros.add(`+${digitosDe(telefone)}`);
+  }
+  return [...numeros];
+}
+
 function classificar(
   numeroQueEntrou: string,
   contato: { phones: readonly string[]; phonesNormalized: readonly string[] },

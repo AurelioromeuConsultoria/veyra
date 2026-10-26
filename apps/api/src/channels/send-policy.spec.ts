@@ -3,9 +3,8 @@ import { decideSend, SERVICE_WINDOW_MS, windowRemainingMs } from './send-policy'
 const agora = new Date('2026-08-21T12:00:00.000Z');
 const base = {
   remetente: 'confere' as const,
-  hasActiveConsent: false,
-  template: null,
-  templateParams: [],
+  bloqueado: false,
+  templatePedido: false,
   externalAddress: '+5511999998888',
   now: agora,
 };
@@ -33,41 +32,34 @@ describe('política de envio (ADR-038)', () => {
     expect(passou).toEqual({ allowed: false, reason: 'window_closed_needs_template' });
   });
 
-  it('fora da janela exige template', () => {
+  it('fora da janela, o texto livre não sai', () => {
     expect(decideSend({ ...base, lastInboundAt: null })).toEqual({
       allowed: false,
       reason: 'window_closed_needs_template',
     });
   });
 
-  it('template exige consentimento vigente, mesmo dentro da janela', () => {
-    const semConsentimento = decideSend({
-      ...base,
-      lastInboundAt: new Date(agora.getTime() - 60_000),
-      template: { name: 'lembrete', language: 'pt_BR', paramCount: 1 },
-      templateParams: ['Ana'],
-    });
-    expect(semConsentimento).toEqual({ allowed: false, reason: 'template_requires_consent' });
-
-    const comConsentimento = decideSend({
-      ...base,
-      hasActiveConsent: true,
-      lastInboundAt: null,
-      template: { name: 'lembrete', language: 'pt_BR', paramCount: 1 },
-      templateParams: ['Ana'],
-    });
-    expect(comConsentimento).toEqual({ allowed: true, kind: 'template' });
+  it('template, dentro ou fora da janela, é indisponível na transição (F4.1b)', () => {
+    for (const lastInboundAt of [new Date(agora.getTime() - 60_000), null]) {
+      expect(decideSend({ ...base, lastInboundAt, templatePedido: true })).toEqual({
+        allowed: false,
+        reason: 'template_flow_unavailable',
+      });
+    }
   });
 
-  it('parâmetros do template têm de casar exatamente', () => {
-    const decisao = decideSend({
-      ...base,
-      hasActiveConsent: true,
-      lastInboundAt: null,
-      template: { name: 'lembrete', language: 'pt_BR', paramCount: 2 },
-      templateParams: ['Ana'],
-    });
-    expect(decisao).toEqual({ allowed: false, reason: 'template_params_mismatch' });
+  it('o pedido de parar recusa tudo, antes do remetente e do template (C16, F4.1b)', () => {
+    for (const extra of [
+      { lastInboundAt: new Date(agora.getTime() - 60_000) },
+      { lastInboundAt: null, templatePedido: true },
+      { lastInboundAt: new Date(agora.getTime() - 60_000), remetente: 'a_identificar' as const },
+      { lastInboundAt: null, remetente: 'numero_nao_confere' as const },
+    ]) {
+      expect(decideSend({ ...base, ...extra, bloqueado: true })).toEqual({
+        allowed: false,
+        reason: 'stop_requested',
+      });
+    }
   });
 
   it('sem endereço externo não há envio — não se escolhe telefone do contato', () => {
@@ -82,11 +74,7 @@ describe('política de envio (ADR-038)', () => {
   it('a RAI e o número que não confere de forma exata não recebem nada, nem template (ADR-052 item 2)', () => {
     for (const extra of [
       { lastInboundAt: new Date(agora.getTime() - 60_000) },
-      {
-        lastInboundAt: null,
-        hasActiveConsent: true,
-        template: { name: 'lembrete', language: 'pt_BR', paramCount: 0 },
-      },
+      { lastInboundAt: null, templatePedido: true },
     ]) {
       expect(decideSend({ ...base, ...extra, remetente: 'a_identificar' })).toEqual({
         allowed: false,
