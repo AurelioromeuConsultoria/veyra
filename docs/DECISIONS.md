@@ -4714,7 +4714,7 @@ A skill `create-migration` traz o bloco de ensaio com as três evidências: os g
 
 ## ADR-052 — Mensagem iniciada pelo negócio: telefones normalizados, remetente sem atribuição silenciosa, template verificável, consentimento por finalidade e aprovação vinculada à prévia
 
-**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). **A F4.1a foi aprovada para implementação em 2026-10-23**, com as condições registradas no fim deste ADR, e publicada em 2026-10-26. **A F4.1b foi parcialmente aprovada em 2026-10-26:** finalidades, consentimentos, bloqueio, permissões e a recusa transitória dos templates estão liberados; a regra temporal da resposta depois do pedido de parar continua proposta. O resto continua PROPOSTO, e nenhum outro código da F4 está autorizado. · **Data:** 2026-10-23
+**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). **A F4.1a foi aprovada para implementação em 2026-10-23**, com as condições registradas no fim deste ADR, e publicada em 2026-10-26. **A F4.1b foi parcialmente aprovada em 2026-10-26:** finalidades, consentimentos, bloqueio, permissões e a recusa transitória dos templates estão liberados, e foram publicados e validados no mesmo dia, com a decisão 19 (ver o fechamento no fim deste ADR); a regra temporal da resposta depois do pedido de parar continua proposta. **A F4.1c tem plano consolidado para revisão**, sem código. O resto continua PROPOSTO, e nenhum outro código da F4 está autorizado. · **Data:** 2026-10-23
 
 A revisão 0 está no `0eb4038`. A revisão 1 não foi comitada; ela passou pelo `reviewer` (mudanças necessárias) e pelo `security` (bloqueado, sem P0), e os achados dos dois estão incorporados aqui. A confirmação desta revisão 2 aprovou com ressalvas (o `reviewer`, com quatro achados importantes; o `security`, com dois P1 novos, os mesmos do `reviewer`), e as correções dela também estão no texto. A conferência final dessas correções aprovou: o `security`, sem ressalva bloqueante, e o `reviewer`, com uma ressalva importante (a regra ao reabrir conversa) e duas de qualidade. As três estão no texto, e os dois disseram que não é preciso nova rodada. Nenhum ADR aceito é alterado antes da aprovação deste; as emendas que ele implicaria estão listadas no fim, em "Emendas propostas".
 
@@ -5845,7 +5845,186 @@ Continuam bloqueados deploy, ativação do Clinics, envio real e dados reais.
 
 **F4.1b publicada e validada (2026-10-26).** O `1bad873` foi publicado com a autorização do usuário, sem force push, e o CI ficou verde nos quatro jobs — Typecheck & build, Lint & format, Testes e E2E (run 40374692840).
 
-- **A decisão 19** (`097c549`, `consents:read` nas seis rotas de registro) está em commit local, à espera da autorização de push. Ela precisa estar publicada e validada antes de a F4.1c usar os consentimentos para autorizar envio.
+- **A decisão 19** (`097c549`, `consents:read` nas seis rotas de registro) está em commit local, à espera da autorização de push. Ela precisa estar publicada e validada antes de a F4.1c usar os consentimentos para autorizar envio. _(Publicada e validada depois: ver o fechamento, adiante.)_
 - **A exceção da resposta depois do pedido de parar continua pendente**, e a margem de 60 s não está aprovada. Até a decisão, nada sai sob o pedido.
 - **A imagem anterior não é opção de rollback:** em falha operacional, permanece a manutenção.
 - Continuam bloqueados deploy, ativação do Clinics, envio real e dados reais.
+
+**Fechamento da F4.1b (2026-10-26).** A F4.1b está publicada e validada, com a árvore final `a06169f` (árvore `2499d9a6…`) verde no CI. Cada commit, com a sua evidência:
+
+| Commit    | O que é                                                                                         | Evidência                                                                                                                                                                                                                           |
+| --------- | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `1bad873` | A implementação da F4.1b                                                                        | CI verde nos quatro jobs (run 40374692840). Localmente: a bateria b67 e a validação proporcional depois dela, 53 mutações mortas, o ensaio da migration com inventário 52, e três rodadas do `reviewer` e da `security`, sem P0     |
+| `097c549` | A decisão 19: `consents:read` nas seis rotas de registro, inclusive no replay                   | CI verde nos quatro jobs (run 40377493802). Localmente: as suítes da F4.1b com 56, unidade, lint, formatação e build, seis mutações mortas (uma por rota), e `reviewer` e `security` sem P0 nem P1                                  |
+| `a9ea40d` | O registro da publicação do `1bad873` (só docs)                                                 | CI verde nos quatro jobs (run 40379123041)                                                                                                                                                                                          |
+| `a06169f` | A trilha de auditoria como supervisão: o teste com papel personalizado e os docs (sem produção) | CI verde nos quatro jobs (run 40379127697, segunda tentativa). A primeira foi cancelada pela concorrência do próprio CI (`cancel-in-progress`), sem falha. Localmente: as suítes da F4.1b com 57, unidade, lint, formatação e build |
+
+- **A ordem dos pushes** seguiu as autorizações, sem force: `1bad873`; o `097c549`, depois do CI verde do `1bad873` e da validação do cenário da trilha; e o `a9ea40d` e o `a06169f`, nessa ordem, depois do CI verde do `097c549`.
+- **Continuam pendentes, sem risco aceito:**
+  - a exceção da resposta depois do pedido de parar, com a regra temporal em proposta e a margem de 60 s não aprovada; as colunas `stopBlockId` entram com ela;
+  - os três requisitos da F4.1c antes de consentimento autorizar envio: a coordenação de todos os escritores de telefone, a revogação na normalização e os templates com finalidade e consentimento verificáveis;
+  - as pendências de acesso a metadados sensíveis na trilha e nos runs, vinculadas ao B1;
+  - a retenção do pedido de parar, com o jurídico;
+  - a `Idempotency-Key` nas telas da F4.4.
+- **A imagem anterior não é opção de rollback:** em falha operacional, permanece a manutenção.
+- Continuam bloqueados deploy, ativação do Clinics, envio real e dados reais.
+
+**F4.1c — o plano consolidado, para revisão antes do código (2026-10-26).** Escopo, pela tabela de entregas do ADR-048, adendo 8:
+
+- no Core, os templates versionados, com revisão e releitura;
+- o envio iniciado pelo negócio (`business_outbound`), com a guarda, o `approvalHash`, o cancelamento, o estado `canceled` e o lote;
+- o E7, se aprovado;
+- os testes de crash do ponto de decisão;
+- e as três pendências que a F4.1a e a F4.1b deixaram para cá, com a condição de serem resolvidas **antes** de qualquer consentimento autorizar envio:
+  - a coordenação de todos os escritores de telefone;
+  - a revogação na normalização;
+  - a restauração dos templates com finalidade e consentimento verificáveis.
+
+**Fica fora**, numa decisão própria: **a exceção da resposta depois do pedido de parar**. A regra temporal continua pendente e a margem de 60 s não está aprovada. Até a decisão, nada sai sob o pedido, nem pela F4.1c.
+
+**Pré-condições, já cumpridas ou a cumprir:**
+
+- a F4.1b publicada e validada (`1bad873`, CI verde);
+- a decisão 19 (`097c549`) publicada e validada antes de os consentimentos autorizarem envio;
+- o B1-(A) continua antes de qualquer uso real.
+
+Dados fictícios, o transporte falso e o catálogo falso. Continuam bloqueados deploy, ativação do Clinics, envio real e dados reais.
+
+**1. A coordenação de todos os escritores de telefone (pendência do desvio 7).** O destinatário do envio iniciado pelo negócio precisa ter **um só** candidato, conferido sob o `address:` compartilhado (item 6 do ADR-052). Isso só vale se todo escritor de telefone esperar o endereço, e a importação não espera: ela foi aceita assim só no escopo da F4.1a.
+
+- **Recomendação: uma trava do workspace para os escritores em massa.**
+  - `phones-bulk:<workspace>`, num nível novo da ordem global, entre o workspace (nível 1) e os contatos (nível 2);
+  - **exclusiva** na importação e na CLI de normalização;
+  - **compartilhada** em quem decide por candidatos: a ingestão, os três atos de identificação, conceder, parar e desbloquear, e a aprovação e a reconferência do `business_outbound`.
+  - **O que ganha:**
+    - a importação de até mil números pega **uma** trava, e não mil, sem o "out of shared memory" do achado 7 da segurança;
+    - a ordem entre a importação e quem decide passa a ser serial, e o resíduo do desvio 7 (a mensagem que vai ao contato exato existente enquanto o importado chega) **deixa de existir**.
+  - **O custo:** a importação espera os usos em curso do workspace, até 10 s, e os usos esperam a importação, que leva poucos segundos. A trava entra no orçamento da guarda e na fumaça da ordem global.
+- **Alternativas:**
+  - **os baldes de endereço** (o HMAC módulo 256 por workspace) mudam a chave de todos os caminhos e as chaves já gravadas no `ContentUse.entityKeys`, e ainda prendem até 256 travas por importação;
+  - **a trava por número com teto no lote** mantém o problema da memória compartilhada, só que menor.
+- **Testes determinísticos, nas duas ordens:**
+  - importação × ingestão;
+  - importação × identificação;
+  - importação × aprovação do `business_outbound`;
+  - importação × conceder e parar;
+  - a tabela do desvio 7 refeita, agora com a ordem serial provada.
+
+**2. A revogação na normalização.** A CLI `phones:normalize` recalcula as formas normalizadas, por exemplo com a mudança da região do workspace (C17), e um número pode deixar de ser exato do contato sem ninguém o tirar.
+
+- **Recomendação:** ela passa a ser um escritor de telefone como os outros.
+  - Pega a trava do item 1, exclusiva.
+  - Para cada contato cujos números exatos mudam, abre uma transação com o contato e o `address:` dos números que saem, exclusivos.
+  - Nessa transação, revoga os consentimentos dos números que deixaram de ser exatos (`number_removed`), com o ator `cli:phones-normalize` na trilha.
+  - Continua idempotente, e a contagem dela passa a incluir as revogações.
+- **Não há motivo novo no enum:** para a pessoa, o número saiu do cadastro.
+- **Testes:**
+  - a mudança de região que tira um número do conjunto exato revoga só aquele consentimento;
+  - rodar de novo não faz nada;
+  - a corrida com conceder, nas duas ordens.
+
+**3. Templates versionados, revisados e relidos (item 4 do ADR-052).**
+
+- **O modelo:** `MessageTemplateVersion`, por workspace e canal, e a revisão `TemplateReview`, por (versão, finalidade).
+  - **A versão guarda:** o id do template na Meta, o nome, o idioma, a categoria, o formato dos parâmetros, os componentes, o vínculo de cada parâmetro com um campo da lista fechada da finalidade, e o `contentHash`.
+  - **A forma canônica do `contentHash` é fixada por teste de unidade:** a allowlist por tipo de componente, sem o `example` nem o handle de mídia.
+  - Mudou o conteúdo, a categoria ou o vínculo, nasce uma versão nova. A anterior fica.
+- **Ficam recusados:** os componentes dinâmicos (o botão de URL com sufixo, o cabeçalho de mídia por link) e a categoria `authentication`.
+- **O cadastro:** pela CLI administrativa, lendo da Meta. Nos testes, um catálogo falso faz o papel da Meta, inclusive para mudar o conteúdo.
+- **A revisão:** por endpoint, sob `templates:review` (Owner e Admin; a chave já existe), registrando quem, quando, o `contentHash` e a versão da finalidade. A tela é da F4.4.
+- **A releitura:** na aprovação e no despacho, sem cache e fora das travas. As saídas:
+  - **falha** da releitura: `failed_before_send`;
+  - **divergência:** `failed_permanent` (`template_changed`), e a versão fica divergente;
+  - **nenhuma outra versão** é usada no lugar.
+- **O `MessageTemplate` da 9.1** fica como histórico, como o `ContactChannelConsent`. Não autoriza nada e não é migrado.
+
+**4. O estado `canceled` e o cancelamento neutro (item 7 do ADR-052).**
+
+- **O valor `canceled` no enum** entra numa migration própria (`ALTER TYPE ... ADD VALUE`), sem uso na mesma transação (ADR-051). O selo no web e todo `switch` sobre o estado o tratam.
+- **O serviço de cancelamento do Core** roda sob a trava exclusiva da chave que o worker pega compartilhada:
+  - `reserved` ou `failed_before_send` vão a `canceled`, com a reserva devolvida;
+  - `sending` recebe `cancelRequestedAt`, e o worker o vê na reconferência;
+  - `sent` e os incertos não mudam.
+- **O pedido de parar passa a usá-lo:** o despacho não iniciado vai a `canceled` com o motivo `stop_requested`, e não mais a `failed_permanent`. O que já está gravado não muda.
+
+**5. O envio iniciado pelo negócio (`business_outbound`, itens 6 a 8 do ADR-052).**
+
+- **O tipo de uso próprio**, registrado em `OrigensDosUsos`, com a sequência do worker da G3.2:
+  1. o claim;
+  2. a releitura do template;
+  3. o marcador, numa transação própria;
+  4. a guarda, com as travas compartilhadas e a reconferência:
+     - o fencing e o `cancelRequestedAt`;
+     - o consentimento por (contato, canal, número exato, versão da finalidade);
+     - o bloqueio por (workspace, número);
+     - o destinatário com um só candidato;
+     - a versão e o hash;
+     - o `approvalHash`;
+     - o E7, se aprovado;
+  5. o início da chamada, que é o ponto de decisão;
+  6. o desfecho, gravado sob as travas.
+- **O destinatário:**
+  - só o número exato do contato, com um só candidato, consentimento vigente e sem bloqueio;
+  - recusa com motivo por destinatário: `address_ambiguous`, `address_changed`, `consent_revoked` ou `opted_out`;
+  - nada escolhe outro número nem outro contato.
+- **O `approvalHash`:** um HMAC com chave do servidor, numa variável nova, separada do JWT e da `ADDRESS_LOCK_KEY`. Ele cobre:
+  - o workspace;
+  - o canal e o `phoneNumberId`;
+  - o contato e o número;
+  - a versão, o `contentHash` e a revisão;
+  - a versão da finalidade e o consentimento;
+  - os valores exatos;
+  - a referência de origem;
+  - o prazo da aprovação.
+
+  Na aprovação, o servidor relê, trava por destinatário e recusa a divergência. No despacho, a divergência dá `approval_stale`, e o prazo vencido dá `approval_expired`.
+
+- **O lote:**
+  - exige `Idempotency-Key`;
+  - processa cada destinatário por si;
+  - a resposta guardada traz só ids, estados e motivos, nunca a prévia; vale a guarda de replay da F4.1b, com o acesso de agora.
+- **Os valores dos parâmetros vêm de um resolvedor por campo da lista fechada.** No Core, só campos do Core: proposta, `contato.nome`. O vertical traz os seus pelo E7.
+- **A porta E6 não é consultada [C14, recomendado]:** é mensagem de autoria humana, revisada, com a lista fechada; a guarda serve aqui à serialização.
+- **Testes:**
+  - determinísticos, com portões em cada passo e o transporte falso pausável;
+  - cada mudança (revogação, parar, número, importação, cancelamento) antes, durante a reconferência e durante a chamada;
+  - a espera de 10 s com o 409;
+  - a guarda perdida (`in_doubt`);
+  - **os crashes do ponto de decisão:** entre o marcador e a chamada, e depois da chamada antes do `COMMIT`, sem novo claim;
+  - o isolamento entre workspaces (P0).
+
+**6. O template no Inbox volta pelo contrato novo.** A recusa transitória (`template_flow_unavailable`) sai só quando o contrato completo existe:
+
+- no compositor, a janela fechada oferece as versões revisadas, para as finalidades com consentimento vigente do número da conversa;
+- o envio passa pelo `business_outbound`, com prévia, `approvalHash` e o resolvedor de campos, e nunca por parâmetro digitado;
+- os testes do caminho de template que saíram na F4.1b voltam, com o contrato novo.
+
+**Recomendação:** esta parte vem por último, depois de o `business_outbound` estar provado.
+
+**7. O E7, a porta `OutboundPrecondition` [C10, recomendado].** É a porta só de leitura do vertical, com as chaves de validade fixadas no pedido e o roteamento por prefixo.
+
+- **Respostas:** "não vale", "indisponível" ou "prefixo desconhecido", cada uma com o seu desfecho.
+- **Teste P0:** uma referência de outro workspace "não vale".
+- **Sem vertical composto,** a porta fica vazia, e o Core só a exercita com uma extensão de teste.
+- **Precisa de aprovação explícita:** é um ponto de composição a mais no ADR-047.
+
+**8. As subentregas, para revisar e publicar cada uma por si:**
+
+| Subentrega  | O que inclui                                                                                                                                                                                                                                                |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **F4.1c-1** | A coordenação dos escritores de telefone (item 1), a revogação na normalização (item 2), o `canceled` e o cancelamento neutro (item 4). Não abre envio nenhum.                                                                                              |
+| **F4.1c-2** | Os templates versionados, a revisão e a releitura (item 3), com o catálogo falso. Não abre envio nenhum.                                                                                                                                                    |
+| **F4.1c-3** | O `business_outbound`, o `approvalHash`, o lote, os testes de crash e o E7, se aprovado (itens 5 e 7); por último, o template no Inbox (item 6). É a única que tira a recusa transitória, e só depois de as três pendências estarem publicadas e validadas. |
+
+Cada uma com o ADR antes do código, a migration conforme o ADR-051 com o ensaio, `reviewer` e `security`, as mutações, a bateria completa, o commit local e a parada antes do push.
+
+**9. O que este plano pede à sua revisão:**
+
+- a trava de escritores em massa (item 1), em vez dos baldes;
+- a CLI de normalização como escritor de telefone, com `number_removed` (item 2);
+- o pedido de parar usando `canceled` daqui em diante (item 4);
+- o resolvedor de campos do Core com `contato.nome` como único campo (item 5);
+- C10 (o E7), C14 (sem a porta E6) e C18 (o Clinics tratar `not_sent_guard_aborted` como não enviado), ainda abertas;
+- a ordem das subentregas, com o template no Inbox por último.
+
+**10. Separado e pendente:** a exceção da resposta depois do pedido de parar, com a regra temporal ainda em proposta (o item 4 da F4.1b). As colunas `stopBlockId` entram com ela, numa migration própria.
