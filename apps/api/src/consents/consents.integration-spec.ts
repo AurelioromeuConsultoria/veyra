@@ -3,6 +3,7 @@ import type { INestApplication } from '@nestjs/common';
 import { ClsService } from 'nestjs-cls';
 import { Client } from 'pg';
 import request from 'supertest';
+import { AUDIT_FIELDS } from '../audit/audit-fields';
 import { CryptoService } from '../common/crypto.service';
 import { TravasDeIdentidade } from '../content-use/identity-locks';
 import { CHAVE } from '../content-use/restriction-locks';
@@ -1471,6 +1472,73 @@ describe('F4.1b — consentimento, pedido de parar e templates na transição (i
         origin: 'in_person',
       }).expect(201);
       expect(await bloqueiosAtivos()).toHaveLength(0);
+    });
+
+    it('a trilha é supervisão: com audit:read e sem consents:read, vê recibo, origem e data, nunca o número, e segue barrado nas rotas', async () => {
+      const ana = await contato('Ana Fictícia', [N_E164]);
+      await chega();
+      const conversa = await conversaDe();
+      const c = (await conceder(ana).expect(201)).body.id as string;
+      await parar(ana).expect(201);
+      // tudo o que registra e lê a trilha, menos a leitura do consentimento
+      const { sessao } = await registrador('auditor@veyra.test', [...SEM_LEITURA, 'audit:read']);
+
+      const trilha = async (entityType: string) =>
+        (await get(`/api/audit?entityType=${entityType}&limit=100`, sessao).expect(200)).body
+          .items as {
+          action: string;
+          entityId: string;
+          after: Record<string, unknown>;
+          createdAt: string;
+        }[];
+      const consentimentos = await trilha('consent');
+      const concedido = consentimentos.find((e) => e.action === 'consent.granted');
+      expect(concedido).toMatchObject({
+        entityId: c,
+        after: { receipt: 'CON-000001', origin: 'in_person' },
+      });
+      expect(Number.isNaN(Date.parse(concedido!.createdAt))).toBe(false);
+      const pedidos = await trilha('stopBlock');
+      expect(pedidos.find((e) => e.action === 'stop.registered')).toMatchObject({
+        after: { receipt: 'PAR-000002', origin: 'phone' },
+      });
+      // o número, a evidência e o registro completo nunca: só os campos revisados
+      for (const entrada of [...consentimentos, ...pedidos]) {
+        expect(JSON.stringify(entrada)).not.toContain(N);
+        const permitidos =
+          AUDIT_FIELDS[entrada.action.startsWith('consent.') ? 'consent' : 'stopBlock'];
+        for (const campo of Object.keys(entrada.after ?? {})) expect(permitidos).toContain(campo);
+      }
+      // campo novo na trilha passa por revisão: mudar a lista quebra este teste
+      expect(AUDIT_FIELDS.consent).toEqual([
+        'contactId',
+        'channelId',
+        'purposeId',
+        'origin',
+        'receipt',
+        'revocationReason',
+        'revocationOrigin',
+      ]);
+      expect(AUDIT_FIELDS.stopBlock).toEqual([
+        'origin',
+        'receipt',
+        'liftOrigin',
+        'liftReceipt',
+        'consentsRevoked',
+        'dispatchesCanceled',
+        'dispatchesInFlight',
+      ]);
+
+      // os links da trilha seguem as permissões das rotas: consultar e registrar, 403
+      await get(`/api/contacts/${ana}/consents`, sessao).expect(403);
+      await get(`/api/conversations/${conversa.id}/consents`, sessao).expect(403);
+      await get('/api/consent-purposes', sessao).expect(403);
+      await conceder(ana, { channelId: canalA2 }, sessao).expect(403);
+      await registrar(`/api/conversations/${conversa.id}/stop`, sessao, { origin: 'phone' }).expect(
+        403,
+      );
+      await desbloquear(ana, N_E164, sessao).expect(403);
+      expect(await bloqueiosAtivos()).toHaveLength(1);
     });
 
     it('perder consents:read entre a primeira execução e o replay: 403, sem devolver nem apagar a resposta guardada', async () => {
