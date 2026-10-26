@@ -5837,3 +5837,10 @@ Continuam bloqueados deploy, ativação do Clinics, envio real e dados reais.
 - **A repetição também confere:** o guard de permissões roda antes do interceptor em toda requisição, inclusive no replay; sem `consents:read` na hora da repetição, 403, sem devolver a resposta guardada e sem apagá-la.
 - **A trilha de auditoria fica fora do alcance da decisão** (achado das duas revisões; para o usuário confirmar). Quem tem `audit:read` lê `consent.granted`, `consent.revoked`, `stop.registered` e `stop.lifted`, com recibo, origem, os ids e as contagens — nunca o número —, mesmo sem `consents:read`. É o canal de supervisão da trilha, com a minimização da lista de campos; os modelos do Core dão `audit:read` só a Owner e Admin, que já têm a leitura, então o alcance é de papel personalizado. A alternativa é filtrar essas entradas no `GET /audit` para quem não tem `consents:read`.
 - **Requisito para a F4.1c:** esta mudança precisa estar publicada e validada antes de os consentimentos passarem a autorizar envio.
+
+**F4.1b publicada e validada (2026-10-26).** O `1bad873` foi publicado com a autorização do usuário, sem force push, e o CI ficou verde nos quatro jobs — Typecheck & build, Lint & format, Testes e E2E (run 40374692840).
+
+- **A decisão 19** (`097c549`, `consents:read` nas seis rotas de registro) está em commit local, à espera da autorização de push. Ela precisa estar publicada e validada antes de a F4.1c usar os consentimentos para autorizar envio.
+- **A exceção da resposta depois do pedido de parar continua pendente**, e a margem de 60 s não está aprovada. Até a decisão, nada sai sob o pedido.
+- **A imagem anterior não é opção de rollback:** em falha operacional, permanece a manutenção.
+- Continuam bloqueados deploy, ativação do Clinics, envio real e dados reais.
