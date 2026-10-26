@@ -5560,3 +5560,5 @@ Se alguma condição falha, a mensagem não sai, com o motivo por destinatário 
   - os commits anteriores ficaram numa referência local recuperável (a branch `backup/f41a-antes-da-consolidacao`), que não é publicada;
   - a bateria local não foi repetida pela mudança de histórico, porque o conteúdo é o mesmo da b65.
 - **Os limites não mudam:** continuam bloqueados deploy, ativação do Clinics, envio real e dados reais.
+
+**F4.1a publicada e validada (2026-10-26).** O push de `1ad1bcd`, `2b6d6fd` e `59535e9`, nessa ordem, foi um avanço simples de `14e7d54` (sem force-push nem reescrita do histórico remoto). O CI no `59535e9` ficou verde nos quatro jobs: Lint & format, Typecheck & build, Testes e E2E (Playwright). A única anotação foi o aviso do GitHub sobre a migração do rótulo `ubuntu-latest` para o Ubuntu 26, que não é falha. As decisões abertas que não entraram na F4.1a (C10, C14, C15, C16 e C18), as pendências de metadados (B1) e os bloqueios de deploy, ativação, envio real e dados reais continuam como estavam.
