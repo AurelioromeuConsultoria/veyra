@@ -5600,13 +5600,38 @@ Se alguma condição falha, a mensagem não sai, com o motivo por destinatário 
 - **O livro do preenchimento das permissões** (item 6).
 - **Os consentimentos da 9.1** (`ContactChannelConsent`) ficam como histórico (C7) e não autorizam nada novo; não são migrados.
 
-**4. A resposta depois do pedido de parar.**
+**4. A resposta depois do pedido de parar — PROPOSTA, ainda não aprovada** (revisão do usuário de 2026-10-26, item 3). Até a aprovação, **nada sai sob bloqueio**, nem resposta humana: o pedido de parar cancela os despachos não iniciados e o envio e o worker recusam com `stop_requested`. A proposta, para decisão:
 
-- **"Recebida depois do bloqueio"** é decidido pela ingestão, sem comparar relógios: o pedido de parar pega o `address:` exclusivo e a ingestão o compartilhado, então os dois se serializam, e a ingestão grava em `Message.stopBlockId` o bloqueio que estava ativo quando a mensagem entrou.
-- **Mensagem fora de ordem:** além disso, o instante do provedor precisa passar do instante do bloqueio, com uma **margem de 60 s**. A mensagem escrita antes do pedido e entregue depois não abre a resposta. O erro de relógio só deixa a regra mais estrita, nunca mais solta.
-- **A janela** conta de 24 h a partir do instante do provedor dessa mensagem.
+- **Duas garantias diferentes, que não se confundem:**
+  - **a ordem da ingestão** é provada pela trava: o pedido de parar pega o `address:` exclusivo e a ingestão o compartilhado, e a ingestão grava em `Message.stopBlockId` o bloqueio que estava ativo quando a mensagem entrou. Isso prova que a mensagem **entrou no Veyra** depois do bloqueio;
+  - **quando a pessoa escreveu** não é provado por nada nosso. A única indicação é o instante do provedor (`timestamp` do payload), do relógio da Meta.
+- **A comparação exata.** Com `tp` = o instante do provedor, como veio, sem o corte em "agora" da ingestão; `tb` = o instante do bloqueio, do relógio do banco; `ti` = o instante da ingestão, do relógio do banco; `M` = a margem. A mensagem só é elegível se:
+  1. `Message.stopBlockId` é o bloqueio **ativo agora** (o mesmo workspace e número);
+  2. `tp` existe e é um inteiro de segundos válido — ausente, não numérico ou fora da faixa a torna **inelegível**;
+  3. `tp ≤ ti` — o instante do provedor no futuro diante do banco, no momento da ingestão, torna a mensagem **inelegível** (o corte em "agora" da ingestão não vale para esta regra, porque ele a afrouxaria);
+  4. `tp − tb ≥ M` — a margem **soma-se ao bloqueio**, deixando a regra mais estrita;
+  5. a janela: `agora − tp < 24 h`, com `agora` do banco.
+- **A hipótese necessária:** o relógio da Meta adiantado em relação ao do banco por menos de `M` (δ = relógio da Meta − relógio do banco < `M`). Sob ela, nenhuma mensagem escrita antes do bloqueio é elegível: se ela foi escrita em `r < tb`, então `tp = r + δ < tb + M`. **Se a hipótese falhar** (δ ≥ `M`), uma mensagem escrita até δ − `M` segundos antes do bloqueio pode ser elegível; a condição 3 só a pega quando a ingestão vem cedo. Já houve evidência de desvio maior que 60 s neste projeto: a VM do Docker ficou 101,7 s atrás do host num Mac em sono (o banco atrás é exatamente o sentido perigoso). Por isso a tolerância **não é garantia absoluta** nem risco aceito; ela depende da hipótese, e a hipótese depende do ambiente.
+- **Exemplos, com `M` = 60 s:**
+
+  | Caso                                                    | δ      | Escrita (relógio real) | `tp − tb` | Resultado                                    |
+  | ------------------------------------------------------- | ------ | ---------------------- | --------- | -------------------------------------------- |
+  | Mensagem anterior entregue depois                       | 0      | 10 s antes do bloqueio | −10 s     | inelegível                                   |
+  | Mensagem logo depois do bloqueio                        | 0      | 30 s depois            | 30 s      | inelegível (o custo da margem)               |
+  | Mensagem depois do bloqueio                             | 0      | 90 s depois            | 90 s      | elegível                                     |
+  | Banco 100 s atrás, mensagem anterior, ingestão em 20 s  | +100 s | 30 s antes             | 70 s      | inelegível pela condição 3 (`tp > ti`)       |
+  | Banco 100 s atrás, mensagem anterior, ingestão em 2 min | +100 s | 30 s antes             | 70 s      | **elegível — o resíduo** da hipótese violada |
+  | Meta 100 s atrás, mensagem depois                       | −100 s | 90 s depois            | −10 s     | inelegível (mais estrito)                    |
+  | Instante ausente, não numérico ou no futuro             | —      | —                      | —         | inelegível                                   |
+
+- **Os testes, se aprovada:** a função da regra é pura, e os casos da tabela viram teste, inclusive os limites (`tp − tb` = 59 s, 60 s e 61 s; `tp = ti` e `tp = ti + 1 s`) e os desvios maiores que 60 s, com o resíduo afirmado como resíduo.
+- **Alternativas, para a decisão:** uma margem maior (ex.: 5 min), com o custo de recusar mais respostas legítimas logo depois do pedido; ou nenhuma resposta sob bloqueio nesta entrega, deixando a exceção para depois de medir o desvio em staging.
+- **Se aprovada, a resposta só sai assim, no envio e no worker** (item 4 da revisão):
+  - existe uma mensagem recebida **elegível**, do mesmo workspace, canal e número, ligada ao bloqueio **vigente** e ainda dentro da janela. O `MessageDispatch.stopBlockId` sozinho não basta: a aprovação não se autoriza só por gravar o id do bloqueio;
+  - **a mensagem duplicada** (a mesma reentregue) é uma só, pelo `externalId`, e não abre nada de novo;
+  - **desbloquear e bloquear de novo:** as mensagens ligadas ao bloqueio anterior não contam para o novo, e o despacho aprovado sob o anterior não sai;
+  - **a mensagem de origem da IA, editada por pessoa,** continua de origem da IA (`fromAiProposal`) e nunca sai sob bloqueio; template também nunca.
 - **Os despachos pendentes:** o pedido de parar cancela, na mesma transação, todo despacho **não iniciado** para o número no workspace, em qualquer canal, com o motivo `stop_requested`. O que já está em voo, com o marcador de despacho, não volta, e a trilha diz isso.
-- **No worker:** a resposta só sai sob bloqueio se for de pessoa (nunca da IA, nunca template) e se `MessageDispatch.stopBlockId` for o bloqueio ativo agora. Isso fecha a corrida em que uma resposta preparada antes do pedido escapa do cancelamento, e o bloqueio retirado e criado de novo não aproveita aprovação antiga.
 
 **5. Os templates na transição.** O motivo é `template_flow_unavailable`: "O envio por template está indisponível nesta versão, até a finalidade verificável (F4.1c)".
 
@@ -5615,14 +5640,27 @@ Se alguma condição falha, a mensagem não sai, com o motivo por destinatário 
 - O worker leva o despacho de template ainda pendente a `failed_permanent` com esse motivo.
 - Nada disso revoga ou altera consentimento. A F4.1c só restaura o envio com o contrato completo.
 
-**6. O preenchimento das permissões.** O `systemKey` identifica o papel, mas não prova que ele não foi personalizado; e hoje não há API de edição de papel: personalização só acontece pela CLI de ativação de um vertical ou direto no banco. Por isso:
+**6. O preenchimento das permissões** (com a revisão do usuário de 2026-10-26, item 2). O que se aprova é uma **ampliação específica** de permissões em três papéis do Core, condicionada a pré-requisitos — e não a preservação de toda personalização: um papel pode conservar `contacts:write` e ainda ter sido restringido em outros aspectos.
 
-- **só acréscimo:** a migration põe as chaves novas no catálogo e insere concessões; nunca remove nem altera nada;
-- **pelo pré-requisito, não pelo nome:** cada chave só entra no papel que já tem a capacidade que ela estende — `consents:read` só onde há `contacts:read`; `consents:manage` só onde há `contacts:write`; `consents:unblock` e `templates:review` só no `owner` e no `admin`, e também só onde há `contacts:write`. Um papel de sistema que alguém restringiu não ganha chave nova por cima da restrição;
-- **o livro do preenchimento:** cada concessão feita fica registrada (workspace, papel, chave, quando), e a reaplicação pula o que já foi feito. Uma revogação posterior pelo workspace **não é desfeita** por uma reaplicação;
-- **auditoria** de cada concessão, com o ator da migration;
-- **o `Profissional` e todo papel sem `systemKey` ficam fora**, assim como o Guest;
-- **o modelo de papéis do Core:** Owner e Admin recebem as chaves novas pelo próprio modelo (todas as chaves, menos `billing:manage` no Admin); o Member, `consents:read` e `consents:manage`.
+- **A matriz explícita**, só nos papéis do Core identificados por `systemKey` = `owner`, `admin` ou `member` — nunca pelo critério "`systemKey` preenchido", porque um vertical pode ter papéis de sistema próprios:
+
+  | Papel    | `consents:read`        | `consents:manage`       | `consents:unblock`      | `templates:review`      |
+  | -------- | ---------------------- | ----------------------- | ----------------------- | ----------------------- |
+  | `owner`  | se tem `contacts:read` | se tem `contacts:write` | se tem `contacts:write` | se tem `contacts:write` |
+  | `admin`  | se tem `contacts:read` | se tem `contacts:write` | se tem `contacts:write` | se tem `contacts:write` |
+  | `member` | se tem `contacts:read` | se tem `contacts:write` | nunca                   | nunca                   |
+
+- **Fora:** o Guest, o `Profissional`, os papéis de sistema de vertical e todo papel personalizado.
+- **Só acréscimo:** a migration põe as chaves no catálogo e insere concessões; nunca remove nem altera nada.
+- **O livro do preenchimento:** cada concessão feita fica registrada (workspace, papel, chave, quando). Ele protege contra a **reaplicação depois de uma revogação**: uma chave que o workspace tirou depois não volta. Ele **não prova** que a concessão inicial respeita toda intenção anterior do workspace; isso é o que a matriz e os pré-requisitos limitam, e é o que se aprova.
+- **Auditoria** de cada concessão, com o ator da migration.
+- **O modelo de papéis do Core, para workspace novo:** Owner e Admin recebem as chaves novas pelo próprio modelo (todas as chaves, menos `billing:manage` no Admin); o Member, `consents:read` e `consents:manage`.
+- **Os testes:**
+  - a matriz nos três papéis;
+  - o Member sem `contacts:write` não recebe `consents:manage`;
+  - o Guest, o `Profissional`, um papel de sistema de vertical e um papel personalizado ficam intocados;
+  - a reaplicação é idempotente, e não devolve a chave revogada depois;
+  - nenhuma concessão é removida.
 
 **7. A concorrência.** Um consentimento não se torna utilizável sob bloqueio por causa da ordem das operações.
 
@@ -5661,7 +5699,21 @@ Se alguma condição falha, a mensagem não sai, com o motivo por destinatário 
 - o preenchimento por pré-requisito e com o livro, em vez de tentar detectar personalização;
 - os prefixos `PAR-` e `DES-` no mesmo contador do `CON-`;
 - a concessão sob bloqueio recusada com 409;
-- a margem de 60 s para o instante do provedor;
+- a margem para o instante do provedor (proposta pendente, item 4);
 - as colunas `Message.stopBlockId` e `MessageDispatch.stopBlockId`.
 
 Continuam bloqueados deploy, ativação do Clinics, envio real e dados reais.
+
+**Revisão do plano da F4.1b (decisão do usuário, 2026-10-26).** O plano fica **parcialmente aprovado**:
+
+- **Aprovado:**
+  - o consentimento ligado ao `Channel` do negócio, e o bloqueio por workspace e número;
+  - os prefixos `CON-`, `PAR-` e `DES-` no mesmo contador, sem sequência contínua;
+  - conceder sob bloqueio ativo responde 409;
+  - as duas colunas `stopBlockId`, com integridade por workspace;
+  - os templates indisponíveis nos três pontos durante a transição;
+  - o desbloqueio que exige a nova solicitação da pessoa e não restaura consentimento;
+  - o preenchimento pela matriz explícita dos três papéis, com os pré-requisitos, nos termos corrigidos do item 6.
+- **Pendente, ainda como proposta:** a regra temporal da resposta depois do pedido de parar (item 4). Até a decisão, nada sai sob bloqueio.
+- **Liberado para implementar:** finalidades, consentimentos, bloqueio, permissões e a recusa transitória dos templates.
+- **Antes do commit final da implementação:** revisão, ensaio da migration e bateria completa, parando antes do push do código.
