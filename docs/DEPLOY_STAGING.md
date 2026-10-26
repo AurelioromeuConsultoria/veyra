@@ -90,18 +90,19 @@ roteamento depender da ordem de leitura do proxy.
 Todas no painel, no recurso (não no serviço), marcando como **build-time = não**.
 A lista completa e comentada está em `deploy/staging/.env.example`; o mínimo:
 
-| Variável                                              | Observação                                          |
-| ----------------------------------------------------- | --------------------------------------------------- |
-| `VEYRA_HOST`                                          | `veyra-staging.malachdigital.com.br`                |
-| `VEYRA_ENV`                                           | `staging` — **é o que autoriza o transporte falso** |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | senha gerada, nunca reaproveitada                   |
-| `JWT_SECRET`                                          | ≥32 caracteres, `openssl rand -base64 48`           |
-| `TOKEN_ENCRYPTION_KEY`                                | **independente** do JWT                             |
-| `META_APP_SECRET` / `META_WEBHOOK_VERIFY_TOKEN`       | valores de TESTE, nunca os do app real              |
-| `META_TRANSPORT_MODE`                                 | `fake` — nada sai para a Meta (ADR-046)             |
-| `ANTHROPIC_API_KEY`                                   | com chave, a IA funciona e o custo é real           |
-| `CLAMAV_HOST`                                         | **vazio** (scanner desligado, ver §2)               |
-| `RESTIC_REPOSITORY` / `RESTIC_PASSWORD` / `AWS_*`     | backup; pode ficar vazio até você decidir o destino |
+| Variável                                              | Observação                                                                   |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `VEYRA_HOST`                                          | `veyra-staging.malachdigital.com.br`                                         |
+| `VEYRA_ENV`                                           | `staging` — **é o que autoriza o transporte falso**                          |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | senha gerada, nunca reaproveitada                                            |
+| `JWT_SECRET`                                          | ≥32 caracteres, `openssl rand -base64 48`                                    |
+| `TOKEN_ENCRYPTION_KEY`                                | **independente** do JWT                                                      |
+| `ADDRESS_LOCK_KEY`                                    | **independente** e ESTÁVEL; rotação só em manutenção (`docs/SECURITY.md` §8) |
+| `META_APP_SECRET` / `META_WEBHOOK_VERIFY_TOKEN`       | valores de TESTE, nunca os do app real                                       |
+| `META_TRANSPORT_MODE`                                 | `fake` — nada sai para a Meta (ADR-046)                                      |
+| `ANTHROPIC_API_KEY`                                   | com chave, a IA funciona e o custo é real                                    |
+| `CLAMAV_HOST`                                         | **vazio** (scanner desligado, ver §2)                                        |
+| `RESTIC_REPOSITORY` / `RESTIC_PASSWORD` / `AWS_*`     | backup; pode ficar vazio até você decidir o destino                          |
 
 > **Mudança de regra, e ela é sua para aceitar.** O pedido original dizia
 > "segredos exclusivamente em arquivo fora do repositório, por exemplo
@@ -300,6 +301,64 @@ muda o registro da migration e não desfaz nenhum objeto.
      WHERE p.proname IN ('clinics_return_guard', 'clinics_attendance_recorded_at')
    UNION ALL SELECT 'gatilho', tg.tgname::text FROM pg_trigger tg
      WHERE tg.tgname IN ('ClinicsReturn_guard', 'ClinicsAttendance_recorded_at')
+   ORDER BY 1, 2;
+   ```
+
+   Para a `20261023120000_conversation_sender_and_phone_identity` (F4.1a,
+   ADR-052), com **18 objetos**. Ela tem um procedimento próprio, antes e
+   depois do `migrate deploy`:
+
+   - **antes:** `pnpm --filter @veyra/api identity:diagnose`. Se ele apontar
+     grupos que violariam o único de conversa aberta, a migration vai falhar
+     inteira; o tratamento é humano (encerrar ou religar a conversa a mais),
+     e nada é corrigido sozinho;
+   - **a ingestão e os escritores de telefone PARADOS** do deploy até o fim das
+     verificações (decisão de 2026-10-23, ADR-052 desvio 12): o webhook sem
+     responder 2xx, para a Meta reentregar — a janela de reentrega dela fica a
+     confirmar na F4.5, e a parada precisa caber nela —, e a edição e a
+     importação de contatos fora do ar;
+   - **depois da migration:** `pnpm --filter @veyra/api phones:normalize`, que
+     preenche as formas normalizadas dos telefones e a segunda chave. Sem ele,
+     o contato sem forma normalizada só coincide como "possível" e a mensagem
+     iria à área RAI. A CLI só grava o contato cujos telefones não mudaram
+     durante a leitura, e conta os pulados; com tudo parado, pulados deve dar
+     zero — se não der, rodar de novo e conferir;
+   - **as verificações**, ainda com tudo parado: o inventário abaixo, o
+     `identity:diagnose` de novo (nenhum grupo) e o `phones:normalize` de
+     novo, que não deve alterar nada. Só então a ingestão e os escritores
+     voltam;
+   - **a variável `ADDRESS_LOCK_KEY`** precisa estar no ambiente ANTES do
+     deploy: sem ela, a API não sobe (§3.3).
+
+   ```sql
+   -- inventário da 20261023120000_conversation_sender_and_phone_identity: 0 linhas =
+   -- nada ficou; 18 = inteira; qualquer outro número = estado parcial
+   SELECT 'tipo' AS k, t.typname::text AS nome FROM pg_type t
+     WHERE t.typname = 'ConversationSender'
+   UNION ALL SELECT 'coluna', c.relname || '.' || a.attname FROM pg_attribute a
+     JOIN pg_class c ON c.oid = a.attrelid
+     WHERE NOT a.attisdropped
+       AND ((c.relname = 'Workspace' AND a.attname = 'phoneRegion')
+         OR (c.relname = 'Contact' AND a.attname IN ('phonesNormalized', 'phoneMatchKeys'))
+         OR (c.relname = 'Conversation'
+           AND a.attname IN ('senderStatus', 'senderIdentifiedAt', 'openMark', 'unidentifiedOpenMark'))
+         OR (c.relname = 'FileObject' AND a.attname = 'conversationRestricted'))
+   UNION ALL SELECT 'indice', c.relname::text FROM pg_class c
+     WHERE c.relkind = 'i' AND c.relname IN (
+       'Contact_phoneMatchKeys_idx',
+       'Conversation_workspaceId_channelId_contactId_externalAddres_key',
+       'Conversation_workspaceId_channelId_externalAddress_unidenti_key')
+   UNION ALL SELECT 'restricao', co.conname::text FROM pg_constraint co
+     WHERE co.conname IN (
+       'Workspace_phoneRegion_check',
+       'Conversation_sender_check',
+       'Conversation_openMark_check',
+       'Conversation_unidentifiedOpenMark_check')
+       AND co.contype <> 'n'
+   UNION ALL SELECT 'funcao', p.proname::text FROM pg_proc p
+     WHERE p.proname = 'conversation_marks'
+   UNION ALL SELECT 'gatilho', tg.tgname::text FROM pg_trigger tg
+     WHERE tg.tgname = 'conversation_marks'
    ORDER BY 1, 2;
    ```
 

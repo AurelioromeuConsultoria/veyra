@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { E2E_PASSWORD_HASH, E2E_WEB_ORIGIN, OWNER_A } from '../env';
-import { login, openE2eDb } from './helpers';
+import { esperarConsentimento, login, openE2eDb } from './helpers';
 
 /**
  * Jornada da sugestão de resposta (ADR-044): a IA rascunha, a pessoa revisa e
@@ -14,6 +14,7 @@ import { login, openE2eDb } from './helpers';
 test.describe('Sugestão de resposta por IA (UI)', () => {
   test('rascunho pendente é revisado, editado e enviado pelo domínio', async ({ page }) => {
     const db = await openE2eDb();
+    let ws: string | null = null;
     try {
       const membership = await db.query<{ id: string; workspaceId: string }>(
         `SELECT m."id", m."workspaceId" FROM "Membership" m
@@ -21,11 +22,13 @@ test.describe('Sugestão de resposta por IA (UI)', () => {
           WHERE u."email" = $1 LIMIT 1`,
         [OWNER_A],
       );
-      const ws = membership.rows[0].workspaceId;
+      ws = membership.rows[0].workspaceId;
 
+      // com o número da conversa, como a ingestão o deixaria (ADR-052)
       const contato = await db.query<{ id: string }>(
-        `INSERT INTO "Contact" ("id","workspaceId","name","updatedAt")
-         VALUES (gen_random_uuid(), $1, 'Paciente Rascunho', now()) RETURNING "id"`,
+        `INSERT INTO "Contact" ("id","workspaceId","name","phones","phonesNormalized","phoneMatchKeys","updatedAt")
+         VALUES (gen_random_uuid(), $1, 'Paciente Rascunho', ARRAY['+5511999991111'],
+                 ARRAY['+5511999991111'], ARRAY['99991111'], now()) RETURNING "id"`,
         [ws],
       );
       const canal = await db.query<{ id: string }>(
@@ -57,8 +60,11 @@ test.describe('Sugestão de resposta por IA (UI)', () => {
 
       await login(page, OWNER_A);
 
-      // consentimento de conteúdo é do workspace, e a tela o respeita
+      // consentimento de conteúdo é do workspace, e a tela o respeita; ler a
+      // caixa só depois de a consulta chegar (antes, ela aparece desmarcada)
+      const carregou = esperarConsentimento(page);
       await page.getByRole('link', { name: 'Sinais' }).click();
+      await carregou;
       const consentimento = page.getByLabel('Permitir uso de conteúdo de conversa');
       if (!(await consentimento.isChecked())) await consentimento.click();
       await expect(consentimento).toBeChecked();
@@ -151,11 +157,24 @@ test.describe('Sugestão de resposta por IA (UI)', () => {
        * e persiste entre specs — deixá-lo ligado quebrava o spec de Sinais, que
        * legitimamente parte de "nasce desligado".
        */
+      const voltou = esperarConsentimento(page);
       await page.getByRole('link', { name: 'Sinais' }).click();
+      await voltou;
       const ligado = page.getByLabel('Permitir uso de conteúdo de conversa');
       if (await ligado.isChecked()) await ligado.click();
       await expect(ligado).not.toBeChecked();
     } finally {
+      /**
+       * E também aqui, direto no banco: o caminho acima só roda se o teste
+       * chegar ao fim. Uma falha no meio deixava o consentimento ligado, e o
+       * spec de Sinais caía em cascata, longe da causa (b48 e b62).
+       */
+      if (ws) {
+        await db.query(
+          `UPDATE "AiConsent" SET "conversationContent" = FALSE WHERE "workspaceId" = $1`,
+          [ws],
+        );
+      }
       await db.end();
     }
   });
@@ -217,9 +236,12 @@ test.describe('Sugestão de resposta por IA (UI)', () => {
         [ws, revisor.rows[0].id, papel.rows[0].id],
       );
 
+      // os dois números das conversas deste teste, como a ingestão os deixaria
       const contato = await db.query<{ id: string }>(
-        `INSERT INTO "Contact" ("id","workspaceId","name","updatedAt")
-         VALUES (gen_random_uuid(), $1, 'Paciente Somente Leitura', now()) RETURNING "id"`,
+        `INSERT INTO "Contact" ("id","workspaceId","name","phones","phonesNormalized","phoneMatchKeys","updatedAt")
+         VALUES (gen_random_uuid(), $1, 'Paciente Somente Leitura',
+                 ARRAY['+5511999993333','+5511999994444'], ARRAY['+5511999993333','+5511999994444'],
+                 ARRAY['99993333','99994444'], now()) RETURNING "id"`,
         [ws],
       );
       const canal = await db.query<{ id: string }>(
@@ -331,13 +353,23 @@ test.describe('Sugestão de resposta por IA (UI)', () => {
   test('fora da janela livre, a tela explica em vez de oferecer sugestão', async ({ page }) => {
     const db = await openE2eDb();
     try {
-      const rows = await db.query<{ workspaceId: string; contactId: string }>(
-        `SELECT m."workspaceId", (SELECT c."id" FROM "Contact" c WHERE c."workspaceId" = m."workspaceId" LIMIT 1) AS "contactId"
-           FROM "Membership" m JOIN "User" u ON u."id" = m."userId"
+      const rows = await db.query<{ workspaceId: string }>(
+        `SELECT m."workspaceId" FROM "Membership" m JOIN "User" u ON u."id" = m."userId"
           WHERE u."email" = $1 LIMIT 1`,
         [OWNER_A],
       );
       const ws = rows.rows[0].workspaceId;
+      /**
+       * Contato PRÓPRIO, com o número da conversa (ADR-052). "O primeiro contato
+       * do workspace" não tinha o número, e o botão ficava desabilitado por "o
+       * número saiu do contato", não pela janela que este teste afirma.
+       */
+      const contato = await db.query<{ id: string }>(
+        `INSERT INTO "Contact" ("id","workspaceId","name","phones","phonesNormalized","phoneMatchKeys","updatedAt")
+         VALUES (gen_random_uuid(), $1, 'Paciente Janela Fechada', ARRAY['+5511999992222'],
+                 ARRAY['+5511999992222'], ARRAY['99992222'], now()) RETURNING "id"`,
+        [ws],
+      );
       const canal = await db.query<{ id: string }>(
         `INSERT INTO "Channel" ("id","workspaceId","type","name")
          VALUES (gen_random_uuid(), $1, 'whatsapp', 'WhatsApp Fechada') RETURNING "id"`,
@@ -348,7 +380,7 @@ test.describe('Sugestão de resposta por IA (UI)', () => {
         `INSERT INTO "Conversation"
            ("id","workspaceId","channelId","contactId","subject","externalAddress","lastInboundAt","lastMessageAt")
          VALUES (gen_random_uuid(), $1, $2, $3, $4, '+5511999992222', now() - interval '25 hours', now())`,
-        [ws, canal.rows[0].id, rows.rows[0].contactId, assunto],
+        [ws, canal.rows[0].id, contato.rows[0].id, assunto],
       );
 
       await login(page, OWNER_A);

@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { OWNER_A } from '../env';
-import { login } from './helpers';
+import { esperarConsentimento, login } from './helpers';
 
 /**
  * O ambiente e2e não tem ANTHROPIC_API_KEY: é exatamente o cenário de
@@ -9,7 +9,15 @@ import { login } from './helpers';
 test.describe('Sinais (UI)', () => {
   test('consentimento nasce desligado e pode ser ligado por quem gerencia', async ({ page }) => {
     await login(page, OWNER_A);
+    /**
+     * Espera o consentimento CHEGAR antes de afirmar "desligado": enquanto a
+     * consulta carrega, a caixa aparece desmarcada, e a afirmação passava à
+     * toa. Com um estado ligado vazado de outro spec, o clique o desligava e o
+     * teste só caía no reload, longe da causa (b62).
+     */
+    const carregou = esperarConsentimento(page);
     await page.getByRole('link', { name: 'Sinais' }).click();
+    await carregou;
 
     // clique + asserção em vez de check(): o input é controlado por estado
     // assíncrono, e check() exige a mudança dentro do próprio clique
@@ -19,7 +27,9 @@ test.describe('Sinais (UI)', () => {
     await expect(consentimento).toBeChecked();
 
     // e a decisão PERSISTE: é configuração do workspace, não estado de tela
+    const recarregou = esperarConsentimento(page);
     await page.reload();
+    await recarregou;
     await expect(page.getByLabel('Permitir uso de conteúdo de conversa')).toBeChecked();
 
     // volta ao estado original para não contaminar os outros testes

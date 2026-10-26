@@ -10,6 +10,7 @@ const minimo = {
   DATABASE_URL: 'postgresql://veyra:x@db:5432/veyra',
   JWT_SECRET: 'a'.repeat(32),
   TOKEN_ENCRYPTION_KEY: 'b'.repeat(32),
+  ADDRESS_LOCK_KEY: 'c'.repeat(32),
 };
 
 describe('validateEnv', () => {
@@ -39,6 +40,25 @@ describe('validateEnv', () => {
     // segredo curto demais é erro de configuração, não ausência: falha alto
     expect(() => validateEnv({ ...minimo, META_APP_SECRET: 'curto' })).toThrow(/META_APP_SECRET/);
     expect(() => validateEnv({ ...minimo, JWT_SECRET: 'curto' })).toThrow(/JWT_SECRET/);
+  });
+
+  it('ADDRESS_LOCK_KEY é obrigatória e sem default (ADR-052 item 3): sem ela, ou curta, não sobe', () => {
+    const semChave: Record<string, string> = { ...minimo };
+    delete semChave.ADDRESS_LOCK_KEY;
+    expect(() => validateEnv(semChave)).toThrow(/ADDRESS_LOCK_KEY/);
+    expect(() => validateEnv({ ...minimo, ADDRESS_LOCK_KEY: 'curta' })).toThrow(/ADDRESS_LOCK_KEY/);
+    // independente das outras chaves, e nunca o valor de exemplo em produção
+    expect(() => validateEnv({ ...minimo, ADDRESS_LOCK_KEY: minimo.JWT_SECRET })).toThrow(
+      /ADDRESS_LOCK_KEY precisa ser diferente/,
+    );
+    expect(() => validateEnv({ ...minimo, ADDRESS_LOCK_KEY: minimo.TOKEN_ENCRYPTION_KEY })).toThrow(
+      /ADDRESS_LOCK_KEY precisa ser diferente/,
+    );
+    const exemplo = 'troque-por-outra-chave-independente-e-estavel';
+    expect(() =>
+      validateEnv({ ...minimo, NODE_ENV: 'production', ADDRESS_LOCK_KEY: exemplo }),
+    ).toThrow(/valor de exemplo/);
+    expect(validateEnv({ ...minimo, ADDRESS_LOCK_KEY: exemplo }).ADDRESS_LOCK_KEY).toBe(exemplo);
   });
 
   it('AI_MODEL fora do formato de id de modelo NÃO sobe (ADR-047 adendo 7 §9)', () => {

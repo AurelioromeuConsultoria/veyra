@@ -2,6 +2,7 @@ import { decideSend, SERVICE_WINDOW_MS, windowRemainingMs } from './send-policy'
 
 const agora = new Date('2026-08-21T12:00:00.000Z');
 const base = {
+  remetente: 'confere' as const,
   hasActiveConsent: false,
   template: null,
   templateParams: [],
@@ -76,6 +77,26 @@ describe('política de envio (ADR-038)', () => {
       lastInboundAt: new Date(agora.getTime() - 60_000),
     });
     expect(decisao).toEqual({ allowed: false, reason: 'no_external_address' });
+  });
+
+  it('a RAI e o número que não confere de forma exata não recebem nada, nem template (ADR-052 item 2)', () => {
+    for (const extra of [
+      { lastInboundAt: new Date(agora.getTime() - 60_000) },
+      {
+        lastInboundAt: null,
+        hasActiveConsent: true,
+        template: { name: 'lembrete', language: 'pt_BR', paramCount: 0 },
+      },
+    ]) {
+      expect(decideSend({ ...base, ...extra, remetente: 'a_identificar' })).toEqual({
+        allowed: false,
+        reason: 'sender_unidentified',
+      });
+      expect(decideSend({ ...base, ...extra, remetente: 'numero_nao_confere' })).toEqual({
+        allowed: false,
+        reason: 'number_not_exact',
+      });
+    }
   });
 
   it('tempo restante da janela: zero sem entrada, decrescente com o tempo', () => {

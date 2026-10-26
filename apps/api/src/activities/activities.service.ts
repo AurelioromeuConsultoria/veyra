@@ -117,8 +117,19 @@ export class ActivitiesService {
     rawCursor?: string,
     options: { includeDealEvents?: boolean } = {},
   ): Promise<ActivityPageDto> {
+    /**
+     * A timeline do contato (ADR-052, C12): o que tem `contactId` gravado (o
+     * legado, anterior à F4.1a, e o que não é de conversa) MAIS as atividades
+     * sem contato de conversas cujo contato ATUAL é ele. Religar a conversa
+     * muda a timeline junto; a conversa RAI não aparece na de ninguém.
+     */
     const targetWhere = target.contactId
-      ? { contactId: target.contactId }
+      ? {
+          OR: [
+            { contactId: target.contactId },
+            { contactId: null, conversation: { contactId: target.contactId } },
+          ],
+        }
       : { dealId: target.dealId };
     // sem pipelines:read, eventos de oportunidade (que carregam valores) não
     // entram nem na timeline do contato
@@ -137,17 +148,20 @@ export class ActivitiesService {
           }
         : {};
     const cursor = rawCursor ? decodeCursor(rawCursor) : null;
+    // AND: o alvo e o cursor usam `OR` cada um, e um não pode apagar o outro
     const where = {
-      ...targetWhere,
-      ...visibilityWhere,
-      ...(cursor
-        ? {
-            OR: [
-              { occurredAt: { lt: cursor.occurredAt } },
-              { occurredAt: cursor.occurredAt, id: { lt: cursor.id } },
-            ],
-          }
-        : {}),
+      AND: [
+        targetWhere,
+        visibilityWhere,
+        cursor
+          ? {
+              OR: [
+                { occurredAt: { lt: cursor.occurredAt } },
+                { occurredAt: cursor.occurredAt, id: { lt: cursor.id } },
+              ],
+            }
+          : {},
+      ],
     };
     const rows = await this.prisma.db.activity.findMany({
       where,

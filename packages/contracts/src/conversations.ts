@@ -10,6 +10,43 @@ export const messageAuthorSchema = z.enum(['contact', 'user', 'ai', 'system']);
 export type MessageAuthorType = z.infer<typeof messageAuthorSchema>;
 
 /**
+ * O remetente da conversa (ADR-052 item 2). `unidentified` é o "remetente a
+ * identificar" (RAI): o número que escreveu pertence a mais de um contato, ou só
+ * coincide por aproximação, e nada o atribui sozinho. Só quem tem
+ * `conversations:read` E `contacts:write` vê essas conversas (C13).
+ */
+export const conversationSenderSchema = z.enum(['identified', 'unidentified']);
+export type ConversationSender = z.infer<typeof conversationSenderSchema>;
+
+/**
+ * Identificar o remetente de uma conversa RAI: um dos candidatos (os contatos
+ * cujo número coincide), ou um contato NOVO, que recebe o número. A
+ * identificação vale só para ESTA conversa: enquanto o número estiver em mais
+ * de um contato, cada mensagem nova volta a ser RAI.
+ */
+export const identifyConversationSenderSchema = z.union([
+  z.object({ contactId: z.string().uuid() }).strict(),
+  z.object({ newContact: z.object({ name: z.string().trim().min(1).max(160) }).strict() }).strict(),
+]);
+export type IdentifyConversationSenderInput = z.infer<typeof identifyConversationSenderSchema>;
+
+/**
+ * "O remetente não é este contato": leva a conversa a RAI. Pode tirar, no mesmo
+ * ato, o número do contato — senão a próxima mensagem do número volta a cair
+ * nele.
+ */
+export const rejectConversationSenderSchema = z.object({ removeNumber: z.boolean() }).strict();
+export type RejectConversationSenderInput = z.infer<typeof rejectConversationSenderSchema>;
+
+/** Um candidato a remetente de uma conversa RAI. */
+export interface ConversationSenderCandidateDto {
+  contactId: string;
+  name: string;
+  /** `exact`: o número é o do cadastro; `possible`: só coincide por aproximação */
+  match: 'exact' | 'possible';
+}
+
+/**
  * O canal NÃO é entrada do cliente (ADR-023): o service usa o canal interno de
  * sistema do workspace. Quando houver canal externo, a escolha vira explícita.
  */
@@ -74,6 +111,21 @@ export interface ConversationDto {
   channelType: 'internal' | 'email' | 'whatsapp';
   contactId: string | null;
   contactName: string | null;
+  /** `unidentified` = remetente a identificar (RAI), sempre sem contato */
+  senderStatus: ConversationSender;
+  /**
+   * O número do canal externo: completo só para quem tem `contacts:read`; para
+   * os outros, só os quatro últimos dígitos. `null` no canal interno.
+   */
+  senderAddress: string | null;
+  /** a pessoa identificou o remetente desta conversa, que nasceu RAI: dá para desfazer */
+  senderIdentifiedByPerson: boolean;
+  /**
+   * A conversa tem mensagens ou atividades anteriores à F4.1a, ligadas ao
+   * contato (o legado, ADR-052): identificar, desfazer e rejeitar dão 409, e a
+   * tela não os oferece.
+   */
+  senderRelinkBlocked: boolean;
   subject: string | null;
   status: ConversationStatus;
   assigneeMembershipId: string | null;

@@ -158,7 +158,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
   - quem tem só permissão de agenda não vê pacote nem saldo, nem pela API;
   - nenhum conteúdo S aparece em entidade do Core nem na auditoria;
   - a taxa de faltas é apurável.
-- **F4 — Fluxo comercial 📝 (plano PROPOSTO; divisão F4.0–F4.5 aprovada como organização do trabalho; F4.0, só documentação, em revisão: adendo 8 do ADR-048, revisão 3, e ADR-052, revisão 2, no Core, com a F4.1a, identidade sem atribuição silenciosa no Core, aprovada em 2026-10-23 e em implementação. As demais subentregas continuam sem aprovação)** Confirmação e reativação pelo WhatsApp com aprovação humana, e conversão a partir do pipeline.
+- **F4 — Fluxo comercial 📝 (plano PROPOSTO; divisão F4.0–F4.5 aprovada como organização do trabalho; F4.0, só documentação, em revisão: adendo 8 do ADR-048, revisão 3, e ADR-052, revisão 2, no Core, com a F4.1a, identidade sem atribuição silenciosa no Core, aprovada em 2026-10-23 e implementada, com as decisões do usuário de 2026-10-23 (bateria b65 verde sobre a versão final; aguarda a revisão e a consolidação dos commits locais antes do push, com o desvio 7 pedindo confirmação). As demais subentregas continuam sem aprovação)** Confirmação e reativação pelo WhatsApp com aprovação humana, e conversão a partir do pipeline.
   **Pronto quando:** as três métricas são apuráveis com dados do piloto.
 
 **Dependências externas:**

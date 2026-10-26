@@ -10,6 +10,7 @@ import {
 import { AI_USE_GUARD } from '../intelligence/ports/ai-use-guard';
 import { UsageModule } from '../usage/usage.module';
 import { GuardaDosUsosDaIa } from './ai-use-guard.adapter';
+import { LimpezaDeConteudoDaConversa } from './conversation-cleanup';
 import {
   PrismaAiConsentRepository,
   PrismaAiProposalRepository,
@@ -34,8 +35,12 @@ import {
     { provide: AI_PROPOSAL_REPOSITORY, useClass: PrismaAiProposalRepository },
     { provide: AI_CONSENT_REPOSITORY, useClass: PrismaAiConsentRepository },
     { provide: PROMPT_VERSION_REPOSITORY, useClass: PrismaPromptVersionRepository },
+    // a religação do remetente expira o conteúdo da conversa na própria
+    // transação (ADR-052 item 2); quem usa é o módulo de conversas
+    LimpezaDeConteudoDaConversa,
   ],
   exports: [
+    LimpezaDeConteudoDaConversa,
     AI_USE_GUARD,
     AI_RUN_REPOSITORY,
     AI_PROPOSAL_REPOSITORY,

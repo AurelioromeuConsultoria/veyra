@@ -51,4 +51,20 @@ export const AUDIT_FIELDS: Record<string, readonly string[]> = {
   // limpeza de conteúdo derivado por restrição (ADR-047 E6): só a CONTAGEM e o
   // alcance, nunca ids de contato nem conteúdo
   aiContent: ['results', 'scope'],
+  /**
+   * O remetente de uma conversa (ADR-052 item 2): identificar, desfazer,
+   * rejeitar e a conversa anterior encerrada. Estado, ids e contagens — NUNCA o
+   * número nem o conteúdo das mensagens.
+   */
+  conversationSender: [
+    'senderStatus',
+    'contactId',
+    'candidates',
+    'newContact',
+    'numberRemoved',
+    'closed',
+    'status',
+    'replacedBy',
+    'unassigned',
+  ],
 };

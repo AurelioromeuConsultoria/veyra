@@ -37,6 +37,13 @@ const envSchema = z.object({
   TOKEN_ENCRYPTION_KEY: z
     .string()
     .min(32, 'TOKEN_ENCRYPTION_KEY precisa de ao menos 32 caracteres'),
+  /**
+   * Chave do HMAC das travas de endereço (ADR-052 item 3). Obrigatória e sem
+   * default: precisa ser ESTÁVEL entre processos e reinícios, porque as chaves
+   * `address:` ficam no registro dos usos. Separada do JWT e da cifra. A
+   * rotação é só em manutenção (docs/SECURITY.md §8)
+   */
+  ADDRESS_LOCK_KEY: z.string().min(32, 'ADDRESS_LOCK_KEY precisa de ao menos 32 caracteres'),
   // Kill switch dos jobs (worker do outbox)
   // z.coerce.boolean() faria DISABLE_JOBS='false' virar TRUE (Boolean('false')),
   // desligando o worker em silêncio — comparação explícita
@@ -114,6 +121,22 @@ export function validateEnv(config: Record<string, unknown>): Env {
         `recebido VEYRA_ENV=${parsed.data.VEYRA_ENV}. O transporte falso NÃO envia nada ` +
         'para a Meta; fora de staging isso seria perda silenciosa de mensagem (ADR-046).',
     );
+  }
+
+  /**
+   * A chave das travas de endereço é INDEPENDENTE (ADR-052 item 3): igual ao
+   * JWT ou à cifra, vazar uma entregaria as outras. Em produção, o valor de
+   * exemplo ("troque…") não sobe — o `.env.example` tem um, e ele passaria no
+   * tamanho mínimo.
+   */
+  const { ADDRESS_LOCK_KEY, JWT_SECRET, TOKEN_ENCRYPTION_KEY, NODE_ENV } = parsed.data;
+  if (ADDRESS_LOCK_KEY === JWT_SECRET || ADDRESS_LOCK_KEY === TOKEN_ENCRYPTION_KEY) {
+    throw new Error(
+      'ADDRESS_LOCK_KEY precisa ser diferente de JWT_SECRET e de TOKEN_ENCRYPTION_KEY',
+    );
+  }
+  if (NODE_ENV === 'production' && /^troque/i.test(ADDRESS_LOCK_KEY)) {
+    throw new Error('ADDRESS_LOCK_KEY ainda tem o valor de exemplo; gere uma chave própria');
   }
 
   return parsed.data;

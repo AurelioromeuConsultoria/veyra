@@ -22,8 +22,8 @@ export class FilesController {
 
   @RequirePermissions('files:read')
   @Get()
-  list(): Promise<FileObjectDto[]> {
-    return this.files.list();
+  list(@CurrentAuth() auth: AuthContext): Promise<FileObjectDto[]> {
+    return this.files.list(auth);
   }
 
   /**
@@ -53,10 +53,11 @@ export class FilesController {
   @RequirePermissions('files:read')
   @Get(':id/content')
   async download(
+    @CurrentAuth() auth: AuthContext,
     @Param('id', new ParseUUIDPipe()) id: string,
     @Res() response: Response,
   ): Promise<void> {
-    const { dto, bytes } = await this.files.download(id);
+    const { dto, bytes } = await this.files.download(auth, id);
     response.setHeader('Content-Type', dto.mimeType);
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");

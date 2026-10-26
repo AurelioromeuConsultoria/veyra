@@ -265,6 +265,14 @@ function contentWhere(target: ContentTarget): Record<string, unknown> {
 /** rotas de CAPACIDADE de IA cujo corpo de resposta é conteúdo derivado */
 const CAPABILITY_ROUTES = ['/summary', '/next-action', '/reply-suggestion'];
 
+/** O filtro das respostas guardadas das capacidades, para quem as apaga. */
+export const REPLAYS_DE_CAPACIDADE = {
+  state: 'completed',
+  OR: CAPABILITY_ROUTES.map((suffix) => ({
+    endpoint: { startsWith: 'POST ', contains: '/intelligence/', endsWith: suffix },
+  })),
+} as const;
+
 @Injectable()
 export class PrismaAiProposalRepository implements AiProposalRepository {
   private readonly logger = new Logger(PrismaAiProposalRepository.name);
@@ -351,12 +359,7 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
     // workspace inteiro mesmo quando o alvo são contatos — a chave não guarda o
     // contato, e apagar a mais aqui só custa um replay, nunca expõe nada
     const { count } = await this.prisma.db.idempotencyKey.deleteMany({
-      where: {
-        state: 'completed',
-        OR: CAPABILITY_ROUTES.map((suffix) => ({
-          endpoint: { startsWith: 'POST ', contains: '/intelligence/', endsWith: suffix },
-        })),
-      },
+      where: REPLAYS_DE_CAPACIDADE,
     } as never);
     return count;
   }
@@ -377,6 +380,14 @@ export class PrismaAiProposalRepository implements AiProposalRepository {
       where: {
         ...(status === 'all' ? {} : { status }),
         ...(excludeTypes && excludeTypes.length > 0 ? { type: { notIn: excludeTypes } } : {}),
+        /**
+         * Proposta de conversa RAI não sai, em status NENHUM (ADR-052, item 2,
+         * e C13). A limpeza da religação só expira as pendentes; o payload
+         * (o rascunho, ou o texto enviado) continua na linha, e é conteúdo
+         * derivado de uma conversa sem contato. No WHERE, e não depois, para a
+         * página não encurtar.
+         */
+        OR: [{ conversationId: null }, { conversation: { senderStatus: 'identified' } }],
       },
       // contato ATUAL da conversa: a restrição de conteúdo vale por ele também
       include: { conversation: { select: { contactId: true } } },

@@ -220,6 +220,8 @@ Toda decisão arquitetural vira ADR **antes** do código. Formato abaixo. ADRs s
 **Decisão:** (a) `Channel` nasce com `type` reservando `email`/`whatsapp` no enum, mas **a API desta entrega aceita apenas `internal`** — o cliente nem informa o canal: o service usa o canal de sistema do workspace. (b) Exatamente um canal interno por workspace, garantido por **unique parcial estrutural** (`systemMark Boolean?` TRUE/NULL + `@@unique([workspaceId, systemMark])`), o mesmo padrão do `Pipeline.defaultMark` — invariante no banco, não no service. Semeado no provisionamento, com backfill idempotente para os workspaces existentes. (c) `Message.externalId` e `@@unique([workspaceId, channelId, externalId])` já existem para dedup de ingestão; `channelId` é **derivado da conversa no servidor**, nunca do cliente. (d) A regra que fica fixada agora: mensagem de saída em canal **externo** passará pelo outbox (efeito externo nunca dentro da transação de domínio); canal interno grava direto, porque não há efeito externo. (e) `Message` é **append-only** — mensagem enviada não se reescreve. (f) **FK tripla** `Message(workspaceId, channelId, conversationId) → Conversation(workspaceId, channelId, id)`: sem ela, as duas FKs compostas separadas (para conversa e para canal) permitiriam, dentro do MESMO workspace, uma mensagem ligada à conversa A carregando o canal B — a mesma incoerência que a tripla `Deal→Stage` já elimina (ADR-010).
 **Consequências:** o inbox fecha ponta a ponta sem provider; ligar um canal real vira um adaptador de ingestão + emissão via outbox, sem migração de dados. Preço do append-only: quando houver canal externo, o estado de entrega (`delivered`/`read`, recibos que chegam depois) **não** poderá ser um UPDATE na mensagem — vai em tabela própria de entregas, como já é `WebhookDelivery` para webhooks. Isso é intencional: recibo é fato novo, não correção do passado.
 
+**Alterado pelo ADR-052 (F4.1a, 2026-10-23).** A mensagem nova não grava mais `authorContactId`, nem a atividade de mensagem grava `contactId`: a **atribuição** ao contato vem da conversa (C12). A **autoria** não muda: `authorType`, o membro que escreveu e a origem de IA ficam na mensagem. As linhas antigas continuam como foram gravadas, e a religação de uma conversa com elas é bloqueada.
+
 ## ADR-024 — Armazenamento por `StorageDriver`, disco local no MVP
 
 **Status:** aceito · **Data:** 2026-08-20
@@ -379,6 +381,13 @@ O Core continua **não conhecendo o vertical** (§3.8): Clinics estende por exte
 **Decisão:** (a) A criação passa por `ContactsService.createFromExternalChannel`, dentro da transação da ingestão, preservando quota, `Activity` (ator `system`) e outbox. (b) A quota é consumida **sem barrar**: perder a mensagem de um paciente por limite de plano é dano irrecuperável para ele — a Meta reentregaria, falharia sempre, e o paciente ficaria sem resposta —, enquanto ultrapassar o teto é problema de cobrança, visível no medidor e resolvido com uma conversa. Criação **manual** continua barrada em 402: lá o usuário está presente, vê o limite e pode decidir. (c) Toda a ingestão de uma mensagem roda em **uma transação sob lock consultivo** por `(workspaceId, channelId, telefone)`, com o dedupe **dentro** do lock: verificar duplicata antes da transação é corrida perdida, e entregas simultâneas — que a Meta faz — criavam contatos duplicados com uma delas estourando no unique da mensagem.
 **Adendo (revisão da 9.1.a):** o "nunca regredir" dos timestamps passou a ser **atômico no banco** (`GREATEST` + `CASE`). Calcular o máximo em JavaScript depois de ler a conversa era corrida: o lock consultivo serializa por telefone, mas uma mensagem **humana** de saída toca a mesma conversa por outro caminho, sem passar por ele — se commitasse entre a leitura e a escrita, a ingestão sobrescreveria o horário novo por um timestamp antigo do provedor. O instante do provedor também é **limitado ao presente**: timestamp no futuro travaria a conversa à frente de tudo e o carimbo `now()` de uma mensagem humana nunca mais apareceria como o mais recente. E a garantia da linha do contador saiu de dentro da transação: pedir uma conexão nova ali dobrava o consumo do pool e, sob concorrência, derrubava as requisições em bloco.
 **Consequências:** o canal externo é cidadão de primeira classe do domínio, não um atalho. Preço: existe um caminho em que o gauge de contatos passa do teto do plano — deliberado, e por isso o medidor mostra o excesso em vez de esconder. O lock serializa por telefone, então conversas de contatos diferentes continuam em paralelo.
+
+**Alterado pelo ADR-052 (F4.1a, 2026-10-23).**
+
+- A trava da ingestão passou a ser o **nível 0** da ordem global, por (workspace, chave de coincidência), **sem o canal**, seguida do endereço compartilhado (`address:<HMAC>`), com `lock_timeout` próprio. Duas mensagens do mesmo número por dois canais não criam mais dois contatos.
+- O contato só é atribuído com **um único candidato exato**. Mais de um candidato, ou só por aproximação, abre "remetente a identificar" (RAI), sem contato.
+- A criação do lead continua por `createFromExternalChannel`, como a exceção do id fresco, sob as travas da ingestão.
+- O payload é validado **item a item**, e a falha transitória propaga (não 200), para a Meta reentregar.
 
 ## ADR-041 — Sem assinatura ativa, custo externo cai para o plano padrão (nunca ilimitado)
 
@@ -916,7 +925,7 @@ Uma colisão de hash só causa espera a mais, nunca liberação indevida. A prim
 3. Travas de **entidade** que determinam a quem um conteúdo pertence (deal e tarefa, item 6), em ordem crescente de id.
 4. Linhas próprias da operação (proposta, dispatch, evento do outbox).
 
-Nenhum caminho pega um nível depois de um nível posterior. A trava tentada de ativação (`clinics_activation`) fica **antes** do nível 1, porque é exclusão mútua entre CLIs.
+Nenhum caminho pega um nível depois de um nível posterior. A trava tentada de ativação (`clinics_activation`) fica **antes** do nível 1, porque é exclusão mútua entre CLIs. _(Alterado pelo ADR-052, F4.1a: o **nível 0** é a trava da ingestão do WhatsApp, por (workspace, chave de coincidência), antes do nível 1, e quem a pega são a ingestão e os três atos de identificação. O nível 3 ganhou as famílias `conversation:<id>` e `address:<HMAC>`, numa única passada em ordem de chave com `deal:` e `task:`.)_
 
 Os lotes que hoje travam contatos fora de ordem (`companies.service.ts`, remoção de empresa) passam a travar em ordem de id. Isso paga a dívida registrada.
 
@@ -1095,7 +1104,7 @@ Para cada uso (IA, mensagem da IA e webhook) e para cada mudança (paciente, rev
 1. **Residual da sessão de guarda: NÃO aceito.** Fica como decisão em aberto (item 3.5). Antes de implementar, o plano precisa trazer uma garantia que impeça a chamada (não só que a detecte), ou um critério revisto para aprovação.
 2. **Prazos: aprovados.** São absolutos: 60 s para a IA, 20 s para a Meta e 10 s por destino de webhook. As tentativas automáticas do SDK ficam desligadas, e cada nova tentativa passa pela guarda de novo.
 3. **Espera: aprovada.** Mudanças interativas por contato esperam até 10 s e respondem 409, sem efeito colateral quando o prazo estoura. A CLI de ativar e desativar espera até 90 s.
-4. **Religação de conversa: aprovada a regra.** O vínculo continua imutável, fixado por teste. Se a religação surgir, ela entra no protocolo e protege o contato antigo, o novo e a conversa.
+4. **Religação de conversa: aprovada a regra.** O vínculo continua imutável, fixado por teste. Se a religação surgir, ela entra no protocolo e protege o contato antigo, o novo e a conversa. _(Alterado pelo ADR-052, F4.1a: a religação surgiu — identificar, desfazer e rejeitar o remetente — e entra no protocolo como decidido aqui, com o contato antigo e o novo, a conversa (`conversation:<id>`) e o endereço exclusivos. O escritor de `Conversation.contactId` é um só, o serviço de identificação, e o teste estático passou a exigir isso.)_
 5. **Troca de contato de deal ou tarefa: aprovada como mudança de titularidade do conteúdo.** Protege os contatos antigo e novo e a entidade, na ordem de travas do item 3.2.
 
 ### Adendo 7 (2026-10-20, APROVADO — texto aprovado e implementação autorizada sob G′; o B2 continua fechado) — o residual da guarda: o que se pode garantir e o que precisa ser decidido
@@ -4820,12 +4829,12 @@ Os quatro pontos que o usuário pediu resolvidos no desenho:
   - um único parcial de conversa aberta por (canal, contato, número);
   - um único parcial de conversa RAI aberta por (canal, número);
   - um CHECK de que a conversa RAI tem `contactId IS NULL`.
-- **A resposta humana** de uma conversa identificada é bloqueada quando o `externalAddress` dela já não está entre os números normalizados do contato.
+- **A resposta humana** de uma conversa identificada é bloqueada quando o `externalAddress` dela já não está entre os números normalizados do contato. _(Alterado pela decisão do usuário de 2026-10-23, desvio 6 dos resultados da F4.1a: a resposta exige a coincidência exata, e a RAI não recebe resposta — desvio 13.)_
 - **Os índices únicos parciais diante de identificar e rejeitar:**
   - **identificar** uma conversa RAI para um contato que já tem conversa aberta com aquele número **encerra a anterior** na mesma transação, com trilha e sem mexer nas mensagens. A identificada passa a ser a aberta;
   - **rejeitar** uma conversa quando já existe uma RAI aberta para (canal, número) leva a rejeitada a RAI **encerrada**. Ela continua na área RAI e pode ser identificada depois, também com trilha;
   - **reabrir ou responder** numa conversa encerrada quando já existe a aberta do mesmo (canal, contato, número), ou a RAI aberta do mesmo (canal, número), é **recusado com 409**, com mensagem em pt-BR que aponta a conversa aberta. Isso vale para os três caminhos que reabrem hoje: a mensagem registrada no Inbox, o `PATCH` com `status: open` e a ingestão;
-  - os casos têm teste, inclusive a resposta numa RAI encerrada.
+  - os casos têm teste, inclusive a resposta numa RAI encerrada. _(Restringido pela decisão do usuário de 2026-10-23, desvio 13 dos resultados da F4.1a: a RAI não recebe resposta; reabri-la continua sujeito ao 409.)_
 
 **A atribuição derivada (o que o desfazer precisa alcançar). [ABERTA C12]**
 
@@ -5357,3 +5366,183 @@ Se alguma condição falha, a mensagem não sai, com o motivo por destinatário 
   - **a rotação, documentada em `docs/SECURITY.md`:** só em manutenção, com os workers parados e sem `ContentUse` autorizado em aberto (a consulta de conferência está no procedimento). Depois, troca-se a chave e sobe-se de novo. Nenhuma chave antiga fica em uso, e as travas não sobrevivem ao reinício.
 
 **9. Ordem de implementação:** contratos → API (migrations, ingestão, contatos, conversas, identificação, anexos, IA, travas) → web (a área RAI no Inbox, com identificar, desfazer e rejeitar, e o autor derivado).
+
+**Resultados da implementação da F4.1a (2026-10-23).**
+
+**O que foi feito**, na ordem contratos → API → web:
+
+- **Contratos:**
+  - `ConversationSender`, os schemas de identificar e rejeitar, e o DTO do candidato;
+  - em `ConversationDto`, os campos `senderStatus`, `senderAddress` (completo só com `contacts:read`) e `senderIdentifiedByPerson`.
+- **A migration `20261023120000_conversation_sender_and_phone_identity`:**
+  - a região do workspace;
+  - as colunas derivadas dos telefones (as chaves de coincidência preenchidas em SQL);
+  - o estado do remetente;
+  - as marcas dos únicos, mantidas por gatilho e amarradas por CHECK;
+  - o CHECK da RAI sem contato;
+  - o GIN das chaves e os dois únicos;
+  - a marca da quarentena que a exclusão de um contato preserva (`FileObject.conversationRestricted`, desvio 14).
+
+  Inventário de 18 objetos, no `DEPLOY_STAGING` §4.
+
+- **A identidade de telefone** (`contacts/phone-identity.ts`, com a `libphonenumber-js` 1.13.14 fixada):
+  - forma normalizada, chave de coincidência (do telefone escrito e da forma normalizada) e classificação (exata, possível, nenhuma; a regra final está no desvio 8);
+  - a regra de decisão: um único candidato exato atribui, nenhum cria o lead, o resto é RAI.
+- **As travas** (`content-use/identity-locks.ts` e a primitiva):
+  - o nível 0 por (workspace, chave de coincidência), com a ficha pelo HMAC;
+  - `address:` com HMAC pela `ADDRESS_LOCK_KEY`, obrigatória no boot e independente das outras chaves;
+  - os escritores de telefone (criar na tela, editar e excluir contato), com a diferença **por número**, e os três atos de identificação, com os telefones que o rejeitar tira; a importação, não (desvio 7);
+  - o prazo de 2 s por mensagem na ingestão, reposto antes de cada trava, e o teto do lote (10 s, a confirmar na F4.5).
+- **A ingestão:**
+  - o isolamento por item, com o `from` de 8 a 20 dígitos;
+  - a decisão do remetente;
+  - a conversa por número, aproveitando a conversa antiga sem endereço;
+  - nenhuma atribuição gravada na mensagem nem na atividade;
+  - o teto do lote: estourado, o próximo item não começa (503), e a reentrega deduplica.
+- **O serviço de identificação** (`conversations/conversation-sender.service.ts`), o escritor único de `Conversation.contactId`:
+  - candidatos, identificar, desfazer e rejeitar (com a retirada do número, em qualquer formato);
+  - o bloqueio do legado;
+  - a conversa anterior encerrada (só quando a identificada fica aberta) e a RAI encerrada;
+  - a expiração da IA por conversa na mesma transação (`intelligence-persistence/conversation-cleanup.ts`);
+  - o responsável sem `contacts:write` sai quando a conversa vai à RAI;
+  - a trilha sem número, com quantos candidatos havia em todo ato.
+- **As conversas:**
+  - o C13 em cada rota (lista e 404);
+  - a atribuição de RAI só a quem tem `contacts:write`, com a condição na própria escrita;
+  - o 409 ao reabrir ou responder;
+  - a marca de legado no DTO (`senderRelinkBlocked`), para a tela não oferecer o ato que daria 409;
+  - o autor exibido derivado.
+- **O envio:** pela **política única** (`decideSend`), no compositor, no envio, na aprovação do rascunho e no worker, a RAI não recebe resposta (desvio 13) e a conversa identificada só a recebe com o número exato do cadastro do contato (desvio 6); o despacho guarda os contatos conferidos por quem aprovou o envio, inclusive a pessoa que escreveu, e o worker não envia a conversa religada desde então.
+- **A timeline:** o `contactId` gravado, mais as atividades sem contato das conversas do contato.
+- **A IA:**
+  - a RAI recusada antes de montar o contexto (escopo vazio) e no replay;
+  - as reconferências da geração e da aprovação comparam o contato atual da conversa com o do escopo;
+  - o despacho da IA de uma conversa religada não sai (`conversation_relinked`), na checagem rápida e sob a guarda;
+  - a fila de propostas não devolve proposta de conversa RAI, em status nenhum.
+- **Os anexos:** a regra que se soma às permissões, com 404, também ao anexar; a exclusão do contato expurga a mídia recebida dele que fica sem vínculo.
+- **As CLIs:** `phones:normalize` (só grava o contato cujos telefones não mudaram durante a leitura) e `identity:diagnose`, este só de leitura e anterior à migration.
+- **O web:** a área RAI no Inbox (`pages/InboxSender.tsx`), com identificar, contato novo, desfazer e rejeitar, a IA desabilitada na RAI e a conversa do legado sem ato; o formulário de contato edita o primeiro telefone e o primeiro e-mail sem apagar os outros.
+- **Documentação:**
+  - `SECURITY.md` §7 (anexos), §7-D.4, §7-D.9, §7-D.10 e §8 (a chave e a rotação);
+  - `DOMAIN_MODEL.md`;
+  - `DEPLOY_STAGING.md` (a variável, o inventário e o procedimento de release);
+  - as marcas "Alterado pelo ADR-052" no ADR-023, no ADR-040 e no ADR-047 (adendo 6, §3.2 e decisão 4).
+
+**Desvios do que estava escrito, com o motivo:**
+
+1. **A migration é UMA só, transacional, com os índices dentro e sem `CONCURRENTLY`.** A nota 7 previa os únicos numa migration própria, depois do diagnóstico.
+   - Com o volume atual (dados fictícios), uma duplicata faz a migration inteira falhar de forma atômica, sem nada aplicado pela metade.
+   - O diagnóstico roda **antes** do deploy, com o schema antigo.
+   - Ensaiado: com uma duplicata, o diagnóstico a apontou, a migration falhou, o inventário ficou em zero e nenhuma conversa foi encerrada.
+   - Com volume real, os índices vão para `CONCURRENTLY`, em migration própria.
+2. **Não há índice nas formas normalizadas.** Nenhuma consulta as busca: os candidatos vêm pela chave de coincidência, que tem o GIN.
+3. **Identificar, desfazer e rejeitar devolvem a conversa atualizada (201),** e não 204. O cliente web sempre lê JSON da resposta.
+4. **A trava da ingestão não obtida responde 409,** pelo filtro de exceções do Prisma (como toda espera estourada). Continua não sendo 2xx, e a Meta reentrega.
+5. **O nível 0 usa a mesma primitiva de 64 bits** (`veyra.restriction.ingest:`), e não a trava antiga de duas chaves de 32 bits. Assim a identificação, que roda no client filtrado, a pega sem que entre modelo novo de SQL na lista fixada da coordenação.
+6. **A resposta exige a coincidência EXATA** (decisão do usuário de 2026-10-23, que substitui a versão anterior deste desvio). Numa conversa identificada, a política de envio só autoriza com o número do cadastro do contato de forma exata: a forma normalizada igual, ou o mesmo número internacional com "+" (o desvio 8). A coincidência só possível — sem DDD, o 9º dígito, a forma ainda não preenchida — não autoriza envio, e não há exceção para a conversa que uma pessoa identificou. A recusa é a da política única (`number_not_exact`), com **400** como toda outra recusa de política, no compositor, no envio, na aprovação do rascunho e no worker. A conversa legada atribuída automaticamente responde: a ingestão antiga só a ligava pelo `has` exato, então, no momento da atribuição, o telefone dela era o número com "+". **Isso vale só se o cadastro não foi editado depois:** o telefone reescrito antes da F4.1a num formato sem "+" depende do `phones:normalize` para voltar a dar exata, e o celular brasileiro sem o 9º dígito, escrito sem "+", não se valida e fica bloqueado até alguém pôr no cadastro o número como está na conversa, com "+" — que é o remédio. A versão anterior deste desvio bloqueava só sem coincidência nenhuma, e não foi aprovada.
+7. **A importação não trava endereço.** A tabela do item 3 a listava entre os escritores de telefone.
+   - Ela só CRIA contatos. Quem decide pelos candidatos — a ingestão e a identificação — decide pelos que leu, e o resultado de cada ordem está fixado por teste determinístico, com a leitura dos candidatos e o commit da importação controlados (`whatsapp-identity.integration-spec.ts`, bloco "a importação, sem trava de endereço"):
+
+     | Quando a importação comita                                        | Ingestão sem contato                                      | Ingestão com um contato exato (Ana)                                                                               | Identificação de uma RAI (Ana e Bia)                                         |
+     | ----------------------------------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+     | antes de quem decide ler os candidatos                            | a mensagem vai ao importado (importação → ingestão)       | dois candidatos: RAI (importação → ingestão)                                                                      | o importado é candidato; a trilha conta três                                 |
+     | depois da leitura dos candidatos e antes do commit de quem decide | um lead a mais, e a próxima é RAI (ingestão → importação) | **a mensagem vai à Ana**, embora o importado já tenha o número no commit; a próxima é RAI (ingestão → importação) | a escolha vale pelos lidos; a trilha conta dois (identificação → importação) |
+
+   - **Não é garantia absoluta contra atribuição:** na sobreposição, a decisão é a da ordem em que quem decide veio antes, e a mensagem pode ir ao contato exato que existia quando os candidatos foram lidos, com o importado chegando no meio. A ambiguidade só aparece na mensagem seguinte. A versão anterior deste desvio dizia "nunca há atribuição silenciosa", e isso foi retirado.
+   - Com a trava por número, um lote de até mil números ocuparia a tabela de travas compartilhada do Postgres (por padrão, cerca de 6400 entradas para todos os workspaces), e poucas importações ao mesmo tempo dariam "out of shared memory" a outros tenants (achado 7 da segurança).
+   - Criar na tela continua travando: é um número só, e a espera fica uniforme com a edição.
+   - Um teste estático fixa que a importação só cria: sem atualizar, fundir ou buscar contato por telefone.
+   - **A F4.1c reabre o ponto:** o item 6 dela ("um só candidato", conferido sob o `address:` compartilhado) supõe que todo escritor de telefone espera o endereço. A alternativa que mantém a serialização é a trava de endereço por **balde** (o HMAC módulo 256, por workspace): a importação pega no máximo 256 travas, e a colisão só causa espera a mais. Ela muda a chave de todos os caminhos, e por isso não entrou aqui.
+   - **Pede a sua confirmação**, porque muda uma linha aprovada, agora com a demonstração da tabela acima. Os baldes ficam como proposta para a F4.1c.
+8. **A classificação ganhou dois casos** (confirmado pelo usuário em 2026-10-23, nos limites abaixo), os dois sem completar nem adivinhar número (C17):
+   - **exata** também quando um telefone do contato é o MESMO número internacional, dígito a dígito, escrito com "+". É o `wa_id` que a biblioteca não valida (o celular brasileiro sem o 9º dígito): o lead nasce com ele assim. Sem isso, toda mensagem seguinte do mesmo número seria RAI, uma regressão diante do `has` exato de antes;
+   - **possível** também quando o telefone tem a chave do número e nenhuma forma guardada o explica (o 00 de operadora, o formato antigo, a forma ainda não preenchida), e com os zeros da frente ignorados no sufixo. Antes, "011 9876-5432" e "0021 11 98765-4321" davam `nenhuma`, e outro contato exato receberia a mensagem em silêncio (achado 4 da segurança);
+   - a chave passou a vir também da forma normalizada, por defesa: as duas só diferem quando a biblioteca separa um ramal escrito com letra ("ext."), que o `phoneSchema` não aceita. O ramal escrito só com dígitos não se valida, e o contato não é candidato por ele — não está resolvido, e fica registrado. O preenchimento em SQL da migration só tem os dígitos escritos; a segunda chave, quando houver, chega com o `phones:normalize`;
+   - tirar o número do contato e bloquear a resposta usam a classificação **estrita**, sem o ramo "nenhuma forma guardada o explica": nesses dois caminhos, o ramo largo seria o lado inseguro (apagaria outro número do contato, ou deixaria responder a um número que já não é dele).
+9. **A ficha do nível 0 é o HMAC** da chave de coincidência, como o endereço, e não os 8 dígitos: o texto da chave vai como parâmetro ao SQL e apareceria num log de instruções. Confirmado pelo usuário em 2026-10-23.
+10. **O preenchimento vai junto do DDL, na mesma migration** (ADR-051 item 2 pede o preenchimento longo à parte). Com o volume atual (dados fictícios), ele é curto; com volume real, vai para migration própria, junto dos `CONCURRENTLY` do desvio 1. Aceito pelo usuário em 2026-10-23 **só para o cenário de dados fictícios**: isso não autoriza alterar depois uma migration publicada.
+11. **O GIN das chaves não é liderado por `workspaceId`** (§3.1 do `DOMAIN_MODEL`). O GIN só compõe com o `uuid` pela extensão `btree_gin`, que existe na imagem do Postgres mas não está instalada (conferido no banco; só a `btree_gist` está). A consulta dos candidatos filtra o workspace pelo client filtrado, e o GIN restringe pelas chaves. Instalar a extensão é mudança de infraestrutura e fica para quando o volume pedir. Aceito pelo usuário em 2026-10-23 como decisão de desempenho, com o **filtro por workspace obrigatório** em toda consulta das chaves.
+12. **A janela entre a migration e o `phones:normalize`:** nela, todo contato com a chave do número é candidato só possível (salvo o telefone guardado como o mesmo número com "+"), e as mensagens que chegarem vão à RAI até uma pessoa identificá-las. É o lado seguro, mas não é o procedimento: **no deploy futuro, a ingestão e os escritores de telefone ficam parados até o `phones:normalize` e as verificações terminarem** (decisão do usuário de 2026-10-23; `DEPLOY_STAGING` §4).
+13. **A RAI não recebe resposta** (decisão de produto do usuário de 2026-10-23, que **restringe o item 2**, onde estava prevista a resposta na RAI). Quem pode ver a RAI a lê e a identifica, conforme as permissões, e precisa resolver a identidade antes de responder. A recusa é da política única (`sender_unidentified`), com **400**, ANTES de criar mensagem, despacho ou reserva; o compositor mostra o motivo, e o painel do remetente diz que responder exige identificar primeiro. O worker recusa o despacho pendente cuja conversa virou RAI (`conversation_relinked`), para toda origem. A versão anterior deste desvio deixava sair a resposta escrita na RAI, com a coluna `MessageDispatch.senderStatusAtWrite`; ela saiu, porque só existia para o comportamento retirado: a regra de religação voltou a ser uma só (a conversa RAI, ou o contato fora dos conferidos). A migration mudou de novo — ainda não publicada —, e o ensaio foi refeito sobre a versão final (resultado no bloco "Testes").
+14. **A mídia recebida não amplia o acesso, nem a quarentena de um contato excluído** (decisão do usuário de 2026-10-23, que substitui o "aceito e registrado" anterior). A marca `FileObject.conversationRestricted` mantém a regra dos anexos de conversa sobre o arquivo mesmo sem vínculo: quem não podia ver a conversa, como quem só tem `files:read`, não o vê na lista, não o baixa e não o exclui (404); quem lê conversas continua vendo.
+    - **A mídia recebida nasce com a marca** (no gravar do coletor), e a migration a preenche para a mídia recebida que já existe. Assim a regra acompanha o arquivo por qualquer caminho: anexada a outra conversa (a mídia de X numa mensagem da conversa de Y) e depois sem vínculo, ela não volta a quem só tem `files:read` (achado da revisão do delta).
+    - **A quarentena que a exclusão preserva** fica inteira, como evidência do ADR-043 §4 — com o nome, o tipo e o tamanho originais —, e é marcada também (o arquivo que um membro enviou não nasce marcado).
+    - **A exclusão de um contato expurga** a mídia recebida das conversas dele que fica sem vínculo, inclusive a de outra pessoa anexada ali.
+    - **Pendência, não risco aceito:** o nome do arquivo também está na trilha (`file.quarantined`, `file.deleted`), e quem tem `audit:read` o vê, mesmo sem `conversations:read`. Ser comportamento anterior não o torna aceito (decisão do usuário de 2026-10-23): fica como **pendência de acesso a metadados sensíveis**, vinculada ao **B1** do ADR-048 §10 e à liberação para dados reais, sem ampliar o escopo da F4.1a. A migration ganhou a coluna no lugar da que saiu no desvio 13.
+
+**Defeito anterior, achado e corrigido:**
+
+- o `updateContactSchema` era `createContactSchema.partial()`, e no Zod 4 o `.partial()` mantém os defaults;
+- por isso, um `PATCH /contacts/:id` sem `phones`, `emails`, `tagIds` ou `customFields` os apagava, contra o próprio comentário do contrato ("undefined = não mexer");
+- com a F4.1a, isso ainda tiraria os números do contato e travaria os endereços dele numa edição só de status;
+- o schema de atualização passou a declarar os campos sem default, e há teste de que editar só o status mantém telefones e emails. Na revisão, os campos passaram a vir de uma base única, com os defaults só na criação.
+
+**Revisão do código (reviewer e security, 2026-10-23).** Os dois deram veredito de bloqueio ("mudanças necessárias" e "bloqueado"), **sem P0**: nenhuma consulta nova cruza workspaces. Os achados e o que foi feito:
+
+- **Bloqueantes:**
+  - a fila de propostas devolvia o rascunho de uma conversa que virou RAI, em `status=all/expired` (os dois): o filtro vai no WHERE, em todo status;
+  - a fumaça da ordem global não tinha os caminhos novos (os dois): ela ganhou a ingestão e um escritor de telefone, e a suíte da identidade ganhou a própria fumaça e as corridas determinísticas — identificar contra a ingestão do mesmo número, nas duas ordens; desfazer contra um uso de IA em andamento, nas duas ordens; o lead de id fresco contra o contato criado na tela;
+  - a exclusão de contato pegava o nível 3 depois de escrever linhas (reviewer): uma passada só, com os endereços;
+  - o `phones:normalize` gravava sem comparar (os dois): grava só se os telefones são os lidos, e conta os pulados;
+  - o e2e da b62 (reviewer, e as três falhas da bateria): as fixtures criavam o contato sem o número da conversa; o reply-suggestion caía no meio com o consentimento ligado, e o spec de Sinais caía em cascata (comprovado pela trilha do consentimento no banco do e2e). As fixtures têm o número, o consentimento volta no `finally`, e os specs esperam a consulta do consentimento antes de ler a caixa.
+- **Importantes:**
+  - a trava do escritor de telefone era pela diferença de chaves (os dois): agora é por número, sempre com o contato, e a conferência depois da trava exige os telefones lidos;
+  - a classificação deixava passar o 0/00 na frente (segurança): desvio 8;
+  - a mídia do contato excluído virava "arquivo sem vínculo" (segurança): a recebida sai junto;
+  - a importação com até mil travas (segurança): desvio 7;
+  - o `from` curto entrava sem trava (os dois): de 8 a 20 dígitos, ou item isolado;
+  - o envio de pessoa na fila não reconferia a religação nem o número (os dois): a política única e os contatos conferidos no despacho;
+  - a recusa de atribuir uma RAI era conferida fora da transação (os dois): condição na escrita, e o responsável sem `contacts:write` sai ao ir para a RAI;
+  - o teto do lote não existia (os dois): o prazo da mensagem é reposto antes de cada trava e não passa do fim do lote;
+  - a religação sob a guarda saía como `content_restricted` (reviewer): `conversation_relinked`;
+  - identificar uma RAI encerrada encerrava a conversa aberta do contato (reviewer): só quando a identificada fica aberta;
+  - o `raw` da região não estava nas exceções (reviewer): registrado no `SECURITY.md` §2, conferido contra o CLS e fixado por teste estático;
+  - a exceção das travas era só comentário (reviewer): um teste estático fixa quem chama os métodos sem trava;
+  - anexar ignorava a regra dos anexos (reviewer): 400 "Arquivo inválido";
+  - documentação desatualizada (reviewer): `DOMAIN_MODEL`, o `.env.example` do staging e os desvios 10 a 12;
+  - o teste do legado e o do C13 por endpoint (reviewer): o legado com os três atos, o anexo e a conversa ao lado rejeitada antes de excluir o contato; o C13 nas rotas da IA, na fila e no replay.
+- **Qualidade, todos tratados:** a contagem de candidatos em todo ato; a reconferência da IA só recusa com o 404 (o resto é "indisponível"); o texto de "tirar o número" diz que sai em qualquer formato; o painel não oferece ato na conversa do legado, e o texto da RAI não afirma o motivo; a função fora do JSDoc da classe; o ramal na chave; os contatos inválidos do payload contados; a ficha do nível 0 pelo HMAC; a chave de endereço independente das outras e sem o valor de exemplo em produção; os ids de RAI na trilha e nos runs, registrados no `SECURITY.md` como pendência de acesso a metadados (vinculada ao B1), e não como risco aceito; e o formulário do web, que apagava o segundo telefone.
+
+**Revisão do delta (2026-10-23).** O security aprovou com ressalvas e o reviewer pediu mudanças, sem P0. Os dois acharam o mesmo defeito, a resposta de pessoa na RAI que nunca saía (P1 para o reviewer, P2 para o security). A primeira correção a deixava sair; o usuário decidiu o contrário, e a RAI não recebe resposta (desvio 13). O resto, tratado:
+
+- **a "possível" ampliada valia também para tirar o número e bloquear a resposta** (security): tirar o número usa a classificação estrita (desvio 8), e responder passou a exigir a exata (desvio 6);
+- **o expurgo da mídia corria contra o coletor e contra um anexar concorrente** (os dois): a exclusão invalida a posse do coletor sobre a mídia das conversas do contato antes de ler os vínculos, e prende as linhas dos arquivos antes de conferi-los;
+- **a conferência do `update` só rodava quando algum telefone mudava** (os dois): roda sempre que o PATCH traz telefones;
+- **o responsável que sai era decidido por uma leitura anterior** (os dois): identificar, desfazer e rejeitar prendem a linha da conversa logo depois das travas consultivas;
+- **o prazo da mensagem podia passar do fim** (os dois): as duas travas do mesmo passo dividem o que sobra, as esperas por linha herdam só o resto, e `prazoDeTrava` nunca é 0;
+- **a passada única da exclusão não tinha teste**, e **a importação só criar** era condição do desvio 7: dois testes estáticos;
+- **o texto do ramal no desvio 8 dizia mais do que o código faz** (security): corrigido;
+- **a quarentena de um contato excluído voltava à lista de arquivos** (reviewer): o usuário não aprovou aceitar; ela fica como evidência e sob a regra dos anexos (desvio 14);
+- **documentação desatualizada** (os dois): este bloco e o comentário do `check:fk`.
+
+**As decisões do usuário sobre o commit `53c59b9` (2026-10-23).** O push não foi autorizado, e quatro pontos mudaram antes dele: a resposta exige a coincidência exata (desvio 6), a RAI não recebe resposta (desvio 13), a importação sem trava ganhou a demonstração por ordem e perdeu a garantia absoluta (desvio 7), e a quarentena de um contato excluído não amplia o acesso (desvio 14). Os desvios 8, 9, 10 e 11 foram confirmados nos limites registrados em cada um, e o 12 ganhou a condição do deploy futuro com a ingestão e os escritores parados.
+
+**A revisão do delta da rodada 3 (2026-10-23).** Os dois aprovaram com ressalvas, sem P0 nem P1, e acharam as quatro decisões implementadas. As ressalvas, tratadas: o ensaio da migration atual, que ainda não tinha sido refeito (feito depois, e só então registrado); sob a guarda, o rascunho da IA não reconferia o número exato (agora reconfere, com `number_not_exact`); a mídia de outra pessoa anexada a uma conversa podia voltar a quem só tem `files:read` (a mídia recebida nasce com a marca, desvio 14); o leitor de arquivo sem a regra (agora privado); o painel avisa que identificar um candidato possível não libera a resposta; e a ressalva do legado no desvio 6.
+
+**A b63 e o que ela mostrou.** A bateria completa sobre o estado anterior ao delta caiu na integração: 36 falhas em duas suítes do Clinics, todas com "o número desta conversa não está mais no cadastro do contato". Era regressão da revisão: levar a regra à política única fez ela valer também no preparo do envio, e as fixtures dessas suítes montavam a conversa para um contato sem o número. As fixtures passaram a ter o número, como a ingestão o deixa. Na segunda rodada, interrompida, caiu também um teste anterior à F4.1a (G2, "a ATIVAÇÃO primeiro"), que esperou 4 s por uma trava pendente que não apareceu, sem lacuna no relógio nem sono da máquina. Ele passou em três rodadas isoladas logo depois, e a espera dele foi instrumentada para dizer o estado da aprovação se cair de novo. A causa não foi achada.
+
+**Testes** (versão final: a árvore com o hash `8e9029f1…` sobre o `53c59b9`, a mesma nas mutações, no ensaio e na bateria b65):
+
+- **integração:** uma suíte nova, `channels/whatsapp-identity.integration-spec.ts`, com 70 testes, todos passando:
+  - a ingestão: formatos diferentes, número compartilhado, único candidato possível, arquivado e outro workspace (P0), a mensagem seguinte à identificação, dois canais ao mesmo tempo, conversa por número, isolamento por item, falha transitória e reentrega, o `from` curto, o `wa_id` sem o 9º dígito, o 00 de operadora e o teto do lote (mensagens e recibos);
+  - os atos: identificar, contato novo, a anterior encerrada, desfazer com a expiração da IA, rejeitar com e sem o número, a RAI encerrada (e identificá-la sem encerrar a aberta), o legado com os três atos, o anexo e a conversa ao lado, o responsável que sai, e as duas ordens da atribuição concorrente;
+  - o C13: as rotas da conversa, as da IA, a fila de propostas em todo status e o replay;
+  - o envio: a RAI recusada antes de mensagem, despacho e reserva; a conversa legada atribuída automaticamente, que responde; a troca de telefone que deixa só uma coincidência possível, e a identificação humana de um candidato possível, que bloqueiam; a regra estrita de tirar o número; o despacho da IA barrado na checagem rápida e sob a guarda, inclusive pelo número que deixa de conferir no meio; a resposta de pessoa religada na fila; o número que sai com a resposta na fila; e a aprovação depois disso;
+  - as travas: identificar contra a ingestão nas duas ordens, desfazer contra um uso de IA nas duas ordens, o lead de id fresco contra o contato da tela, a fumaça com todos os caminhos novos juntos, e **os seis testes da importação sem trava** (a tabela do desvio 7);
+  - os arquivos, nas duas direções: a mídia recebida que perde o vínculo, a de outra pessoa anexada numa conversa e a quarentena de um contato excluído não voltam a quem só tem `files:read`; e a exclusão de um contato não apaga o arquivo, nem os bytes, que outra conversa ainda usa (sem `file.purge`, e o download funciona); mais o expurgo contra o coletor e contra um anexar, nas duas ordens;
+  - os escritores de telefone: as colunas derivadas, o PATCH parcial, a espera pela ingestão (inclusive com a mesma chave), editar só o nome sem trava, o PATCH com os mesmos telefones contra outro escritor, e o `phones:normalize` contra um escritor;
+  - as garantias do banco;
+- **a fumaça do Clinics** (`clinics-restriction-changes`) ganhou a ingestão e um escritor de telefone; as suítes `clinics-ai-dispatch-guard` e `clinics-guard-matrix` passaram a dar à conversa o número do contato;
+- **unidade:** a identidade de telefone (16), as travas de identidade (4), a política de envio, o ambiente (a chave obrigatória e independente) e os testes estáticos (o escritor único de `contactId`, a fronteira dos eventos, os chamadores sem trava, o `raw` do serviço de contatos, a passada única da exclusão e a importação que só cria);
+- **web:** o painel do remetente (7, com os textos da RAI) e o formulário de contato (2);
+- **e2e:** as fixtures com o número da conversa, e o consentimento devolvido no `finally`;
+- **mutações:** 57 nas garantias, **todas mortas sobre a versão final** (`scratchpad/logs/mut-f41a-final.log`); o hash da árvore depois delas é o mesmo de antes. Entre elas, as das decisões de 2026-10-23: a RAI sem motivo próprio, a política respondendo na RAI, a coincidência possível autorizando envio, a guarda sem o número exato, a quarentena sem a marca, a regra ignorando a marca, a mídia recebida sem a marca e o expurgo sem o anexo marcado;
+- **ensaio da migration final** (`scratchpad/logs/ensaio-f41a-4.log`), com a base fictícia estendida por um arquivo ligado a uma mídia recebida e outro solto:
+  - a falha forçada deixou o schema idêntico ao de antes, o inventário em 0 e os dados iguais — sem alteração parcial;
+  - a aplicação limpa deu o inventário de 18, a marca na mídia recebida existente (`recebida.png|true`), o arquivo solto sem marca (`solta.png|false`), as chaves e as marcas esperadas, e o `migrate diff` vazio; a diferença das definições está no log;
+  - o ensaio da duplicata está no desvio 1;
+- **bateria completa (b65), sobre a versão final:** lint, format, build, unidade (296), web (141), integração duas vezes (906 e 906), drift, migrations do zero, `check:fk` e e2e (49), todos verdes; desvio Node×banco de até 2 ms e nenhuma lacuna de relógio. A b64, verde, foi sobre o estado anterior às decisões de 2026-10-23.
+
+**A conclusão dos testes determinísticos da importação (desvio 7).** Os seis passam, com a leitura dos candidatos e o commit da importação controlados por espião. O resultado de cada ordem é o da tabela do desvio: quando a importação comita antes da leitura, quem decide a vê (ordem lógica: importação, depois o outro); quando comita depois da leitura e antes do commit de quem decide, a decisão é a dos candidatos lidos (ordem lógica: o outro, depois a importação) — inclusive a mensagem que vai ao contato exato já existente, com o importado chegando no meio. Em nenhuma ordem a importação funde contatos ou muda uma decisão já tomada; a ambiguidade criada por ela aparece na mensagem seguinte, como RAI. Isso sustenta o desvio 7 no limite registrado, sem garantia absoluta; a decisão continua sendo sua.
+
+**O que fica para depois** (ADR-052, sem aprovação): o BSUID, as finalidades, o consentimento, o bloqueio de parar, os templates, o envio iniciado pelo negócio, o E7 e o estado `canceled`. A F4.1a não abre envio nenhum.

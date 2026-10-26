@@ -35,3 +35,16 @@ export async function openE2eDb(): Promise<Client> {
   await db.connect();
   return db;
 }
+
+/**
+ * A resposta do GET do consentimento de conteúdo (ADR-028). Enquanto ela não
+ * chega, a caixa da tela de Sinais aparece desmarcada: quem lê ou clica a
+ * caixa antes disso afirma, ou muda, um estado que ainda não conhece.
+ * Arme ANTES da navegação que dispara a consulta.
+ */
+export function esperarConsentimento(page: Page): Promise<unknown> {
+  return page.waitForResponse(
+    (r) =>
+      r.url().endsWith('/api/intelligence/consent') && r.request().method() === 'GET' && r.ok(),
+  );
+}

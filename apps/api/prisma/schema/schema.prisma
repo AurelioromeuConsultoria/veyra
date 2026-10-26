@@ -68,13 +68,17 @@ model RefreshToken {
 
 /// Raiz do tenant: exclusão LGPD via cascade a partir daqui.
 model Workspace {
-  id        String          @id @default(uuid()) @db.Uuid
-  name      String
-  slug      String          @unique
-  status    WorkspaceStatus @default(active)
-  settings  Json            @default("{}")
-  createdAt DateTime        @default(now())
-  updatedAt DateTime        @updatedAt
+  id          String          @id @default(uuid()) @db.Uuid
+  name        String
+  slug        String          @unique
+  status      WorkspaceStatus @default(active)
+  settings    Json            @default("{}")
+  /// Região padrão para normalizar telefone sem DDI (ADR-052 item 1, C17).
+  /// Não há caminho de mudança: mudar reinterpretaria números existentes, e
+  /// isso exige diagnóstico e procedimento explícito (CHECK de duas letras)
+  phoneRegion String          @default("BR")
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
 
   roles                  Role[]
   memberships            Membership[]
@@ -333,6 +337,14 @@ model Contact {
   name              String
   emails            String[]      @default([])
   phones            String[]      @default([])
+  /// Formas E.164 VÁLIDAS dos telefones, pela região do workspace (ADR-052
+  /// item 1). O original fica em `phones`; número que não se valida não entra
+  /// aqui e nada é completado. Recalculada pelo serviço em toda escrita
+  phonesNormalized  String[]      @default([])
+  /// A chave de coincidência: os últimos 8 dígitos de cada telefone com 8 ou
+  /// mais dígitos, normalizado ou não. É por ela que a ingestão acha os
+  /// candidatos (o número exato, a variante do 9º dígito e o sufixo)
+  phoneMatchKeys    String[]      @default([])
   status            ContactStatus @default(active)
   companyId         String?       @db.Uuid
   ownerMembershipId String?       @db.Uuid
@@ -364,6 +376,9 @@ model Contact {
   @@index([workspaceId, name])
   @@index([workspaceId, companyId])
   @@index([workspaceId, ownerMembershipId])
+  // GIN sobre o array, sem o workspaceId na frente: um GIN composto com uuid
+  // exigiria a extensão btree_gin. A consulta filtra o workspace depois
+  @@index([phoneMatchKeys], type: Gin)
 }
 
 model Tag {
@@ -852,6 +867,13 @@ enum ConversationStatus {
   closed
 }
 
+/// O remetente da conversa (ADR-052 item 2): `unidentified` é o "remetente a
+/// identificar" (RAI), sempre SEM contato, que nenhum caminho atribui sozinho
+enum ConversationSender {
+  identified
+  unidentified
+}
+
 enum MessageDirection {
   inbound
   outbound
@@ -904,6 +926,17 @@ model Conversation {
   /// pode ter vários telefones; o envio NÃO escolhe um de `Contact.phones` —
   /// responde para o número que falou com a gente.
   externalAddress      String?
+  /// RAI (ADR-052 item 2): o CHECK garante que `unidentified` não tem contato
+  senderStatus         ConversationSender @default(identified)
+  /// quando uma PESSOA identificou o remetente de uma conversa que nasceu RAI;
+  /// null nas atribuídas pela ingestão. É o que separa desfazer de rejeitar
+  senderIdentifiedAt   DateTime?
+  /// marca do único "uma conversa aberta por (canal, contato, número)": TRUE
+  /// fora de `closed`, NULL encerrada. Mantida por gatilho no banco
+  openMark             Boolean?
+  /// marca do único "uma RAI aberta por (canal, número)": TRUE na RAI fora de
+  /// `closed`, NULL no resto. Mantida pelo mesmo gatilho
+  unidentifiedOpenMark Boolean?
   createdAt            DateTime           @default(now())
 
   workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -920,6 +953,11 @@ model Conversation {
   // apontar para a conversa A usando o canal B (mesma classe da FK tripla
   // Deal→Stage, ADR-010)
   @@unique([workspaceId, channelId, id])
+  // ADR-052 item 2: uma conversa aberta por (canal, contato, número) e uma RAI
+  // aberta por (canal, número). NULL não colide, então a marca NULL (encerrada)
+  // e o contato ou o número ausentes ficam fora da unicidade
+  @@unique([workspaceId, channelId, contactId, externalAddress, openMark])
+  @@unique([workspaceId, channelId, externalAddress, unidentifiedOpenMark])
   // cursor keyset do inbox: (lastMessageAt, id) desc, por status
   @@index([workspaceId, status, lastMessageAt(sort: Desc), id])
   @@index([workspaceId, lastMessageAt(sort: Desc), id])
@@ -1056,6 +1094,11 @@ model FileObject {
    * o arquivo para `pending` nem apaga a linha.
    */
   bytesPurgedAt          DateTime?
+  /// A REGRA DOS ANEXOS DE CONVERSA vale mesmo sem vínculo (ADR-052, decisão de
+  /// 2026-10-23): marcada na quarentena que a exclusão de um contato preserva
+  /// como evidência (ADR-043 §4). A linha fica, com o nome original, mas só
+  /// quem lê conversas a vê — nunca quem só tem `files:read`.
+  conversationRestricted Boolean        @default(false)
   createdAt              DateTime       @default(now())
 
   workspace     Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -1566,10 +1609,13 @@ model MessageDispatch {
   templateName       String?
   templateLanguage   String?
   templateParams     Json?
-  /// CONTATOS conferidos na APROVAÇÃO do rascunho da IA (ADR-047 adendo 7 §9,
-  /// G3.2): o envio trava e reconfere todos eles, somados ao contato atual da
-  /// conversa. Vazio para mensagem escrita por pessoa. Sem FK (histórico do
-  /// que foi conferido), validado na escrita e conferido pelo `check:fk`.
+  /// CONTATOS conferidos por quem APROVOU o envio: na aprovação do rascunho da
+  /// IA (ADR-047 adendo 7 §9, G3.2), o envio trava e reconfere todos eles,
+  /// somados ao contato atual da conversa; na mensagem escrita por pessoa
+  /// (ADR-052, revisão da F4.1a), o contato da conversa quando ela escreveu.
+  /// O worker não envia a conversa religada desde então. Vazio no despacho
+  /// anterior a eles. Sem FK (histórico do que foi conferido), conferido pelo
+  /// `check:fk`.
   approvalContactIds String[]      @db.Uuid
   /// ORIGEM DE IA: o despacho nasceu da aprovação de uma proposta da IA, editada
   /// ou não (decisão de 2026-10-21, ADR-047 adendo 7 §9, G3.2). Editar não

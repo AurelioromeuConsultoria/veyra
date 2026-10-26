@@ -1,5 +1,9 @@
 import type { INestApplication } from '@nestjs/common';
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ClsService } from 'nestjs-cls';
 import { Client } from 'pg';
 import { randomUUID } from 'node:crypto';
@@ -15,6 +19,7 @@ import {
 } from '../../../test/integration/fixtures';
 import type { AuthContext } from '../../common/decorators';
 import { postgresErrorCode } from '../../common/prisma-exception.filter';
+import { WhatsappService } from '../../channels/whatsapp.service';
 import { ContactsService } from '../../contacts/contacts.service';
 import {
   ContentUseGuard,
@@ -56,6 +61,8 @@ const CONFIG: ConfigDaGuarda = {
   // ativação terminar o catálogo e a matriz com a bateria no mesmo banco
   mudancaTravaMs: 3_000,
   mudancaTransacaoMs: 15_000,
+  ingestaoTravaMs: 2_000,
+  ingestaoLoteMs: 10_000,
   workspaceTravaMs: 3_000,
   workspaceTransacaoMs: 15_000,
   prazoDaIaMs: 1_000,
@@ -654,7 +661,17 @@ describe('G2 — mudanças de restrição e aprovações na primitiva de travas 
       await pausa.travou.aberto;
       const aprovacao = capturar(aprovar(proposta));
       try {
-        await travaConsultivaPendente(); // a aprovação espera a trava do workspace
+        // a aprovação espera a trava do workspace. Caiu uma vez sem causa (b63,
+        // 2026-10-23, sem lacuna de relógio nem sono): se repetir, a mensagem
+        // diz se a aprovação já tinha terminado, e com qual erro
+        await travaConsultivaPendente().catch((falha: Error) => {
+          throw new Error(
+            `${falha.message}; a aprovação: ${JSON.stringify({
+              terminou: aprovacao.estado.terminou,
+              erro: String(aprovacao.estado.erro ?? null),
+            })}`,
+          );
+        });
         expect(aprovacao.estado.terminou).toBe(false);
       } finally {
         pausa.segue.abrir();
@@ -795,12 +812,62 @@ describe('G2 — mudanças de restrição e aprovações na primitiva de travas 
 
   // ── 7. ordem global: concorrência sem deadlock (adendo 6 §10.9) ───────────
 
-  it('fumaça: mudança por contato, ativação, aprovação, troca de tarefa e uso concorrentes terminam, sem deadlock, cada um com um desfecho previsto', async () => {
+  it('fumaça: mudança por contato, ativação, aprovação, troca de tarefa, uso, a ingestão e quem escreve telefone concorrentes terminam, sem deadlock, cada um com um desfecho previsto', async () => {
     await ativarClinics();
     const c1 = await contato('Um');
     const c2 = await contato('Dois');
     await liberar(c1);
     await liberar(c2);
+    /**
+     * Os caminhos da F4.1a (ADR-052 item 3) na mesma corrida: a ingestão do
+     * número de c1 (nível 0, depois workspace e endereço compartilhados) e um
+     * escritor de telefone em c2 (contato e endereço exclusivos). Número fictício.
+     */
+    const canal = await prisma.raw.channel.create({
+      data: { workspaceId: ws, type: 'whatsapp', name: 'WhatsApp fictício' },
+    });
+    await prisma.raw.channelCredential.create({
+      data: {
+        workspaceId: ws,
+        channelId: canal.id,
+        phoneNumberId: '109876543399',
+        businessAccountId: 'waba-fumaca',
+        tokenCipher: 'cifrado',
+      },
+    });
+    await prisma.raw.contact.updateMany({
+      where: { id: c1 },
+      data: {
+        phones: ['+5511987650001'],
+        phonesNormalized: ['+5511987650001'],
+        phoneMatchKeys: ['87650001'],
+      },
+    });
+    const ingestao = () =>
+      app.get(WhatsappService).ingest({
+        object: 'whatsapp_business_account',
+        entry: [
+          {
+            changes: [
+              {
+                field: 'messages',
+                value: {
+                  metadata: { phone_number_id: '109876543399' },
+                  messages: [
+                    {
+                      id: 'wamid.FUMACA.1',
+                      from: '5511987650001',
+                      timestamp: String(Math.floor(Date.now() / 1000)),
+                      type: 'text',
+                      text: { body: 'Mensagem fictícia' },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      });
     const proposta = await (async () => {
       const run = await prisma.raw.aiRun.create({
         data: {
@@ -834,6 +901,8 @@ describe('G2 — mudanças de restrição e aprovações na primitiva de travas 
       noWorkspace(() => app.get(IntelligenceService).approveProposal(auth, proposta)),
       app.get(ClinicsActivationService).disable(SLUG),
       trocarTarefa(await tarefa(c2), { contactId: c1 }),
+      ingestao(),
+      noWorkspace(() => app.get(ContactsService).update(auth, c2, { phones: ['+5511987650002'] })),
     ]);
     const deadlocks = resultados.filter(
       (r) => r.status === 'rejected' && postgresErrorCode(r.reason) === '40P01',
@@ -851,7 +920,9 @@ describe('G2 — mudanças de restrição e aprovações na primitiva de travas 
       const previsto =
         postgresErrorCode(r.reason) === '55P03' ||
         r.reason instanceof ConflictException ||
-        r.reason instanceof BadRequestException;
+        r.reason instanceof BadRequestException ||
+        // a ingestão sem prazo para o lote (503): a Meta reentrega
+        r.reason instanceof ServiceUnavailableException;
       expect({ previsto, erro: (r.reason as Error)?.name }).toEqual({
         previsto: true,
         erro: (r.reason as Error)?.name,

@@ -11,6 +11,7 @@ import type { FileObjectDto } from '@veyra/contracts';
 import { AuditService } from '../audit/audit.service';
 import { AuthContext } from '../common/decorators';
 import { OutboxService } from '../outbox/outbox.service';
+import { PermissionsService } from '../auth/permissions.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { UsageService } from '../usage/usage.service';
 import { UnsupportedFileError, assertAllowedFile, extensionOf } from './file-type';
@@ -53,7 +54,65 @@ export class FilesService {
     private readonly audit: AuditService,
     private readonly usage: UsageService,
     @Inject(STORAGE_DRIVER) private readonly storage: StorageDriver,
+    private readonly permissions: PermissionsService,
   ) {}
+
+  /**
+   * Os ANEXOS DE CONVERSA (ADR-052 item 2; critério 3 da aprovação da F4.1a):
+   * o arquivo ligado a uma mensagem — anexo ou mídia recebida — exige, ALÉM
+   * das permissões que a rota já pede, `conversations:read` e o acesso a TODAS
+   * as conversas a que está ligado, com a regra do C13 para as RAI
+   * (`contacts:write`). Um vínculo sem acesso basta para negar. Arquivo sem
+   * vínculo de mensagem fica como antes — salvo o marcado `conversationRestricted`
+   * (a quarentena que a exclusão de um contato preserva, decisão de 2026-10-23),
+   * que continua exigindo `conversations:read`.
+   */
+  private async acessiveis(auth: AuthContext, fileIds: string[]): Promise<Set<string>> {
+    if (fileIds.length === 0) return new Set();
+    const selecao = {
+      fileObjectId: true,
+      message: { select: { conversation: { select: { senderStatus: true } } } },
+    } as const;
+    const [anexos, midias, marcados] = await Promise.all([
+      this.prisma.db.messageAttachment.findMany({
+        where: { fileObjectId: { in: fileIds } },
+        select: selecao,
+      } as never),
+      this.prisma.db.inboundMedia.findMany({
+        where: { fileObjectId: { in: fileIds } },
+        select: selecao,
+      } as never),
+      this.prisma.db.fileObject.findMany({
+        where: { id: { in: fileIds }, conversationRestricted: true },
+        select: { id: true },
+      } as never),
+    ]);
+    const restritos = new Set((marcados as unknown as { id: string }[]).map((m) => m.id));
+    const vinculos = new Map<string, string[]>();
+    for (const vinculo of [...anexos, ...midias] as unknown as {
+      fileObjectId: string | null;
+      message: { conversation: { senderStatus: string } };
+    }[]) {
+      if (!vinculo.fileObjectId) continue;
+      vinculos.set(vinculo.fileObjectId, [
+        ...(vinculos.get(vinculo.fileObjectId) ?? []),
+        vinculo.message.conversation.senderStatus,
+      ]);
+    }
+    if (vinculos.size === 0 && restritos.size === 0) return new Set(fileIds);
+    const [leConversas, veRai] = await Promise.all([
+      this.permissions.has(auth, 'conversations:read'),
+      this.permissions.has(auth, 'contacts:write'),
+    ]);
+    return new Set(
+      fileIds.filter((id) => {
+        const remetentes = vinculos.get(id);
+        if (!remetentes) return !restritos.has(id) || leConversas;
+        if (!leConversas) return false;
+        return remetentes.every((status) => status !== 'unidentified' || veRai);
+      }),
+    );
+  }
 
   /**
    * O tipo é DETECTADO por magic bytes (ADR-025) e a chave é DERIVADA no
@@ -127,7 +186,7 @@ export class FilesService {
       });
       throw error;
     }
-    return this.get(id);
+    return this.dtoDoGravado(id);
   }
 
   /**
@@ -166,6 +225,13 @@ export class FilesService {
             // houver; por ora, a primeira membership ativa do workspace
             uploadedByMembershipId: await this.systemUploader(tx),
             scanStatus: 'pending',
+            /**
+             * A MÍDIA RECEBIDA nasce sob a regra dos anexos de conversa, e a
+             * leva consigo (ADR-052, revisão da F4.1a): anexada a outra
+             * conversa, ou sem vínculo depois de uma exclusão, ela nunca volta
+             * a quem só tem `files:read`.
+             */
+            conversationRestricted: true,
           },
         } as never);
         const fileId = (created as unknown as { id: string }).id;
@@ -183,7 +249,7 @@ export class FilesService {
       });
       throw error;
     }
-    return this.get(id);
+    return this.dtoDoGravado(id);
   }
 
   /** Membership de referência para arquivo que não veio de uma pessoa. */
@@ -218,15 +284,24 @@ export class FilesService {
     });
   }
 
-  async list(): Promise<FileObjectDto[]> {
+  async list(auth: AuthContext): Promise<FileObjectDto[]> {
     const rows = (await this.prisma.db.fileObject.findMany({
       orderBy: { createdAt: 'desc' },
       take: 200,
     } as never)) as unknown as FileRow[];
-    return rows.map((row) => this.toDto(row));
+    const acessiveis = await this.acessiveis(
+      auth,
+      rows.map((row) => row.id),
+    );
+    return rows.filter((row) => acessiveis.has(row.id)).map((row) => this.toDto(row));
   }
 
-  async get(id: string): Promise<FileObjectDto> {
+  /**
+   * O DTO do arquivo que ESTE serviço acabou de gravar, para quem o gravou.
+   * Privado de propósito: sem a regra dos anexos (`acessiveis`), ele não pode
+   * servir a leitura de um arquivo qualquer (revisão da F4.1a).
+   */
+  private async dtoDoGravado(id: string): Promise<FileObjectDto> {
     const row = (await this.prisma.db.fileObject.findFirst({
       where: { id },
     })) as unknown as FileRow | null;
@@ -239,11 +314,14 @@ export class FilesService {
    * ser baixado internamente (§7.5), mas não sai para canal externo — a regra
    * de saída está em `assertSendableExternally`.
    */
-  async download(id: string): Promise<{ dto: FileObjectDto; bytes: Buffer }> {
+  async download(auth: AuthContext, id: string): Promise<{ dto: FileObjectDto; bytes: Buffer }> {
     const row = (await this.prisma.db.fileObject.findFirst({
       where: { id },
     })) as unknown as FileRow | null;
-    if (!row) throw new NotFoundException('Arquivo não encontrado');
+    // o anexo de conversa inacessível é 404, não 403: não se revela que existe
+    if (!row || !(await this.acessiveis(auth, [id])).has(id)) {
+      throw new NotFoundException('Arquivo não encontrado');
+    }
     if (row.scanStatus === 'quarantined') {
       throw new ForbiddenException('Arquivo em quarentena não pode ser baixado');
     }
@@ -264,16 +342,155 @@ export class FilesService {
     }
   }
 
-  /** Valida que os arquivos existem NESTE workspace e devolve o que achou. */
-  async loadForAttachment(ids: string[]): Promise<FileRow[]> {
+  /**
+   * Valida que os arquivos existem NESTE workspace, e que quem anexa pode vê-los
+   * (a regra dos anexos de conversa, ADR-052): sem ela, o id de uma mídia de RAI
+   * anexado a outra conversa mostraria o nome do arquivo no `MessageDto`. O
+   * arquivo que não pode ver é "inválido", como o que não existe.
+   */
+  async loadForAttachment(auth: AuthContext, ids: string[]): Promise<FileRow[]> {
     if (ids.length === 0) return [];
     const rows = (await this.prisma.db.fileObject.findMany({
       where: { id: { in: ids } },
     } as never)) as unknown as FileRow[];
-    if (rows.length !== new Set(ids).size) {
+    const visiveis = await this.acessiveis(
+      auth,
+      rows.map((r) => r.id),
+    );
+    if (rows.length !== new Set(ids).size || visiveis.size !== rows.length) {
       throw new BadRequestException('Arquivo inválido');
     }
     return rows;
+  }
+
+  /**
+   * A MÍDIA RECEBIDA de um contato: os arquivos das mídias e dos anexos das
+   * mensagens de ENTRADA das conversas dele, e os anexos marcados como mídia
+   * recebida (`conversationRestricted`) em qualquer mensagem delas — a mídia de
+   * outra pessoa que alguém anexou aqui. É o que a exclusão do contato expurga,
+   * se ficar sem vínculo (`expurgarSemVinculoNaTransacao`).
+   *
+   * ANTES de ler, a posse do coletor sobre essas mídias é invalidada, com a
+   * linha presa: um coletor no meio da gravação termina antes (e o vínculo dele
+   * é lido aqui), e um que chegue depois perde o cercamento e descarta o
+   * próprio arquivo. Sem isso, um vínculo gravado entre a leitura e a cascata
+   * deixava o arquivo de fora — de novo "sem vínculo" (revisão da F4.1a).
+   */
+  async midiaRecebidaDoContato(tx: Db, contactId: string): Promise<string[]> {
+    const daConversa = { message: { conversation: { contactId } } };
+    await tx.inboundMedia.updateMany({
+      where: daConversa,
+      data: { claimToken: null, claimedAt: null, leaseExpiresAt: null },
+    } as never);
+    const [midias, anexos, marcados] = await Promise.all([
+      tx.inboundMedia.findMany({
+        where: { ...daConversa, fileObjectId: { not: null } },
+        select: { fileObjectId: true },
+      } as never),
+      tx.messageAttachment.findMany({
+        where: { message: { direction: 'inbound', conversation: { contactId } } },
+        select: { fileObjectId: true },
+      } as never),
+      tx.messageAttachment.findMany({
+        where: { ...daConversa, file: { conversationRestricted: true } },
+        select: { fileObjectId: true },
+      } as never),
+    ]);
+    return [
+      ...new Set(
+        [...midias, ...anexos, ...marcados]
+          .map((v) => (v as unknown as { fileObjectId: string | null }).fileObjectId)
+          .filter((id): id is string => typeof id === 'string'),
+      ),
+    ];
+  }
+
+  /**
+   * Expurga, na transação de quem exclui um contato, os arquivos da mídia
+   * recebida dele que ficaram SEM VÍNCULO nenhum depois da cascata das
+   * mensagens (LGPD; revisão da F4.1a). Sem isso, eles voltariam a "arquivo
+   * sem vínculo", listável e baixável só com `files:read` — furando a regra dos
+   * anexos de conversa. O que ainda tem vínculo (outra conversa) fica, com a
+   * regra dele. Os bytes saem pelo `file.purge`, como em `remove`; a quarentena
+   * fica, porque é a evidência. Devolve quantos expurgou.
+   */
+  async expurgarSemVinculoNaTransacao(
+    tx: Db,
+    auth: AuthContext,
+    fileIds: string[],
+    storageLimit: number | null,
+  ): Promise<number> {
+    if (fileIds.length === 0) return 0;
+    const workspaceId = auth.workspaceId as string;
+    /**
+     * PRENDE as linhas antes de conferir os vínculos (escrita sem efeito). O
+     * anexar faz a mesma escrita antes de ligar o arquivo, e as duas se
+     * serializam: um anexar que veio antes aparece na leitura abaixo, e um que
+     * vem depois não acha mais o arquivo e é recusado — em vez de o anexo novo
+     * cair junto, em cascata, da mensagem de outra pessoa. A trava da FK do
+     * anexar (KEY SHARE) sozinha não conflita com esta escrita, e o filtro no
+     * próprio DELETE não bastaria: a subconsulta usa o retrato da instrução.
+     */
+    await tx.fileObject.updateMany({
+      where: { id: { in: fileIds } },
+      data: { scanAttempts: { increment: 0 } },
+    } as never);
+    const [anexos, midias] = await Promise.all([
+      tx.messageAttachment.findMany({
+        where: { fileObjectId: { in: fileIds } },
+        select: { fileObjectId: true },
+      } as never),
+      tx.inboundMedia.findMany({
+        where: { fileObjectId: { in: fileIds } },
+        select: { fileObjectId: true },
+      } as never),
+    ]);
+    const ligados = new Set(
+      [...anexos, ...midias].map(
+        (v) => (v as unknown as { fileObjectId: string | null }).fileObjectId,
+      ),
+    );
+    const soltos = fileIds.filter((id) => !ligados.has(id));
+    if (soltos.length === 0) return 0;
+    /**
+     * A QUARENTENA fica, como evidência (ADR-043 §4) — inteira, com o nome
+     * original —, mas sem vínculo ela voltaria a quem só tem `files:read`.
+     * Preservar a evidência não amplia o acesso (decisão de 2026-10-23): a
+     * marca mantém a regra dos anexos de conversa sobre ela.
+     */
+    await tx.fileObject.updateMany({
+      where: { id: { in: soltos }, scanStatus: 'quarantined' },
+      data: { conversationRestricted: true },
+    } as never);
+    const rows = (await tx.fileObject.findMany({
+      where: { id: { in: soltos }, scanStatus: { not: 'quarantined' } },
+    } as never)) as unknown as FileRow[];
+    for (const row of rows) {
+      await this.audit.record(tx, workspaceId, 'file.deleted', {
+        entityType: 'file',
+        entityId: row.id,
+        actor: this.audit.actorFrom(auth),
+        before: { fileName: row.fileName, mimeType: row.mimeType },
+        after: null,
+      });
+    }
+    const { count } = await tx.fileObject.deleteMany({
+      where: { id: { in: rows.map((r) => r.id) }, scanStatus: { not: 'quarantined' } },
+    });
+    const bytes = rows.reduce((soma, r) => soma + r.sizeBytes, 0);
+    if (bytes > 0) {
+      await this.usage.consume(tx, workspaceId, 'storage_bytes', -bytes, storageLimit);
+    }
+    for (const row of rows) {
+      await this.outbox.enqueue(
+        tx,
+        workspaceId,
+        'file.purge',
+        { key: row.key },
+        `file.purge:${row.id}`,
+      );
+    }
+    return count;
   }
 
   /**
@@ -285,7 +502,10 @@ export class FilesService {
     const existing = (await this.prisma.db.fileObject.findFirst({
       where: { id },
     })) as unknown as FileRow | null;
-    if (!existing) throw new NotFoundException('Arquivo não encontrado');
+    // `files:write` (a rota) continua exigido; a regra dos anexos se SOMA a ele
+    if (!existing || !(await this.acessiveis(auth, [id])).has(id)) {
+      throw new NotFoundException('Arquivo não encontrado');
+    }
     if (existing.scanStatus === 'quarantined') {
       /**
        * A LINHA da quarentena é a evidência de que o arquivo existiu e foi

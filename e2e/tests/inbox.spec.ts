@@ -102,10 +102,15 @@ test.describe('Inbox (UI)', () => {
        * workspace", que só existia porque `contacts.spec.ts` roda antes na ordem
        * alfabética: rodar este teste isolado quebrava no INSERT do consentimento,
        * apontando para o lugar errado.
+       *
+       * O contato tem o número da conversa, com as colunas derivadas, como a
+       * ingestão o deixaria (ADR-052): sem ele, a resposta é bloqueada por
+       * "o número saiu do contato", e a tela não chega à janela nem ao opt-in.
        */
       const contatoRow = await db.query<{ id: string }>(
-        `INSERT INTO "Contact" ("id","workspaceId","name","updatedAt")
-         VALUES (gen_random_uuid(), $1, 'Paciente Externo', now()) RETURNING "id"`,
+        `INSERT INTO "Contact" ("id","workspaceId","name","phones","phonesNormalized","phoneMatchKeys","updatedAt")
+         VALUES (gen_random_uuid(), $1, 'Paciente Externo', ARRAY['+5511999990000'],
+                 ARRAY['+5511999990000'], ARRAY['99990000'], now()) RETURNING "id"`,
         [ws],
       );
       const contato = contatoRow.rows[0].id;

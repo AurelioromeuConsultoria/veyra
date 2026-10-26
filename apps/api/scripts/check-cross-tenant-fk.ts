@@ -85,9 +85,10 @@ const DOCUMENTED_LOOSE_COLUMNS = new Set([
   'ContentUse.reservationIds',
   // identificador do PROCESSO que registrou o uso (host:pid:boot), não entidade
   'ContentUse.instanceId',
-  // ADR-047 adendo 7 §9 (G3.2): os contatos conferidos na aprovação do rascunho
-  // da IA — histórico do que foi conferido, sem FK; validados na escrita e
-  // conferidos pela fotografia abaixo
+  // ADR-047 adendo 7 §9 (G3.2) e ADR-052 (revisão da F4.1a): os contatos
+  // conferidos por quem aprovou o envio — na aprovação do rascunho da IA, ou o
+  // contato da conversa quando a pessoa escreveu. Histórico do que foi
+  // conferido, sem FK; conferidos pela fotografia abaixo
   'MessageDispatch.approvalContactIds',
 ]);
 

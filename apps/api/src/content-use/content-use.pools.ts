@@ -34,6 +34,19 @@ export interface ConfigDaGuarda {
   mudancaTravaMs: number;
   /** ... e o prazo da transação dela */
   mudancaTransacaoMs: number;
+  /**
+   * a ingestão do WhatsApp: espera por TODAS as travas da mensagem (ADR-052
+   * item 3). Curto, porque roda dentro da requisição do webhook; sem a trava,
+   * a Meta reentrega
+   */
+  ingestaoTravaMs: number;
+  /**
+   * ... e o TETO do payload inteiro (ADR-052 item 3), abaixo do prazo do webhook
+   * da Meta. Estourado, a mensagem seguinte não começa: o webhook responde erro
+   * e a Meta reentrega o lote, que o `externalId` deduplica. O prazo exato da
+   * Meta fica a confirmar na F4.5
+   */
+  ingestaoLoteMs: number;
   /** ativar e desativar (CLI): espera pela trava do workspace */
   workspaceTravaMs: number;
   /** ... e o prazo da transação */
@@ -65,6 +78,8 @@ export const CONFIG_PADRAO_DA_GUARDA: ConfigDaGuarda = {
   reconciliacaoMs: 5_000,
   mudancaTravaMs: 10_000,
   mudancaTransacaoMs: 30_000,
+  ingestaoTravaMs: 2_000,
+  ingestaoLoteMs: 10_000,
   workspaceTravaMs: 90_000,
   workspaceTransacaoMs: 120_000,
   prazoDaIaMs: 60_000,

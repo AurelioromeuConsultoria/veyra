@@ -416,7 +416,7 @@ function ImportButton({ onDone }: { onDone: () => void }) {
   );
 }
 
-function ContactForm({
+export function ContactForm({
   contact,
   tags,
   companies,
@@ -450,26 +450,43 @@ function ContactForm({
   );
   const [error, setError] = useState<string | null>(null);
 
+  /**
+   * O formulário edita o PRIMEIRO e-mail e o PRIMEIRO telefone; os outros ficam
+   * como estão. Antes, salvar mandava só o primeiro e apagava os demais — com a
+   * identidade de telefone (ADR-052), isso mudava para onde vão as mensagens
+   * do segundo número. Na edição, a lista só vai quando muda: editar o nome não
+   * mexe em telefone nenhum.
+   */
+  const outrosEmails = contact?.emails.slice(1) ?? [];
+  const outrosTelefones = contact?.phones.slice(1) ?? [];
+  const mesmaLista = (a: string[], b: string[]) =>
+    a.length === b.length && a.every((v, i) => v === b[i]);
   const save = useMutation({
     mutationFn: (values: ContactFormValues) => {
-      const payload = {
+      const emails = [...(values.email ? [values.email] : []), ...outrosEmails];
+      const phones = [...(values.phone ? [values.phone] : []), ...outrosTelefones];
+      const comum = {
         name: values.name,
-        emails: values.email ? [values.email] : [],
-        phones: values.phone ? [values.phone] : [],
         companyId: values.companyId || null,
         ownerMembershipId: values.ownerMembershipId || null,
         source: values.source || null,
         tagIds,
         customFields: customValues,
       };
-      return contact
-        ? api.patch<ContactDto>(`/api/contacts/${contact.id}`, payload)
-        : api.post<ContactDto>('/api/contacts', {
-            ...payload,
-            companyId: payload.companyId ?? undefined,
-            ownerMembershipId: payload.ownerMembershipId ?? undefined,
-            source: payload.source ?? undefined,
-          });
+      if (contact) {
+        return api.patch<ContactDto>(`/api/contacts/${contact.id}`, {
+          ...comum,
+          ...(mesmaLista(emails, contact.emails) ? {} : { emails }),
+          ...(mesmaLista(phones, contact.phones) ? {} : { phones }),
+        });
+      }
+      const payload = { ...comum, emails, phones };
+      return api.post<ContactDto>('/api/contacts', {
+        ...payload,
+        companyId: payload.companyId ?? undefined,
+        ownerMembershipId: payload.ownerMembershipId ?? undefined,
+        source: payload.source ?? undefined,
+      });
     },
     onSuccess: onDone,
     onError: (e) => setError(e instanceof ApiError ? e.message : 'Falha ao salvar'),
@@ -501,6 +518,21 @@ function ContactForm({
       <Field label="Telefone" error={form.formState.errors.phone?.message}>
         <Input {...form.register('phone')} disabled={!canWrite} />
       </Field>
+      {outrosTelefones.length > 0 || outrosEmails.length > 0 ? (
+        <p className="text-data text-muted-fg">
+          {[
+            outrosTelefones.length > 0
+              ? `mais ${outrosTelefones.length} ${outrosTelefones.length === 1 ? 'telefone' : 'telefones'}`
+              : null,
+            outrosEmails.length > 0
+              ? `mais ${outrosEmails.length} ${outrosEmails.length === 1 ? 'e-mail' : 'e-mails'}`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(' e ')}{' '}
+          no cadastro, mantidos como estão.
+        </p>
+      ) : null}
       <Field label="Empresa">
         <Select full {...form.register('companyId')} disabled={!canWrite}>
           <option value="">— sem empresa —</option>

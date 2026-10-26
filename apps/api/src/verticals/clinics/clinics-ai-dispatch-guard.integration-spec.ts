@@ -60,6 +60,8 @@ const CONFIG: ConfigDaGuarda = {
   reconciliacaoMs: 1_000,
   mudancaTravaMs: 3_000,
   mudancaTransacaoMs: 15_000,
+  ingestaoTravaMs: 2_000,
+  ingestaoLoteMs: 10_000,
   workspaceTravaMs: 3_000,
   workspaceTransacaoMs: 15_000,
   prazoDaIaMs: 1_000,
@@ -185,7 +187,19 @@ describe('G3.2 — o envio da mensagem da IA sob a guarda de uso externo (ADR-04
     auth = { userId, email: 'dona@acme.test', membershipId, workspaceId: ws, sessionId: 'teste' };
 
     await app.get(ClinicsActivationService).enable(SLUG);
-    contato = (await prisma.raw.contact.create({ data: { workspaceId: ws, name: 'Fictício' } })).id;
+    // com o número da conversa, como a ingestão o deixaria (ADR-052): sem ele, a
+    // política de envio recusa o número que saiu do cadastro do contato
+    contato = (
+      await prisma.raw.contact.create({
+        data: {
+          workspaceId: ws,
+          name: 'Fictício',
+          phones: ['+5511900000001'],
+          phonesNormalized: ['+5511900000001'],
+          phoneMatchKeys: ['00000001'],
+        },
+      })
+    ).id;
     await liberar(contato);
     const canal = await prisma.raw.channel.create({
       data: { workspaceId: ws, type: 'whatsapp', name: 'WhatsApp fictício' },

@@ -6,7 +6,7 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { replyDraftSchema, sendMessagePayloadSchema } from '@veyra/contracts';
+import { replyDraftSchema, sendMessagePayloadSchema, type ConversationDto } from '@veyra/contracts';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { ActivitiesService } from '../activities/activities.service';
@@ -153,6 +153,22 @@ export interface NextActionResult {
   rationale?: string;
 }
 
+/**
+ * Os sujeitos de um conteúdo de conversa para a checagem de restrição. A
+ * conversa "remetente a identificar" (ADR-052 item 2) não tem sujeito NENHUM:
+ * escopo vazio é restrito no `LlmGateway`, em todo workspace e antes de
+ * qualquer porta — sem contato não quer dizer conteúdo liberado. Os outros
+ * sujeitos (o contato de quando o rascunho foi gerado) somam-se ao contato
+ * atual.
+ */
+function sujeitosDaConversa(
+  conversation: Pick<ConversationDto, 'contactId' | 'senderStatus'>,
+  outros: readonly (string | null)[] = [],
+): (string | null)[] {
+  if (conversation.senderStatus === 'unidentified') return [];
+  return [conversation.contactId, ...outros];
+}
+
 @Injectable()
 export class IntelligenceService {
   private readonly logger = new Logger(IntelligenceService.name);
@@ -184,11 +200,11 @@ export class IntelligenceService {
     // existência ANTES do gate de consentimento: id inexistente ou de outro
     // workspace precisa dar 404, e não "sem consentimento". `get` traz só
     // metadados — nenhum corpo de mensagem é lido antes do consentimento.
-    const conversation = await this.conversations.get(conversationId);
+    const conversation = await this.conversations.get(auth, conversationId);
 
     // ADR-048 §6.3: restrição ANTES de ler qualquer corpo — e antes do
     // consentimento, que é do workspace e não libera contato restrito
-    const scope = this.scope(auth, [conversation.contactId]);
+    const scope = this.scope(auth, sujeitosDaConversa(conversation));
     if ((await this.assertRestrictionAnswered(scope)) === 'restricted') {
       const runId = await this.refusedAsRestricted(auth, CONVERSATION_SUMMARY_PROMPT.capability, {
         conversationId,
@@ -210,7 +226,7 @@ export class IntelligenceService {
       return { status: 'no_consent', runId };
     }
 
-    const page = await this.conversations.listMessages(conversationId, {
+    const page = await this.conversations.listMessages(auth, conversationId, {
       limit: SUMMARY_MESSAGE_LIMIT,
     });
     if (page.items.length === 0) {
@@ -318,7 +334,7 @@ export class IntelligenceService {
       });
       return { status: 'content_restricted', runId };
     }
-    const signals = await this.collectSignals(contactId);
+    const signals = await this.collectSignals(auth, contactId);
     const score = computeLeadScore(signals);
 
     const contextSummary = `contact:${contactId}; sinais determinísticos (recência, pipeline, engajamento); sem conteúdo de mensagem`;
@@ -406,7 +422,7 @@ export class IntelligenceService {
    * explicação. Sem provedor, `explanation` vem null e o resto continua de pé.
    */
   async scoreLead(auth: AuthContext, contactId: string): Promise<LeadScoreResult> {
-    const signals = await this.collectSignals(contactId);
+    const signals = await this.collectSignals(auth, contactId);
     const score = computeLeadScore(signals);
 
     /**
@@ -472,10 +488,10 @@ export class IntelligenceService {
     conversationId: string,
   ): Promise<ConversationSummaryResult | null> {
     // valida acesso pelo serviço de domínio antes de devolver qualquer coisa
-    const conversation = await this.conversations.get(conversationId);
+    const conversation = await this.conversations.get(auth, conversationId);
     // conteúdo JÁ persistido também não sai para contato restrito — inclusive o
     // gerado antes de a restrição existir (ADR-048 §6.3, item 3)
-    if (!(await this.llm.allows(this.scope(auth, [conversation.contactId])))) return null;
+    if (!(await this.llm.allows(this.scope(auth, sujeitosDaConversa(conversation))))) return null;
     const latest = await this.runs.latestResult(CONVERSATION_SUMMARY_PROMPT.capability, {
       conversationId,
     });
@@ -575,12 +591,11 @@ export class IntelligenceService {
    * modelo, nem para este método.
    */
   async suggestReply(auth: AuthContext, conversationId: string): Promise<ReplySuggestionResult> {
-    const workspaceId = auth.workspaceId as string;
     // existência primeiro: id de outro workspace é 404, não "indisponível"
-    const conversation = await this.conversations.get(conversationId);
+    const conversation = await this.conversations.get(auth, conversationId);
 
     // restrição antes da política, do consentimento e de qualquer leitura de corpo
-    const scope = this.scope(auth, [conversation.contactId]);
+    const scope = this.scope(auth, sujeitosDaConversa(conversation));
     if ((await this.assertRestrictionAnswered(scope)) === 'restricted') {
       const runId = await this.refusedAsRestricted(auth, REPLY_SUGGESTION_PROMPT.capability, {
         conversationId,
@@ -598,7 +613,7 @@ export class IntelligenceService {
      * token para produzir algo inaprovável. O veredito é o mesmo que o
      * compositor usa — nunca uma segunda cópia da regra (ADR-038).
      */
-    const policy = await this.conversations.sendPolicy(workspaceId, conversationId);
+    const policy = await this.conversations.sendPolicy(auth, conversationId);
     if (policy.channelType !== 'whatsapp') {
       // registra como toda outra recusa: sem run, não há rastro de quem tentou
       const runId = await this.record(auth, {
@@ -653,7 +668,7 @@ export class IntelligenceService {
       };
     }
 
-    const page = await this.conversations.listMessages(conversationId, {
+    const page = await this.conversations.listMessages(auth, conversationId, {
       limit: REPLY_MESSAGE_LIMIT,
     });
     if (page.items.length === 0) {
@@ -802,12 +817,12 @@ export class IntelligenceService {
     auth: AuthContext,
     conversationId: string,
   ): Promise<ReplySuggestionResult | null> {
-    const conversation = await this.conversations.get(conversationId);
+    const conversation = await this.conversations.get(auth, conversationId);
     const proposal = await this.proposals.findPendingReply(conversationId);
     if (!proposal) return null;
     // o rascunho é derivado da conversa: restrito pelo contato de HOJE e pelo
     // contato de quando foi gerado — o vínculo pode ter mudado no meio
-    const subjects = [conversation.contactId, proposal.contactId ?? null];
+    const subjects = sujeitosDaConversa(conversation, [proposal.contactId ?? null]);
     if (!(await this.llm.allows(this.scope(auth, subjects)))) return null;
     if (proposal.expiresAt.getTime() < Date.now()) return null;
     const payload = sendMessagePayloadSchema.safeParse(proposal.payload);
@@ -854,8 +869,8 @@ export class IntelligenceService {
     if (!proposal.conversationId) {
       throw new BadRequestException('Proposta sem conversa vinculada');
     }
-    const conversation = await this.conversations.get(proposal.conversationId);
-    const contatos = [proposal.contactId ?? null, conversation.contactId];
+    const conversation = await this.conversations.get(auth, proposal.conversationId);
+    const contatos = sujeitosDaConversa(conversation, [proposal.contactId ?? null]);
     // checagem rápida (evita trabalho); a GARANTIA é a reconferência sob trava
     await this.assertProposalNotRestricted(auth, id, contatos);
     // revalida o payload NO ACEITE: entre propor e aprovar, nada garante que a
@@ -868,7 +883,7 @@ export class IntelligenceService {
       proposal.runId,
       { conversationId: proposal.conversationId, body, edited: body !== payload.body },
       { workspaceId: auth.workspaceId as string, membershipId: auth.membershipId as string },
-      this.guardFor(auth, contatos),
+      this.guardFor(auth, contatos, proposal.conversationId),
     );
     if (result === 'not_pending') throw new BadRequestException('Proposta já revisada');
     if (result === 'restricted' || result === 'unavailable') {
@@ -1010,12 +1025,54 @@ export class IntelligenceService {
    * dentro da transação, antes do claim, e chama a reconferência — que vê uma
    * mudança de restrição comitada enquanto a aprovação esperava a trava.
    */
-  private guardFor(auth: AuthContext, contactIds: readonly (string | null)[]): ExecutionGuard {
+  private guardFor(
+    auth: AuthContext,
+    contactIds: readonly (string | null)[],
+    conversationId?: string | null,
+  ): ExecutionGuard {
     return {
       workspaceId: auth.workspaceId as string,
       contactIds,
-      recheck: () => this.llm.verdict(this.scope(auth, contactIds)),
+      recheck: async () =>
+        this.conversaNaReconferencia(
+          await this.conversaMudou(auth, conversationId, contactIds),
+          () => this.llm.verdict(this.scope(auth, contactIds)),
+        ),
     };
+  }
+
+  /**
+   * A conversa ainda é a do escopo (ADR-052 item 2)? Se, enquanto o uso
+   * esperava a trava, ela foi desfeita, rejeitada ou identificada como outro
+   * contato, o contexto montado é de quem a conversa ERA: o uso é recusado. A
+   * conversa RAI, ou a que sumiu (404), também recusa. Outra falha da leitura
+   * (banco, prazo) não prova que a conversa mudou: é `indisponivel`, e o uso
+   * não começa — sem virar "restrito" na trilha.
+   */
+  private async conversaMudou(
+    auth: AuthContext,
+    conversationId: string | null | undefined,
+    sujeitos: readonly (string | null)[],
+  ): Promise<'mudou' | 'igual' | 'indisponivel'> {
+    if (!conversationId) return 'igual';
+    try {
+      const atual = await this.conversations.get(auth, conversationId);
+      return atual.senderStatus === 'unidentified' || !sujeitos.includes(atual.contactId)
+        ? 'mudou'
+        : 'igual';
+    } catch (erro) {
+      return erro instanceof NotFoundException ? 'mudou' : 'indisponivel';
+    }
+  }
+
+  /** O veredito da reconferência: a conversa primeiro, depois a porta da restrição. */
+  private async conversaNaReconferencia(
+    conversa: 'mudou' | 'igual' | 'indisponivel',
+    porta: () => Promise<'allowed' | 'restricted' | 'unavailable'>,
+  ): Promise<'allowed' | 'restricted' | 'unavailable'> {
+    if (conversa === 'mudou') return 'restricted';
+    if (conversa === 'indisponivel') return 'unavailable';
+    return porta();
   }
 
   /**
@@ -1221,7 +1278,11 @@ export class IntelligenceService {
         costCeilingCents: maxCost,
       },
       reservations: { runs: runsReservation.reservationId, cost: costReservation.reservationId },
-      recheck: () => this.llm.verdict(request.scope),
+      recheck: async () =>
+        this.conversaNaReconferencia(
+          await this.conversaMudou(auth, args.target.conversationId, request.scope.contactIds),
+          () => this.llm.verdict(request.scope),
+        ),
       call: (signal) => this.llm.completeUnderGuard(request, signal),
       persist: async (tx, outcome) => {
         if (outcome.kind === 'ok') {
@@ -1321,12 +1382,12 @@ export class IntelligenceService {
    * Sinais vêm de SERVIÇOS DE DOMÍNIO (ADR-027): o módulo não consulta banco.
    * Como os services usam o client filtrado, o run herda tenant e RBAC.
    */
-  private async collectSignals(contactId: string): Promise<ScoreSignals> {
+  private async collectSignals(auth: AuthContext, contactId: string): Promise<ScoreSignals> {
     const contact = await this.contacts.get(contactId);
     const [deals, timeline, conversations] = await Promise.all([
       this.deals.listByContact(contactId),
       this.activities.list({ contactId }, 1),
-      this.conversations.list({ contactId, status: 'all', limit: 20 }),
+      this.conversations.list(auth, { contactId, status: 'all', limit: 20 }),
     ]);
 
     const openDealsValueCents = deals
@@ -1342,7 +1403,7 @@ export class IntelligenceService {
     const since = Date.now() - 30 * 24 * 60 * 60 * 1000;
     let messagesLast30Days = 0;
     for (const conversation of conversations.items) {
-      const page = await this.conversations.listMessages(conversation.id, { limit: 100 });
+      const page = await this.conversations.listMessages(auth, conversation.id, { limit: 100 });
       messagesLast30Days += page.items.filter(
         (message) => new Date(message.createdAt).getTime() >= since,
       ).length;

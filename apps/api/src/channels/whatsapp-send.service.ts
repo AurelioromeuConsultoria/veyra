@@ -24,7 +24,14 @@ import { PrismaService, type Db } from '../prisma/prisma.service';
 import { UsageService } from '../usage/usage.service';
 import { classifyFailure } from './meta-errors';
 import { META_TRANSPORT, type MetaTransport, type SendOutcome } from './meta.transport';
-import { decideSend, type SendDecision } from './send-policy';
+import { coincideExatamente } from '../contacts/phone-identity';
+import {
+  decideSend,
+  MENSAGEM_NUMERO_NAO_CONFERE,
+  MENSAGEM_REMETENTE_A_IDENTIFICAR,
+  type RemetenteDoEnvio,
+  type SendDecision,
+} from './send-policy';
 
 type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
 
@@ -74,6 +81,8 @@ export interface PreparedOutbound {
   readonly [marcaDePreparo]: never;
   conversationId: string;
   channelId: string;
+  /** o contato da conversa no preparo: o que a pessoa via quando escreveu */
+  contactId: string | null;
   reservationId: string;
   template?: { name: string; language: string; params: string[] };
 }
@@ -83,6 +92,24 @@ export interface OutboundAuthor {
   body: string;
   authorType: 'user' | 'system' | 'ai';
   authorMembershipId: string | null;
+}
+
+/**
+ * A conversa foi RELIGADA depois de o envio ser aprovado (ADR-052 item 2)? Ela
+ * virou "remetente a identificar", ou o contato dela não está entre os
+ * conferidos por quem aprovou o envio — os da aprovação do rascunho da IA, ou o
+ * contato que a pessoa via quando escreveu. O texto era para outra pessoa e não
+ * sai. Como a RAI não recebe resposta (decisão de 2026-10-23), toda mensagem na
+ * fila foi escrita para um contato; o despacho sem conferidos (anterior à G3.2
+ * na IA, anterior à F4.1a na pessoa) só é barrado pela RAI.
+ */
+function religadaDesdeOEnvio(
+  conversa: { contactId: string | null; senderStatus: string },
+  contatosConferidos: readonly string[],
+): boolean {
+  if (conversa.senderStatus === 'unidentified') return true;
+  if (contatosConferidos.length === 0) return false;
+  return conversa.contactId === null || !contatosConferidos.includes(conversa.contactId);
 }
 
 /**
@@ -165,6 +192,7 @@ export class WhatsappSendService implements OnModuleInit {
     return {
       conversationId: conversation.id,
       channelId: conversation.channelId,
+      contactId: conversation.contactId,
       reservationId: reservation.reservationId,
       template: input.template,
     } as PreparedOutbound;
@@ -221,7 +249,18 @@ export class WhatsappSendService implements OnModuleInit {
         templateName: prepared.template?.name ?? null,
         templateLanguage: prepared.template?.language ?? null,
         templateParams: prepared.template ? (prepared.template.params as object) : undefined,
-        approvalContactIds: contatosDaAprovacao,
+        /**
+         * Os contatos conferidos por quem APROVOU o envio: os da aprovação do
+         * rascunho da IA, ou, na mensagem escrita por pessoa, o contato da
+         * conversa no preparo (ADR-052, revisão da F4.1a). O worker não envia
+         * se a conversa tiver sido religada desde então.
+         */
+        approvalContactIds:
+          aprovacao !== undefined
+            ? contatosDaAprovacao
+            : prepared.contactId
+              ? [prepared.contactId]
+              : [],
         // a ORIGEM DE IA, editada ou não (decisão de 2026-10-21): só a
         // aprovação de uma proposta da IA passa `aprovacao`
         fromAiProposal: aprovacao !== undefined,
@@ -368,6 +407,19 @@ export class WhatsappSendService implements OnModuleInit {
     // conversa sem contato: o desconhecido vai à porta como tal (`null`)
     const sujeitosDoEnvio = contatosDoEnvio.length > 0 ? contatosDoEnvio : [null];
     const origemDaIa = message.authorType === 'ai' || dispatch.fromAiProposal === true;
+    /**
+     * Religada desde o envio, nada sai — da IA ou de pessoa (ADR-052, revisão
+     * da F4.1a): a resposta escrita para X pode esperar horas na fila, e a
+     * conversa ter sido rejeitada no meio. Para a mensagem de pessoa, esta é a
+     * conferência; para a da IA, a garantia é a reconferência sob a guarda.
+     */
+    if (religadaDesdeOEnvio(conversation, dispatch.approvalContactIds ?? [])) {
+      if (dispatch.reservationId) await this.usage.release(dispatch.reservationId);
+      await this.finish(messageId, dispatch.claimToken, 'failed_permanent', {
+        errorCode: 'conversation_relinked',
+      });
+      return 'done';
+    }
     if (origemDaIa) {
       const verdict = await this.restriction.check(workspaceId, 'ai', sujeitosDoEnvio);
       if (verdict.unavailable) {
@@ -493,7 +545,12 @@ export class WhatsappSendService implements OnModuleInit {
         messageId,
         dispatch.claimToken,
         reservationId,
-        { contatos: contatosDoEnvio, sujeitos: sujeitosDoEnvio },
+        {
+          contatos: contatosDoEnvio,
+          sujeitos: sujeitosDoEnvio,
+          conversationId: conversation.id,
+          contatosDaAprovacao: dispatch.approvalContactIds ?? [],
+        },
         enviar,
       );
     }
@@ -601,7 +658,12 @@ export class WhatsappSendService implements OnModuleInit {
     messageId: string,
     claimToken: string,
     reservationId: string,
-    escopo: { contatos: string[]; sujeitos: (string | null)[] },
+    escopo: {
+      contatos: string[];
+      sujeitos: (string | null)[];
+      conversationId: string;
+      contatosDaAprovacao: readonly string[];
+    },
     enviar: (signal: AbortSignal) => Promise<SendOutcome>,
   ): Promise<'done' | 'retry'> {
     // o desfecho que a Meta devolveu, guardado fora da guarda: se ela cair
@@ -611,6 +673,9 @@ export class WhatsappSendService implements OnModuleInit {
       emDuvida: false,
     };
     let resultado: ResultadoDoUso<'done' | 'retry'>;
+    // a reconferência viu a conversa religada, ou o número que não confere: o
+    // motivo é esse, não a restrição
+    let recusa: 'conversation_relinked' | 'number_not_exact' | null = null;
     try {
       // a linha do período precisa existir ANTES: a cobrança acima do teto, dentro
       // da transação da guarda, não pode criá-la
@@ -623,6 +688,26 @@ export class WhatsappSendService implements OnModuleInit {
         origem: { messageId, claimToken },
         reservas: [reservationId],
         reconferir: async () => {
+          // a conversa RELIDA sob as travas (ADR-052 item 2): religada depois
+          // da aprovação, o rascunho foi escrito para outra pessoa
+          const atual = await this.prisma.db.conversation.findFirst({
+            where: { id: escopo.conversationId },
+            select: { contactId: true, senderStatus: true, externalAddress: true },
+          });
+          if (!atual || religadaDesdeOEnvio(atual, escopo.contatosDaAprovacao)) {
+            recusa = 'conversation_relinked';
+            return 'restrito';
+          }
+          /**
+           * O número EXATO, de novo, sob as travas: uma troca de telefone que
+           * comitou depois da checagem rápida esperou a guarda até aqui, e o
+           * rascunho não sai para um número que já não confere (revisão da
+           * F4.1a). Sob a guarda, o escritor de telefone espera o contato.
+           */
+          if ((await this.remetenteDoEnvio(atual)) !== 'confere') {
+            recusa = 'number_not_exact';
+            return 'restrito';
+          }
           const veredito = await this.restriction.check(workspaceId, 'ai', escopo.sujeitos);
           if (veredito.unavailable) return 'indisponivel';
           return veredito.restricted.some(Boolean) ? 'restrito' : 'liberado';
@@ -685,7 +770,7 @@ export class WhatsappSendService implements OnModuleInit {
         if (resultado.motivo === 'restrito') {
           // o marcador sai: a mensagem comprovadamente não foi despachada
           await this.finish(messageId, claimToken, 'failed_permanent', {
-            errorCode: 'content_restricted',
+            errorCode: recusa ?? 'content_restricted',
             naoSaiu: true,
           });
           return 'done';
@@ -1227,12 +1312,43 @@ export class WhatsappSendService implements OnModuleInit {
 
   // ── Internos ──────────────────────────────────────────────────────────────
 
+  /**
+   * O REMETENTE diante do envio (ADR-052 item 2, decisões de 2026-10-23). A
+   * conversa RAI não recebe resposta: a pessoa identifica antes de responder.
+   * A identificada só recebe com o número do cadastro do contato de forma
+   * EXATA — a forma normalizada igual, ou o mesmo número internacional com
+   * "+". A coincidência só possível (sem DDD, o 9º dígito, a forma ainda não
+   * preenchida) não autoriza envio, nem quando foi uma pessoa que identificou.
+   * É o MESMO predicado no compositor (`sendPolicy`), no envio, na aprovação do
+   * rascunho e no worker — nunca uma segunda cópia (ADR-038).
+   */
+  async remetenteDoEnvio(conversation: {
+    contactId: string | null;
+    senderStatus: string;
+    externalAddress: string | null;
+  }): Promise<RemetenteDoEnvio> {
+    if (conversation.senderStatus === 'unidentified') return 'a_identificar';
+    // sem número, a política recusa adiante (`no_external_address`)
+    if (!conversation.externalAddress) return 'confere';
+    // identificada, com número e sem contato: nada com que conferir (fail-closed)
+    if (!conversation.contactId) return 'numero_nao_confere';
+    const contato = (await this.prisma.db.contact.findFirst({
+      where: { id: conversation.contactId },
+      select: { phones: true, phonesNormalized: true },
+    })) as unknown as { phones: string[]; phonesNormalized: string[] } | null;
+    if (!contato) return 'numero_nao_confere';
+    return coincideExatamente(conversation.externalAddress, contato)
+      ? 'confere'
+      : 'numero_nao_confere';
+  }
+
   private async evaluate(
     workspaceId: string,
     conversation: {
       id: string;
       channelId: string;
       contactId: string | null;
+      senderStatus: string;
       lastInboundAt: Date | null;
       externalAddress: string | null;
     },
@@ -1259,6 +1375,7 @@ export class WhatsappSendService implements OnModuleInit {
 
     return decideSend({
       lastInboundAt: conversation.lastInboundAt,
+      remetente: await this.remetenteDoEnvio(conversation),
       hasActiveConsent: consent !== null,
       template: registered
         ? { name: template!.name, language: template!.language, paramCount: registered.paramCount }
@@ -1273,6 +1390,7 @@ export class WhatsappSendService implements OnModuleInit {
     id: string;
     channelId: string;
     contactId: string | null;
+    senderStatus: string;
     lastInboundAt: Date | null;
     externalAddress: string | null;
   }> {
@@ -1282,6 +1400,7 @@ export class WhatsappSendService implements OnModuleInit {
         id: true,
         channelId: true,
         contactId: true,
+        senderStatus: true,
         lastInboundAt: true,
         externalAddress: true,
       },
@@ -1289,6 +1408,7 @@ export class WhatsappSendService implements OnModuleInit {
       id: string;
       channelId: string;
       contactId: string | null;
+      senderStatus: string;
       lastInboundAt: Date | null;
       externalAddress: string | null;
     } | null;
@@ -1308,6 +1428,10 @@ export class WhatsappSendService implements OnModuleInit {
         return 'Quantidade de parâmetros não corresponde ao template';
       case 'no_external_address':
         return 'Conversa sem endereço externo: não há destinatário para o envio';
+      case 'sender_unidentified':
+        return MENSAGEM_REMETENTE_A_IDENTIFICAR;
+      case 'number_not_exact':
+        return MENSAGEM_NUMERO_NAO_CONFERE;
       default:
         return 'Envio não permitido pela política do canal';
     }

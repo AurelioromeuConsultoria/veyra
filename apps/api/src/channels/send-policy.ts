@@ -8,9 +8,27 @@
  */
 export const SERVICE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * As recusas pelo REMETENTE (ADR-052 item 2, decisões de 2026-10-23), iguais
+ * em toda ponta: a conversa "remetente a identificar" não recebe resposta, e a
+ * identificada só recebe com o número do cadastro do contato de forma EXATA.
+ */
+export const MENSAGEM_REMETENTE_A_IDENTIFICAR =
+  'O remetente desta conversa ainda não foi identificado. Identifique quem escreveu antes de responder.';
+export const MENSAGEM_NUMERO_NAO_CONFERE =
+  'O número desta conversa não confere, de forma exata, com um telefone do cadastro do contato. Confira o contato antes de responder.';
+
+/**
+ * O remetente diante do envio: a conversa RAI, a identificada cujo número não
+ * confere de forma exata com o cadastro do contato, ou a que confere.
+ */
+export type RemetenteDoEnvio = 'a_identificar' | 'numero_nao_confere' | 'confere';
+
 export interface SendContext {
   /** última mensagem DO CONTATO; null = o negócio está iniciando a conversa */
   lastInboundAt: Date | null;
+  /** o remetente da conversa (ADR-052 item 2) */
+  remetente: RemetenteDoEnvio;
   /** consentimento vigente para este contato e canal */
   hasActiveConsent: boolean;
   /** template pedido no envio, se houver */
@@ -32,13 +50,23 @@ export type SendDecision =
         | 'template_requires_consent'
         | 'template_unknown'
         | 'template_params_mismatch'
-        | 'no_external_address';
+        | 'no_external_address'
+        | 'sender_unidentified'
+        | 'number_not_exact';
     };
 
 export function decideSend(context: SendContext): SendDecision {
   // sem endereço não há para onde enviar — e escolher um telefone qualquer do
   // contato seria responder para quem não falou com a gente
   if (!context.externalAddress) return { allowed: false, reason: 'no_external_address' };
+  // nem template: sem saber quem escreveu, ou sem o número EXATO no cadastro do
+  // contato, responder pode ir a outra pessoa. Aproximação não autoriza envio
+  if (context.remetente === 'a_identificar') {
+    return { allowed: false, reason: 'sender_unidentified' };
+  }
+  if (context.remetente === 'numero_nao_confere') {
+    return { allowed: false, reason: 'number_not_exact' };
+  }
 
   const insideWindow =
     context.lastInboundAt !== null &&

@@ -29,15 +29,18 @@ export class ConversationContentReplayGuard implements IdempotentReplayGuard {
 
   async verdict(request: AuthedRequest): Promise<Verdict> {
     const id = request.params?.id;
-    const workspaceId = request.auth?.workspaceId;
-    if (typeof id !== 'string' || !workspaceId) return 'discard';
-    let contactId: string | null;
+    const auth = request.auth;
+    const workspaceId = auth?.workspaceId;
+    if (typeof id !== 'string' || !auth || !workspaceId) return 'discard';
+    let conversa: { contactId: string | null; senderStatus: string };
     try {
-      contactId = (await this.conversations.get(id)).contactId;
+      conversa = await this.conversations.get(auth, id);
     } catch {
       return 'discard';
     }
-    return fromGateway(await this.llm.verdict({ workspaceId, contactIds: [contactId] }));
+    // remetente a identificar (ADR-052 item 2): o corpo guardado nunca volta
+    if (conversa.senderStatus === 'unidentified') return 'discard';
+    return fromGateway(await this.llm.verdict({ workspaceId, contactIds: [conversa.contactId] }));
   }
 }
 

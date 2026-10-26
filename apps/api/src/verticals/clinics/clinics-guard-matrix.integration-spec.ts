@@ -77,6 +77,8 @@ const CONFIG: ConfigDaGuarda = {
   reconciliacaoMs: 1_000,
   mudancaTravaMs: 5_000,
   mudancaTransacaoMs: 15_000,
+  ingestaoTravaMs: 2_000,
+  ingestaoLoteMs: 10_000,
   workspaceTravaMs: 5_000,
   workspaceTransacaoMs: 15_000,
   // as chamadas presas no portão cabem nos prazos
@@ -215,6 +217,9 @@ describe('G4 — a validação do conjunto: matriz uso × mudança, recuperaçã
     auth = { userId, email: 'dona@acme.test', membershipId, workspaceId: ws, sessionId: 'teste' };
     // o canal e a conversa do envio da IA, com a janela de 24 h aberta
     contatoDaConversa = await contato();
+    // com o número da conversa, como a ingestão o deixaria (ADR-052): sem ele, a
+    // política de envio recusa o número que saiu do cadastro do contato
+    await comONumero(contatoDaConversa, '+5511900000001');
     const canal = await prisma.raw.channel.create({
       data: { workspaceId: ws, type: 'whatsapp', name: 'WhatsApp fictício' },
     });
@@ -305,6 +310,16 @@ describe('G4 — a validação do conjunto: matriz uso × mudança, recuperaçã
   }
 
   // ── dados fictícios ───────────────────────────────────────────────────────
+
+  const comONumero = (contactId: string, numero: string) =>
+    prisma.raw.contact.updateMany({
+      where: { id: contactId },
+      data: {
+        phones: [numero],
+        phonesNormalized: [numero],
+        phoneMatchKeys: [numero.slice(-8)],
+      },
+    });
 
   async function contato(workspaceId?: string) {
     return (
@@ -976,6 +991,7 @@ describe('G4 — a validação do conjunto: matriz uso × mudança, recuperaçã
       const userB = await createUserFixture(prisma, `b-${randomUUID().slice(0, 8)}@outro.test`);
       const membershipB = await createMembershipFixture(prisma, wsB, userB, outro.roles.owner);
       const cB = await contato(wsB);
+      await comONumero(cB, '+5511900000002');
       const canalB = await prisma.raw.channel.create({
         data: { workspaceId: wsB, type: 'whatsapp', name: 'WhatsApp fictício B' },
       });

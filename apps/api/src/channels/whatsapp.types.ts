@@ -5,13 +5,26 @@ import { z } from 'zod';
  * envelopes: a Meta adiciona campos sem aviso, e recusar o payload inteiro por
  * isso faria o webhook devolver erro e a Meta reentregar para sempre.
  *
+ * ISOLAMENTO POR ITEM (ADR-052 item 10, C11): o envelope é validado inteiro,
+ * mas `messages[]`, `contacts[]` e `statuses[]` são validados ITEM A ITEM. Um
+ * item fora da forma (a mensagem sem `from` de quem usa nome de usuário, o
+ * contato sem `wa_id`) é contado e ignorado sem derrubar os outros nem os
+ * recibos do mesmo lote — antes, derrubava o payload todo com 200, e a Meta
+ * não reentregava.
+ *
  * O que NÃO fazemos aqui: confiar em qualquer campo antes da assinatura conferir
  * (ADR-037). Este schema roda depois.
  */
-const messageSchema = z
+export const messageSchema = z
   .object({
     id: z.string().min(1).max(200),
-    from: z.string().min(1).max(40),
+    /**
+     * O `wa_id`: só dígitos, de 8 a 20. Com menos de 8 não há chave de
+     * coincidência, e a mensagem entraria sem o nível 0 nem o endereço —
+     * cada uma criando um contato novo, sem serialização (revisão da F4.1a).
+     * Fora disso, o item é isolado (C11)
+     */
+    from: z.string().regex(/^\d{8,20}$/),
     timestamp: z.string().min(1).max(20),
     type: z.string().min(1).max(40),
     text: z
@@ -37,7 +50,7 @@ const messageSchema = z
   })
   .passthrough();
 
-const statusSchema = z
+export const statusSchema = z
   .object({
     id: z.string().min(1).max(200),
     status: z.string().min(1).max(40),
@@ -52,6 +65,17 @@ const statusSchema = z
   })
   .passthrough();
 
+export const contactItemSchema = z
+  .object({
+    wa_id: z.string().max(40),
+    profile: z
+      .object({ name: z.string().max(160) })
+      .partial()
+      .optional(),
+  })
+  .passthrough();
+
+/** Só o envelope: os itens são validados um a um, por quem os processa. */
 export const whatsappWebhookSchema = z
   .object({
     object: z.string().max(60),
@@ -69,21 +93,9 @@ export const whatsappWebhookSchema = z
                         metadata: z
                           .object({ phone_number_id: z.string().min(1).max(60) })
                           .passthrough(),
-                        contacts: z
-                          .array(
-                            z
-                              .object({
-                                wa_id: z.string().max(40),
-                                profile: z
-                                  .object({ name: z.string().max(160) })
-                                  .partial()
-                                  .optional(),
-                              })
-                              .passthrough(),
-                          )
-                          .optional(),
-                        messages: z.array(messageSchema).optional(),
-                        statuses: z.array(statusSchema).optional(),
+                        contacts: z.array(z.unknown()).optional(),
+                        messages: z.array(z.unknown()).optional(),
+                        statuses: z.array(z.unknown()).optional(),
                       })
                       .passthrough(),
                   })
@@ -98,6 +110,8 @@ export const whatsappWebhookSchema = z
   .passthrough();
 
 export type WhatsappWebhook = z.infer<typeof whatsappWebhookSchema>;
+export type WhatsappMessageItem = z.infer<typeof messageSchema>;
+export type WhatsappStatusItem = z.infer<typeof statusSchema>;
 
 /** Tipos de mensagem que sabemos ingerir; o resto é registrado e ignorado. */
 export const SUPPORTED_MESSAGE_TYPES = new Set(['text', 'image', 'document', 'audio']);

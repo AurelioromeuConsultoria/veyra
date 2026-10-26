@@ -55,6 +55,8 @@ const CONFIG: ConfigDaGuarda = {
   reconciliacaoMs: 1_000,
   mudancaTravaMs: 3_000,
   mudancaTransacaoMs: 15_000,
+  ingestaoTravaMs: 2_000,
+  ingestaoLoteMs: 10_000,
   workspaceTravaMs: 3_000,
   workspaceTransacaoMs: 15_000,
   // a IA com prazo curto: o teste da chamada que não respeita o sinal cabe

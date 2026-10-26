@@ -26,4 +26,22 @@ export class PermissionsService {
     });
     return row !== null;
   }
+
+  /**
+   * A permissão de OUTRA membership ativa deste workspace (o client filtrado
+   * garante o workspace). Usada quando a ação depende de quem recebe, não de
+   * quem pede — por exemplo, atribuir uma conversa RAI (ADR-052, C13).
+   */
+  async membershipHas(membershipId: string, key: PermissionKey): Promise<boolean> {
+    const membership = await this.prisma.db.membership.findFirst({
+      where: { id: membershipId, status: 'active' },
+      select: { roleId: true },
+    });
+    if (!membership) return false;
+    const row = await this.prisma.db.rolePermission.findFirst({
+      where: { roleId: membership.roleId, permissionKey: key },
+      select: { id: true },
+    });
+    return row !== null;
+  }
 }

@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import type {
   ConsentStatus,
   ConversationDto,
@@ -15,7 +20,13 @@ import type {
   UpdateConversationInput,
 } from '@veyra/contracts';
 import { ActivitiesService } from '../activities/activities.service';
-import { decideSend, SERVICE_WINDOW_MS } from '../channels/send-policy';
+import { PermissionsService } from '../auth/permissions.service';
+import {
+  decideSend,
+  MENSAGEM_NUMERO_NAO_CONFERE,
+  MENSAGEM_REMETENTE_A_IDENTIFICAR,
+  SERVICE_WINDOW_MS,
+} from '../channels/send-policy';
 import { WhatsappSendService } from '../channels/whatsapp-send.service';
 import { FilesService } from '../files/files.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -46,8 +57,21 @@ type ConversationRow = {
   lastInboundAt: Date | null;
   /** endereço exato no canal externo (o wa_id que falou com a gente) */
   externalAddress: string | null;
+  /** RAI (ADR-052 item 2): `unidentified` não tem contato */
+  senderStatus: 'identified' | 'unidentified';
+  senderIdentifiedAt: Date | null;
   createdAt: Date;
 };
+
+/** O que a tela pode ver da conversa, conforme quem pergunta (C13). */
+type Visao = { podeVerRai: boolean; mostraNumero: boolean };
+
+/** C13: a RAI não vai para quem não pode identificá-la. */
+const MENSAGEM_ATRIBUIR_RAI =
+  'Esta conversa só pode ser atribuída a quem pode identificar o remetente';
+
+/** O 409 do único de conversa aberta (critério 4 da aprovação da F4.1a). */
+const MENSAGEM_OUTRA_ABERTA = 'Já existe outra conversa aberta para este número.';
 
 type MessageRow = {
   id: string;
@@ -87,7 +111,68 @@ export class ConversationsService {
     private readonly files: FilesService,
     private readonly send: WhatsappSendService,
     private readonly usage: UsageService,
+    private readonly permissions: PermissionsService,
   ) {}
+
+  /**
+   * C13 (ADR-052): a conversa RAI só existe para quem tem `contacts:write`,
+   * além de `conversations:read`; o número completo, só com `contacts:read`.
+   */
+  private async visao(auth: AuthContext): Promise<Visao> {
+    const [podeVerRai, mostraNumero] = await Promise.all([
+      this.permissions.has(auth, 'contacts:write'),
+      this.permissions.has(auth, 'contacts:read'),
+    ]);
+    return { podeVerRai, mostraNumero };
+  }
+
+  /** A conversa como quem pergunta pode vê-la: a RAI invisível é 404. */
+  private async lerVisivel(
+    auth: AuthContext,
+    id: string,
+  ): Promise<{ row: ConversationRow; visao: Visao }> {
+    const row = (await this.prisma.db.conversation.findFirst({
+      where: { id },
+    })) as unknown as ConversationRow | null;
+    const visao = await this.visao(auth);
+    if (!row || (row.senderStatus === 'unidentified' && !visao.podeVerRai)) {
+      throw new NotFoundException('Conversa não encontrada');
+    }
+    return { row, visao };
+  }
+
+  /**
+   * Reabrir (ou responder numa conversa encerrada) com outra aberta da mesma
+   * chave violaria o único (ADR-052 item 2): 409. Ele aponta a outra conversa
+   * SÓ se quem pede pode acessá-la; senão, a mensagem é genérica.
+   */
+  private async conflitoAoReabrir(row: ConversationRow, visao: Visao): Promise<void> {
+    if (!row.externalAddress) return;
+    const where =
+      row.senderStatus === 'unidentified'
+        ? { senderStatus: 'unidentified' as const }
+        : row.contactId
+          ? { contactId: row.contactId }
+          : null;
+    if (!where) return;
+    const outra = (await this.prisma.db.conversation.findFirst({
+      where: {
+        ...where,
+        channelId: row.channelId,
+        externalAddress: row.externalAddress,
+        status: { not: 'closed' },
+        id: { not: row.id },
+      },
+      select: { id: true, senderStatus: true },
+    })) as unknown as { id: string; senderStatus: string } | null;
+    if (!outra) return;
+    const acessivel = outra.senderStatus !== 'unidentified' || visao.podeVerRai;
+    throw new ConflictException(
+      acessivel
+        ? { message: MENSAGEM_OUTRA_ABERTA, conversationId: outra.id }
+        : MENSAGEM_OUTRA_ABERTA,
+    );
+  }
 
   /**
    * Canal interno de sistema do workspace (ADR-023). O cliente nunca escolhe
@@ -105,9 +190,12 @@ export class ConversationsService {
     return channel.id;
   }
 
-  async list(input: ListConversationsInput): Promise<ConversationPageDto> {
+  async list(auth: AuthContext, input: ListConversationsInput): Promise<ConversationPageDto> {
+    const visao = await this.visao(auth);
     const cursor = input.cursor ? decodeCursor(input.cursor) : null;
     const where = {
+      // C13: sem `contacts:write`, a RAI não aparece nem na contagem da página
+      ...(visao.podeVerRai ? {} : { senderStatus: 'identified' as const }),
       ...(input.status === 'all' ? {} : { status: input.status }),
       ...(input.assigneeMembershipId ? { assigneeMembershipId: input.assigneeMembershipId } : {}),
       ...(input.contactId ? { contactId: input.contactId } : {}),
@@ -129,7 +217,7 @@ export class ConversationsService {
     const page = rows.slice(0, input.limit);
     const last = page[page.length - 1];
     return {
-      items: await this.toDtos(page),
+      items: await this.toDtos(page, visao),
       nextCursor:
         rows.length > input.limit && last
           ? encodeCursor({ at: last.lastMessageAt, id: last.id })
@@ -137,16 +225,13 @@ export class ConversationsService {
     };
   }
 
-  async get(id: string): Promise<ConversationDto> {
-    const row = (await this.prisma.db.conversation.findFirst({
-      where: { id },
-    })) as unknown as ConversationRow | null;
-    if (!row) throw new NotFoundException('Conversa não encontrada');
-    const [dto] = await this.toDtos([row]);
+  async get(auth: AuthContext, id: string): Promise<ConversationDto> {
+    const { row, visao } = await this.lerVisivel(auth, id);
+    const [dto] = await this.toDtos([row], visao);
     return dto;
   }
 
-  async create(input: CreateConversationInput): Promise<ConversationDto> {
+  async create(auth: AuthContext, input: CreateConversationInput): Promise<ConversationDto> {
     await this.validateReferences(input);
     const channelId = await this.systemChannelId();
     const created = await this.prisma.db.conversation.create({
@@ -159,7 +244,7 @@ export class ConversationsService {
         lastMessageAt: new Date(),
       },
     } as never);
-    return this.get((created as unknown as { id: string }).id);
+    return this.get(auth, (created as unknown as { id: string }).id);
   }
 
   async update(
@@ -167,22 +252,41 @@ export class ConversationsService {
     id: string,
     input: UpdateConversationInput,
   ): Promise<ConversationDto> {
-    const existing = (await this.prisma.db.conversation.findFirst({
-      where: { id },
-    })) as unknown as ConversationRow | null;
-    if (!existing) throw new NotFoundException('Conversa não encontrada');
+    const { row: existing, visao } = await this.lerVisivel(auth, id);
     await this.validateReferences(input);
+    // C13: a conversa RAI só vai para quem pode identificar o remetente — a
+    // notificação da atribuição revelaria a conversa a quem não pode vê-la
+    const soConversaIdentificada =
+      input.assigneeMembershipId !== undefined &&
+      input.assigneeMembershipId !== null &&
+      !(await this.permissions.membershipHas(input.assigneeMembershipId, 'contacts:write'));
+    if (soConversaIdentificada && existing.senderStatus === 'unidentified') {
+      throw new BadRequestException(MENSAGEM_ATRIBUIR_RAI);
+    }
+    if (existing.status === 'closed' && input.status && input.status !== 'closed') {
+      await this.conflitoAoReabrir(existing, visao);
+    }
 
     const db = this.prisma.db as unknown as TxRunner;
     await db.$transaction(async (tx) => {
-      await tx.conversation.updateMany({
-        where: { id },
+      /**
+       * A conferência acima leu a conversa FORA da transação: um desfazer ou um
+       * rejeitar concorrente pode tê-la levado à RAI no meio. A condição na
+       * própria escrita é a garantia; sem linha escrita, ela virou RAI.
+       */
+      const { count } = await tx.conversation.updateMany({
+        where: { id, ...(soConversaIdentificada ? { senderStatus: 'identified' } : {}) },
         data: {
           subject: input.subject,
           status: input.status,
           assigneeMembershipId: input.assigneeMembershipId,
         },
       });
+      if (count === 0) {
+        const ainda = await tx.conversation.findFirst({ where: { id }, select: { id: true } });
+        if (!ainda) throw new NotFoundException('Conversa não encontrada');
+        throw new BadRequestException(MENSAGEM_ATRIBUIR_RAI);
+      }
       // ADR-026: atribuir a OUTRA pessoa avisa quem recebeu; quem atribui a si
       // mesmo não se autonotifica. dedupeKey pelo par (conversa, destinatário):
       // reatribuir para quem já foi avisado não repete o aviso — evita
@@ -203,7 +307,7 @@ export class ConversationsService {
         );
       }
     });
-    return this.get(id);
+    return this.get(auth, id);
   }
 
   /**
@@ -215,10 +319,7 @@ export class ConversationsService {
     conversationId: string,
     input: CreateMessageInput,
   ): Promise<MessageDto> {
-    const conversation = (await this.prisma.db.conversation.findFirst({
-      where: { id: conversationId },
-    })) as unknown as ConversationRow | null;
-    if (!conversation) throw new NotFoundException('Conversa não encontrada');
+    const { row: conversation, visao } = await this.lerVisivel(auth, conversationId);
 
     if (input.direction === 'inbound' && !conversation.contactId) {
       throw new BadRequestException(
@@ -231,7 +332,7 @@ export class ConversationsService {
     // pendente de verificação não sai do Veyra (§7.5). Esta checagem vem ANTES
     // do roteamento de canal: é sobre o CONTEÚDO, e recusar por conteúdo antes
     // de discutir política de canal dá o erro mais útil ao usuário.
-    const attachments = await this.files.loadForAttachment(input.attachmentIds ?? []);
+    const attachments = await this.files.loadForAttachment(auth, input.attachmentIds ?? []);
     const channel = await this.prisma.db.channel.findFirst({
       where: { id: conversation.channelId },
       select: { type: true },
@@ -275,9 +376,13 @@ export class ConversationsService {
       const row = (await this.prisma.db.message.findFirst({
         where: { id: messageId },
       })) as unknown as MessageRow;
-      const [dto] = await this.toMessageDtos([row]);
+      const [dto] = await this.toMessageDtos([row], conversation);
       return dto;
     }
+
+    // mensagem em conversa encerrada a reabre: com outra aberta da mesma chave,
+    // o único seria violado (ADR-052 item 2)
+    if (conversation.status === 'closed') await this.conflitoAoReabrir(conversation, visao);
 
     const db = this.prisma.db as unknown as TxRunner;
     const id = await db.$transaction(async (tx) => {
@@ -287,9 +392,9 @@ export class ConversationsService {
           // derivado da conversa NO SERVIDOR (ADR-023), nunca do cliente
           channelId: conversation.channelId,
           direction: input.direction,
+          // a AUTORIA é gravada; a ATRIBUIÇÃO ao contato vem da conversa (C12)
           authorType: input.direction === 'outbound' ? 'user' : 'contact',
           authorMembershipId: input.direction === 'outbound' ? auth.membershipId : null,
-          authorContactId: input.direction === 'inbound' ? conversation.contactId : null,
           body: input.body,
           // canal interno entrega na hora; canal externo passará pelo outbox
           deliveredAt: new Date(),
@@ -297,6 +402,19 @@ export class ConversationsService {
       } as never);
 
       if (attachments.length > 0) {
+        /**
+         * PRENDE os arquivos antes de ligá-los (escrita sem efeito), como o
+         * expurgo da exclusão de contato: as duas escritas se serializam. Se o
+         * expurgo veio antes, o arquivo sumiu e o anexo é recusado; se veio
+         * depois, ele vê este vínculo e o arquivo fica (revisão da F4.1a).
+         */
+        const presos = await tx.fileObject.updateMany({
+          where: { id: { in: attachments.map((file) => file.id) } },
+          data: { scanAttempts: { increment: 0 } },
+        } as never);
+        if ((presos as unknown as { count: number }).count !== attachments.length) {
+          throw new BadRequestException('Arquivo inválido');
+        }
         await tx.messageAttachment.createMany({
           data: attachments.map((file) => ({
             workspaceId: auth.workspaceId as string,
@@ -322,7 +440,8 @@ export class ConversationsService {
         {
           actorMembershipId: auth.membershipId,
           payload: {}, // nunca o corpo da mensagem na timeline
-          targets: { conversationId, contactId: conversation.contactId },
+          // sem `contactId`: a timeline do contato vem da conversa (C12)
+          targets: { conversationId },
         },
       );
       return (message as unknown as { id: string }).id;
@@ -331,16 +450,16 @@ export class ConversationsService {
     const row = (await this.prisma.db.message.findFirst({
       where: { id },
     })) as unknown as MessageRow;
-    const [dto] = await this.toMessageDtos([row]);
+    const [dto] = await this.toMessageDtos([row], conversation);
     return dto;
   }
 
-  async listMessages(conversationId: string, input: ListMessagesInput): Promise<MessagePageDto> {
-    const conversation = await this.prisma.db.conversation.findFirst({
-      where: { id: conversationId },
-      select: { id: true },
-    });
-    if (!conversation) throw new NotFoundException('Conversa não encontrada');
+  async listMessages(
+    auth: AuthContext,
+    conversationId: string,
+    input: ListMessagesInput,
+  ): Promise<MessagePageDto> {
+    const { row: conversation } = await this.lerVisivel(auth, conversationId);
 
     const cursor = input.cursor ? decodeCursor(input.cursor) : null;
     const rows = (await this.prisma.db.message.findMany({
@@ -362,7 +481,7 @@ export class ConversationsService {
     const page = rows.slice(0, input.limit);
     const last = page[page.length - 1];
     return {
-      items: await this.toMessageDtos(page),
+      items: await this.toMessageDtos(page, conversation),
       nextCursor:
         rows.length > input.limit && last
           ? encodeCursor({ at: last.createdAt, id: last.id })
@@ -378,11 +497,9 @@ export class ConversationsService {
    * revogado nem recibo atrasado, e uma segunda implementação da regra
    * divergiria da que o worker aplica de fato (ADR-038, ADR-039).
    */
-  async sendPolicy(workspaceId: string, id: string): Promise<SendPolicyDto> {
-    const row = (await this.prisma.db.conversation.findFirst({
-      where: { id },
-    })) as unknown as ConversationRow | null;
-    if (!row) throw new NotFoundException('Conversa não encontrada');
+  async sendPolicy(auth: AuthContext, id: string): Promise<SendPolicyDto> {
+    const workspaceId = auth.workspaceId as string;
+    const { row } = await this.lerVisivel(auth, id);
 
     const channel = await this.prisma.db.channel.findFirst({
       where: { id: row.channelId },
@@ -427,6 +544,26 @@ export class ConversationsService {
       };
     }
 
+    /**
+     * O MESMO predicado do envio (ADR-052 item 2), para a tela não prometer o
+     * que o envio nega — e antes da cota: a RAI não recebe resposta, e a
+     * identificada só com o número exato do cadastro do contato.
+     */
+    const remetente = await this.send.remetenteDoEnvio(row);
+    if (remetente !== 'confere') {
+      return {
+        channelType,
+        mode: 'blocked',
+        reason:
+          remetente === 'a_identificar'
+            ? MENSAGEM_REMETENTE_A_IDENTIFICAR
+            : MENSAGEM_NUMERO_NAO_CONFERE,
+        windowExpiresAt,
+        consentStatus: null,
+        templates: [],
+      };
+    }
+
     const [consents, templates, cotaEsgotada] = await Promise.all([
       this.resolveConsents([row]),
       this.prisma.db.messageTemplate.findMany({
@@ -456,6 +593,7 @@ export class ConversationsService {
      */
     const decision = decideSend({
       lastInboundAt: row.lastInboundAt,
+      remetente,
       hasActiveConsent: consentStatus === 'granted',
       template: null,
       templateParams: [],
@@ -536,14 +674,15 @@ export class ConversationsService {
     }
   }
 
-  private async toDtos(rows: ConversationRow[]): Promise<ConversationDto[]> {
-    const [contactNames, memberNames, channels] = await Promise.all([
+  private async toDtos(rows: ConversationRow[], visao: Visao): Promise<ConversationDto[]> {
+    const [contactNames, memberNames, channels, doLegado] = await Promise.all([
       this.resolveContactNames(rows.map((r) => r.contactId)),
       this.resolveMemberNames(rows.map((r) => r.assigneeMembershipId)),
       this.prisma.db.channel.findMany({
         where: { id: { in: [...new Set(rows.map((r) => r.channelId))] } },
         select: { id: true, type: true },
       }),
+      this.conversasDoLegado(rows),
     ]);
     const channelType = new Map(channels.map((c) => [c.id, c.type]));
     return rows.map((row) => ({
@@ -551,6 +690,15 @@ export class ConversationsService {
       channelType: (channelType.get(row.channelId) ?? 'internal') as ConversationDto['channelType'],
       contactId: row.contactId,
       contactName: row.contactId ? (contactNames.get(row.contactId) ?? null) : null,
+      senderStatus: row.senderStatus,
+      // o número completo só com `contacts:read`; para os outros, os 4 últimos
+      senderAddress: row.externalAddress
+        ? visao.mostraNumero
+          ? row.externalAddress
+          : `•••• ${row.externalAddress.slice(-4)}`
+        : null,
+      senderIdentifiedByPerson: row.senderIdentifiedAt !== null,
+      senderRelinkBlocked: doLegado.has(row.id),
       subject: row.subject,
       status: row.status,
       assigneeMembershipId: row.assigneeMembershipId,
@@ -569,6 +717,34 @@ export class ConversationsService {
           : new Date(row.lastInboundAt.getTime() + SERVICE_WINDOW_MS).toISOString(),
       createdAt: row.createdAt.toISOString(),
     }));
+  }
+
+  /**
+   * As conversas com atribuição GRAVADA ao contato, anterior à F4.1a (o
+   * legado, ADR-052): a mesma condição que `ConversationSenderService` confere
+   * sob as travas, em duas consultas para a página inteira. Só as de canal
+   * externo, que são as que se religam.
+   */
+  private async conversasDoLegado(rows: ConversationRow[]): Promise<Set<string>> {
+    const ids = rows.filter((r) => r.externalAddress).map((r) => r.id);
+    if (ids.length === 0) return new Set();
+    const [mensagens, atividades] = await Promise.all([
+      this.prisma.db.message.findMany({
+        where: { conversationId: { in: ids }, authorContactId: { not: null } },
+        select: { conversationId: true },
+        distinct: ['conversationId'],
+      } as never),
+      this.prisma.db.activity.findMany({
+        where: { conversationId: { in: ids }, contactId: { not: null } },
+        select: { conversationId: true },
+        distinct: ['conversationId'],
+      } as never),
+    ]);
+    return new Set(
+      [...mensagens, ...atividades].map(
+        (r) => (r as unknown as { conversationId: string }).conversationId,
+      ),
+    );
   }
 
   /**
@@ -598,10 +774,19 @@ export class ConversationsService {
     return estado;
   }
 
-  private async toMessageDtos(rows: MessageRow[]): Promise<MessageDto[]> {
+  /**
+   * O autor exibido: o membro; senão o contato GRAVADO na mensagem (o legado,
+   * anterior à F4.1a); senão, para a mensagem do contato, o contato ATUAL da
+   * conversa (C12). Na conversa RAI, nenhum nome — a tela diz "remetente a
+   * identificar".
+   */
+  private async toMessageDtos(
+    rows: MessageRow[],
+    conversa: Pick<ConversationRow, 'contactId'>,
+  ): Promise<MessageDto[]> {
     const [memberNames, contactNames, attachments, dispatches] = await Promise.all([
       this.resolveMemberNames(rows.map((r) => r.authorMembershipId)),
-      this.resolveContactNames(rows.map((r) => r.authorContactId)),
+      this.resolveContactNames([...rows.map((r) => r.authorContactId), conversa.contactId]),
       this.resolveAttachments(rows.map((r) => r.id)),
       this.resolveDispatches(rows.map((r) => r.id)),
     ]);
@@ -613,7 +798,9 @@ export class ConversationsService {
         ? (memberNames.get(row.authorMembershipId) ?? null)
         : row.authorContactId
           ? (contactNames.get(row.authorContactId) ?? null)
-          : null,
+          : row.authorType === 'contact' && conversa.contactId
+            ? (contactNames.get(conversa.contactId) ?? null)
+            : null,
       body: row.body,
       attachments: attachments.get(row.id) ?? [],
       dispatchState: (dispatches.get(row.id)?.state ?? null) as MessageDto['dispatchState'],

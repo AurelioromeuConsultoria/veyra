@@ -341,7 +341,7 @@ describe('regras estáticas', () => {
     expect(achados).toEqual([]);
   });
 
-  it('o contato da CONVERSA é imutável: o contrato não o atualiza e nenhuma escrita o muda (adendo 6 §9)', () => {
+  it('o contato da CONVERSA tem UM escritor só, a identificação do remetente: o contrato não o atualiza e nenhuma outra escrita o muda (adendo 6 §9; ADR-052 item 2)', () => {
     expect(Object.keys(updateConversationSchema.shape)).not.toContain('contactId');
     const raiz = join(__dirname, '..');
     const achados: string[] = [];
@@ -364,7 +364,9 @@ describe('regras estáticas', () => {
       }
     };
     varrer(raiz);
-    expect(achados).toEqual([]);
+    // as religações (identificar, desfazer, rejeitar) passam pelo protocolo
+    // da mudança por contato, e é só aqui que o contato da conversa muda
+    expect([...new Set(achados)]).toEqual(['/conversations/conversation-sender.service.ts']);
   });
 
   it('as chaves das travas de restrição só existem na primitiva', () => {

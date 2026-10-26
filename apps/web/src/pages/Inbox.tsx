@@ -23,6 +23,7 @@ import { Input, Select, Textarea } from '../components/ui/input';
 import { EmptyState } from '../components/ui/page';
 import { WindowChip, WindowMeter } from '../components/ui/window-meter';
 import { api, ApiError, toQuery } from '../lib/api';
+import { SenderPanel } from './InboxSender';
 import { dayLabel, fullStamp, relativeStamp, timeOfDay } from '../lib/format';
 import { hasPermission, useSession } from '../lib/session';
 
@@ -163,6 +164,12 @@ export function InboxPage() {
    * invalida o trabalho que outra pessoa poderia aprovar (ADR-044, adendo 3).
    */
   const canSuggestReply = canUseAi && canReadConversations && canWrite;
+  /**
+   * Decidir o remetente (ADR-052 item 2): identificar, desfazer e rejeitar. O
+   * servidor confere as mesmas três chaves; a tela só não oferece o que negaria.
+   */
+  const canIdentify =
+    canWrite && hasPermission(user, 'contacts:write') && hasPermission(user, 'contacts:read');
   const queryClient = useQueryClient();
 
   /**
@@ -220,6 +227,8 @@ export function InboxPage() {
   });
   const items = conversations.data?.items ?? [];
   const selected = items.find((c) => c.id === selectedId) ?? null;
+  /** remetente a identificar: a IA não usa esta conversa (o servidor recusa) */
+  const selectedRai = selected?.senderStatus === 'unidentified';
 
   /**
    * A conversa apontada de fora pode não caber no filtro corrente — uma proposta
@@ -246,7 +255,7 @@ export function InboxPage() {
       ),
     // mesma regra do rascunho: a rota do resumo é `intelligence:use` +
     // `conversations:read`, e a tela não pode pedir o que o servidor negará
-    enabled: selectedId !== null && canUseAi && canReadConversations,
+    enabled: selectedId !== null && canUseAi && canReadConversations && !selectedRai,
   });
 
   /**
@@ -268,7 +277,7 @@ export function InboxPage() {
       api.get<ReplySuggestionDto | null>(
         `/api/intelligence/conversations/${selectedId}/reply-suggestion`,
       ),
-    enabled: selectedId !== null && canUseAi && canReadConversations,
+    enabled: selectedId !== null && canUseAi && canReadConversations && !selectedRai,
   });
 
   const messages = useQuery({
@@ -624,13 +633,18 @@ export function InboxPage() {
         <ul className="min-h-0 flex-1 overflow-auto">
           {items.map((conversation) => {
             const ativa = conversation.id === selectedId;
-            const titulo = conversation.contactName ?? conversation.subject ?? 'Sem assunto';
-            // legenda: o assunto quando há contato, o aviso quando não há
-            const legenda = conversation.contactName
-              ? conversation.subject
-              : conversation.subject
-                ? 'Sem contato'
-                : null;
+            const rai = conversation.senderStatus === 'unidentified';
+            const titulo = rai
+              ? 'Remetente a identificar'
+              : (conversation.contactName ?? conversation.subject ?? 'Sem assunto');
+            // legenda: o número na RAI; o assunto quando há contato; o aviso quando não há
+            const legenda = rai
+              ? conversation.senderAddress
+              : conversation.contactName
+                ? conversation.subject
+                : conversation.subject
+                  ? 'Sem contato'
+                  : null;
             return (
               <li key={conversation.id}>
                 <button
@@ -701,7 +715,9 @@ export function InboxPage() {
           <header className="flex items-center gap-3 border-b border-border bg-surface px-6 py-3">
             <div className="mr-auto min-w-0">
               <h2 className="truncate text-display-sm">
-                {selected.contactName ?? selected.subject ?? 'Conversa'}
+                {selectedRai
+                  ? 'Remetente a identificar'
+                  : (selected.contactName ?? selected.subject ?? 'Conversa')}
               </h2>
               <p className="mt-0.5 flex items-center gap-2 truncate text-data text-muted-fg">
                 {selected.contactName && selected.subject ? (
@@ -713,7 +729,7 @@ export function InboxPage() {
                 {selected.assigneeName ? <span>{selected.assigneeName}</span> : null}
               </p>
             </div>
-            {canUseAi && canReadConversations ? (
+            {canUseAi && canReadConversations && !selectedRai ? (
               <Button
                 size="sm"
                 variant="ai"
@@ -738,6 +754,10 @@ export function InboxPage() {
               </Select>
             ) : null}
           </header>
+
+          {canIdentify && selected.channelType !== 'internal' && selected.senderAddress ? (
+            <SenderPanel conversation={selected} onChanged={() => invalidate()} />
+          ) : null}
 
           {/* ASSINATURA: a janela de 24h como medidor, não como texto de debug */}
           {policy.data && policy.data.channelType !== 'internal' ? (
@@ -829,7 +849,8 @@ export function InboxPage() {
                     >
                       <div className="flex items-center gap-1.5 px-0.5">
                         <span className="text-data-sm font-medium text-muted-fg">
-                          {group.authorName ?? (saida ? 'Você' : 'Contato')}
+                          {group.authorName ??
+                            (saida ? 'Você' : selectedRai ? 'Remetente a identificar' : 'Contato')}
                         </span>
                         {/* UMA hora por bloco: a thread agrupa por autor, e a hora de
                             cada frase virava uma coluna de ruído */}
@@ -984,6 +1005,7 @@ export function InboxPage() {
                        consentimento de conteúdo — a tela não recalcula política */
                     disabled={
                       !canSuggestReply ||
+                      selectedRai ||
                       suggestReply.isPending ||
                       modo !== 'free_form' ||
                       aiConsent.data?.conversationContent !== true
@@ -1009,11 +1031,13 @@ export function InboxPage() {
                   <span className="text-data text-muted-fg">
                     {!canSuggestReply
                       ? 'Somente leitura: gerar rascunho substitui o pendente e exige responder conversas'
-                      : modo !== 'free_form'
-                        ? (policy.data?.reason ?? 'Sugestão só dentro da janela livre de 24h')
-                        : aiConsent.data?.conversationContent !== true
-                          ? 'Sugestão indisponível: falta autorização de uso de conteúdo de conversa'
-                          : (replyNotice ?? 'A IA rascunha; você revisa e envia')}
+                      : selectedRai
+                        ? 'Remetente a identificar: a IA não usa esta conversa'
+                        : modo !== 'free_form'
+                          ? (policy.data?.reason ?? 'Sugestão só dentro da janela livre de 24h')
+                          : aiConsent.data?.conversationContent !== true
+                            ? 'Sugestão indisponível: falta autorização de uso de conteúdo de conversa'
+                            : (replyNotice ?? 'A IA rascunha; você revisa e envia')}
                   </span>
                 </div>
               )}

@@ -5,6 +5,7 @@ import { ContentUseGuard, GANCHOS_DA_GUARDA } from './content-use.guard';
 import { OrigensDosUsos, UsosOrfaos } from './content-use.orphans';
 import { CONFIG_DA_GUARDA, CONFIG_PADRAO_DA_GUARDA, PoolsDaGuarda } from './content-use.pools';
 import { ReconciliacaoDosUsos } from './content-use.reconciler';
+import { TravasDeIdentidade } from './identity-locks';
 import { MudancasDeRestricao } from './restriction-changes';
 
 /**
@@ -26,6 +27,7 @@ import { MudancasDeRestricao } from './restriction-changes';
     OrigensDosUsos,
     ReconciliacaoDosUsos,
     MudancasDeRestricao,
+    TravasDeIdentidade,
   ],
   // os pools NÃO saem do módulo: a conexão crua de registro e o client sem
   // filtro são da guarda (docs/SECURITY.md §2)
@@ -37,6 +39,7 @@ import { MudancasDeRestricao } from './restriction-changes';
     OrigensDosUsos,
     ReconciliacaoDosUsos,
     MudancasDeRestricao,
+    TravasDeIdentidade,
   ],
 })
 export class ContentUseModule {}

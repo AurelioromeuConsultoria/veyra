@@ -2,50 +2,64 @@ import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query } from 
 import {
   ConversationDto,
   ConversationPageDto,
+  ConversationSenderCandidateDto,
   CreateConversationInput,
   CreateMessageInput,
+  IdentifyConversationSenderInput,
   ListConversationsInput,
   ListMessagesInput,
   MessageDto,
   MessagePageDto,
+  RejectConversationSenderInput,
   SendPolicyDto,
   UpdateConversationInput,
   createConversationSchema,
   createMessageSchema,
+  identifyConversationSenderSchema,
   listConversationsSchema,
   listMessagesSchema,
+  rejectConversationSenderSchema,
   updateConversationSchema,
 } from '@veyra/contracts';
 import { AuthContext, CurrentAuth, RequirePermissions } from '../common/decorators';
 import { Idempotent } from '../common/idempotency.decorator';
 import { ZodPipe } from '../common/zod.pipe';
+import { ConversationSenderService } from './conversation-sender.service';
 import { ConversationsService } from './conversations.service';
 
 @Controller('conversations')
 export class ConversationsController {
-  constructor(private readonly conversations: ConversationsService) {}
+  constructor(
+    private readonly conversations: ConversationsService,
+    private readonly sender: ConversationSenderService,
+  ) {}
 
   @RequirePermissions('conversations:read')
   @Get()
   list(
+    @CurrentAuth() auth: AuthContext,
     @Query(new ZodPipe(listConversationsSchema)) query: ListConversationsInput,
   ): Promise<ConversationPageDto> {
-    return this.conversations.list(query);
+    return this.conversations.list(auth, query);
   }
 
   @RequirePermissions('conversations:read')
   @Get(':id')
-  get(@Param('id', new ParseUUIDPipe()) id: string): Promise<ConversationDto> {
-    return this.conversations.get(id);
+  get(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<ConversationDto> {
+    return this.conversations.get(auth, id);
   }
 
   @RequirePermissions('conversations:write')
   @Idempotent()
   @Post()
   create(
+    @CurrentAuth() auth: AuthContext,
     @Body(new ZodPipe(createConversationSchema)) body: CreateConversationInput,
   ): Promise<ConversationDto> {
-    return this.conversations.create(body);
+    return this.conversations.create(auth, body);
   }
 
   @RequirePermissions('conversations:write')
@@ -70,16 +84,66 @@ export class ConversationsController {
     @CurrentAuth() auth: AuthContext,
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<SendPolicyDto> {
-    return this.conversations.sendPolicy(auth.workspaceId as string, id);
+    return this.conversations.sendPolicy(auth, id);
   }
 
   @RequirePermissions('conversations:read')
   @Get(':id/messages')
   listMessages(
+    @CurrentAuth() auth: AuthContext,
     @Param('id', new ParseUUIDPipe()) id: string,
     @Query(new ZodPipe(listMessagesSchema)) query: ListMessagesInput,
   ): Promise<MessagePageDto> {
-    return this.conversations.listMessages(id, query);
+    return this.conversations.listMessages(auth, id, query);
+  }
+
+  /**
+   * O REMETENTE (ADR-052 item 2). Ver a conversa RAI exige `contacts:write`
+   * (C13, conferido no serviço, com 404); os candidatos mostram contatos, então
+   * pedem também `contacts:read`.
+   */
+  @RequirePermissions('conversations:read', 'contacts:read', 'contacts:write')
+  @Get(':id/sender/candidates')
+  senderCandidates(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<ConversationSenderCandidateDto[]> {
+    return this.sender.candidates(auth, id);
+  }
+
+  /** Identificar: só para a conversa; o número compartilhado continua RAI. */
+  @RequirePermissions('conversations:write', 'contacts:write', 'contacts:read')
+  @Post(':id/sender/identify')
+  async identifySender(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body(new ZodPipe(identifyConversationSenderSchema)) body: IdentifyConversationSenderInput,
+  ): Promise<ConversationDto> {
+    await this.sender.identify(auth, id, body);
+    return this.conversations.get(auth, id);
+  }
+
+  /** Desfazer a identificação feita por uma pessoa. */
+  @RequirePermissions('conversations:write', 'contacts:write', 'contacts:read')
+  @Post(':id/sender/unidentify')
+  async unidentifySender(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<ConversationDto> {
+    await this.sender.unidentify(auth, id);
+    return this.conversations.get(auth, id);
+  }
+
+  /** "O remetente não é este contato", com a retirada do número oferecida. */
+  @RequirePermissions('conversations:write', 'contacts:write', 'contacts:read')
+  @Post(':id/sender/reject')
+  async rejectSender(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body(new ZodPipe(rejectConversationSenderSchema)) body: RejectConversationSenderInput,
+  ): Promise<ConversationDto> {
+    await this.sender.reject(auth, id, body);
+    return this.conversations.get(auth, id);
   }
 
   /**
