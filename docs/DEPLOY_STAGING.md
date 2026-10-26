@@ -424,8 +424,10 @@ muda o registro da migration e não desfaz nenhum objeto.
      normaliza cada workspace numa transação só, com a trava dos escritores em
      massa exclusiva. **Durante a passada de um workspace**, nada espera sem
      limite, mas quase tudo que mexe com telefone daquele workspace desiste:
-     - a ingestão espera só o prazo dela e falha: a Meta reentrega, e os
-       outros workspaces do mesmo POST seguem;
+     - a ingestão espera só o prazo dela e falha. Os outros workspaces do
+       mesmo POST continuam sendo processados enquanto houver prazo do lote,
+       mas a resposta à Meta é de erro, sem confirmação parcial: a reentrega
+       traz o lote inteiro, e os itens já processados são deduplicados;
      - a resposta de pessoa e o envio da IA não começam e voltam pela
        retentativa do outbox;
      - importar (em até 2 s), criar ou editar contato com telefone, excluir
@@ -1066,3 +1068,65 @@ O preço: o painel deixa de mostrar a configuração completa, e quem for depura
 precisa saber que metade dela está num arquivo. Escolha entre superfície de
 acesso (painel) e transparência de operação — não há resposta certa, e a
 decisão deve ficar registrada aqui quando você tomá-la.
+
+## 12. Registro de incidentes
+
+### INC-2026-10-26-01 — staging fora do ar (aberto)
+
+- **Detecção:** pelo usuário, no navegador, por volta das 18:30 (-03) de
+  2026-10-26: `https://veyra-staging.malachdigital.com.br` responde
+  `no available server`.
+- **O que a sondagem externa mostra** (só leitura, de fora da VPS, às 18:33 e
+  às 19:55):
+  - `GET /` e `GET /api/health` dão **503** `no available server`, em 35 a
+    160 ms;
+  - o DNS aponta para a VPS (77.37.43.5), e o certificado é válido (Let's
+    Encrypt, até 2027-01-24).
+
+  Ou seja: a VPS e o Traefik respondem, e a rota do domínio existe, mas o
+  Traefik não tem nenhum container saudável para ela.
+
+- **Causa:** não identificada. O agente não tem acesso à VPS nem ao painel, e
+  o diagnóstico interno depende de quem tem. As hipóteses, sem ordem
+  comprovada:
+  - o `web` ou a `api` parados ou reprovados no healthcheck (o `web` só sobe
+    com a `api` saudável);
+  - um deploy que tenha subido código novo sem as migrations, se o recurso
+    estiver na `main` com deploy automático (o §4 pede o recurso fixado num
+    commit);
+  - falta de recurso na VPS compartilhada.
+- **Autorizado (decisão do usuário, 2026-10-26):** só diagnóstico de leitura —
+  quais serviços estão parados, os erros e a versão implantada. **Não
+  autorizado:** reiniciar, implantar, aplicar migrations ou alterar o proxy
+  compartilhado. Continuam bloqueados deploy, ativação do Clinics, envio real
+  e dados reais.
+- **O diagnóstico de leitura**, para quem tem acesso ao host (nada aqui
+  reinicia ou altera; confira a saída antes de compartilhar):
+
+  ```bash
+  # estado, saúde, reinícios, imagem e quando subiu cada container do Veyra
+  for c in $(docker ps -a --format '{{.Names}}' | grep -i veyra); do
+    docker inspect "$c" --format '{{.Name}} | {{.State.Status}} | saude={{if .State.Health}}{{.State.Health.Status}}{{else}}-{{end}} | reinicios={{.RestartCount}} | desde={{.State.StartedAt}} | saiu={{.State.FinishedAt}} cod={{.State.ExitCode}} | {{.Config.Image}}'
+  done
+  # as últimas saídas do healthcheck
+  for c in $(docker ps -a --format '{{.Names}}' | grep -i veyra); do
+    echo "== $c"; docker inspect "$c" --format '{{if .State.Health}}{{range .State.Health.Log}}{{.End}} rc={{.ExitCode}} {{printf "%.200s" .Output}}{{"\n"}}{{end}}{{end}}' | tail -3
+  done
+  # recursos do host
+  uptime; free -h; df -h / /var/lib/docker 2>/dev/null
+  # só as linhas de erro da api e do web nas últimas 24 h
+  for c in $(docker ps -a --format '{{.Names}}' | grep -i veyra | grep -iE 'api|web'); do
+    echo "== $c"; docker logs --since 24h "$c" 2>&1 | grep -iE 'error|fatal|exception|unhealthy|prisma|P[0-9]{4}|migrat|ECONN' | tail -20
+  done
+  ```
+
+  No painel do Coolify: o histórico de **Deployments** do recurso (houve deploy
+  em 2026-10-26? de qual commit?) e se o **Auto Deploy** está ligado. A versão
+  implantada é o commit do último deploy concluído. Com o banco no ar, a
+  última migration aplicada também é lida sem alterar nada:
+  `SELECT migration_name, finished_at FROM "_prisma_migrations" ORDER BY started_at DESC LIMIT 3;`.
+
+- **Próximo passo:** com a saída acima, identificar a causa e propor a
+  recuperação, que depende de nova autorização. Se a causa for código novo com
+  schema antigo, vale a regra da manutenção: a imagem anterior não é rollback,
+  e o acesso continua bloqueado até a recuperação definida.
