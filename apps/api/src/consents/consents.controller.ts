@@ -22,7 +22,9 @@ import { ConsentsService } from './consents.service';
 
 /**
  * As rotas do consentimento e do pedido de parar (ADR-052 item 5, F4.1b), ato
- * por ato: a chave nova SEMPRE se soma à visibilidade da rota — `contacts:read`
+ * por ato: a chave nova SEMPRE se soma à visibilidade da rota, e todo registro
+ * exige também `consents:read`, porque devolve o registro — inclusive o
+ * existente de outra pessoa (decisão 19). A visibilidade é `contacts:read`
  * pelo contato, `conversations:read` pela conversa (e, na RAI, `contacts:write`,
  * conferido pela leitura da conversa, C13). Os registros exigem
  * `Idempotency-Key`. Pela conversa, o replay passa pela guarda que refaz a
@@ -56,7 +58,7 @@ export class ConsentsController {
     return this.consents.forConversation(auth, conversationId);
   }
 
-  @RequirePermissions('consents:manage', 'contacts:read')
+  @RequirePermissions('consents:manage', 'contacts:read', 'consents:read')
   @Idempotent({ required: true })
   @Post('contacts/:contactId/consents')
   grant(
@@ -67,7 +69,7 @@ export class ConsentsController {
     return this.consents.grant(auth, contactId, body);
   }
 
-  @RequirePermissions('consents:manage', 'contacts:read')
+  @RequirePermissions('consents:manage', 'contacts:read', 'consents:read')
   @Idempotent({ required: true })
   @Post('contacts/:contactId/consents/:consentId/revoke')
   revoke(
@@ -79,7 +81,7 @@ export class ConsentsController {
     return this.consents.revoke(auth, contactId, consentId, body.origin);
   }
 
-  @RequirePermissions('consents:manage', 'contacts:read')
+  @RequirePermissions('consents:manage', 'contacts:read', 'consents:read')
   @Idempotent({ required: true })
   @Post('contacts/:contactId/stop')
   stopByContact(
@@ -90,7 +92,7 @@ export class ConsentsController {
     return this.consents.stopByContact(auth, contactId, body.number, body.origin);
   }
 
-  @RequirePermissions('consents:manage', 'conversations:read')
+  @RequirePermissions('consents:manage', 'conversations:read', 'consents:read')
   @Idempotent({ required: true, replayGuard: ConversationConsentReplayGuard })
   @Post('conversations/:conversationId/stop')
   stopByConversation(
@@ -101,7 +103,7 @@ export class ConsentsController {
     return this.consents.stopByConversation(auth, conversationId, body.origin);
   }
 
-  @RequirePermissions('consents:unblock', 'contacts:read')
+  @RequirePermissions('consents:unblock', 'contacts:read', 'consents:read')
   @Idempotent({ required: true })
   @Post('contacts/:contactId/stop/lift')
   liftByContact(
@@ -112,7 +114,7 @@ export class ConsentsController {
     return this.consents.liftByContact(auth, contactId, body.number, body.origin);
   }
 
-  @RequirePermissions('consents:unblock', 'conversations:read')
+  @RequirePermissions('consents:unblock', 'conversations:read', 'consents:read')
   @Idempotent({ required: true, replayGuard: ConversationConsentReplayGuard })
   @Post('conversations/:conversationId/stop/lift')
   liftByConversation(

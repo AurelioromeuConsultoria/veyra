@@ -5733,9 +5733,9 @@ Continuam bloqueados deploy, ativação do Clinics, envio real e dados reais.
   | `GET /consent-purposes`                                              | `consents:read`                                                     |
   | `GET /contacts/:id/consents`                                         | `consents:read` + `contacts:read`                                   |
   | `GET /conversations/:id/consents`                                    | `consents:read` + `conversations:read` (RAI: `contacts:write`, C13) |
-  | `POST /contacts/:id/consents` e `.../consents/:consentId/revoke`     | `consents:manage` + `contacts:read`                                 |
-  | `POST /contacts/:id/stop` e `POST /conversations/:id/stop`           | `consents:manage` + a visibilidade da rota                          |
-  | `POST /contacts/:id/stop/lift` e `POST /conversations/:id/stop/lift` | `consents:unblock` + a visibilidade da rota                         |
+  | `POST /contacts/:id/consents` e `.../consents/:consentId/revoke`     | `consents:manage` + `contacts:read` (+ `consents:read`, decisão 19) |
+  | `POST /contacts/:id/stop` e `POST /conversations/:id/stop`           | `consents:manage` + a visibilidade (+ `consents:read`, decisão 19)  |
+  | `POST /contacts/:id/stop/lift` e `POST /conversations/:id/stop/lift` | `consents:unblock` + a visibilidade (+ `consents:read`, decisão 19) |
   - Pela conversa, o número completo só aparece com `contacts:read`; para os outros, os 4 últimos. Na RAI, sem `contacts:write`, a conversa não existe (404), mesmo com a chave do ato.
   - Os registros exigem `Idempotency-Key`: sem ela, a resposta é 400 (`@Idempotent({ required: true })`).
   - **A repetição:**
@@ -5789,7 +5789,7 @@ Continuam bloqueados deploy, ativação do Clinics, envio real e dados reais.
     - com o acesso mantido, o mesmo corpo — o mesmo registro e o mesmo recibo —, sem operação nova;
     - em nenhum caso a operação executa de novo, e a resposta guardada não é apagada: a guarda ganhou a decisão `{ refuse }`, ao lado de `replay`, `discard` e `unavailable`;
     - pelo contato, a rota já exige `contacts:read`, e o guard de permissões confere isso em toda repetição.
-19. **O registro devolve o registro, mesmo sem `consents:read`** (achado da `security` no delta 2; decisão do usuário pendente). As rotas de registro exigem a chave do ato (`consents:manage` ou `consents:unblock`) e a visibilidade, como no item 2 aprovado, mas não `consents:read`. Pela chave natural, a repetição devolve o registro existente — o pedido de parar ativo de outra pessoa, ou o consentimento já concedido —, com recibo e data. O alcance é de papel personalizado: a matriz do Core dá as duas chaves juntas. **Recomendação:** somar `consents:read` às seis rotas de registro (quem registra precisa ver o que existe), o que muda a matriz aprovada e por isso espera a decisão do usuário; até lá, o comportamento fica registrado aqui e no SECURITY §7-E.
+19. **O registro devolvia o registro, mesmo sem `consents:read`** (achado da `security` no delta 2). No `1bad873`, as rotas de registro exigiam a chave do ato e a visibilidade, como no item 2 aprovado, mas não a leitura; pela chave natural, a repetição devolvia o registro existente — o pedido de parar ativo de outra pessoa, ou o consentimento já concedido —, com recibo e data. **O usuário aprovou exigir `consents:read` nas seis rotas, em 2026-10-26; o que mudou está no bloco "Decisão 19", adiante.**
 
 **Pendências registradas, sem risco aceito:**
 
@@ -5828,3 +5828,12 @@ Continuam bloqueados deploy, ativação do Clinics, envio real e dados reais.
   - as corridas, nas duas ordens e controladas pela trava do endereço: parar × conceder, parar × importação (com a releitura provada por espião), parar × tirar o número, conceder × tirar o número e desbloquear × conceder; e a trava do contato exclusiva, provada contra uma trava compartilhada;
 - **a suíte nova `permission-backfill.integration-spec.ts`:** a matriz, os pré-requisitos, quem fica de fora (o guest, o `Profissional`, um papel de sistema de vertical e um personalizado), o livro, a auditoria só do que foi concedido, a reaplicação sem devolver a chave revogada, e nada removido;
 - **os testes antigos que mudaram:** a política e o envio de template recusados (`whatsapp-send`), o drift da categoria nova, o catálogo com os namespaces `consents` e `templates`, e o e2e do Inbox, com a janela fechada, o template indisponível e o pedido de parar.
+
+**Decisão 19: `consents:read` nas seis rotas de registro (aprovada pelo usuário em 2026-10-26; commit separado, depois da publicação do `1bad873`).** O ato de registrar devolve o registro — inclusive, pela chave natural, o existente de outra pessoa —, então quem registra precisa da leitura.
+
+- **A chave se SOMA às de cada rota**, sem substituir nenhuma: conceder e revogar exigem `consents:manage` + `contacts:read` + `consents:read`; parar, `consents:manage` + a visibilidade da rota + `consents:read`; desbloquear, `consents:unblock` + a visibilidade + `consents:read`.
+- **`consents:read` não substitui `contacts:read`:** pela conversa, o número completo continua dependendo de `contacts:read`, e a RAI de `contacts:write` (C13); a guarda do replay (decisão 18) continua refazendo os dois.
+- **Nenhuma concessão automática:** a migration publicada não muda, e nenhum papel personalizado ganha a leitura para continuar registrando. Nos papéis do Core, a matriz do item 6 já dá a leitura junto da chave de registro, salvo o papel que tenha `contacts:write` sem `contacts:read`: esse ganhou `consents:manage` — e, no Owner e no Admin, também `consents:unblock` — sem `consents:read`, e a partir daqui não registra nem desbloqueia até o workspace lhe dar a leitura. Ele já não usava as rotas pelo contato, que exigem `contacts:read`; a perda é só pelas rotas da conversa.
+- **A repetição também confere:** o guard de permissões roda antes do interceptor em toda requisição, inclusive no replay; sem `consents:read` na hora da repetição, 403, sem devolver a resposta guardada e sem apagá-la.
+- **A trilha de auditoria fica fora do alcance da decisão** (achado das duas revisões; para o usuário confirmar). Quem tem `audit:read` lê `consent.granted`, `consent.revoked`, `stop.registered` e `stop.lifted`, com recibo, origem, os ids e as contagens — nunca o número —, mesmo sem `consents:read`. É o canal de supervisão da trilha, com a minimização da lista de campos; os modelos do Core dão `audit:read` só a Owner e Admin, que já têm a leitura, então o alcance é de papel personalizado. A alternativa é filtrar essas entradas no `GET /audit` para quem não tem `consents:read`.
+- **Requisito para a F4.1c:** esta mudança precisa estar publicada e validada antes de os consentimentos passarem a autorizar envio.

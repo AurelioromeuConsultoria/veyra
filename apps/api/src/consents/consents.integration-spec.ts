@@ -1100,6 +1100,7 @@ describe('F4.1b — consentimento, pedido de parar e templates na transição (i
       const conversa = await conversaDe();
       const { sessao, roleId } = await operador('op@veyra.test', [
         'conversations:read',
+        'consents:read',
         'consents:manage',
         'contacts:read',
       ]);
@@ -1134,6 +1135,7 @@ describe('F4.1b — consentimento, pedido de parar e templates na transição (i
       expect(rai.senderStatus).toBe('unidentified');
       const { sessao, roleId } = await operador('op@veyra.test', [
         'conversations:read',
+        'consents:read',
         'consents:manage',
         'contacts:read',
         'contacts:write',
@@ -1163,12 +1165,17 @@ describe('F4.1b — consentimento, pedido de parar e templates na transição (i
       const conversa = await conversaDe();
       const completo = await operador('op@veyra.test', [
         'conversations:read',
+        'consents:read',
         'consents:manage',
         'consents:unblock',
         'contacts:read',
       ]);
       // quem nunca teve contacts:read recebeu o número mascarado, e o replay também
-      const mascarado = await operador('op2@veyra.test', ['conversations:read', 'consents:manage']);
+      const mascarado = await operador('op2@veyra.test', [
+        'conversations:read',
+        'consents:read',
+        'consents:manage',
+      ]);
       const chave = randomUUID();
       const primeiro = await registrar(
         `/api/conversations/${conversa.id}/stop`,
@@ -1235,6 +1242,7 @@ describe('F4.1b — consentimento, pedido de parar e templates na transição (i
       await parar(ana).expect(201);
       const { sessao, roleId } = await operador('op@veyra.test', [
         'conversations:read',
+        'consents:read',
         'consents:unblock',
         'contacts:read',
       ]);
@@ -1266,6 +1274,7 @@ describe('F4.1b — consentimento, pedido de parar e templates na transição (i
       const rai = await conversaDe();
       const { sessao, roleId } = await operador('op@veyra.test', [
         'conversations:read',
+        'consents:read',
         'consents:manage',
         'contacts:read',
         'contacts:write',
@@ -1294,6 +1303,7 @@ describe('F4.1b — consentimento, pedido de parar e templates na transição (i
       const conversa = await conversaDe();
       const { sessao } = await operador('op@veyra.test', [
         'conversations:read',
+        'consents:read',
         'consents:manage',
         'contacts:read',
       ]);
@@ -1336,11 +1346,13 @@ describe('F4.1b — consentimento, pedido de parar e templates na transição (i
       const conversa = await conversaDe();
       const um = await operador('op@veyra.test', [
         'conversations:read',
+        'consents:read',
         'consents:manage',
         'contacts:read',
       ]);
       const outro = await operador('op2@veyra.test', [
         'conversations:read',
+        'consents:read',
         'consents:manage',
         'contacts:read',
       ]);
@@ -1361,6 +1373,145 @@ describe('F4.1b — consentimento, pedido de parar e templates na transição (i
       expect(alheio.body.message).toMatch(/Idempotency-Key já usada/);
       expect(JSON.stringify(alheio.body)).not.toContain(N);
       expect(await estado()).toEqual(antes);
+    });
+  });
+
+  // ── A leitura exigida nos registros (decisão 19) ────────────────────────
+
+  describe('a leitura exigida nos seis registros (decisão 19)', () => {
+    /** Tem tudo o que cada registro exige, menos `consents:read`. */
+    const SEM_LEITURA = [
+      'workspace:read',
+      'contacts:read',
+      'contacts:write',
+      'conversations:read',
+      'consents:manage',
+      'consents:unblock',
+    ];
+    const registrador = async (email: string, chaves: string[]) => {
+      const u = await createUserFixture(prisma, email);
+      const roleId = await papel(`Registrador ${email}`, chaves);
+      await createMembershipFixture(prisma, wsA.workspaceId, u, roleId);
+      return { sessao: await login(email), roleId };
+    };
+    const estado = async () => ({
+      consentimentos: await prisma.raw.consent.count(),
+      ativos: await prisma.raw.consent.count({ where: { activeMark: true } }),
+      pedidos: await prisma.raw.stopBlock.count(),
+      pedidosAtivos: await prisma.raw.stopBlock.count({ where: { activeMark: true } }),
+      trilha: await prisma.raw.auditLog.count(),
+      chaves: await prisma.raw.idempotencyKey.count(),
+    });
+
+    it('sem consents:read, as seis rotas respondem 403, sem efeito e sem devolver o registro anterior', async () => {
+      const ana = await contato('Ana Fictícia', [N_E164]);
+      await chega();
+      const conversa = await conversaDe();
+      // registros anteriores, de outra pessoa: a chave natural os devolveria
+      const c = (await conceder(ana).expect(201)).body.id as string;
+      const { sessao } = await registrador('reg@veyra.test', SEM_LEITURA);
+      const semEfeito = async (
+        tentativa: () => PromiseLike<{ status: number; body: unknown }>,
+        ...proibidos: string[]
+      ) => {
+        const antes = await estado();
+        const r = await tentativa();
+        expect(r.status).toBe(403);
+        for (const texto of proibidos) expect(JSON.stringify(r.body)).not.toContain(texto);
+        expect(await estado()).toEqual(antes);
+      };
+      await semEfeito(() => conceder(ana, {}, sessao).then((r) => r), 'CON-', N);
+      await semEfeito(
+        () =>
+          registrar(`/api/contacts/${ana}/consents/${c}/revoke`, sessao, {
+            origin: 'phone',
+          }).then((r) => r),
+        'CON-',
+        N,
+      );
+      await parar(ana).expect(201);
+      await semEfeito(() => parar(ana, N_E164, sessao).then((r) => r), 'PAR-', N);
+      await semEfeito(
+        () =>
+          registrar(`/api/conversations/${conversa.id}/stop`, sessao, { origin: 'phone' }).then(
+            (r) => r,
+          ),
+        'PAR-',
+        N,
+      );
+      await semEfeito(() => desbloquear(ana, N_E164, sessao).then((r) => r), 'PAR-', 'DES-', N);
+      await semEfeito(
+        () =>
+          registrar(`/api/conversations/${conversa.id}/stop/lift`, sessao, {
+            origin: 'in_person',
+          }).then((r) => r),
+        'PAR-',
+        'DES-',
+        N,
+      );
+      expect(await bloqueiosAtivos()).toHaveLength(1);
+    });
+
+    it('com a leitura somada às permissões, as mesmas rotas funcionam', async () => {
+      const ana = await contato('Ana Fictícia', [N_E164]);
+      await chega();
+      const conversa = await conversaDe();
+      const { sessao } = await registrador('reg@veyra.test', [...SEM_LEITURA, 'consents:read']);
+      const c = (await conceder(ana, {}, sessao).expect(201)).body.id as string;
+      await registrar(`/api/contacts/${ana}/consents/${c}/revoke`, sessao, {
+        origin: 'phone',
+      }).expect(201);
+      await parar(ana, N_E164, sessao).expect(201);
+      await registrar(`/api/conversations/${conversa.id}/stop`, sessao, { origin: 'phone' }).expect(
+        201,
+      );
+      await desbloquear(ana, N_E164, sessao).expect(201);
+      await parar(ana, N_E164, sessao).expect(201);
+      await registrar(`/api/conversations/${conversa.id}/stop/lift`, sessao, {
+        origin: 'in_person',
+      }).expect(201);
+      expect(await bloqueiosAtivos()).toHaveLength(0);
+    });
+
+    it('perder consents:read entre a primeira execução e o replay: 403, sem devolver nem apagar a resposta guardada', async () => {
+      const ana = await contato('Ana Fictícia', [N_E164]);
+      await chega();
+      const conversa = await conversaDe();
+      const { sessao, roleId } = await registrador('reg@veyra.test', [
+        ...SEM_LEITURA,
+        'consents:read',
+      ]);
+      const chaveConceder = randomUUID();
+      const chaveParar = randomUUID();
+      const concedido = await conceder(ana, {}, sessao, chaveConceder).expect(201);
+      const parado = await registrar(
+        `/api/conversations/${conversa.id}/stop`,
+        sessao,
+        { origin: 'phone' },
+        chaveParar,
+      ).expect(201);
+      const antes = await estado();
+      await prisma.raw.rolePermission.deleteMany({
+        where: { roleId, permissionKey: 'consents:read' },
+      });
+      const r1 = await conceder(ana, {}, sessao, chaveConceder).expect(403);
+      expect(JSON.stringify(r1.body)).not.toContain(concedido.body.receipt);
+      const r2 = await registrar(
+        `/api/conversations/${conversa.id}/stop`,
+        sessao,
+        { origin: 'phone' },
+        chaveParar,
+      ).expect(403);
+      expect(JSON.stringify(r2.body)).not.toContain(parado.body.receipt);
+      expect(r1.headers['idempotent-replay']).toBeUndefined();
+      expect(r2.headers['idempotent-replay']).toBeUndefined();
+      // nada executou, e as duas respostas guardadas continuam lá
+      expect(await estado()).toEqual(antes);
+      expect(
+        await prisma.raw.idempotencyKey.count({
+          where: { key: { in: [chaveConceder, chaveParar] }, state: 'completed' },
+        }),
+      ).toBe(2);
     });
   });
 
