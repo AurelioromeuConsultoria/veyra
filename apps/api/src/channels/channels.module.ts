@@ -6,6 +6,11 @@ import { FilesModule } from '../files/files.module';
 import { UsageModule } from '../usage/usage.module';
 import { FakeMetaTransport } from './fake.transport';
 import { GraphApiTransport, META_TRANSPORT } from './meta.transport';
+import {
+  FakeTemplateCatalog,
+  GraphTemplateCatalog,
+  META_TEMPLATE_CATALOG,
+} from './meta-templates.catalog';
 import { CancelamentoDeDespachos } from './dispatch-cancellation.service';
 import { MediaCollectorService } from './media-collector.service';
 import { WhatsappSendService } from './whatsapp-send.service';
@@ -43,7 +48,27 @@ import { WhatsappService } from './whatsapp.service';
           ? new FakeMetaTransport()
           : new GraphApiTransport(config),
     },
+    /**
+     * O catálogo de templates (F4.1c-2), pela mesma escolha: o falso, VAZIO, só
+     * com o transporte falso em staging; a Graph API em todo o resto. Os testes
+     * injetam o falso deles por override.
+     */
+    {
+      provide: META_TEMPLATE_CATALOG,
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) =>
+        config.get<string>('META_TRANSPORT_MODE') === 'fake' &&
+        config.get<string>('VEYRA_ENV') === 'staging'
+          ? new FakeTemplateCatalog()
+          : new GraphTemplateCatalog(config),
+    },
   ],
-  exports: [WhatsappService, WhatsappSendService, MediaCollectorService, CancelamentoDeDespachos],
+  exports: [
+    WhatsappService,
+    WhatsappSendService,
+    MediaCollectorService,
+    CancelamentoDeDespachos,
+    META_TEMPLATE_CATALOG,
+  ],
 })
 export class ChannelsModule {}

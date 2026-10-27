@@ -92,4 +92,19 @@ export const AUDIT_FIELDS: Record<string, readonly string[]> = {
     'dispatchesInFlight',
   ],
   consentPurpose: ['key', 'version', 'category', 'fields'],
+  // F4.1c-2: o que identifica a versão e o conteúdo (o hash), nunca o texto
+  templateVersion: [
+    'channelId',
+    'businessAccountId',
+    'metaTemplateId',
+    'name',
+    'language',
+    'version',
+    'category',
+    'parameterFormat',
+    'contentHash',
+    'status',
+    'motivo',
+  ],
+  templateReview: ['templateVersionId', 'purposeId', 'contentHash'],
 };

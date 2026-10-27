@@ -476,6 +476,41 @@ muda o registro da migration e não desfaz nenhum objeto.
    ORDER BY 1, 2;
    ```
 
+   Para a `20261026200000_template_versions` (F4.1c-2, ADR-052 item 4), com
+   **27 objetos**: os tipos `TemplateCategory`, `TemplateParameterFormat` e
+   `TemplateVersionStatus`; as tabelas `MessageTemplateVersion` e
+   `TemplateReview`, com 12 restrições (2 chaves, 6 FKs — 4 compostas e 2
+   para o workspace — e 4 CHECKs) e 6 índices; e as funções e os gatilhos `template_version_guard` e
+   `template_review_guard`. As tabelas nascem vazias, e nada que já existe
+   muda. Ela **não abre envio**: o envio por template continua recusado
+   (`template_flow_unavailable`). O cadastro das versões é pela CLI
+   `templates:register`, que lê o catálogo da Meta com a credencial do canal;
+   com o transporte falso, o catálogo também é falso e nasce vazio, e o
+   cadastro não acha nada. Contra uma WABA real, o cadastro só depois da
+   liberação de dados reais.
+
+   A WABA do canal não muda na rotação do token sem `--trocar-waba` (§7).
+
+   ```sql
+   -- inventário da 20261026200000_template_versions: 0 linhas = nada ficou;
+   -- 27 = inteira; qualquer outro número = estado parcial
+   SELECT 'tipo' AS k, t.typname::text AS nome FROM pg_type t
+     WHERE t.typname IN ('TemplateCategory', 'TemplateParameterFormat', 'TemplateVersionStatus')
+   UNION ALL SELECT 'tabela', c.relname::text FROM pg_class c
+     WHERE c.relkind = 'r' AND c.relname IN ('MessageTemplateVersion', 'TemplateReview')
+   UNION ALL SELECT 'restricao', co.conname::text FROM pg_constraint co
+     JOIN pg_class c ON c.oid = co.conrelid
+     WHERE c.relname IN ('MessageTemplateVersion', 'TemplateReview') AND co.contype <> 'n'
+   UNION ALL SELECT 'indice', i.relname::text FROM pg_index x
+     JOIN pg_class i ON i.oid = x.indexrelid JOIN pg_class c ON c.oid = x.indrelid
+     WHERE c.relname IN ('MessageTemplateVersion', 'TemplateReview') AND NOT x.indisprimary
+   UNION ALL SELECT 'funcao', p.proname::text FROM pg_proc p
+     WHERE p.proname IN ('template_version_guard', 'template_review_guard')
+   UNION ALL SELECT 'gatilho', tg.tgname::text FROM pg_trigger tg
+     WHERE tg.tgname IN ('template_version_guard', 'template_review_guard')
+   ORDER BY 1, 2;
+   ```
+
    Para outra migration, monte o inventário do mesmo jeito, a partir das
    instruções do arquivo: cada `CREATE` e cada `ADD CONSTRAINT`.
 
@@ -924,6 +959,13 @@ docker run --rm -v <volume-storage>:/destino -v <volume-restic-cache>:/cache \
 descartável é o que distingue backup de esperança.
 
 ## 7. Operação do dia a dia
+
+**A WABA do canal não muda na rotação do token** sem `--trocar-waba`
+(`pnpm --filter @veyra/api channel:whatsapp`, F4.1c-2): as versões de template
+ficam presas à WABA de onde saíram, e trocá-la diverge todas na próxima
+releitura, que pedem cadastro e revisão de novo. Um erro de digitação ali
+custaria isso. A recusa não tem teste automatizado (o script fica fora do
+`tsconfig` do build); confira à mão na primeira rotação.
 
 ```bash
 # logs (json-file, 10 MB × 5 por container — rotação no próprio Docker)

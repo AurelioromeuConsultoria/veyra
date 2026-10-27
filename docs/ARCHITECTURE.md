@@ -67,7 +67,7 @@ Regras:
 
 Módulos previstos em `apps/api/src/`:
 
-`auth`, `workspaces` (workspace, membership, role, team, invite), `contacts`, `companies`, `custom-fields`, `pipelines` (pipeline, stage, deal), `tasks`, `notes`, `activities` (timeline), `conversations` (conversation, message, channel), `consents` (finalidade, consentimento, pedido de parar — ADR-052, F4.1b), `calendar`, `notifications`, `files`, `automations`, `webhooks`, `integrations`, `audit`, `billing`, `intelligence`, `jobs`, `prisma`, `common`.
+`auth`, `workspaces` (workspace, membership, role, team, invite), `contacts`, `companies`, `custom-fields`, `pipelines` (pipeline, stage, deal), `tasks`, `notes`, `activities` (timeline), `conversations` (conversation, message, channel), `consents` (finalidade, consentimento, pedido de parar — ADR-052, F4.1b), `templates` (versões de template do WhatsApp e a revisão — ADR-052, F4.1c-2), `calendar`, `notifications`, `files`, `automations`, `webhooks`, `integrations`, `audit`, `billing`, `intelligence`, `jobs`, `prisma`, `common`.
 
 Regras de dependência:
 
@@ -87,6 +87,7 @@ graph LR
         activities --> contacts & pipelines & conversations & tasks
         conversations --> contacts
         consents --> conversations & contacts
+        templates --> conversations
         tasks --> contacts & pipelines
         calendar --> contacts
     end
@@ -97,6 +98,7 @@ graph LR
 - `integrations`/`webhooks` são infraestrutura de borda: nunca dependem de módulos de domínio específicos além dos contratos que expõem.
 - `intelligence` depende de services de domínio (via tools) — nunca do Prisma.
 - Nenhum módulo do Core importa nada de um vertical.
+- `templates` depende do canal (a credencial cifrada e a porta do catálogo da Meta) e da transação das mudanças do `content-use` (global, para o `lock_timeout`), e lê as finalidades pelo client protegido, sem importar `consents`; nenhum módulo do Core depende dele na F4.1c-2 (ADR-052).
 - `consents` depende do canal (o pedido de parar cancela os despachos) e da conversa (a rota pela conversa usa a visibilidade dela). O caminho inverso — o envio confere o bloqueio, quem tira número do contato revoga o consentimento — usa as funções de `consents/consent-records.ts` na transação de quem chama, sem importar o módulo: a aresta não vira ciclo (ADR-052, F4.1b).
 
 ## 6. Estratégia de verticais

@@ -15,6 +15,11 @@
  * O token é CIFRADO antes de ir ao banco (AES-256-GCM, `TOKEN_ENCRYPTION_KEY`) e
  * nunca é impresso — nem em erro. Reexecutar com o mesmo `phone-number-id`
  * rotaciona o token, que é o caminho normal de rotação.
+ *
+ * A WABA NÃO MUDA na rotação sem `--trocar-waba` (F4.1c-2): as versões de
+ * template do canal ficam presas à WABA de onde saíram, e a releitura diverge
+ * todas quando a credencial aponta outra — um erro de digitação aqui exigiria
+ * cadastrar e revisar de novo todos os templates do canal.
  */
 import 'dotenv/config';
 import { createCipheriv, createHash, randomBytes } from 'node:crypto';
@@ -74,8 +79,9 @@ async function main(): Promise<void> {
   if (!slug || !phoneNumberId || !businessAccountId) {
     console.error(
       'uso: channel:whatsapp --slug <workspace> --phone-number-id <id> ' +
-        '--waba <id> [--name "WhatsApp"] [--token-stdin]\n' +
-        'o token é perguntado sem eco; com --token-stdin, vem da entrada padrão.',
+        '--waba <id> [--name "WhatsApp"] [--token-stdin] [--trocar-waba]\n' +
+        'o token é perguntado sem eco; com --token-stdin, vem da entrada padrão.\n' +
+        'na rotação, trocar a WABA exige --trocar-waba: diverge as versões de template do canal.',
     );
     process.exitCode = 1;
     return;
@@ -123,12 +129,23 @@ async function main(): Promise<void> {
      */
     const existente = await prisma.channelCredential.findFirst({
       where: { phoneNumberId },
-      select: { workspaceId: true, channelId: true },
+      select: { workspaceId: true, channelId: true, businessAccountId: true },
     });
     if (existente && existente.workspaceId !== workspace.id) {
       throw new Error(
         `phone-number-id ${phoneNumberId} já está registrado em OUTRO workspace. ` +
           'Remova lá antes, ou o webhook entregaria as mensagens ao tenant errado.',
+      );
+    }
+
+    if (
+      existente &&
+      existente.businessAccountId !== businessAccountId &&
+      !process.argv.includes('--trocar-waba')
+    ) {
+      throw new Error(
+        `a WABA informada (${businessAccountId}) não é a registrada (${existente.businessAccountId}). ` +
+          'Trocar a WABA diverge todas as versões de template do canal; confirme com --trocar-waba.',
       );
     }
 

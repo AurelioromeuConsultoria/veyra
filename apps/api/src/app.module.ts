@@ -17,6 +17,7 @@ import { WorkspaceThrottleGuard } from './common/workspace-throttle.guard';
 import { CompaniesModule } from './companies/companies.module';
 import { ConversationsModule } from './conversations/conversations.module';
 import { ConsentsModule } from './consents/consents.module';
+import { TemplatesModule } from './templates/templates.module';
 import { ChannelsModule } from './channels/channels.module';
 import { AutomationsModule } from './automations/automations.module';
 import { UsageModule } from './usage/usage.module';
@@ -82,6 +83,7 @@ import { ClinicsModule } from './verticals/clinics/clinics.module';
     NotesModule,
     ConversationsModule,
     ConsentsModule,
+    TemplatesModule,
     NotificationsModule,
     CalendarModule,
     FilesModule,

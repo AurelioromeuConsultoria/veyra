@@ -113,6 +113,8 @@ model Workspace {
   automationExecutions   AutomationExecution[]
   channelCredentials     ChannelCredential[]
   messageTemplates       MessageTemplate[]
+  templateVersions       MessageTemplateVersion[]
+  templateReviews        TemplateReview[]
   channelConsents        ContactChannelConsent[]
   consentPurposes        ConsentPurpose[]
   consents               Consent[]
@@ -232,6 +234,7 @@ model Membership {
   consentChanges             AiConsent[]             @relation("ConsentAuthor")
   grantedConsents            ContactChannelConsent[] @relation("ConsentGranter")
   purposeConsentsGranted     Consent[]               @relation("PurposeConsentGrantedBy")
+  templateReviews            TemplateReview[]
   purposeConsentsRevoked     Consent[]               @relation("PurposeConsentRevokedBy")
   stopBlocksCreated          StopBlock[]             @relation("StopBlockCreatedBy")
   stopBlocksLifted           StopBlock[]             @relation("StopBlockLiftedBy")
@@ -909,11 +912,12 @@ model Channel {
   systemMark  Boolean?
   createdAt   DateTime    @default(now())
 
-  workspace        Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace        Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   conversations    Conversation[]
   messages         Message[]
   credential       ChannelCredential?
   messageTemplates MessageTemplate[]
+  templateVersions MessageTemplateVersion[]
   consents         Consent[]
 
   @@unique([workspaceId, id])
@@ -1779,6 +1783,90 @@ model MessageTemplate {
   @@index([workspaceId, channelId])
 }
 
+// ── F4.1c-2: templates versionados, revisados e relidos (ADR-052 item 4) ──────
+
+enum TemplateCategory {
+  utility
+  marketing
+}
+
+enum TemplateParameterFormat {
+  /// `{{1}}`, `{{2}}`
+  positional
+  /// `{{nome}}`
+  named
+}
+
+enum TemplateVersionStatus {
+  /// o conteúdo que a Meta mostrou no cadastro
+  active
+  /// a Meta mostrou outro conteúdo (um cadastro mais novo ou a releitura): a
+  /// versão nunca mais é usada
+  divergent
+}
+
+/// A VERSÃO de um template do WhatsApp (ADR-052 item 4, F4.1c-2), lida da Meta
+/// pela CLI administrativa. O conteúdo é IMUTÁVEL: mudou o conteúdo, a
+/// categoria ou o vínculo, nasce uma versão nova. Só o `status` muda, de
+/// `active` para `divergent`, uma vez (`OUTCOME_ONLY_MODELS` no client e o
+/// gatilho `template_version_guard` no banco). Não autoriza envio nesta
+/// subentrega. O `MessageTemplate` da 9.1 fica como histórico.
+model MessageTemplateVersion {
+  id                String                  @id @default(uuid()) @db.Uuid
+  workspaceId       String                  @db.Uuid
+  channelId         String                  @db.Uuid
+  /// a WABA de onde a versão saiu: o envio da Meta acha o template pelo nome e
+  /// pelo idioma NA WABA do número, e a credencial com outra WABA diverge a versão
+  businessAccountId String
+  /// o id do template na Meta: a releitura exige o mesmo id na mesma WABA
+  metaTemplateId    String
+  name              String
+  language          String
+  /// 1, 2, … por (canal, nome, idioma)
+  version           Int
+  category          TemplateCategory
+  parameterFormat   TemplateParameterFormat
+  /// a forma CANÔNICA: só os componentes aceitos, sem `example` nem mídia
+  components        Json
+  /// parâmetro (`header.1`, `body.nome`) → campo do catálogo; nunca o valor
+  bindings          Json
+  /// SHA-256 da forma canônica com os vínculos (nome, idioma, categoria, formato)
+  contentHash       String
+  status            TemplateVersionStatus   @default(active)
+  createdAt         DateTime                @default(dbgenerated("transaction_timestamp()"))
+
+  workspace Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  channel   Channel          @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  reviews   TemplateReview[]
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, channelId, name, language, version])
+  @@index([workspaceId, channelId, name, language])
+}
+
+/// A REVISÃO de uma versão de template para uma versão de finalidade (ADR-052
+/// item 4, F4.1c-2), por quem tem `templates:review`: quem, quando e o hash
+/// que viu. Append-only. Vale só para aquele conteúdo e aquela finalidade.
+model TemplateReview {
+  id                     String   @id @default(uuid()) @db.Uuid
+  workspaceId            String   @db.Uuid
+  templateVersionId      String   @db.Uuid
+  purposeId              String   @db.Uuid
+  /// o `contentHash` que a pessoa viu (igual ao da versão)
+  contentHash            String
+  reviewedByMembershipId String   @db.Uuid
+  createdAt              DateTime @default(dbgenerated("transaction_timestamp()"))
+
+  workspace       Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  templateVersion MessageTemplateVersion @relation(fields: [workspaceId, templateVersionId], references: [workspaceId, id], onDelete: Cascade)
+  purpose         ConsentPurpose         @relation(fields: [workspaceId, purposeId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  reviewedBy      Membership             @relation(fields: [workspaceId, reviewedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([workspaceId, id])
+  @@unique([workspaceId, templateVersionId, purposeId])
+  @@index([workspaceId, purposeId])
+}
+
 // ── F4.1b: finalidades, consentimentos e o pedido de parar (ADR-052 item 5) ──
 
 enum ConsentOrigin {
@@ -1820,8 +1908,9 @@ model ConsentPurpose {
   fields      String[]
   createdAt   DateTime               @default(dbgenerated("transaction_timestamp()"))
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  consents  Consent[]
+  workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  consents        Consent[]
+  templateReviews TemplateReview[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, key, version])

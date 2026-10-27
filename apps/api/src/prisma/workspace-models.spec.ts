@@ -105,7 +105,12 @@ describe('registro de modelos protegidos — drift contra o schema', () => {
     }
   });
 
-  it('os modelos de desfecho (F4.1b): de workspace, não append-only, e só campos opcionais do schema', () => {
+  /** Os campos de desfecho que nascem num estado inicial, e não vazios. */
+  const ESTADO_INICIAL_DO_DESFECHO: Record<string, string> = {
+    'MessageTemplateVersion.status': 'active',
+  };
+
+  it('os modelos de desfecho (F4.1b): de workspace, não append-only, e o desfecho nasce vazio (ou no estado inicial declarado)', () => {
     for (const [name, { desfecho, doBanco }] of Object.entries(OUTCOME_ONLY_MODELS)) {
       expect(CORE_WORKSPACE_MODELS.has(name)).toBe(true);
       expect(APPEND_ONLY_MODELS.has(name)).toBe(false);
@@ -115,8 +120,16 @@ describe('registro de modelos protegidos — drift contra o schema', () => {
         expect(model.body).toMatch(new RegExp(`^\\s*${campo}\\s+DateTime`, 'm'));
       }
       for (const campo of desfecho) {
-        // opcional: o desfecho nasce vazio, e o registro em si não está na lista
-        expect(model.body).toMatch(new RegExp(`^\\s*${campo}\\s+\\w+\\?`, 'm'));
+        // opcional: o desfecho nasce vazio, e o registro em si não está na lista.
+        // A ÚNICA exceção declarada é o status da versão de template (F4.1c-2),
+        // que nasce no default `active` — o client recusa o campo na criação e
+        // o gatilho exige `active` no INSERT
+        const inicial = ESTADO_INICIAL_DO_DESFECHO[`${name}.${campo}`];
+        expect(model.body).toMatch(
+          inicial
+            ? new RegExp(`^\\s*${campo}\\s+\\w+\\s+@default\\(${inicial}\\)`, 'm')
+            : new RegExp(`^\\s*${campo}\\s+\\w+\\?`, 'm'),
+        );
       }
     }
   });

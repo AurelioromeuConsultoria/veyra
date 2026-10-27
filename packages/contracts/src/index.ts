@@ -20,5 +20,6 @@ export * from './permissions';
 export * from './pipelines';
 export * from './tags';
 export * from './tasks';
+export * from './templates';
 export * from './usage';
 export * from './webhooks';

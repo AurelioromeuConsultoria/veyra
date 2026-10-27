@@ -4714,7 +4714,7 @@ A skill `create-migration` traz o bloco de ensaio com as três evidências: os g
 
 ## ADR-052 — Mensagem iniciada pelo negócio: telefones normalizados, remetente sem atribuição silenciosa, template verificável, consentimento por finalidade e aprovação vinculada à prévia
 
-**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). **A F4.1a foi aprovada para implementação em 2026-10-23**, com as condições registradas no fim deste ADR, e publicada em 2026-10-26. **A F4.1b foi parcialmente aprovada em 2026-10-26:** finalidades, consentimentos, bloqueio, permissões e a recusa transitória dos templates estão liberados, e foram publicados e validados no mesmo dia, com a decisão 19 (ver o fechamento no fim deste ADR); a regra temporal da resposta depois do pedido de parar continua proposta. **A F4.1c foi aprovada em três subentregas em 2026-10-26**; a F4.1c-1 foi publicada e validada no mesmo dia (`e070bc6`), e a F4.1c-2 está liberada para implementar (ver o fim deste ADR). O resto continua PROPOSTO, e nenhum outro código da F4 está autorizado. · **Data:** 2026-10-23
+**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). **A F4.1a foi aprovada para implementação em 2026-10-23**, com as condições registradas no fim deste ADR, e publicada em 2026-10-26. **A F4.1b foi parcialmente aprovada em 2026-10-26:** finalidades, consentimentos, bloqueio, permissões e a recusa transitória dos templates estão liberados, e foram publicados e validados no mesmo dia, com a decisão 19 (ver o fechamento no fim deste ADR); a regra temporal da resposta depois do pedido de parar continua proposta. **A F4.1c foi aprovada em três subentregas em 2026-10-26**; a F4.1c-1 foi publicada e validada no mesmo dia (`e070bc6`), e a F4.1c-2 está implementada, revisada e validada em 2026-10-27, em commit local, sem push (ver o fim deste ADR). O resto continua PROPOSTO, e nenhum outro código da F4 está autorizado. · **Data:** 2026-10-23
 
 A revisão 0 está no `0eb4038`. A revisão 1 não foi comitada; ela passou pelo `reviewer` (mudanças necessárias) e pelo `security` (bloqueado, sem P0), e os achados dos dois estão incorporados aqui. A confirmação desta revisão 2 aprovou com ressalvas (o `reviewer`, com quatro achados importantes; o `security`, com dois P1 novos, os mesmos do `reviewer`), e as correções dela também estão no texto. A conferência final dessas correções aprovou: o `security`, sem ressalva bloqueante, e o `reviewer`, com uma ressalva importante (a regra ao reabrir conversa) e duas de qualidade. As três estão no texto, e os dois disseram que não é preciso nova rodada. Nenhum ADR aceito é alterado antes da aprovação deste; as emendas que ele implicaria estão listadas no fim, em "Emendas propostas".
 
@@ -6208,3 +6208,248 @@ Cada uma com o ADR antes do código, a migration conforme o ADR-051 com o ensaio
 **O staging fora do ar** é um incidente separado (`DEPLOY_STAGING.md` §12, INC-2026-10-26-01). Está autorizado só o diagnóstico de leitura; reiniciar, implantar, aplicar migrations e alterar o proxy compartilhado continuam fora.
 
 A exceção da resposta depois do pedido de parar continua pendente. Continuam bloqueados deploy, ativação do Clinics, envio real e dados reais.
+
+**F4.1c-2 — o desenho, antes do código (2026-10-26).** Liberada pelo usuário com o CI verde da F4.1c-1, conforme o item 3 do plano. **Não abre envio:** a recusa transitória dos templates continua, e nada no worker nem no compositor lê as versões novas. Ligar as versões ao envio é da F4.1c-3. O catálogo falso faz o papel da Meta nos testes. Dados fictícios.
+
+1. **O módulo `templates`, novo, no Core.**
+   - Depende de `conversations`, para o canal, a credencial cifrada e a porta do catálogo da Meta.
+   - Lê as finalidades (dado de `consents`) pelo client protegido, no workspace do contexto, sem importar o módulo.
+   - É uma aresta nova no grafo (ARCHITECTURE §5). Nenhum módulo do Core passa a depender dele nesta subentrega.
+2. **A porta do catálogo de templates** (`META_TEMPLATE_CATALOG`), ao lado do transporte, só de leitura.
+   - **Um método só** _(revisão: a leitura pelo id saiu)_: buscar pelo nome e pelo idioma na WABA do canal (`GET /{waba}/message_templates`, com o nome e o idioma na consulta e conferidos na resposta), seguindo a paginação até 5 páginas — é assim que o envio da Meta acha o template. Os campos lidos são `id`, `name`, `language`, `status`, `category`, `parameter_format` e `components`. `ausente` só com a listagem percorrida até o fim; a listagem mais longa, o corpo acima do teto, o id da WABA que não é número e o item incompleto são `falha`.
+   - **A implementação real** usa o mesmo cliente HTTP do transporte (hosts permitidos, sem redirect, prazo e teto). O token é decifrado só na chamada, e o erro guarda só o status e o código numérico. O catálogo falso, vazio, só existe com o transporte falso em staging.
+   - **Integrar, não construir (CLAUDE.md §3.15):** a fonte da verdade é a Meta, e uma biblioteca de catálogo não pagaria a dependência. A implementação real não é exercitada contra a Meta, porque o envio e os dados reais estão bloqueados; só a leitura da resposta é testada, pela unidade.
+   - **O catálogo falso dos testes** muda o conteúdo, a categoria e o status, e remove o template.
+3. **O modelo.**
+   - **`MessageTemplateVersion`**, por workspace e canal. Os campos:
+     - `businessAccountId` (a WABA de onde saiu; revisão), `metaTemplateId`, `name` e `language`;
+     - `version`: 1, 2, … por canal, nome e idioma;
+     - `category`: `utility` ou `marketing`;
+     - `parameterFormat`: `positional` ou `named`;
+     - `components`: a forma canônica;
+     - `bindings`: o vínculo de cada parâmetro com um campo;
+     - `contentHash`;
+     - `status`: `active` ou `divergent`;
+     - `createdAt`, pelo relógio do banco.
+
+     O conteúdo é imutável. Só o `status` muda, de `active` para `divergent`, uma vez: `OUTCOME_ONLY_MODELS` no client e um gatilho no banco, como o do consentimento. Os únicos são `(workspaceId, id)` e `(workspaceId, channelId, name, language, version)`.
+
+   - **`TemplateReview`**, só de acréscimo: `templateVersionId`, `purposeId` (a versão da finalidade), `contentHash` (o que a pessoa viu), `reviewedByMembershipId` e `createdAt`. O único é `(workspaceId, templateVersionId, purposeId)`.
+   - **As FKs** para o canal, a versão, a finalidade e a membership são compostas. Os dois modelos entram em `WORKSPACE_MODELS`, e a trilha tem allowlist.
+   - **O `MessageTemplate` da 9.1** fica como histórico: não autoriza nada e não é migrado.
+4. **A forma canônica e o `contentHash`**, fixados por teste de unidade com um vetor conhecido.
+   - **Entram:** o nome, o idioma, a categoria, o formato dos parâmetros, os componentes e os vínculos.
+   - **Os componentes aceitos:**
+     - o cabeçalho de texto (`format`, `text`);
+     - o corpo (`text`);
+     - o rodapé (`text`);
+     - os botões de resposta rápida (`text`), de URL fixa (`text`, `url`) e de telefone (`text`, `phone_number`).
+   - **Saem** o `example` e qualquer handle de mídia.
+   - **Falha fechada nas chaves** _(revisão)_: cada componente e cada botão têm a lista das chaves que conhecem, e só o `example` é ignorado; qualquer outra chave é recusa, e o componente repetido também. A troca, aceita: uma chave nova e inofensiva da Meta diverge a versão na releitura, e o template precisa de cadastro e revisão novos.
+   - A ordem dos componentes e dos botões se mantém; a das chaves, não.
+   - O hash é o SHA-256 do JSON canônico, com as chaves ordenadas, em hex.
+5. **O que o cadastro recusa, com motivo:**
+   - a categoria `authentication`;
+   - o status diferente de `APPROVED`;
+   - **o cabeçalho de mídia** (imagem, vídeo, documento, localização). É mais estrito que o plano, que recusava só a mídia por link: o Core não tem resolvedor de mídia, e a mídia do envio é conteúdo dinâmico;
+   - o botão de URL com sufixo dinâmico e os botões de outro tipo (cópia de código, OTP, fluxo, catálogo);
+   - o componente de tipo desconhecido (falha fechada);
+   - o parâmetro sem vínculo, o vínculo sem parâmetro e o vínculo a um campo fora do catálogo do Core.
+6. **Os vínculos e o catálogo de campos do Core.**
+   - Cada parâmetro (`header.1`, `body.1`, `body.first_name`) liga a um campo.
+   - O catálogo do Core tem só `contato.nome` (decisão 4 do usuário). Os campos do vertical entram pelo E7, na F4.1c-3.
+   - O valor nunca é guardado, só o nome do campo.
+7. **O cadastro, pela CLI `templates:register`** (`--slug`, `--channel`, `--name`, `--language`, `--param header.1=contato.nome` …):
+   - lê da Meta fora da transação, valida e calcula o hash;
+   - se a última versão ativa tem o mesmo hash, nada muda (`sem_mudanca`);
+   - se não, nasce uma versão nova, e as ativas anteriores do mesmo canal, nome e idioma vão a `divergent` na mesma transação, porque a Meta acabou de mostrar outro conteúdo;
+   - a trilha é `template_version.registered`, com o ator `cli:templates-register`;
+   - o relato traz só o resultado e o motivo.
+8. **A revisão, por endpoint**, sob `templates:review` (Owner e Admin; a chave já existe).
+   - **A rota:** `POST /api/templates/versions/:id/reviews`, com a finalidade e o `contentHash` que a pessoa viu.
+   - **As recusas:**
+     - a versão divergente: 409;
+     - o canal sem credencial, ou com a credencial noutra WABA: 409 (revisão);
+     - a linha da versão presa além do prazo (uma divergência em curso): 409, com a mensagem própria (revisão);
+     - a versão de outro workspace: 404;
+     - o hash diferente do da versão: 409;
+     - a categoria da versão diferente da da finalidade: 400;
+     - o campo vinculado fora da lista fechada da finalidade: 400.
+   - **Repetir** a mesma versão e finalidade devolve a revisão existente, sem trilha nova.
+   - **A trilha** é `template_review.created`.
+   - **A leitura** (`GET /api/templates/versions` e `GET /api/templates/versions/:id`) também fica sob `templates:review`. A tela é da F4.4.
+9. **A releitura:** um serviço sem cache e fora das travas, que a F4.1c-3 vai chamar na aprovação e no despacho. Ele lê da Meta como o envio a leria — pelo nome e pelo idioma, na WABA da versão —, exige o mesmo `metaTemplateId`, canoniza com os vínculos da versão e compara o hash _(revisão)_. Os desfechos:
+   - **`confere`**;
+   - **`divergente`:** a credencial do canal está noutra WABA (sem ler a Meta); a listagem inteira da WABA não tem o template; ele tem outro id; o hash mudou; ou o conteúdo virou recusado. A versão vai a `divergent`, com trilha (o motivo `waba_trocada` ou `releitura`);
+   - **`indisponivel`:** o status na Meta não é `APPROVED` (pausado, desativado, em análise). Nada muda na versão;
+   - **`falha`:** o canal sem credencial, o token que não se decifra, a rede, o prazo, o teto ou a listagem longa demais. Nada muda, e nada é lançado.
+
+   O desfecho do despacho é da F4.1c-3. Pelo plano, a falha dá `failed_before_send` e a divergência dá `failed_permanent` com `template_changed`; o caso `indisponivel` fica para a decisão dela. Nenhuma outra versão é usada no lugar.
+
+10. **A migration** segue o ADR-051, com o ensaio. Não há preenchimento: as tabelas nascem vazias.
+11. **Os testes:**
+    - a unidade da forma canônica e do hash;
+    - o cadastro com o catálogo falso: versão nova, sem mudança, mudança de conteúdo e de categoria, e cada recusa (que o vínculo entra no hash, prova o vetor da unidade: com um só campo no catálogo, a mudança só de vínculo não se monta na integração);
+    - a revisão: a permissão, cada recusa, a repetição e o isolamento (P0);
+    - a releitura: cada desfecho, o template removido e o isolamento;
+    - o gatilho no banco;
+    - as mutações e a bateria.
+
+**Implementação da F4.1c-2 (2026-10-26).** Segue o desenho acima, sem abrir envio. Dados fictícios e o catálogo falso.
+
+- **O que existe:**
+  - o contrato `templates.ts`, com o catálogo de campos do Core (`contato.nome`);
+  - a porta do catálogo da Meta, com a leitura da Graph API e o catálogo falso, ao lado do transporte e escolhida pela mesma fábrica;
+  - a forma canônica com o hash;
+  - os serviços das versões (o cadastro, a releitura e a leitura) e da revisão;
+  - a CLI `templates:register`;
+  - as rotas sob `templates:review`;
+  - a migration `20261026200000_template_versions`, com 27 objetos depois da revisão (26 antes) e o ensaio feito.
+- **O que mudou em relação ao desenho, e por quê:**
+  - **O módulo não importa `consents`:** lê as finalidades pelo client protegido, no workspace do contexto (item 1, corrigido acima e no ARCHITECTURE §5).
+  - **O gatilho da revisão prende a linha da versão** (`FOR SHARE`) até o commit. A divergência que chega durante a revisão espera, e a revisão que chega durante a divergência é recusada. O 409 do gatilho tem a mensagem própria ("a versão mudou enquanto a revisão era registrada"), distinta das recusas do serviço.
+  - **A repetição da revisão tem um caminho só:** o único (versão, finalidade) do banco recusa a segunda, e a existente é a resposta, na repetição e na corrida.
+  - **O teste do registro dos modelos de desfecho** aceita, além do campo opcional, o estado inicial DECLARADO de um campo: só o `status` da versão, que nasce `active` (restrito na revisão; o gatilho e o client o garantem).
+  - **Com o transporte falso (staging), o catálogo também é falso e nasce vazio:** o cadastro não acha nada, em vez de inventar conteúdo.
+- **Os testes:**
+  - a unidade da forma canônica, com o JSON canônico escrito à mão e cada recusa;
+  - a unidade da leitura da Graph API, com o cliente HTTP substituído;
+  - a suíte de integração `templates.integration-spec.ts`, com:
+    - o cadastro: a versão nova, sem mudança, a mudança de conteúdo e de categoria, a divergente que não volta, cada recusa, a falha da Meta e o canal de outro workspace;
+    - a revisão: a trilha, a repetição, o 403, o hash velho, a divergente, a categoria, o campo, a finalidade inexistente, o isolamento (P0) e a revisão durante a divergência;
+    - a releitura: cada desfecho, o template removido, a divergente que não chega à Meta e o isolamento;
+    - a imutabilidade pelo client e pelo banco;
+  - o registro dos modelos.
+
+**Revisão da F4.1c-2 (`reviewer` e `security`, 2026-10-26) e as correções.** Os dois aprovaram com ajustes, sem item bloqueante nem P0, e confirmaram que nada abre envio. O que mudou:
+
+- **A versão não ficava presa à WABA de onde saiu** (os dois). O envio da Meta acha o template pelo nome e pelo idioma na WABA do número, e a releitura lia pelo id, com o token de agora. Uma rotação de credencial que trocasse a WABA daria `confere` para o template revisado, e sairia o da outra WABA. **Corrigido:**
+  - a coluna `businessAccountId` na versão, imutável no gatilho;
+  - a credencial do canal noutra WABA diverge a versão (`waba_trocada`);
+  - a releitura lê como o envio leria e exige o mesmo id.
+- **O 400 com o código 100 da Graph virava ausência irreversível** (os dois): o código também cobre a permissão perdida e o campo não suportado. **Corrigido pela mesma mudança:** a leitura pelo id saiu, e a ausência só vale com a listagem da WABA percorrida até o fim.
+- **A forma canônica aceitava chaves desconhecidas** dentro dos componentes aceitos (os dois). **Corrigido:**
+  - uma allowlist de chaves por componente e por botão, em que só o `example` é ignorado;
+  - o componente repetido é recusado;
+  - as tabelas de categoria e formato viraram `Map`, para não acharem `constructor` nem `__proto__` pela herança.
+- **A leitura da Graph** (os dois):
+  - segue a paginação até 5 páginas, e a listagem mais longa é `falha`, não `ausente`;
+  - pede o idioma na consulta;
+  - o código de erro só entra se for número;
+  - o corpo acima do teto é relatado como tal;
+  - os ids da Meta são só dígitos, no cliente e por CHECK no banco. A migration ensaiada de novo tem 27 objetos.
+- **A releitura lançava exceção sem credencial** (os dois). **Corrigido:** devolve `falha`, sem mudar nada.
+- **O `sem_mudanca` ignorava o id e a WABA** (os dois). **Corrigido:** o template recriado com outro id é versão nova.
+- **A revisão esperava a linha da versão sem prazo** (os dois). **Corrigido:** a transação interativa das mudanças, com o `lock_timeout` desde o BEGIN (409 no prazo).
+- **A regra do teste dos modelos de desfecho tinha afrouxado** para todos os modelos (`security`). **Corrigido:** o default só vale para o `status` da versão de template, declarado.
+- **A CLI escondia o motivo** das recusas do serviço (`reviewer`). **Corrigido:** a mensagem das recusas, que não tem segredo, é impressa; do erro do Prisma, só o tipo e o código.
+- **Os testes novos:**
+  - a finalidade de outro workspace (P0);
+  - o filtro pelo canal de outro workspace;
+  - quem revisou, na resposta e na trilha;
+  - o campo a mais no corpo;
+  - o 403 na leitura por id;
+  - a corrida nos dois sentidos;
+  - os dois cadastros ao mesmo tempo;
+  - a espera com prazo;
+  - a credencial sem a WABA;
+  - o template recriado com outro id;
+  - o canal sem credencial na releitura;
+  - na unidade, as chaves desconhecidas, o componente repetido e as chaves herdadas.
+- **Para a F4.1c-3**, sem efeito agora (`security`):
+  - os parâmetros do envio são montados pela ordem numérica, não pela das chaves dos vínculos (`body.10` vem antes de `body.2`);
+  - o `sendTemplate` do transporte só manda parâmetros do corpo, mas o cadastro aceita `header.N`;
+  - o `confere` da releitura, que roda fora das travas, não dispensa reler o status da versão sob a guarda;
+  - a releitura no despacho precisa de prazo absoluto (`signal`), porque o `call` só tem o de ociosidade;
+  - antes de dados reais, conferir que o `phoneNumberId` pertence à WABA da credencial.
+
+**A revisão do delta da F4.1c-2 (2026-10-26).** Os dois aprovaram com ajustes menores, sem item bloqueante nem P0. O que mudou:
+
+- **A paginação pelo cursor** (os dois): a página seguinte é montada sobre a URL da primeira, com o `after` da resposta. O host, o caminho e a WABA nunca vêm da resposta, e a query do `next` (que pode trazer o token) não é usada. Sem cursor, com página seguinte, é `falha`.
+- **O `divergir` com prazo e sem lançar** (`security`): a transação das mudanças, com `lock_timeout`. Se a divergência não se grava, a releitura ainda responde `divergente`, e a próxima releitura decide de novo: grava se ainda vir a divergência; se a Meta voltar ao conteúdo original antes, dá `confere`, e a divergência observada fica só no log. O hash garante que só sai o conteúdo revisado. **Requisito da F4.1c-3:** `divergente` é final para aquele despacho e aquela aprovação (`failed_permanent`), e ela tenta gravar a divergência de novo na transação dela; a coluna `status` sozinha nunca prova validade — a releitura é a prova.
+- **A revisão confere a WABA da credencial** (`security`, sugestão para a F4.1c-3, feita agora): o canal noutra WABA recusa a revisão (409), e o canal sem credencial também, com a mensagem própria. É a checagem RÁPIDA, sem trava: uma rotação que comite no meio deixa a revisão nascer, e a releitura diverge a versão (`waba_trocada`) antes de qualquer uso — a garantia é a releitura.
+- **O 409 da espera** pela linha da versão tem a mensagem própria (`reviewer`), não a de "contato".
+- **O script do canal não troca a WABA em silêncio** (`reviewer`): sem `--trocar-waba`, a rotação com outra WABA é recusada, e o runbook diz por quê.
+- **O teto do corpo** é reconhecido pela constante do transporte, não pela string repetida (`reviewer`).
+- **A trilha do cadastro** leva a WABA e o id da Meta (`reviewer`), na allowlist.
+- **Os testes:**
+  - os dois cadastros concorrentes só aceitam o P2002 como rejeição;
+  - a mensagem da espera;
+  - o cadastro depois da troca de WABA;
+  - a revisão com a credencial noutra WABA;
+  - o CHECK dos ids;
+  - a WABA e o id na trilha.
+- **Declarado:**
+  - a comparação da WABA no `sem_mudanca` equivale, na Meta real, à do id, porque os ids são globais. O teste a exercita pelo catálogo falso, que guarda pelo id;
+  - a prova da corrida dos dois cadastros depende da ordem do agendador. O teste garante o invariante (nunca duas ativas, e só o P2002 como rejeição), não a corrida.
+
+**A terceira rodada da F4.1c-2 (2026-10-26).** Os dois aprovaram com ajustes menores, sem item bloqueante nem P0, e condicionaram a aprovação a uma rodada válida da integração, das mutações e da bateria, ainda pendentes (a máquina dormiu, com a tampa fechada). O que mudou:
+
+- o canal sem credencial recebe, na revisão, a mensagem própria;
+- a divergência que não se grava: "a próxima releitura decide de novo", e o requisito da F4.1c-3 (ver acima);
+- o cursor hostil, com `&`, `=` e `#`, tem teste: fica codificado dentro do `after`;
+- o texto de uso do script do canal cita `--trocar-waba`;
+- o parágrafo do runbook foi para o §7.
+
+**Declarado:**
+
+- o prazo da transação da revisão (P2028, 30 s) ainda sai com a mensagem genérica das mudanças ("Uso em andamento para este contato"). É improvável com o `lock_timeout` de 10 s antes dele, e fica assim nesta subentrega;
+- a recusa da troca de WABA no script não tem teste automatizado: o script fica fora do `tsconfig` do build; o lint da raiz o cobre, e a tipagem dele foi conferida à parte (`tsc --noEmit --strict` no arquivo, sem erro).
+
+**A validação da F4.1c-2 (2026-10-27).** Na árvore de trabalho sobre o `149261a`, sem push. Dados fictícios e o catálogo falso.
+
+- **As interrupções, invalidadas e refeitas:**
+  - em 2026-10-26, na bateria do Mac e com a tampa fechada, a máquina entrou em sono de manutenção a cada minuto. A rodada da integração daquela janela foi invalidada (uma espera de 28,5 s coincidiu com um sono de 29 s), e a validação parou até a tomada;
+  - em 2026-10-27, o Mac reiniciou no meio da rodada de mutações. A mutação ativa (S15) ficou no arquivo e foi desfeita, o `veyra_test` foi recriado, e a rodada foi invalidada e refeita inteira. O executor passou a guardar a mutação ativa fora do `/tmp` e a restaurá-la ao começar.
+- **O ensaio da `20261026200000_template_versions`:**
+  - a falha forçada antes do COMMIT deixa o schema intacto (inventário 0, nenhuma definição existente alterada);
+  - a aplicação limpa dá o inventário 27 e o `migrate diff` vazio.
+- **As mutações:** 50 casos. 49 morreram por teste que falha na suíte alvo ("N failed"), nenhum por compilação, e 1 é equivalente. Cobrem:
+  - a forma canônica (12): o `example`, a ordem das chaves, as recusas, os vínculos, o hash, as chaves desconhecidas e o componente repetido;
+  - a leitura da Graph (7): a ausência só com a listagem inteira, o idioma, o cursor sobre a URL da primeira e codificado, a falta de cursor, a WABA inválida e o código de erro;
+  - o cadastro e a releitura (18): a divergência das anteriores, o `sem_mudanca` pelo status, pelo id e pela WABA, o status não aprovado, cada desfecho da releitura, o isolamento (P0), a WABA trocada, o id exigido, a credencial ausente e o `divergir` com prazo e sem lançar;
+  - a revisão (9): o hash, o status, a categoria, os campos, a repetição, a WABA, a credencial, o prazo da espera e a mensagem dela;
+  - o banco (4): os dois gatilhos, o `FOR SHARE` e o CHECK dos ids.
+- **Os casos que pediram trabalho:**
+  - **G6, R4 e R8** morriam por compilação e foram reescritos: a falta de cursor vira fim da listagem; a revisão não confere os campos; o canal sem credencial recebe a mensagem da WABA. Os três morreram com "1 failed".
+  - **K6 é equivalente:** aceita o tipo de botão desconhecido no `switch`, mas a allowlist das chaves do botão já o recusou antes. O ramo fica, como defesa.
+  - **S15 e R6** (o `divergir` e a revisão sem o `lock_timeout`) falhavam o teste alvo, mas a suíte travava ("7 failed" e "15 failed", e o jest não saía). O cliente que segurava a linha da versão só era solto no `finally`, que o teste estourado não alcança, e o `resetDb` de cada teste seguinte esperava a trava. **Corrigido no teste:** os clientes que seguram trava e as chamadas que esperam por ela ficam registrados, e o `afterEach` os solta e espera as chamadas. Depois disso, as duas morreram com "1 failed" no teste alvo, pelo prazo de 30 s do jest (a espera sem limite que a mutação cria), com a suíte em 39 s.
+  - **A correção tocou os testes que matam S4, S16, R9, D2 e D3.** Por isso, as 31 mutações da integração foram repetidas contra a suíte final, e todas morreram no teste alvo.
+  - **S3** (o cadastro que aceita template não aprovado), inconclusiva antes, morreu nas duas rodadas válidas.
+- **A bateria completa** (b69, em blocos, no Mac na tomada, com a tampa aberta e sem sono em nenhum bloco):
+  - lint, formatação e build: OK;
+  - a unidade: 330 testes;
+  - o web: 142;
+  - a integração: 1.038, duas rodadas;
+  - o `migrate diff` contra o schema e as migrations do zero: OK;
+  - o e2e: 49;
+  - o `check:fk` **falhou**, e passou depois da correção abaixo.
+- **O `check:fk` acusou** `MessageTemplateVersion.businessAccountId` e `MessageTemplateVersion.metaTemplateId` como colunas com cara de FK, sem constraint. São ids DA META, como o `ChannelCredential.businessAccountId`: não há tabela nossa para referenciar. **Corrigido:**
+  - as duas entraram na lista de exceções documentadas do script, com o motivo, e no DOMAIN_MODEL;
+  - a integridade que importa é a releitura, que exige o mesmo id na WABA da credencial do canal, mais o CHECK dos dígitos e o gatilho que as mantém imutáveis;
+  - repetidos depois: o `check:fk` (limpo), o lint e a formatação. O script fica fora do build, da unidade, da integração e do e2e, que não precisaram ser repetidos.
+
+**A revisão do delta final (`reviewer` e `security`, 2026-10-27).** Os dois aprovaram com ajustes de qualidade (P3), sem item bloqueante, e conferiram o texto acima contra os logs. O `security` confirmou que a exceção do `check:fk` não abre caminho entre workspaces:
+
+- os dois ids só são comparados, nunca filtram nem autorizam;
+- com a mesma WABA em dois workspaces, cada um lê a Meta com o próprio token e grava só no próprio escopo;
+- a edição do template por um faz o outro divergir, o que falha fechado.
+
+O que mudou:
+
+- os comentários do `check:fk` e do DOMAIN_MODEL dizem por que a WABA não referencia a credencial (é a fotografia do cadastro, e a releitura precisa ver a troca) e que os ids nunca são chave de busca nem de autorização;
+- o teste da espera da revisão passou a exigir menos de 4,5 s, como o da divergência (antes, o prazo da transação, 10 s);
+- o `soltar` não deixa um `end` que falha interromper o `afterEach`;
+- o comentário do `afterEach` diz o limite dele: espera o que o teste abandonado dispara logo depois, desde que não haja outro acesso ao banco antes.
+- repetidos depois: a suíte de templates (39), o grupo da integração que a contém (279, duas rodadas), as mutações R6 e R9 (mortas no teste alvo, "1 failed"), o `check:fk` (limpo), o lint e a formatação.
+
+**Requisito da F4.1c-3 (`security`).** O webhook `message_template_status_update` chega sem workspace, com a WABA e o id do template, e a mesma WABA pode estar em mais de um workspace. Por isso:
+
+- o workspace se resolve pela credencial, e o processamento é workspace a workspace;
+- o webhook é só gatilho da releitura: nunca grava status nem vale como `confere`.
+
+**Declarado, sem mudança agora:**
+
+- o teste da espera não tem prazo explícito (`Promise.race`): sob S15 e R6, ele morre pelo prazo do jest, não pela asserção do tempo. A morte é na suíte alvo, com "1 failed";
+- o cabeçalho da lista de exceções do `check:fk` ainda descreve só os polimórficos, e o relatório cita o ADR-011 para toda exceção. É anterior a esta subentrega;
+- o `phone-writers.integration-spec.ts` ainda solta as travas só no `finally`, como este teste fazia. Levar `segurar` e `soltar` para o `test/integration/locks.ts` fica para depois.

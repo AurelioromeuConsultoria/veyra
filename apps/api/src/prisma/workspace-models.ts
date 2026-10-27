@@ -77,6 +77,9 @@ export const WORKSPACE_MODELS = new Set<string>([
   'StopBlock',
   'ConsentReceiptCounter',
   'PermissionBackfill',
+  // Templates versionados e revisados (F4.1c-2, ADR-052 item 4)
+  'MessageTemplateVersion',
+  'TemplateReview',
 ]);
 
 /**
@@ -111,6 +114,8 @@ export const APPEND_ONLY_MODELS = new Set<string>([
   // preenchimento só é escrito pela migration
   'ConsentPurpose',
   'PermissionBackfill',
+  // F4.1c-2: a revisão de template é um ato registrado, e não se reescreve
+  'TemplateReview',
 ]);
 
 /**
@@ -136,6 +141,11 @@ export const OUTCOME_ONLY_MODELS: Readonly<
   StopBlock: {
     desfecho: ['liftedByMembershipId', 'liftOrigin', 'liftReceipt', 'activeMark'],
     doBanco: ['createdAt', 'liftedAt'],
+  },
+  // F4.1c-2: o conteúdo da versão é imutável; só o status vai a `divergent`
+  MessageTemplateVersion: {
+    desfecho: ['status'],
+    doBanco: ['createdAt'],
   },
 };
 
@@ -184,6 +194,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     purposeConsentsRevoked: 'Consent',
     stopBlocksCreated: 'StopBlock',
     stopBlocksLifted: 'StopBlock',
+    templateReviews: 'TemplateReview',
     // alvo fora do perímetro: travessia via db é bloqueada (sessões só via raw)
     activeSessions: 'RefreshToken',
   },
@@ -314,6 +325,18 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
   ConsentPurpose: {
     workspace: 'Workspace',
     consents: 'Consent',
+    templateReviews: 'TemplateReview',
+  },
+  MessageTemplateVersion: {
+    workspace: 'Workspace',
+    channel: 'Channel',
+    reviews: 'TemplateReview',
+  },
+  TemplateReview: {
+    workspace: 'Workspace',
+    templateVersion: 'MessageTemplateVersion',
+    purpose: 'ConsentPurpose',
+    reviewedBy: 'Membership',
   },
   Consent: {
     workspace: 'Workspace',
@@ -374,6 +397,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     messages: 'Message',
     credential: 'ChannelCredential',
     messageTemplates: 'MessageTemplate',
+    templateVersions: 'MessageTemplateVersion',
     consents: 'Consent',
   },
   Conversation: {

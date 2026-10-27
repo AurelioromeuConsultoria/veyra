@@ -64,6 +64,15 @@ const DOCUMENTED_LOOSE_COLUMNS = new Set([
   'ChannelCredential.phoneNumberId',
   'ChannelCredential.businessAccountId',
   'MessageDispatch.externalId',
+  // a WABA e o template NA META de onde a versão saiu (ADR-052 item 4, F4.1c-2):
+  // ids de OUTRO sistema, só dígitos por CHECK e imutáveis pelo gatilho. Nunca
+  // são chave de busca nem de autorização: só são comparados na releitura, que
+  // exige o mesmo id na WABA da credencial do canal. A WABA é a FOTOGRAFIA do
+  // cadastro, não uma referência à credencial: a credencial troca de WABA
+  // (`--trocar-waba`) ou sai, e a releitura precisa ver a diferença para
+  // divergir (`waba_trocada`). Uma FK travaria a troca ou apagaria a versão.
+  'MessageTemplateVersion.businessAccountId',
+  'MessageTemplateVersion.metaTemplateId',
   // id da mídia NO PROVEDOR: opaco, e os bytes só existem lá até a coleta.
   // A integridade que importa é o unique (workspaceId, messageId,
   // providerMediaId), que impede referência duplicada. ADR-037.

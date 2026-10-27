@@ -47,6 +47,8 @@ export interface MetaTransport {
 const ALLOWED_HOSTS = new Set(['graph.facebook.com']);
 const ALLOWED_HOST_SUFFIX = '.fbsbx.com';
 const TIMEOUT_MS = 15_000;
+/** A mensagem do corpo acima do teto: quem lê o erro a reconhece por aqui. */
+export const MENSAGEM_DO_TETO = 'Resposta acima do teto';
 const MAX_MEDIA_BYTES = 10 * 1024 * 1024;
 
 function hostAllowed(host: string): boolean {
@@ -109,7 +111,7 @@ function call(
         res.on('data', (chunk: Buffer) => {
           total += chunk.length;
           if (total > (options.maxBytes ?? 256 * 1024)) {
-            req.destroy(new Error('Resposta acima do teto'));
+            req.destroy(new Error(MENSAGEM_DO_TETO));
             return;
           }
           chunks.push(chunk);
@@ -254,4 +256,5 @@ export class GraphApiTransport implements MetaTransport {
   }
 }
 
-export { providerAddress, hostAllowed };
+export { providerAddress, hostAllowed, call };
+export type { RawResponse };
