@@ -4714,7 +4714,7 @@ A skill `create-migration` traz o bloco de ensaio com as três evidências: os g
 
 ## ADR-052 — Mensagem iniciada pelo negócio: telefones normalizados, remetente sem atribuição silenciosa, template verificável, consentimento por finalidade e aprovação vinculada à prévia
 
-**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). **A F4.1a foi aprovada para implementação em 2026-10-23**, com as condições registradas no fim deste ADR, e publicada em 2026-10-26. **A F4.1b foi parcialmente aprovada em 2026-10-26:** finalidades, consentimentos, bloqueio, permissões e a recusa transitória dos templates estão liberados, e foram publicados e validados no mesmo dia, com a decisão 19 (ver o fechamento no fim deste ADR); a regra temporal da resposta depois do pedido de parar continua proposta. **A F4.1c foi aprovada em três subentregas em 2026-10-26**; a F4.1c-1 foi publicada e validada no mesmo dia (`e070bc6`), e a F4.1c-2 está implementada, revisada e validada em 2026-10-27, em commit local, sem push (ver o fim deste ADR). O resto continua PROPOSTO, e nenhum outro código da F4 está autorizado. · **Data:** 2026-10-23
+**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). **A F4.1a foi aprovada para implementação em 2026-10-23**, com as condições registradas no fim deste ADR, e publicada em 2026-10-26. **A F4.1b foi parcialmente aprovada em 2026-10-26:** finalidades, consentimentos, bloqueio, permissões e a recusa transitória dos templates estão liberados, e foram publicados e validados no mesmo dia, com a decisão 19 (ver o fechamento no fim deste ADR); a regra temporal da resposta depois do pedido de parar continua proposta. **A F4.1c foi aprovada em três subentregas em 2026-10-26**; a F4.1c-1 foi publicada e validada no mesmo dia (`e070bc6`), e a F4.1c-2 foi publicada e validada em 2026-10-27 (`60b7b16`). A F4.1c-3 tem o desenho registrado antes do código (ver o fim deste ADR). O resto continua PROPOSTO, e nenhum outro código da F4 está autorizado. · **Data:** 2026-10-23
 
 A revisão 0 está no `0eb4038`. A revisão 1 não foi comitada; ela passou pelo `reviewer` (mudanças necessárias) e pelo `security` (bloqueado, sem P0), e os achados dos dois estão incorporados aqui. A confirmação desta revisão 2 aprovou com ressalvas (o `reviewer`, com quatro achados importantes; o `security`, com dois P1 novos, os mesmos do `reviewer`), e as correções dela também estão no texto. A conferência final dessas correções aprovou: o `security`, sem ressalva bloqueante, e o `reviewer`, com uma ressalva importante (a regra ao reabrir conversa) e duas de qualidade. As três estão no texto, e os dois disseram que não é preciso nova rodada. Nenhum ADR aceito é alterado antes da aprovação deste; as emendas que ele implicaria estão listadas no fim, em "Emendas propostas".
 
@@ -6453,3 +6453,219 @@ O que mudou:
 - o teste da espera não tem prazo explícito (`Promise.race`): sob S15 e R6, ele morre pelo prazo do jest, não pela asserção do tempo. A morte é na suíte alvo, com "1 failed";
 - o cabeçalho da lista de exceções do `check:fk` ainda descreve só os polimórficos, e o relatório cita o ADR-011 para toda exceção. É anterior a esta subentrega;
 - o `phone-writers.integration-spec.ts` ainda solta as travas só no `finally`, como este teste fazia. Levar `segurar` e `soltar` para o `test/integration/locks.ts` fica para depois.
+
+**A F4.1c-2 publicada e validada (2026-10-27).** O usuário autorizou o push do `149261a` e do `60b7b16`, nessa ordem, sem reescrever o histórico. Os quatro jobs do CI da árvore final (`60b7b16`) terminaram verdes no run 40538042129: lint e formatação, tipos e build, testes, e e2e. Na mesma autorização, o usuário decidiu:
+
+- **a exceção do `check:fk` para os dois ids da Meta fica aceita,** restrita a essas colunas. Ela não dispensa o isolamento por workspace das consultas e das credenciais;
+- **a K6 fica registrada como equivalente,** com a justificativa dada, sem diferença artificial só para aumentar a contagem de mutações mortas.
+
+**F4.1c-3 — o desenho, antes do código (2026-10-27).** Liberada pelo usuário com o CI verde da F4.1c-2, conforme os itens 5 a 7 do plano. Dados fictícios, o transporte falso e o catálogo falso. Continuam bloqueados deploy, ativação do Clinics, envio real e dados reais.
+
+**Os requisitos que o usuário preservou (2026-10-27):**
+
+- **O webhook de status de template só dispara a releitura.** Com várias credenciais correspondentes, cada workspace é processado à parte, com a própria credencial. Nada é escolhido arbitrariamente, e o payload não serve de autorização nem de confirmação de conteúdo. O webhook não entra nesta subentrega; quando entrar, segue esta regra.
+- **A aprovação continua vinculada** aos valores exatos, ao destinatário, à finalidade, ao consentimento e à versão. Nenhuma divergência troca em silêncio o que foi aprovado.
+- **O cancelamento por lista de mensagens** só é ligado com a serialização prevista. Esta subentrega não liga nenhum chamador por lista.
+- **O template só volta ao Inbox** depois de o contrato completo estar implementado e validado.
+- **A validação é proporcional:** testes focados durante os ajustes, a bateria completa no fechamento e repetição quando uma mudança ou falha a justificar. As tarefas de manutenção já registradas ficam fora.
+
+**A ordem interna.** Primeiro o contrato do `business_outbound`, sem o Inbox, com os testes focados e as mutações. Depois o template no Inbox, por cima do contrato validado. A bateria completa vem no fechamento; depois, o commit local e a parada antes do push.
+
+**1. O pedido aprovado: `OutboundApproval`, 1:1 com a mensagem.**
+
+- **Os campos:**
+  - `messageId` (a chave, e a FK composta para a mensagem);
+  - o destinatário: `contactId` e `number`, o número exato;
+  - o remetente: `channelId` e o `phoneNumberId` da credencial na aprovação;
+  - o conteúdo: `templateVersionId` e `templateReviewId`;
+  - a finalidade e o consentimento: `purposeId` e `consentId`;
+  - a origem: `originRef` (`prefixo:id`) e as `validityKeys` fixadas na criação (E7);
+  - o prazo: `expiresAt`;
+  - `approvalHash`, `approvedByMembershipId` e `createdAt`, no relógio do banco.
+- **Os valores não são guardados** (minimização). O despacho os recalcula dos dados de agora, sob as travas, e o hash prova que são os aprovados. O que fica é o texto renderizado da mensagem, que é o que o Inbox mostra.
+- **Append-only:** no client e por um gatilho que recusa o `UPDATE`.
+- **As FKs compostas:**
+  - contato, consentimento, canal e mensagem em cascata: excluir o contato já apaga a conversa e as mensagens dele;
+  - versão, revisão, finalidade e quem aprovou sem ação: são imutáveis.
+- **O `phoneNumberId`** é id da Meta, exceção documentada no `check:fk`, como o da credencial.
+- **A trilha** leva os ids, a origem e o prazo, e nunca o número nem os valores.
+
+**2. O `approvalHash` (item 8 do ADR-052).**
+
+- **O algoritmo:** HMAC-SHA256 com a chave `OUTBOUND_APPROVAL_KEY`, nova e obrigatória no boot, como a `ADDRESS_LOCK_KEY`. Precisa de ao menos 32 caracteres e é distinta do JWT, da chave de cifra e da `ADDRESS_LOCK_KEY`.
+- **A forma canônica `v1`:** um JSON de chaves ordenadas com a versão da forma e os campos do item 1. Entram também os valores exatos de cada parâmetro e o `expiresAt` em ISO com milissegundos.
+- **O caminho do hash:**
+  - a prévia devolve o hash e o `expiresAt`;
+  - a aprovação recebe os dois de volta e recalcula o hash com os dados de agora;
+  - o despacho recalcula de novo.
+
+  Como é HMAC, o cliente não forja o prazo nem os valores.
+
+**3. O prazo da aprovação, no relógio do banco (ADR-049).**
+
+- **A fonte:** é fixado na prévia.
+  - **Inbox: 1 hora**, recomendação desta subentrega. A pessoa aprova e o envio sai em segundos, e o prazo só limita a retentativa do outbox.
+  - **Vertical:** o prazo dele vem com a origem (a confirmação até o início menos a margem, e a reativação em 24 h), na F4.2.
+- **A aprovação recusa** o prazo vencido ou acima do máximo do tipo de origem.
+- **No despacho,** o prazo vencido dá `failed_permanent` (`approval_expired`).
+
+**4. O destinatário (item 6 do ADR-052).** Na aprovação e na reconferência:
+
+- **Os critérios:**
+  - o número está entre os `numerosExatos` do contato;
+  - a chave de coincidência dá um só candidato: `decidirRemetente` resolve para esse contato, sem outro exato nem possível;
+  - há consentimento ativo para (contato, canal, número, finalidade);
+  - não há bloqueio do número no workspace.
+- **Os motivos de recusa,** por destinatário: `address_changed`, `address_ambiguous`, `consent_revoked` e `opted_out`.
+- **Nada escolhe outro número nem outro contato.**
+
+**5. A conversa.**
+
+- **Na aprovação:** a mensagem precisa de conversa. Vale a aberta de (canal, contato, número). Se não houver, uma nova é criada sob o nível 0 do número, exclusivo, como na ingestão, antes das outras travas. A ingestão do mesmo número espera.
+- **A conversa RAI** do número não é usada.
+- **No Inbox,** a conversa é a dada: o destinatário é o contato e o endereço dela, que precisa conferir exatamente (`remetenteDoEnvio`).
+
+**6. A prévia: `POST /api/business-outbound/preview`.**
+
+- **Não tem efeito,** não pega trava e não relê a Meta; é a aprovação que relê.
+- **Por item, devolve:**
+  - o texto renderizado e os valores;
+  - o `expiresAt` e o `approvalHash`;
+  - ou o motivo da recusa.
+- **As permissões:**
+  - `conversations:write`;
+  - `contacts:read`, porque mostra o nome e o número;
+  - `consents:read`, porque revela a finalidade consentida.
+
+  É a recomendação desta subentrega, sem chave nova.
+
+**7. A aprovação, em lote: `POST /api/business-outbound`.**
+
+- **A requisição:**
+  - o `Idempotency-Key` é obrigatório (400 sem ele), e a mesma chave com outro lote dá 409;
+  - de 1 a 50 itens, cada um com o alvo, o `expiresAt` e o `approvalHash` da prévia;
+  - as permissões são as da prévia.
+- **Cada item é processado por si,** numa transação das mudanças, com `lock_timeout`:
+  1. a releitura do template na Meta, antes das travas e com prazo absoluto;
+  2. as travas, na ordem global:
+     - o nível 0 do número, exclusivo;
+     - o workspace, compartilhado;
+     - os escritores em massa, compartilhado;
+     - o contato, compartilhado;
+     - o `address:` do número, compartilhado;
+     - a `validity:` das chaves, compartilhada;
+  3. a reconferência, com leituras novas:
+     - o destinatário;
+     - a versão ativa, com o hash, e a revisão do par;
+     - o consentimento;
+     - o E7, quando a origem é de vertical;
+     - os valores, pelo resolvedor;
+     - o prazo, e o hash recalculado igual ao recebido;
+  4. a quota, reservada antes da transação e devolvida se o item não nascer;
+  5. a escrita, numa transação só:
+     - a conversa, se for nova;
+     - a mensagem, com o texto renderizado;
+     - o despacho `reserved`;
+     - a aprovação;
+     - o evento do outbox;
+     - a trilha.
+- **A resposta e o replay:**
+  - a resposta traz, por item, só o índice, o `messageId`, o estado (`approved` ou `refused`) e o motivo, nunca a prévia;
+  - o replay devolve essa resposta, com as permissões da rota conferidas de novo.
+
+**8. O worker do `business_outbound` (item 7 do ADR-052).** O despacho com aprovação segue a ordem da G3.2:
+
+1. **o claim.** Com o pedido de cancelamento, vai a `canceled`, como hoje;
+2. **a releitura** do template, fora das travas, com prazo absoluto (`signal`):
+   - `confere`: segue;
+   - `divergente`: `failed_permanent` (`template_changed`), e a divergência é gravada de novo;
+   - `indisponivel` (pausado na Meta): `failed_before_send` (`template_unavailable`), recomendação desta subentrega. Cada nova tentativa relê, até o prazo da aprovação;
+   - `falha`: `failed_before_send` (`template_unverified`);
+3. **o prazo:** vencido no banco, `failed_permanent` (`approval_expired`);
+4. **a quota viva e o marcador,** numa transação própria, com fencing;
+5. **a guarda,** com o uso `business_outbound`:
+   - as travas: o contato, o `address:` do número, a `validity:` das chaves e os escritores em massa, compartilhados;
+   - a reconferência, com leituras novas: o pedido de cancelamento, o destinatário, o bloqueio, o consentimento, a versão ativa com o hash, a revisão, o E7, os valores e o hash recalculado (`approval_stale`) e o prazo;
+6. **o início da chamada,** pela guarda. É o ponto de decisão;
+7. **o desfecho,** gravado sob as travas, como no envio da IA.
+
+- **A porta E6 não é consultada (C14):** a mensagem do `business_outbound` só nasce da aprovação, com o texto da versão revisada e os valores do resolvedor. Nenhum caminho converte um rascunho da IA nela.
+- **O tipo de uso `business_outbound`:**
+  - entra em `OrigensDosUsos`, com a origem (`messageId`, `claimToken`);
+  - a marca de incerteza é a do envio da IA;
+  - o valor do enum `ContentUseKind` entra numa migration própria (`ADD VALUE`, ADR-051).
+- **O despacho de template sem aprovação** (o caminho anterior) continua recusado com `template_flow_unavailable`.
+
+**9. O envio do template pelo transporte.** O `sendTemplate` passa a receber os componentes, resolvendo duas pendências registradas na F4.1c-2:
+
+- os parâmetros do corpo e do cabeçalho, em ordem numérica (`body.2` antes de `body.10`);
+- o nome de cada parâmetro no formato `NAMED`.
+
+A unidade fixa o corpo da requisição à Graph, e o transporte falso guarda o que recebeu.
+
+**10. O E7: a porta `OutboundPrecondition` (C10, aprovado).**
+
+- **A composição:** é o ponto de composição novo do ADR-047, a lista `outboundPreconditions` na raiz de composição.
+- **O roteamento:** pelo prefixo da `originRef`, para uma única porta. A porta só lê e roda no CLS do workspace.
+- **As respostas:**
+
+  | Resposta             | O que traz                                                | Na aprovação                         | No despacho                                                                                                                 |
+  | -------------------- | --------------------------------------------------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+  | `vale`               | os valores dos campos do vertical e as chaves de validade | segue, se as chaves forem as fixadas | segue, se as chaves forem as fixadas                                                                                        |
+  | `nao_vale`           | o motivo                                                  | recusa                               | `failed_permanent` (`precondition_failed`), recomendação desta subentrega: `canceled` fica só para o pedido de cancelamento |
+  | `indisponivel`       | erro ou prazo de 3 s                                      | recusa                               | `failed_before_send` (`precondition_unavailable`)                                                                           |
+  | prefixo desconhecido | —                                                         | recusa                               | `failed_permanent` (`precondition_unknown`)                                                                                 |
+
+- **Os valores e as chaves:** o Core confere os valores contra a lista fechada da finalidade: o conjunto exato de chaves, texto, tamanho máximo, sem quebra de linha nem tabulação. As chaves diferentes das fixadas dão `approval_stale`.
+- **O que entra agora:**
+  - sem vertical composto, a lista fica vazia, e só a origem do Core (`conversation:`) é aceita;
+  - os testes usam uma extensão de teste, inclusive o P0 de uma referência de outro workspace;
+  - o Clinics implementa a porta na F4.2. Os campos do vertical nos vínculos dos templates entram com ela.
+
+**11. O template no Inbox (item 6 do plano), por último.**
+
+- **As opções da conversa:** `GET /api/conversations/:id/template-options` lista as versões ativas do canal que têm revisão para uma finalidade com consentimento ativo do número da conversa.
+- **O compositor:**
+  - com a janela fechada, oferece essas opções e mostra a prévia;
+  - aprova pelo mesmo lote, com um item, a origem `conversation:<id>` e um `Idempotency-Key` gerado pelo web.
+- **O caminho anterior sai do web** (o parâmetro digitado). O envio comum continua recusando o template.
+
+**12. Os testes.**
+
+- **Determinísticos,** com portões em cada passo e o transporte falso pausável.
+- **Cada mudança, em três momentos:** antes das travas, durante a reconferência e durante a chamada. As mudanças são:
+  - a revogação;
+  - o pedido de parar;
+  - o número alterado ou passado a outro contato;
+  - a importação;
+  - o cancelamento;
+  - o template alterado na Meta;
+  - o nome alterado (`approval_stale`);
+  - o prazo vencido.
+- **A espera com prazo e o 409.**
+- **A guarda perdida,** com o `in_doubt`.
+- **Os crashes do ponto de decisão:**
+  - entre o marcador e a chamada, que vai a `unknown_after_dispatch`;
+  - depois da chamada e antes do `COMMIT`, sem novo claim.
+- **O isolamento entre workspaces (P0):** no lote, na prévia, no E7 e nas opções do Inbox.
+- **O lote:** sem a chave, 400; a mesma chave com outro lote, 409; o replay sem a prévia.
+- **As mutações e a bateria completa,** no fechamento.
+
+**13. A migration (ADR-051, com o ensaio).** Uma só, `20261027120000_business_outbound`, como a do `canceled` na F4.1c-1: o valor `business_outbound` do `ContentUseKind`, sem uso na mesma transação; o único `(workspaceId, id)` do `Consent`, alvo da FK composta; a tabela `OutboundApproval`, com as FKs compostas, os índices e as restrições do hash, do número, do id da Meta e da origem; e o gatilho de imutabilidade. São 22 objetos.
+
+**14. Fora desta subentrega:**
+
+- o webhook de status de template;
+- o chamador do cancelamento por lista;
+- o Clinics como implementador do E7 (F4.2);
+- a conferência de que o `phoneNumberId` pertence à WABA, antes de dados reais;
+- a exceção da resposta depois do pedido de parar;
+- as manutenções registradas na F4.1c-2.
+
+**As recomendações desta subentrega, para a revisão do usuário no commit local:**
+
+- o prazo de 1 hora no Inbox;
+- as permissões reaproveitadas, sem chave nova;
+- o `nao_vale` do E7 como `failed_permanent`;
+- o template pausado como `failed_before_send` até o prazo;
+- os valores fora da aprovação.
