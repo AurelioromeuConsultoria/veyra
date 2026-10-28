@@ -4520,6 +4520,84 @@ Pelo exemplo 5, o mesmo paciente também conta em outubro, com a âncora em 28/1
 
 Cada parte com testes focados durante os ajustes, uma revisão e as mutações pertinentes no fechamento, e a bateria antes do commit local.
 
+**As decisões do usuário sobre o plano da F4.2 (2026-10-28) e o desenho refinado, antes do código.** O plano está aprovado, com as condições abaixo. Pode começar pelo Core e depois o Clinics, e para no commit local antes do push do código. Nenhuma mudança no staging está autorizada.
+
+**1. O conteúdo mínimo: aprovado.**
+
+- A confirmação leva o primeiro nome, a data e a hora; a reativação, só o primeiro nome. Os dois vão com o texto fixo revisado, e a unidade sai.
+- Isso reduz o conteúdo exposto, mas **não torna a comunicação anônima nem resolve o B1**.
+- A conferência contra os nomes do catálogo é apoio à revisão humana, não garantia de ausência de informação clínica.
+
+**2. O corpo neutro para as origens de vertical: aprovado.**
+
+- **O texto:** o Core grava uma descrição genérica, "Mensagem por template". Ela não cita o vertical, não importa regra dele e não afirma "enviada": quem diz se saiu, foi cancelada ou ficou incerta é o estado do despacho.
+- **As cópias do `Message.body`,** levantadas antes do código, ficam todas neutras:
+  - a leitura da conversa (o Inbox);
+  - o contexto da IA, que lê as mensagens da conversa.
+
+  As outras superfícies não copiam o texto:
+  - a timeline (`message_sent` e `message_received` têm payload vazio);
+  - o outbox (o único evento é o `whatsapp.send_pending`, com o `messageId`);
+  - a trilha (sem valores);
+  - os logs (só contagens);
+  - e não há busca de mensagens.
+
+  Uma superfície nova que copie o corpo herda o neutro.
+
+- **O texto renderizado pertence ao armazenamento protegido do vertical:** a tela de prévia de quem aprova e o pedido do Clinics. As rotas genéricas do Core aceitam só a origem do Core (`conversation:`). A origem de vertical passa pelas rotas do vertical, que chamam o serviço do Core no mesmo processo e recebem dele o texto renderizado; o Core não o grava.
+
+**3. As permissões: a leitura junto da escrita.**
+
+- **A prévia e a aprovação** exigem `clinics:schedule:read` **e** `clinics:schedule:write`, além das três do Core. Escrita não implica leitura em papel personalizado.
+- **A declaração vem da porta registrada no servidor,** nunca do cliente. O serviço do Core confere as permissões da porta, pela membership autenticada, **antes** de consultar a origem ou devolver conteúdo, na prévia, na aprovação e no replay. As rotas do vertical também as declaram (`@RequirePermissions`), como segunda camada.
+- **A leitura de um pedido** só com `clinics:schedule:read` não mostra o número completo nem a situação do consentimento: o servidor os omite sem `contacts:read` e `consents:read`.
+
+**4. O prazo.**
+
+- **As duas horas da confirmação: aprovadas para o protótipo.** A confirmação deixa de ser elegível quando restarem duas horas ou menos, e a tela explica.
+- **O vencimento efetivo** é o menor entre o limite da origem e o teto do Core, no relógio do banco. Os tetos ficam explícitos:
+  - a origem do Inbox: uma hora, fixa, como na F4.1c-3;
+  - a origem de vertical: o limite da porta, no máximo 24 horas.
+
+  O limite da porta é o início menos duas horas, na confirmação, e 24 horas, na reativação. A porta passa a devolver esse limite.
+
+- **O vencimento fica preso à aprovação,** pelo hash, e nunca é prorrogado.
+
+**5. O desfecho e a remoção do texto.**
+
+- **O texto e os valores ficam só no pedido do Clinics.** O pedido guarda o texto renderizado; os valores (a data e a hora) não são guardados à parte. O pedido guarda o início fixado da confirmação, porque a validade depende dele, e esse dado já é do agendamento.
+- **O mecanismo concreto: uma varredura periódica do Clinics,** pelo agendador de jobs do Core.
+  - Cross-workspace, com `raw` justificado como os outros jobs, e idempotente.
+  - Apaga o texto do pedido quando o desfecho é terminal:
+    - o despacho `sent`, `canceled`, `failed_permanent` ou `unknown_after_dispatch` (o incerto);
+    - a aprovação vencida pelo relógio do banco, com o despacho fora de `sending`;
+    - o pedido nunca aprovado, cujo alvo deixou de valer, ou cujo prazo passou.
+  - Depois do vencimento, nada sai: o verificador confere o prazo antes da chamada.
+  - `failed_before_send` ainda elegível não é terminal.
+  - A varredura funciona depois de reinício, porque decide só pelo banco, e não depende de alguém abrir a tela.
+- **O E7 continua só de leitura.** A varredura é um escritor próprio do vertical, e não a porta.
+
+**6. A repetição e a remarcação.**
+
+- **O alvo da confirmação** é o agendamento com o início fixado; **o da reativação**, o retorno.
+- **Remarcar** invalida o pedido antigo, e o horário novo exige pedido e aprovação novos.
+- **O pedido nasce antes da prévia,** com o alvo, e a origem do envio é o pedido (`clinics.outreach:<id>`).
+- **No máximo um pedido "que conta" por alvo,** por uma marca com único parcial:
+  - a marca só sai quando o pedido é comprovadamente não enviado, conferido sob a `validity:` exclusiva;
+  - enviado ou incerto mantém a marca para sempre.
+- **Uma aprovação só por origem de vertical:** o Core passa a ter um único por (workspace, origem), para as origens que não são do Core, na aprovação. Uma prévia nova do mesmo pedido não gera segunda mensagem.
+- **Nem recriar o pedido nem repetir a aprovação** contorna a regra.
+
+**O que muda no Core, além do adendo 9:**
+
+- o contrato do E7 com as permissões e o limite do prazo;
+- o serviço do envio do negócio com a conferência das permissões da porta e o teto de 24 horas;
+- as rotas genéricas só com a origem do Core;
+- o corpo neutro;
+- o único por origem de vertical na aprovação;
+- o `contato.primeiro_nome`;
+- o motivo `origin_invalidated` do cancelamento neutro.
+
 ## ADR-049 — Relógio de agendamento: quem compara define o relógio, e filas e leases usam o do banco
 
 **Status:** aceito (plano aprovado pela revisão de 2026-10-19; a entrega segue para revisão) · **Data:** 2026-10-19
