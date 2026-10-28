@@ -4433,9 +4433,9 @@ Pelo exemplo 5, o mesmo paciente também conta em outubro, com a âncora em 28/1
 
 **Continuam bloqueados** o código da F4, deploy, ativação do Clinics, envio real e dados reais.
 
-### Adendo 9 (2026-10-28) — plano da F4.2: o Clinics na porta do E7 (APROVADO com condições; implementado, commit local)
+### Adendo 9 (2026-10-28) — plano da F4.2: o Clinics na porta do E7 (APROVADO com condições; publicado e validado em `ec2d224`)
 
-**Situação: aprovado pelo usuário em 2026-10-28, com as condições registradas abaixo, e implementado no mesmo dia (commit local, sem push; ver "Implementação da F4.2").** A situação original era PROPOSTO: pedido pelo usuário com o CI verde da F4.1c-3, antes de ligar o Clinics ao E7. Dados fictícios, o transporte falso e o catálogo falso; continuam bloqueados envio real e dados reais.
+**Situação: aprovado pelo usuário em 2026-10-28, com as condições registradas abaixo, implementado, publicado e validado no mesmo dia (`ec2d224`, os quatro jobs do CI verdes no run 40770037881; ver "Implementação da F4.2").** A situação original era PROPOSTO: pedido pelo usuário com o CI verde da F4.1c-3, antes de ligar o Clinics ao E7. Dados fictícios, o transporte falso e o catálogo falso; continuam bloqueados envio real e dados reais.
 
 **O que muda em relação ao adendo 8.** O adendo 8 previa a prévia no corpo da mensagem do Core. O usuário vetou ligar dado clínico às mensagens comuns do Core, nem como solução provisória (2026-10-28). Este plano refaz os itens 1 (a fronteira), 2 (o conteúdo) e 3 (o pedido) por esse critério. O resto do adendo 8 vale: a validade, o lote, as métricas e as entregas.
 
@@ -4722,12 +4722,91 @@ _No Clinics:_
 
   A fumaça da ordem global (`clinics-restriction-changes`) não foi estendida: a prova por caminho e a fumaça própria cobrem a ordem dos caminhos novos.
 
-**Residuais registrados (não corrigidos nesta subentrega):**
+**A validação (2026-10-28).**
 
-- **O prazo da aprovação da confirmação** é o início menos duas horas, e por isso o `expiresAt` da aprovação e a trilha do Core (`business_outbound.approved`) revelam o horário do atendimento, dado derivado de classe S. Quem lê a auditoria já vê o `startsAt` na trilha do agendamento. A exposição a mais é pequena e fica aceita para o protótipo fictício; antes do uso real, entra na restrição de leitura do B1.
-- **O despacho não revalida quem aprovou.** O comportamento é da F4.1c-3, mas o teto de 24 horas da origem de vertical amplia de uma hora para até 24 horas a janela em que a aprovação de um membro removido ainda sai nas retentativas. É decisão para antes do uso real: conferir na reconferência que a membership de quem aprovou está ativa e tem as permissões da porta.
+- **As provas:**
+  - o ensaio das duas migrations;
+  - 34 mutações mortas por teste que falha;
+  - a bateria b71 e o subconjunto pós-correções b72;
+  - o CI verde da árvore final (`ec2d224`).
+- **A falha da b71, mantida no registro:**
+  - o que aconteceu: um teste do webhook sob a guarda (G3.3, "a ativação do Clinics espera a entrega em andamento") falhou uma vez, com a máquina acordada;
+  - a causa não foi identificada, e a falha não reproduziu nas dez rodadas seguintes.
+- **O que isso não prova (usuário):** que o diff não altere diretamente esse caminho não prova ausência de relação, porque a entrega mudou a composição (a porta do E7), os jobs (o agendamento periódico) e componentes compartilhados. A bateria local não se repete indefinidamente: o CI foi a execução completa seguinte, verde. Se a falha voltar, preservar a evidência e investigar antes de fechar a entrega.
+
+**Residuais registrados (não corrigidos nesta subentrega; os dois primeiros com a decisão do usuário):**
+
+- **O prazo da aprovação da confirmação** é o início menos duas horas, e por isso o `expiresAt` da aprovação e a trilha do Core (`business_outbound.approved`) revelam o horário do atendimento, dado derivado de classe S. Quem lê a auditoria já vê o `startsAt` na trilha do agendamento. **Decisão do usuário (2026-10-28):** aceito exclusivamente para a demonstração com dados fictícios e transporte falso. Isso não libera uso real. A exposição continua vinculada ao B1 e à revisão das superfícies de leitura.
+- **O despacho não revalida quem aprovou.** O comportamento é da F4.1c-3, mas o teto de 24 horas da origem de vertical amplia de uma hora para até 24 horas a janela em que a aprovação de um membro removido ainda sai nas retentativas. **Decisão do usuário (2026-10-28):** aceito exclusivamente para a demonstração com dados fictícios e transporte falso. Isso não libera uso real.
+
+  **REQUISITO antes de qualquer envio real** (não recomendação):
+  - a reconferência valida a membership ATIVA de quem aprovou e as permissões exigidas dele, inclusive as declaradas pela porta;
+  - a remoção ou a perda de acesso impede a chamada;
+  - a indisponibilidade da checagem não autoriza o envio (falha fechada).
+
 - **O 409 dos caminhos da agenda** que esperam a `validity:` diz "uso em andamento para este contato", a mensagem do Core. É imprecisa na agenda, sem efeito.
 - **Os cancelamentos do Clinics e do pedido de parar não se serializam entre si.** O do Clinics trava a `validity:`; o do pedido de parar, o `address:`. A sobreposição não terminal é de no máximo uma linha (o despacho daquela origem para aquele número), e o impasse não acontece com uma linha. Se acontecesse, um dos dois seria desfeito (40P01), sem envio a mais. O comentário do cancelamento neutro foi corrigido.
+
+### Adendo 10 (2026-10-28) — plano curto da F4.3: o vínculo com o deal e as métricas (PROPOSTO, para revisão antes do código)
+
+**Situação: PROPOSTO.** Pedido pelo usuário depois da F4.2. Nenhum código da F4.3 está autorizado. Dados fictícios e transporte falso; envio real e dados reais continuam bloqueados.
+
+**O que fica como está (aprovado no adendo 8, revisão 3, com V3, V4 e V5):**
+
+- **O vínculo (item 6):**
+  - fica numa tabela do Clinics, com FK composta `RESTRICT` para o `Deal`;
+  - listar e escolher exige `pipelines:read` e `clinics:schedule:write`, e só aparecem os deals do mesmo contato do paciente;
+  - ver o vínculo exige `pipelines:read` e `clinics:schedule:read`;
+  - excluir um deal vinculado dá o 409 genérico do Core ("Registro em uso por outros dados"), provisório para o protótipo fictício (V3).
+- **As regras comuns das métricas (item 7):**
+  - o período em datas locais da unidade, `[de, até)`;
+  - as janelas J e N também em datas locais, semiabertas;
+  - "sem dados" diferente de 0%;
+  - a unidade de contagem é o agendamento, o deal ou o paciente, nunca a mensagem;
+  - o incerto é grupo próprio e não conta como enviado;
+  - a resposta numa conversa "remetente a identificar" não conta.
+- **As três métricas:**
+  - o funil da confirmação (7.1), com as seis etapas e a falta por três grupos, como associação;
+  - a conversão com janela por deal, J = 90 dias (7.2);
+  - os pacientes com retorno depois da reativação, N = 60 dias, como "associação temporal, não causa" (7.3).
+
+  Os exemplos do adendo 8 viram casos de teste.
+
+- **V4:** as contagens de resposta exigem a permissão da métrica **e** `conversations:read`; quem não lê as conversas não vê essas contagens.
+
+**De onde vêm os dados (sem decisão nova):**
+
+- o pedido "enviado para o horário final" é o pedido da F4.2 com o mesmo início do agendamento e o estado `sent`;
+- a entrega e a resposta vêm do Core, por uma leitura neutra por origem, como a situação da F4.2. A entrega são os recibos `delivered` ou `read` que o Core já guarda. A resposta é a mensagem de entrada na conversa daquele número, depois do envio e antes do início. O vertical não lê as tabelas do Core;
+- a falta, pela regra da F3.3a.
+
+**Decisões abertas, com a recomendação:**
+
+1. **A fonte do instante "confirmado pela equipe"** (o adendo 8 a deixou para a F4.3). Hoje o agendamento não guarda quando foi confirmado; a trilha guarda, mas a retenção a apaga e ela não é fonte de domínio.
+   - Recomendação: uma coluna `confirmedAt` no agendamento, escrita pelo relógio do banco na transição para `confirmed` e zerada na remarcação, que volta a `scheduled`.
+   - Sem retroativo: o agendamento confirmado antes da F4.3 fica fora dessa etapa, e o período mostra "sem dados" para ela, nunca 0.
+2. **A cardinalidade e o ciclo do vínculo.**
+   - Recomendação: no máximo um deal por agendamento; um deal com vários agendamentos.
+   - Vincular, trocar e desvincular com trilha, só enquanto o agendamento não foi atendido. Depois do atendimento, o vínculo fica fixo, porque a conversão depende dele.
+3. **A troca de contato do deal vinculado** (o Core permite).
+   - Recomendação: a métrica só conta o vínculo cujo deal ainda é do contato do paciente, conferido na hora da conta, sem trava nova no Core.
+   - Alternativa descartada: uma FK composta com o contato faria a troca do contato do deal dar 409 no Core por causa do vertical.
+4. **As permissões das métricas.**
+   - Recomendação: a "permissão da métrica" é `clinics:schedule:read`, como a falta da F3.3a, sem chave nova.
+   - Somam-se `conversations:read` para as contagens de resposta (V4) e `pipelines:read` para a conversão, que lê deals.
+5. **A unidade da conversão.** O deal não tem unidade.
+   - Recomendação: como na falta, a unidade é obrigatória com mais de uma ativa, e o fuso dela define a data local do deal e a janela.
+
+**O que a F4.3 entrega:**
+
+- o vínculo: a tabela, a migration, as rotas e a trilha;
+- as três métricas pela API, com os exemplos do adendo 8 como testes;
+- a leitura neutra do Core para a entrega e a resposta;
+- a coluna do instante da confirmação, se aprovada.
+
+As telas ficam na F4.4.
+
+**Limite da demonstração:** com o transporte falso, não chegam recibos nem respostas reais. As etapas "entrega" e "resposta" ficam "sem dados" na demonstração, e nada é acrescentado para simulá-las.
 
 ## ADR-049 — Relógio de agendamento: quem compara define o relógio, e filas e leases usam o do banco
 
@@ -5012,7 +5091,7 @@ A skill `create-migration` traz o bloco de ensaio com as três evidências: os g
 
 ## ADR-052 — Mensagem iniciada pelo negócio: telefones normalizados, remetente sem atribuição silenciosa, template verificável, consentimento por finalidade e aprovação vinculada à prévia
 
-**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). **A F4.1a foi aprovada para implementação em 2026-10-23**, com as condições registradas no fim deste ADR, e publicada em 2026-10-26. **A F4.1b foi parcialmente aprovada em 2026-10-26:** finalidades, consentimentos, bloqueio, permissões e a recusa transitória dos templates estão liberados, e foram publicados e validados no mesmo dia, com a decisão 19 (ver o fechamento no fim deste ADR); a regra temporal da resposta depois do pedido de parar continua proposta. **A F4.1c foi aprovada em três subentregas em 2026-10-26**; a F4.1c-1 foi publicada e validada no mesmo dia (`e070bc6`), e a F4.1c-2 foi publicada e validada em 2026-10-27 (`60b7b16`). A F4.1c-3 foi publicada e validada em 2026-10-28 (`89da993`), e a F4.1c está completa. A F4.2 foi aprovada com condições e implementada em 2026-10-28 (ADR-048, adendo 9), em commit local. O resto continua PROPOSTO, e nenhum outro código da F4 está autorizado. · **Data:** 2026-10-23
+**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). **A F4.1a foi aprovada para implementação em 2026-10-23**, com as condições registradas no fim deste ADR, e publicada em 2026-10-26. **A F4.1b foi parcialmente aprovada em 2026-10-26:** finalidades, consentimentos, bloqueio, permissões e a recusa transitória dos templates estão liberados, e foram publicados e validados no mesmo dia, com a decisão 19 (ver o fechamento no fim deste ADR); a regra temporal da resposta depois do pedido de parar continua proposta. **A F4.1c foi aprovada em três subentregas em 2026-10-26**; a F4.1c-1 foi publicada e validada no mesmo dia (`e070bc6`), e a F4.1c-2 foi publicada e validada em 2026-10-27 (`60b7b16`). A F4.1c-3 foi publicada e validada em 2026-10-28 (`89da993`), e a F4.1c está completa. A F4.2 foi aprovada com condições, publicada e validada em 2026-10-28 (`ec2d224`, CI verde; ADR-048, adendo 9). O plano curto da F4.3 está no ADR-048, adendo 10, para revisão antes do código. O resto continua PROPOSTO, e nenhum outro código da F4 está autorizado. · **Data:** 2026-10-23
 
 A revisão 0 está no `0eb4038`. A revisão 1 não foi comitada; ela passou pelo `reviewer` (mudanças necessárias) e pelo `security` (bloqueado, sem P0), e os achados dos dois estão incorporados aqui. A confirmação desta revisão 2 aprovou com ressalvas (o `reviewer`, com quatro achados importantes; o `security`, com dois P1 novos, os mesmos do `reviewer`), e as correções dela também estão no texto. A conferência final dessas correções aprovou: o `security`, sem ressalva bloqueante, e o `reviewer`, com uma ressalva importante (a regra ao reabrir conversa) e duas de qualidade. As três estão no texto, e os dois disseram que não é preciso nova rodada. Nenhum ADR aceito é alterado antes da aprovação deste; as emendas que ele implicaria estão listadas no fim, em "Emendas propostas".
 
