@@ -639,6 +639,19 @@ describe('Clinics — restrição de conteúdo com a porta real e API de libera�
           },
         });
       },
+      // o pedido de envio passa pelo agendamento real, que vem junto (F4.2)
+      ClinicsOutreachRequest: async () => {
+        const ag = await agendamentoComPais();
+        return prisma.raw.clinicsOutreachRequest.create({
+          data: {
+            workspaceId: wsA.workspaceId,
+            kind: 'confirmation',
+            appointmentId: ag.id,
+            startsAt: ag.startsAt,
+            createdByMembershipId: ag.createdByMembershipId,
+          },
+        });
+      },
     };
 
     /** Agendamento fictício com os pais (paciente, profissional, serviço, unidade). */

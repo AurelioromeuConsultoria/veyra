@@ -35,6 +35,7 @@ export const MOTIVO_DO_ENVIO_DO_NEGOCIO: Record<BusinessOutboundReason, string> 
   quota_exceeded: 'limite do plano atingido',
   busy: 'uma mudança deste contato estava em andamento — tente de novo em instantes',
   not_processed: 'falha inesperada neste envio: nada foi gravado — tente de novo',
+  origin_already_approved: 'este pedido de origem já foi aprovado: nada sai de novo por ele',
 };
 
 const chaveDaOpcao = (o: TemplateOptionDto) => `${o.templateVersionId}:${o.purposeId}`;

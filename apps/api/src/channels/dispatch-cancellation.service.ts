@@ -12,7 +12,12 @@ export type AlvoDoCancelamento =
  * web e na restrição `MessageDispatch_cancel_check` (por migration), nunca como
  * texto livre do chamador.
  */
-const MOTIVOS = ['stop_requested'] as const;
+const MOTIVOS = [
+  'stop_requested',
+  // a origem do pedido deixou de valer: o vertical cancelou o agendamento ou
+  // o retorno, sob a `validity:` exclusiva (F4.2)
+  'origin_invalidated',
+] as const;
 export type MotivoDoCancelamento = (typeof MOTIVOS)[number];
 
 /** O motivo lido do banco é da lista (a restrição garante; o tipo confere). */
@@ -74,8 +79,13 @@ export interface ResultadoDoCancelamento {
  * A pré-condição também evita o impasse de linhas: o primeiro comando prende
  * as candidatas na ordem do plano, e dois cancelamentos de conjuntos que se
  * cruzam, sem as travas exclusivas, podem se travar (40P01, um é desfeito,
- * nada sai a mais). O chamador por `messageIds` (F4.1c-3) precisa serializar
- * antes, pela trava do contato ou do número.
+ * nada sai a mais). O chamador por `messageIds` precisa serializar antes:
+ * o vertical (F4.2) chama sob a `validity:` EXCLUSIVA do alvo, a mesma chave
+ * que o despacho do negócio pega compartilhada, com o motivo
+ * `origin_invalidated`. Esse chamador e o pedido de parar (`address:`) não se
+ * serializam entre si: o que os dois prendem em comum é no máximo o despacho
+ * de UMA origem para UM número, e uma linha só não forma impasse (ADR-048
+ * adendo 9, residuais).
  */
 @Injectable()
 export class CancelamentoDeDespachos {

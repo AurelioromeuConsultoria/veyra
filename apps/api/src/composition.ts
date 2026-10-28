@@ -1,6 +1,7 @@
 import type { ExtensionsOptions } from './extensions/extensions.module';
 import { ClinicsContentRestriction } from './verticals/clinics/clinics-content-restriction';
 import { clinicsExtension } from './verticals/clinics/clinics.extension';
+import { ClinicsOutreachPrecondition } from './verticals/clinics/outreach/clinics-outreach.precondition';
 
 /**
  * RAIZ DE COMPOSIÇÃO do produto (ADR-047). Junto com `app.module.ts`, é o
@@ -13,4 +14,6 @@ import { clinicsExtension } from './verticals/clinics/clinics.extension';
 export const COMPOSITION: ExtensionsOptions = {
   extensions: [clinicsExtension],
   contentRestrictionProviders: [ClinicsContentRestriction],
+  // a pré-condição do envio do negócio (E7): o pedido de envio da clínica (F4.2)
+  outboundPreconditionProviders: [ClinicsOutreachPrecondition],
 };

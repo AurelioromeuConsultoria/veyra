@@ -103,6 +103,36 @@ describe('Clinics — garantias estáticas (ADR-047, ADR-048)', () => {
     expect(ofensas).toEqual([]);
   });
 
+  it('a ÚNICA exceção à fronteira de escrita no Core: o envio do negócio, só pelos arquivos do pedido de envio (F4.2)', () => {
+    // a aprovação pelo serviço do Core cria conversa, mensagem, despacho e o
+    // evento do outbox — é o caminho DESENHADO (ADR-048 adendo 9), com as
+    // travas, a guarda e a trilha do Core; nenhum outro arquivo do vertical o usa
+    const quem = walk(ROOT)
+      .filter((file) => /from '\.\.\/(\.\.\/)+business-outbound\//.test(readFileSync(file, 'utf8')))
+      .map((file) => relative(ROOT, file))
+      .sort();
+    expect(quem).toEqual([
+      // o módulo, para a injeção
+      'clinics.module.ts',
+      'outreach/clinics-outreach.service.ts',
+      'outreach/clinics-outreach.sweep.ts',
+      'outreach/clinics-outreach.validity.ts',
+    ]);
+  });
+
+  it('o único `raw` do pedido de envio é a lista dos workspaces da varredura (F4.2, CLAUDE.md §3.3)', () => {
+    const usam = walk(join(ROOT, 'outreach'))
+      .filter((file) => /\.raw\b/.test(readFileSync(file, 'utf8')))
+      .map((file) => relative(ROOT, file));
+    expect(usam).toEqual(['outreach/clinics-outreach.sweep.ts']);
+    const varredura = readFileSync(join(ROOT, 'outreach/clinics-outreach.sweep.ts'), 'utf8');
+    expect(varredura.match(/\.raw\b/g)).toHaveLength(1);
+    // só agrupa por workspace: nenhum pedido, texto ou escrita sai pelo `raw`
+    expect(varredura).toMatch(
+      /\.raw\.clinicsOutreachRequest\.groupBy\(\{\s*by: \['workspaceId'\],/,
+    );
+  });
+
   it('a matriz só concede chaves do catálogo do vertical, e Guest não recebe nada', () => {
     const catalogo = new Set(Object.keys(CLINICS_PERMISSION_CATALOG));
     for (const keys of Object.values(CLINICS_ROLE_GRANTS)) {

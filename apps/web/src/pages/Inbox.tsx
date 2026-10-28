@@ -108,6 +108,8 @@ const DISPATCH_ERROR_LABEL: Record<string, string> = {
   template_params_mismatch: 'parâmetros não correspondem ao template',
   template_flow_unavailable: 'o template não sai pelo envio comum',
   stop_requested: 'a pessoa pediu para parar: nada é enviado a este número',
+  // o vertical cancela quando o pedido de origem deixa de valer (F4.2)
+  origin_invalidated: 'o pedido de origem deixou de valer antes do envio',
   cancel_requested: 'cancelado antes de sair',
   quota_exceeded: 'limite do plano atingido',
   no_credential: 'canal sem credencial configurada',

@@ -30,8 +30,14 @@ import { AuditService } from '../../../audit/audit.service';
 import { PermissionsService } from '../../../auth/permissions.service';
 import type { AuthContext } from '../../../common/decorators';
 import { postgresErrorCode } from '../../../common/prisma-exception.filter';
+import {
+  MudancasDeRestricao,
+  type ExecutorDeTransacao,
+} from '../../../content-use/restriction-changes';
 import { PrismaService, type Db } from '../../../prisma/prisma.service';
 import { agoraDoBanco } from '../../../prisma/relogio-do-banco';
+import { chaveDoRetorno } from '../outreach/clinics-outreach.precondition';
+import { ValidadeDosPedidos } from '../outreach/clinics-outreach.validity';
 
 type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
 
@@ -111,6 +117,8 @@ export class ClinicsReturnsService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly permissions: PermissionsService,
+    private readonly restricao: MudancasDeRestricao,
+    private readonly validade: ValidadeDosPedidos,
   ) {}
 
   // ── leitura (clinics:schedule:read), projetada por permissão ─────────────
@@ -303,7 +311,9 @@ export class ClinicsReturnsService {
     await this.exigirAcao(auth);
     const workspaceId = auth.workspaceId as string;
     try {
-      await (this.prisma.db as unknown as TxRunner).$transaction(async (tx) => {
+      await this.restricao.naTransacaoInterativa(this.mudancas(), async (tx) => {
+        // a leitura SEM trava, de antes de esperar: a troca concorrente que
+        // comitar enquanto esta espera é vista na releitura, e recusada (MUDOU)
         const visto = await lerRetorno(tx, id);
         if (visto.status !== 'pending') {
           // o mesmo pedido sobre o retorno que este agendamento cumpriu
@@ -311,6 +321,9 @@ export class ClinicsReturnsService {
           throw new ConflictException(ENCERRADO);
         }
         if (visto.appointmentId === input.appointmentId) return;
+        // o vínculo tira o retorno de "pendente sem agendamento" (F4.2): a
+        // `validity:` exclusiva dele vem ANTES de qualquer trava de linha
+        await this.validade.travar(tx, workspaceId, [chaveDoRetorno(id)]);
         await travarAgendamentos(tx, [input.appointmentId, visto.appointmentId]);
         // e o RETORNO, depois dos agendamentos (a ordem de sempre), relido. Se
         // outra escrita o mudou desde a leitura, a resposta sai AQUI, antes do
@@ -405,6 +418,8 @@ export class ClinicsReturnsService {
             after: trilha(depois),
           });
         }
+        // o pedido de reativação deste retorno deixa de valer
+        await this.validade.invalidar(tx, auth, { returnId: id });
       });
     } catch (error) {
       throw traduzirVinculo(error);
@@ -458,7 +473,10 @@ export class ClinicsReturnsService {
   ): Promise<ClinicsReturnDto> {
     await this.exigirMotivo(auth, input.reason);
     const workspaceId = auth.workspaceId as string;
-    await (this.prisma.db as unknown as TxRunner).$transaction(async (tx) => {
+    await this.restricao.naTransacaoInterativa(this.mudancas(), async (tx) => {
+      // o cancelamento encerra o retorno (F4.2): a `validity:` exclusiva dele
+      // vem ANTES de qualquer linha
+      await this.validade.travar(tx, workspaceId, [chaveDoRetorno(id)]);
       // a corrida com o registro de atendimento: quem trava a linha primeiro
       // decide; o outro espera aqui e lê o estado que ficou
       await travarRetornoPendente(tx, id);
@@ -486,6 +504,8 @@ export class ClinicsReturnsService {
         before: { appointmentId: visto.appointmentId },
         after: trilha(await lerRetorno(tx, id)),
       });
+      // o pedido de reativação deste retorno deixa de valer
+      await this.validade.invalidar(tx, auth, { returnId: id });
     });
     return this.get(auth, id);
   }
@@ -529,6 +549,11 @@ export class ClinicsReturnsService {
   // ── auxiliares ──────────────────────────────────────────────────────────
 
   /** Agir sobre o retorno: a recepção (`schedule:write`) ou o profissional (`care:write`). */
+  /** O client que abre a transação das mudanças que invalidam pedidos. */
+  private mudancas(): ExecutorDeTransacao {
+    return this.prisma.db as unknown as ExecutorDeTransacao;
+  }
+
   private async exigirAcao(auth: AuthContext): Promise<void> {
     if (
       (await this.permissions.has(auth, AGENDA_ESCREVER)) ||

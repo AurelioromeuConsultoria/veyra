@@ -142,6 +142,7 @@ model Workspace {
   clinicsAttendances          ClinicsAttendance[]
   clinicsPackages             ClinicsPackage[]
   clinicsReturns              ClinicsReturn[]
+  clinicsOutreachRequests     ClinicsOutreachRequest[]
 }
 
 /// Catálogo GLOBAL de permissões (ADR-004): chaves estáveis do sistema —
@@ -217,39 +218,40 @@ model Membership {
   // FK composta (ADR-010): Membership não pode apontar para Role de outro workspace
   role      Role      @relation(fields: [workspaceId, roleId], references: [workspaceId, id])
 
-  ownedCompanies             Company[]               @relation("CompanyOwner")
-  ownedContacts              Contact[]               @relation("ContactOwner")
-  activeSessions             RefreshToken[]          @relation("SessionActiveMembership")
-  ownedDeals                 Deal[]                  @relation("DealOwner")
-  assignedTasks              Task[]                  @relation("TaskAssignee")
-  authoredNotes              Note[]                  @relation("NoteAuthor")
-  activities                 Activity[]              @relation("ActivityActor")
-  auditLogs                  AuditLog[]              @relation("AuditActor")
-  assignedConversations      Conversation[]          @relation("ConversationAssignee")
-  authoredMessages           Message[]               @relation("MessageAuthorMembership")
-  organizedEvents            CalendarEvent[]         @relation("EventOrganizer")
-  notifications              Notification[]          @relation("NotificationRecipient")
-  uploadedFiles              FileObject[]            @relation("FileUploader")
-  aiRuns                     AiRun[]                 @relation("AiRunTrigger")
-  reviewedProposals          AiProposal[]            @relation("ProposalReviewer")
-  consentChanges             AiConsent[]             @relation("ConsentAuthor")
-  grantedConsents            ContactChannelConsent[] @relation("ConsentGranter")
-  purposeConsentsGranted     Consent[]               @relation("PurposeConsentGrantedBy")
+  ownedCompanies             Company[]                @relation("CompanyOwner")
+  ownedContacts              Contact[]                @relation("ContactOwner")
+  activeSessions             RefreshToken[]           @relation("SessionActiveMembership")
+  ownedDeals                 Deal[]                   @relation("DealOwner")
+  assignedTasks              Task[]                   @relation("TaskAssignee")
+  authoredNotes              Note[]                   @relation("NoteAuthor")
+  activities                 Activity[]               @relation("ActivityActor")
+  auditLogs                  AuditLog[]               @relation("AuditActor")
+  assignedConversations      Conversation[]           @relation("ConversationAssignee")
+  authoredMessages           Message[]                @relation("MessageAuthorMembership")
+  organizedEvents            CalendarEvent[]          @relation("EventOrganizer")
+  notifications              Notification[]           @relation("NotificationRecipient")
+  uploadedFiles              FileObject[]             @relation("FileUploader")
+  aiRuns                     AiRun[]                  @relation("AiRunTrigger")
+  reviewedProposals          AiProposal[]             @relation("ProposalReviewer")
+  consentChanges             AiConsent[]              @relation("ConsentAuthor")
+  grantedConsents            ContactChannelConsent[]  @relation("ConsentGranter")
+  purposeConsentsGranted     Consent[]                @relation("PurposeConsentGrantedBy")
   templateReviews            TemplateReview[]
   outboundApprovals          OutboundApproval[]
-  purposeConsentsRevoked     Consent[]               @relation("PurposeConsentRevokedBy")
-  stopBlocksCreated          StopBlock[]             @relation("StopBlockCreatedBy")
-  stopBlocksLifted           StopBlock[]             @relation("StopBlockLiftedBy")
+  purposeConsentsRevoked     Consent[]                @relation("PurposeConsentRevokedBy")
+  stopBlocksCreated          StopBlock[]              @relation("StopBlockCreatedBy")
+  stopBlocksLifted           StopBlock[]              @relation("StopBlockLiftedBy")
   // lado reverso do vertical Clinics (ADR-047 adendo 2, item 1)
-  clinicsReleasesGranted     ClinicsContactRelease[] @relation("ClinicsReleaseGrantedBy")
-  clinicsProfessional        ClinicsProfessional?    @relation("ClinicsProfessionalAccount")
-  clinicsPatientsCreated     ClinicsPatient[]        @relation("ClinicsPatientCreatedBy")
-  clinicsAppointmentsCreated ClinicsAppointment[]    @relation("ClinicsAppointmentCreatedBy")
-  clinicsAttendancesRecorded ClinicsAttendance[]     @relation("ClinicsAttendanceRecordedBy")
-  clinicsPackagesCreated     ClinicsPackage[]        @relation("ClinicsPackageCreatedBy")
-  clinicsReturnsAssigned     ClinicsReturn[]         @relation("ClinicsReturnAssignee")
-  clinicsReturnsCreated      ClinicsReturn[]         @relation("ClinicsReturnCreatedBy")
-  clinicsReturnsClosed       ClinicsReturn[]         @relation("ClinicsReturnClosedBy")
+  clinicsReleasesGranted     ClinicsContactRelease[]  @relation("ClinicsReleaseGrantedBy")
+  clinicsProfessional        ClinicsProfessional?     @relation("ClinicsProfessionalAccount")
+  clinicsPatientsCreated     ClinicsPatient[]         @relation("ClinicsPatientCreatedBy")
+  clinicsAppointmentsCreated ClinicsAppointment[]     @relation("ClinicsAppointmentCreatedBy")
+  clinicsAttendancesRecorded ClinicsAttendance[]      @relation("ClinicsAttendanceRecordedBy")
+  clinicsPackagesCreated     ClinicsPackage[]         @relation("ClinicsPackageCreatedBy")
+  clinicsReturnsAssigned     ClinicsReturn[]          @relation("ClinicsReturnAssignee")
+  clinicsReturnsCreated      ClinicsReturn[]          @relation("ClinicsReturnCreatedBy")
+  clinicsReturnsClosed       ClinicsReturn[]          @relation("ClinicsReturnClosedBy")
+  clinicsOutreachCreated     ClinicsOutreachRequest[] @relation("ClinicsOutreachCreatedBy")
 
   // Alvo de FK composta para Team/ownership futuros
   @@unique([workspaceId, id])
@@ -2063,6 +2065,9 @@ model OutboundApproval {
   expiresAt              DateTime
   /// HMAC-SHA256 da forma canônica `v1`, em hex
   approvalHash           String
+  /// `true` na origem de vertical, `null` na do Core: o único por (workspace,
+  /// origem, marca) faz uma aprovação por pedido do vertical (F4.2)
+  originMark             Boolean?
   approvedByMembershipId String   @db.Uuid
   createdAt              DateTime @default(dbgenerated("transaction_timestamp()"))
 
@@ -2083,6 +2088,7 @@ model OutboundApproval {
   // uma aprovação por prévia: o hash cobre o prazo com milissegundos, e a
   // repetição da mesma prévia devolve a mensagem que já existe
   @@unique([workspaceId, approvalHash])
+  @@unique([workspaceId, originRef, originMark])
   @@index([workspaceId, contactId])
   @@index([workspaceId, originRef])
 }

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { BusinessOutboundReason } from '../../business-outbound';
 
 export * from './local-time';
 
@@ -716,4 +717,233 @@ export interface ClinicsNoShowDto {
   pendingPast: number;
   /** à parte, fora da conta */
   canceled: number;
+}
+
+// ── O envio iniciado pela clínica (F4.2, ADR-048 adendos 8 e 9) ──────────────
+
+/**
+ * O tipo do pedido de envio: a CONFIRMAÇÃO de um horário marcado ou a
+ * REATIVAÇÃO de um retorno vencido. Cada um tem a sua finalidade do Core, e
+ * uma não herda o consentimento da outra (V2).
+ */
+export const CLINICS_OUTREACH_KINDS = ['confirmation', 'reactivation'] as const;
+export const clinicsOutreachKindSchema = z.enum(CLINICS_OUTREACH_KINDS);
+export type ClinicsOutreachKind = z.infer<typeof clinicsOutreachKindSchema>;
+
+/**
+ * A finalidade do Core que cada tipo aceita, pela CHAVE, e os campos que ela
+ * pode ter — o conteúdo mínimo aprovado (adendo 9, decisão 1): a confirmação,
+ * o primeiro nome, a data e a hora; a reativação, só o primeiro nome. Uma
+ * finalidade com outro campo (o nome inteiro, por exemplo) é recusada.
+ */
+export const CLINICS_OUTREACH_PURPOSES: Readonly<
+  Record<ClinicsOutreachKind, { key: string; fields: readonly string[] }>
+> = {
+  confirmation: {
+    key: 'clinics_confirmacao',
+    fields: ['contato.primeiro_nome', 'clinics.data', 'clinics.hora'],
+  },
+  reactivation: { key: 'clinics_reativacao', fields: ['contato.primeiro_nome'] },
+};
+
+/**
+ * O estado do pedido, DERIVADO da aprovação e do despacho do Core — não há
+ * sincronização (adendo 8, item 3):
+ * - `draft`: ainda sem aprovação;
+ * - `pending`: aprovado, e o despacho ainda pode sair;
+ * - `sent`: saiu;
+ * - `not_sent`: comprovadamente não saiu (cancelado, recusado, vencido, ou o
+ *   alvo deixou de valer antes da aprovação);
+ * - `uncertain`: pode ter saído — nunca é reenviado (C5).
+ */
+export const CLINICS_OUTREACH_STATES = [
+  'draft',
+  'pending',
+  'sent',
+  'not_sent',
+  'uncertain',
+] as const;
+export type ClinicsOutreachState = (typeof CLINICS_OUTREACH_STATES)[number];
+
+/**
+ * Os candidatos: na confirmação, os agendamentos marcados ou confirmados dos
+ * próximos dias locais da unidade (`date` inclusivo, `days` dias); na
+ * reativação, os retornos pendentes, sem agendamento, já vencidos.
+ */
+export const listClinicsOutreachCandidatesSchema = z
+  .object({
+    kind: clinicsOutreachKindSchema,
+    date: localDate.optional(),
+    days: z.coerce.number().int().min(1).max(7).optional(),
+    /** obrigatória quando há mais de uma unidade ativa */
+    unitId: z.uuid().optional(),
+  })
+  .strict();
+export type ListClinicsOutreachCandidatesInput = z.infer<
+  typeof listClinicsOutreachCandidatesSchema
+>;
+
+/** O alvo do pedido: o agendamento (confirmação) ou o retorno (reativação). */
+const alvoDoPedidoSchema = z.union([
+  z.object({ appointmentId: z.uuid() }).strict(),
+  z.object({ returnId: z.uuid() }).strict(),
+]);
+
+/** Preparar os pedidos: um por alvo. O pedido nasce ANTES da prévia (adendo 9, decisão 6). */
+export const prepareClinicsOutreachSchema = z
+  .object({
+    kind: clinicsOutreachKindSchema,
+    targets: z.array(alvoDoPedidoSchema).min(1).max(50),
+  })
+  .strict();
+export type PrepareClinicsOutreachInput = z.infer<typeof prepareClinicsOutreachSchema>;
+
+/** O número exato do contato, como no Core: "+dígitos". */
+const numeroDoPedidoSchema = z.string().regex(/^\+[1-9][0-9]{7,14}$/, 'Número no formato +dígitos');
+
+/** O item da prévia: o pedido e as escolhas do envio (o canal, o número, a versão e a finalidade). */
+const itemDoEnvioSchema = z
+  .object({
+    requestId: z.uuid(),
+    channelId: z.uuid(),
+    number: numeroDoPedidoSchema,
+    templateVersionId: z.uuid(),
+    purposeId: z.uuid(),
+  })
+  .strict();
+
+export const previewClinicsOutreachSchema = z
+  .object({ items: z.array(itemDoEnvioSchema).min(1).max(50) })
+  .strict();
+export type PreviewClinicsOutreachInput = z.infer<typeof previewClinicsOutreachSchema>;
+
+/** O item aprovado: o da prévia, mais o prazo e o hash que a pessoa viu. */
+export const approveClinicsOutreachSchema = z
+  .object({
+    items: z
+      .array(
+        itemDoEnvioSchema
+          .extend({
+            expiresAt: z.string().datetime({ offset: false }),
+            approvalHash: z.string().regex(/^[0-9a-f]{64}$/, 'HMAC-SHA256 em hexadecimal'),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(50),
+  })
+  .strict();
+export type ApproveClinicsOutreachInput = z.infer<typeof approveClinicsOutreachSchema>;
+
+/**
+ * Os motivos do vertical, além dos do Core (`BusinessOutboundReason`), que
+ * passam como vieram. Lista fechada; nenhum traz dado do paciente.
+ */
+export const CLINICS_OUTREACH_REASONS = [
+  // o alvo não existe, ou não é do tipo pedido
+  'target_not_found',
+  // o agendamento não está marcado ou confirmado; o retorno não está pendente sem agendamento
+  'target_invalid',
+  // a confirmação deixa de ser elegível a duas horas do início (adendo 9, decisão 4)
+  'starts_too_soon',
+  // o alvo já tem um pedido que conta: em rascunho, aguardando, enviado ou incerto
+  'request_exists',
+  // o pedido não existe, ou não está em rascunho (já aprovado, ou encerrado)
+  'request_not_found',
+  'request_not_draft',
+  // a finalidade não é a do tipo, ou permite campo além do conteúdo mínimo
+  'purpose_not_allowed',
+  // o texto contém o nome de um serviço ou de um profissional do catálogo (apoio à revisão)
+  'catalog_name_in_text',
+] as const;
+export type ClinicsOutreachReason = (typeof CLINICS_OUTREACH_REASONS)[number];
+
+/** Um candidato, com o que impede preparar o pedido agora. */
+export interface ClinicsOutreachCandidateDto {
+  kind: ClinicsOutreachKind;
+  appointmentId: string | null;
+  returnId: string | null;
+  /** a confirmação: o início, e a data e a hora locais da unidade */
+  startsAt: string | null;
+  localDate: string | null;
+  localStart: string | null;
+  /** a reativação: o vencimento (data local) */
+  dueDate: string | null;
+  patientId: string;
+  patientName: string;
+  contactId: string;
+  /** os números exatos do contato: quem prepara escolhe um */
+  numbers: string[];
+  /** `null` = pode preparar */
+  blocked: Extract<ClinicsOutreachReason, 'starts_too_soon' | 'request_exists'> | null;
+  /** o pedido que conta para este alvo, se houver */
+  request: { id: string; state: ClinicsOutreachState } | null;
+}
+
+/**
+ * O pedido, lido com `clinics:schedule:read`. O número completo só com
+ * `contacts:read`, e o motivo do não envio só com `contacts:read` e
+ * `consents:read`: ele pode revelar a situação do consentimento (adendo 9,
+ * decisão 3).
+ */
+export interface ClinicsOutreachRequestDto {
+  id: string;
+  kind: ClinicsOutreachKind;
+  appointmentId: string | null;
+  startsAt: string | null;
+  returnId: string | null;
+  state: ClinicsOutreachState;
+  /** o texto da prévia; `null` antes dela e depois do desfecho terminal (minimização) */
+  text: string | null;
+  /** o número aprovado; mascarado sem `contacts:read`; `null` antes da aprovação */
+  number: string | null;
+  /** o motivo do Core; `null` sem `contacts:read` e `consents:read` */
+  reason: string | null;
+  createdAt: string;
+}
+
+export type ClinicsOutreachPrepareItemDto =
+  | { index: number; ok: true; request: ClinicsOutreachRequestDto }
+  | {
+      index: number;
+      ok: false;
+      reason:
+        | Extract<
+            ClinicsOutreachReason,
+            'target_not_found' | 'target_invalid' | 'starts_too_soon' | 'request_exists'
+          >
+        // uma mudança do mesmo alvo segurava a trava: tente de novo
+        | Extract<BusinessOutboundReason, 'busy'>;
+    };
+
+export interface ClinicsOutreachPrepareDto {
+  items: ClinicsOutreachPrepareItemDto[];
+}
+
+export type ClinicsOutreachPreviewItemDto =
+  | {
+      index: number;
+      ok: true;
+      text: string;
+      values: Record<string, string>;
+      expiresAt: string;
+      approvalHash: string;
+    }
+  | { index: number; ok: false; reason: ClinicsOutreachReason | BusinessOutboundReason };
+
+export interface ClinicsOutreachPreviewDto {
+  items: ClinicsOutreachPreviewItemDto[];
+}
+
+/** A resposta do lote: só ids, estados e motivos (é a guardada no replay). */
+export interface ClinicsOutreachResultItemDto {
+  index: number;
+  requestId: string;
+  state: 'approved' | 'refused';
+  messageId: string | null;
+  reason: ClinicsOutreachReason | BusinessOutboundReason | null;
+}
+
+export interface ClinicsOutreachResultDto {
+  items: ClinicsOutreachResultItemDto[];
 }

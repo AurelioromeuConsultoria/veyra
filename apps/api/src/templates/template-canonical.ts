@@ -176,6 +176,8 @@ export function canonizar(
     'name' | 'language' | 'category' | 'parameterFormat' | 'components'
   >,
   vinculos: Readonly<Record<string, string>>,
+  /** os campos que as portas do E7 fornecem (F4.2), além dos do Core */
+  camposDoVertical: readonly string[] = [],
 ): Canonizacao {
   try {
     const category = CATEGORIAS.get(template.category);
@@ -226,7 +228,8 @@ export function canonizar(
     if (!temCorpo) throw new Recusa('componente_recusado');
 
     // cada parâmetro com exatamente um vínculo, e cada vínculo a um campo do
-    // catálogo do Core; o mesmo parâmetro repetido no texto é um só
+    // catálogo do Core ou de uma porta do E7; o mesmo parâmetro repetido no
+    // texto é um só
     const exigidas = new Set(chaves);
     for (const chave of exigidas) {
       if (!Object.prototype.hasOwnProperty.call(vinculos, chave)) {
@@ -235,7 +238,10 @@ export function canonizar(
     }
     for (const [chave, campo] of Object.entries(vinculos)) {
       if (!exigidas.has(chave)) throw new Recusa('vinculo_sobrando');
-      if (!(CAMPOS_DO_CORE as readonly string[]).includes(campo)) {
+      if (
+        !(CAMPOS_DO_CORE as readonly string[]).includes(campo) &&
+        !camposDoVertical.includes(campo)
+      ) {
         throw new Recusa('campo_fora_do_catalogo');
       }
     }

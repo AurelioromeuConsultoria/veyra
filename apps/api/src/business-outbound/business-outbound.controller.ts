@@ -45,17 +45,20 @@ export class EnvioDoNegocioController {
     @CurrentAuth() auth: AuthContext,
     @Body(new ZodPipe(previewBusinessOutboundSchema)) body: PreviewBusinessOutboundInput,
   ): Promise<BusinessOutboundPreviewDto> {
-    return this.envio.previa(auth.workspaceId as string, body);
+    // a rota genérica: só a origem do Core
+    return this.envio.previa(auth, body, 'core');
   }
 
   @RequirePermissions('conversations:write', 'contacts:read', 'consents:read')
   @Idempotent({ required: true })
   @Post()
   @HttpCode(200)
-  aprovar(
+  async aprovar(
     @CurrentAuth() auth: AuthContext,
     @Body(new ZodPipe(approveBusinessOutboundSchema)) body: ApproveBusinessOutboundInput,
   ): Promise<BusinessOutboundResultDto> {
-    return this.envio.aprovar(auth, body);
+    const { items } = await this.envio.aprovar(auth, body, 'core');
+    // o texto renderizado nunca sai pela resposta guardada do lote
+    return { items: items.map(({ texto: _texto, ...item }) => item) };
   }
 }

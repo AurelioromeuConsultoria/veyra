@@ -547,6 +547,61 @@ muda o registro da migration e não desfaz nenhum objeto.
    ORDER BY 1, 2;
    ```
 
+   Para a `20261028120000_business_outbound_vertical_origin` (F4.2, ADR-048
+   adendo 9), com **4 objetos**: a coluna `originMark` da `OutboundApproval`,
+   o único `OutboundApproval_workspaceId_originRef_originMark_key`, a restrição
+   `OutboundApproval_originMark_check` e a `MessageDispatch_cancel_check`
+   **com** o motivo `origin_invalidated`. A restrição do cancelamento é
+   trocada, e não criada: a de antes, só com `stop_requested`, não conta.
+   Antes de qualquer mudança, a migration confere que nenhuma aprovação tem
+   origem de vertical e, se houver, falha inteira. O Prisma relata só
+   "current transaction is aborted"; a causa aparece aplicando o arquivo pelo
+   `psql` com `ON_ERROR_STOP`, como no ensaio.
+
+   ```sql
+   -- inventário da 20261028120000_business_outbound_vertical_origin:
+   -- 0 linhas = nada ficou; 4 = inteira; outro número = estado parcial
+   SELECT 'coluna' AS k FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'OutboundApproval' AND column_name = 'originMark'
+   UNION ALL SELECT 'indice' FROM pg_indexes
+     WHERE schemaname = 'public' AND indexname = 'OutboundApproval_workspaceId_originRef_originMark_key'
+   UNION ALL SELECT 'check' FROM pg_constraint WHERE conname = 'OutboundApproval_originMark_check'
+   UNION ALL SELECT 'motivo' FROM pg_constraint
+     WHERE conname = 'MessageDispatch_cancel_check'
+       AND pg_get_constraintdef(oid) LIKE '%origin_invalidated%';
+   ```
+
+   Para a `20261028150000_clinics_outreach` (F4.2, a parte do Clinics, ADR-048
+   adendo 9), com **19 objetos**: o enum `ClinicsOutreachKind`; a tabela
+   `ClinicsOutreachRequest`, com 8 restrições (a chave, 4 FKs compostas ou para
+   o workspace e 3 CHECKs) e 5 índices, entre eles os dois únicos da marca de
+   ativo e o da varredura; e as duas funções e os dois gatilhos do pedido (a
+   guarda e a recusa da exclusão). A tabela nasce vazia, e nada que já
+   existe muda. As FKs seguram, até o COMMIT, as escritas em
+   `ClinicsAppointment`, `ClinicsReturn`, `Membership` e `Workspace`. **Com o
+   Clinics desativado no staging, a varredura roda e não acha nada; a porta do
+   E7 responde "não vale" em workspace sem o vertical ativo.**
+
+   ```sql
+   -- inventário da 20261028150000_clinics_outreach: 0 linhas = nada ficou;
+   -- 19 = inteira; qualquer outro número = estado parcial
+   SELECT 'enum' AS k, t.typname::text AS nome FROM pg_type t
+     WHERE t.typname = 'ClinicsOutreachKind'
+   UNION ALL SELECT 'tabela', c.relname::text FROM pg_class c
+     WHERE c.relkind = 'r' AND c.relname = 'ClinicsOutreachRequest'
+   UNION ALL SELECT 'restricao', co.conname::text FROM pg_constraint co
+     JOIN pg_class c ON c.oid = co.conrelid
+     WHERE c.relname = 'ClinicsOutreachRequest' AND co.contype <> 'n'
+   UNION ALL SELECT 'indice', i.relname::text FROM pg_index x
+     JOIN pg_class i ON i.oid = x.indexrelid JOIN pg_class c ON c.oid = x.indrelid
+     WHERE c.relname = 'ClinicsOutreachRequest' AND NOT x.indisprimary
+   UNION ALL SELECT 'funcao', p.proname::text FROM pg_proc p
+     WHERE p.proname IN ('clinics_outreach_request_guard', 'clinics_outreach_request_no_delete')
+   UNION ALL SELECT 'gatilho', tg.tgname::text FROM pg_trigger tg
+     WHERE tg.tgname IN ('ClinicsOutreachRequest_guard', 'ClinicsOutreachRequest_no_delete')
+   ORDER BY 1, 2;
+   ```
+
    Para outra migration, monte o inventário do mesmo jeito, a partir das
    instruções do arquivo: cada `CREATE` e cada `ADD CONSTRAINT`.
 
@@ -1225,7 +1280,9 @@ O marco do usuário: concluir a F4 e pôr uma demonstração funcionando, com da
   - `20261026150000_dispatch_canceled` (F4.1c-1);
   - `20261026200000_template_versions` (F4.1c-2);
   - `20261027120000_business_outbound` (F4.1c-3);
-  - e as que a F4.2 a F4.4 trouxerem.
+  - `20261028120000_business_outbound_vertical_origin` (F4.2, a parte do Core);
+  - `20261028150000_clinics_outreach` (F4.2, a parte do Clinics);
+  - e as que a F4.3 e a F4.4 trouxerem.
 - **As variáveis novas, no ambiente ANTES do deploy:** a `ADDRESS_LOCK_KEY` e a `OUTBOUND_APPROVAL_KEY`, independentes e estáveis. `META_TRANSPORT_MODE=fake` e `VEYRA_ENV=staging` continuam.
 
 **2. O que a demonstração ainda não tem, e precisa de decisão ou código:**

@@ -152,6 +152,33 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Um trabalho PERIÓDICO de outro módulo (F4.2: a varredura do Clinics), no
+   * mesmo agendador. API neutra: o Core não sabe quem chama. Chamado depois do
+   * `onModuleInit` (no `onApplicationBootstrap` de quem registra); com os jobs
+   * desligados (teste, `DISABLE_JOBS`), não agenda nada — as suítes chamam o
+   * trabalho direto. Uma falha do trabalho fica no log, só com o tipo do erro.
+   */
+  async agendarPeriodico(
+    fila: string,
+    cron: string,
+    trabalho: () => Promise<unknown>,
+  ): Promise<void> {
+    if (!this.boss) return;
+    await this.boss.createQueue(fila);
+    await this.boss.work(fila, async () => {
+      try {
+        await trabalho();
+      } catch (erro) {
+        this.logger.error(
+          `Trabalho periódico ${fila} falhou (${(erro as Error)?.name ?? 'Error'})`,
+        );
+        throw erro;
+      }
+    });
+    await this.boss.schedule(fila, cron, {}, { tz: 'America/Sao_Paulo' });
+  }
+
+  /**
    * Um ciclo de entrega do outbox. Público: o worker chama por agendamento e
    * os testes chamam direto (sem esperar cron).
    */

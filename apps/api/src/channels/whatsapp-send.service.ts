@@ -333,6 +333,8 @@ export class WhatsappSendService implements OnModuleInit {
       channelId: string;
       reservationId: string;
       body: string;
+      /** a origem é de um vertical: a aprovação ganha a marca do único por origem */
+      origemDeVertical: boolean;
       aprovacao: {
         contactId: string;
         number: string;
@@ -374,6 +376,8 @@ export class WhatsappSendService implements OnModuleInit {
       data: {
         messageId,
         channelId: entrada.channelId,
+        // uma aprovação por origem de vertical (F4.2); a do Core não tem a marca
+        originMark: entrada.origemDeVertical ? true : null,
         ...entrada.aprovacao,
         validityKeys: [...entrada.aprovacao.validityKeys],
       },

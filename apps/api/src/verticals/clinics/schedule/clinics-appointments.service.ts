@@ -23,7 +23,13 @@ import { Prisma } from '../../../generated/prisma/client';
 import { AuditService } from '../../../audit/audit.service';
 import type { AuthContext } from '../../../common/decorators';
 import { postgresConstraintName, postgresErrorCode } from '../../../common/prisma-exception.filter';
+import {
+  MudancasDeRestricao,
+  type ExecutorDeTransacao,
+} from '../../../content-use/restriction-changes';
 import { PrismaService, type Db } from '../../../prisma/prisma.service';
+import { chaveDoAgendamento } from '../outreach/clinics-outreach.precondition';
+import { ValidadeDosPedidos } from '../outreach/clinics-outreach.validity';
 
 type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
 
@@ -84,6 +90,8 @@ export class ClinicsAppointmentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly restricao: MudancasDeRestricao,
+    private readonly validade: ValidadeDosPedidos,
   ) {}
 
   /** O dia LOCAL de uma unidade. O vínculo com atendimento só para quem lê atendimento. */
@@ -175,6 +183,11 @@ export class ClinicsAppointmentsService {
   /**
    * Conserva a duração REGISTRADA; só trocar o serviço a recalcula pela duração
    * atual do novo. Volta a `scheduled`: a confirmação era do horário antigo.
+   *
+   * Remarcar invalida o pedido de confirmação do horário antigo (F4.2): a
+   * `validity:` exclusiva do agendamento vem ANTES de qualquer linha, e os
+   * pedidos de outro início são invalidados na mesma transação. O horário novo
+   * exige pedido e aprovação novos.
    */
   async reschedule(
     auth: AuthContext,
@@ -183,7 +196,8 @@ export class ClinicsAppointmentsService {
   ): Promise<ClinicsAppointmentDto> {
     const workspaceId = auth.workspaceId as string;
     const timezone = await this.semSobreposicao(() =>
-      (this.prisma.db as unknown as TxRunner).$transaction(async (tx) => {
+      this.restricao.naTransacaoInterativa(this.mudancas(), async (tx) => {
+        await this.validade.travar(tx, workspaceId, [chaveDoAgendamento(id)]);
         const visto = await tx.clinicsAppointment.findFirst({
           where: { id },
           select: { unitId: true },
@@ -231,6 +245,7 @@ export class ClinicsAppointmentsService {
             status: 'scheduled',
           },
         });
+        await this.validade.invalidar(tx, auth, { appointmentId: id, exceto: startsAt });
         return unidade.timezone;
       }),
     );
@@ -240,6 +255,10 @@ export class ClinicsAppointmentsService {
   /**
    * Transição a partir da ORIGEM permitida. Trava a linha ANTES de ler, como a
    * remarcação: a trilha registra o estado que a transição de fato substituiu.
+   *
+   * Antes da linha, a `validity:` exclusiva do agendamento (F4.2): toda
+   * transição que não seja a confirmação tira o agendamento de "marcado ou
+   * confirmado", e os pedidos de confirmação dele deixam de valer.
    */
   async changeStatus(
     auth: AuthContext,
@@ -247,7 +266,8 @@ export class ClinicsAppointmentsService {
     input: ChangeClinicsAppointmentStatusInput,
   ): Promise<ClinicsAppointmentDto> {
     const workspaceId = auth.workspaceId as string;
-    const timezone = await (this.prisma.db as unknown as TxRunner).$transaction(async (tx) => {
+    const timezone = await this.restricao.naTransacaoInterativa(this.mudancas(), async (tx) => {
+      await this.validade.travar(tx, workspaceId, [chaveDoAgendamento(id)]);
       const { count: existe } = await tx.clinicsAppointment.updateMany({
         where: { id },
         data: { updatedAt: new Date() },
@@ -274,6 +294,7 @@ export class ClinicsAppointmentsService {
         before: { status: atual.status, cancelReason: atual.cancelReason },
         after: { status: input.to, cancelReason },
       });
+      if (input.to !== 'confirmed') await this.validade.invalidar(tx, auth, { appointmentId: id });
       // o fuso de DENTRO da transação: a transição já valeu, nada depois dela
       // pode transformá-la em erro
       const unidade = (await tx.clinicsUnit.findFirst({
@@ -286,6 +307,11 @@ export class ClinicsAppointmentsService {
   }
 
   // ── auxiliares ──────────────────────────────────────────────────────────
+
+  /** O client que abre a transação das mudanças que invalidam pedidos. */
+  private mudancas(): ExecutorDeTransacao {
+    return this.prisma.db as unknown as ExecutorDeTransacao;
+  }
 
   private async ler(id: string, timezone: string): Promise<ClinicsAppointmentDto> {
     const row = (await this.prisma.db.clinicsAppointment.findFirst({

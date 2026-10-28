@@ -4433,9 +4433,9 @@ Pelo exemplo 5, o mesmo paciente também conta em outubro, com a âncora em 28/1
 
 **Continuam bloqueados** o código da F4, deploy, ativação do Clinics, envio real e dados reais.
 
-### Adendo 9 (2026-10-28) — plano da F4.2: o Clinics na porta do E7 (PROPOSTO, para revisão antes do código)
+### Adendo 9 (2026-10-28) — plano da F4.2: o Clinics na porta do E7 (APROVADO com condições; implementado, commit local)
 
-**Situação: PROPOSTO.** Pedido pelo usuário com o CI verde da F4.1c-3, antes de ligar o Clinics ao E7. Nenhum código da F4.2 está autorizado. Dados fictícios, o transporte falso e o catálogo falso; continuam bloqueados envio real e dados reais.
+**Situação: aprovado pelo usuário em 2026-10-28, com as condições registradas abaixo, e implementado no mesmo dia (commit local, sem push; ver "Implementação da F4.2").** A situação original era PROPOSTO: pedido pelo usuário com o CI verde da F4.1c-3, antes de ligar o Clinics ao E7. Dados fictícios, o transporte falso e o catálogo falso; continuam bloqueados envio real e dados reais.
 
 **O que muda em relação ao adendo 8.** O adendo 8 previa a prévia no corpo da mensagem do Core. O usuário vetou ligar dado clínico às mensagens comuns do Core, nem como solução provisória (2026-10-28). Este plano refaz os itens 1 (a fronteira), 2 (o conteúdo) e 3 (o pedido) por esse critério. O resto do adendo 8 vale: a validade, o lote, as métricas e as entregas.
 
@@ -4596,7 +4596,138 @@ Cada parte com testes focados durante os ajustes, uma revisão e as mutações p
 - o corpo neutro;
 - o único por origem de vertical na aprovação;
 - o `contato.primeiro_nome`;
-- o motivo `origin_invalidated` do cancelamento neutro.
+- o motivo `origin_invalidated` do cancelamento neutro;
+- a porta lê pelo cliente de quem chama (decisão abaixo).
+
+**Decisão de implementação (2026-10-28): a porta do E7 lê pelo cliente de quem chama.** A pendência registrada na F4.1c-3 (SECURITY §7-G, item 8) pedia que a porta, chamada na conferência dentro da transação da aprovação, não prendesse uma segunda conexão do pool principal. Com um cliente próprio, cada aprovação seguraria duas conexões, e uma rajada que enchesse o pool travaria todas até o prazo. É o mesmo defeito do adendo 2 do ADR-032 e do relógio da F4.1c-3.
+
+- **O contrato:** `check(leitor, workspaceId, originId)`. O Core passa o cliente que a conferência usa:
+  - na prévia, o cliente filtrado;
+  - na aprovação, a transação, que já segura as travas, inclusive a `validity:` das chaves fixadas;
+  - no despacho, a transação da guarda, que tem pool próprio.
+- **Ganho de consistência:** a leitura da origem vê o mesmo instante da reconferência, sob as travas.
+- **Só leitura, também no tipo:** o leitor (`LeitorDaPreCondicao`) expõe só `findFirst`, `findMany` e `count` dos modelos. Nada de `$transaction`, SQL cru ou escrita. O tipo é defesa em profundidade; a revisão e o teste continuam valendo.
+- **O prazo de 2 s continua:** a consulta que estourar dá "indisponível", e a instrução presa fica limitada pelos prazos da transação de quem chama.
+- **Alternativa descartada:** consultar a porta só antes das travas, fora da transação. A leitura deixaria de valer sob a `validity:`, e a remarcação entre a consulta e o `COMMIT` passaria.
+- **Custo:** nenhum. Nenhuma porta foi composta até aqui.
+
+**Implementação da F4.2 (2026-10-28): as decisões tomadas no código.** Estas decisões completam o desenho acima. Nenhuma muda uma condição do usuário.
+
+_No Core:_
+
+- **A porta declara os campos que fornece** (`fields`, `<extensão>.<campo>`). A canonização da versão de template (F4.1c-2) só aceitava vínculos aos campos do Core, e a data e a hora da confirmação não tinham como entrar. Agora ela aceita os campos do Core mais os declarados pelas portas registradas no servidor, e a lista continua fechada.
+  - O boot recusa:
+    - o campo de outra extensão;
+    - o campo do Core;
+    - o campo fora do formato;
+    - o campo repetido entre portas.
+  - A fachada do E7 trata como "indisponível" a resposta com valor de campo não declarado.
+  - A revisão continua exigindo os vínculos dentro dos campos da finalidade: é ela o portão humano.
+- **A situação e a invalidação por origem,** no serviço do envio do negócio, para o vertical não ler as tabelas do Core:
+  - `situacoesPorOrigem` devolve a mensagem, o número, o prazo e o despacho de cada origem aprovada;
+  - `invalidarOrigensNaTransacao` faz o cancelamento neutro com `origin_invalidated`, só para origens de vertical. Pré-condição: quem chama segura a `validity:` exclusiva.
+
+  A regra estática do Clinics proíbe importar de `channels/`, e o vertical nunca vê `messageId` para cancelar. O relógio do envio (`agora`) também é exposto pelo serviço, e assim a lista fixa de quem lê o relógio do banco não ganha um quarto nome.
+
+- **O agendamento periódico neutro:** `JobsService.agendarPeriodico(fila, cron, trabalho)`. Um módulo registra o trabalho no `onApplicationBootstrap`. Com os jobs desligados (em teste), nada é agendado, e a suíte chama o trabalho direto.
+  - Alternativa descartada: um ponto de composição E8 só para jobs.
+
+_No Clinics:_
+
+- **As finalidades pela chave:** `clinics_confirmacao` e `clinics_reativacao`. A chave de finalidade não aceita ponto.
+  - A finalidade com campo além do conteúdo mínimo é recusada (`purpose_not_allowed`), por exemplo o nome inteiro (`contato.nome`).
+  - Os campos do vertical são `clinics.data` (`DD/MM/AAAA`) e `clinics.hora` (`HH:MM`), no fuso da unidade.
+- **O pedido (`ClinicsOutreachRequest`, classe S) guarda só:**
+  - o alvo: o agendamento com o início fixado, ou o retorno;
+  - a marca de ativo;
+  - o texto e o instante em que ele foi apagado;
+  - quem criou e quando.
+
+  O canal, o número, a versão e a finalidade ficam na aprovação do Core. A prévia e a aprovação os recebem no corpo, como na rota do Core, e o hash os prende.
+  - A marca é `true` ou nula. Os únicos são (agendamento, início, marca) e (retorno, marca), e a nula não colide.
+  - O gatilho torna o alvo e a criação imutáveis. A marca nunca volta, o texto apagado nunca volta, e a criação e o apagamento são do relógio do banco.
+
+- **O estado é derivado** (`draft`, `pending`, `sent`, `not_sent`, `uncertain`) da aprovação e do despacho, pelo relógio do banco.
+  - Reservado ou com falha transitória é `pending` até o prazo da aprovação. Depois dele, é `not_sent`: o verificador recusa antes da chamada.
+  - Sem aprovação, é `draft` enquanto conta e o limite não passou.
+- **A marca sai, sob a `validity:` exclusiva, só do comprovadamente não enviado:** sem aprovação, ou com o despacho `canceled` ou `failed_permanent`. Depois disso a porta diz "não vale" para sempre, então nem um despacho atrasado sai. Enviado, incerto e em curso mantêm a marca. Os momentos:
+  - na mudança do alvo, depois do cancelamento neutro;
+  - ao preparar um pedido novo para o mesmo alvo. O aprovado que venceu sem sair é cancelado antes.
+
+  Preparar de novo um alvo com rascunho devolve o mesmo rascunho.
+
+- **O texto é gravado na prévia,** depois da conferência contra o catálogo, e regravado com o texto que o Core devolve na aprovação. Um processo que caia entre a aprovação e a gravação não deixa o pedido sem texto.
+  - A conferência compara os nomes inteiros dos serviços e dos profissionais, inclusive os arquivados, como palavra, sem acento e sem caixa.
+  - Ela roda de novo na aprovação, sobre o texto guardado.
+  - Falso positivo conhecido e aceito: um profissional cadastrado só com o primeiro nome, igual ao do paciente, recusa o envio. A conferência é conservadora por desenho.
+- **A ordem das travas:** a `validity:` exclusiva do alvo vem antes de qualquer trava de linha, nestes caminhos:
+  - a mudança de estado do agendamento: só a confirmação mantém o pedido;
+  - a remarcação: invalida os pedidos de outro início;
+  - o registro de atendimento;
+  - o vínculo do retorno;
+  - o cancelamento do retorno.
+
+  Todos usam a transação interativa das mudanças (10 s por trava, 30 s de transação, 409 no prazo). No vínculo, o retorno é lido **antes** da trava, sem travar, e relido depois. Assim a troca concorrente continua recusada (`MUDOU`) em vez de sobrescrever a primeira em silêncio, e o teste da F3.2 passou a esperar na trava consultiva.
+
+- **A porta** confere:
+  - o vertical ativo;
+  - a marca;
+  - o alvo: o agendamento marcado ou confirmado com o mesmo início, ou o retorno pendente sem agendamento.
+
+  O limite é o início menos duas horas, ou a criação mais 24 horas. As chaves são `clinics.appointment:<id>` e `clinics.return:<id>`. As permissões declaradas são `clinics:schedule:read` e `clinics:schedule:write`.
+
+- **As rotas:**
+  - os candidatos: agenda, contatos e consentimentos;
+  - preparar, a prévia e a aprovação: as cinco chaves; a aprovação com `Idempotency-Key` obrigatória, e a resposta guardada sem o texto;
+  - a leitura do pedido: a agenda. O número vai mascarado sem `contacts:read`, e o motivo só sai com `contacts:read` e `consents:read`.
+
+  Os candidatos não mostram a situação do consentimento: ela aparece por item na prévia, com o motivo do Core.
+
+- **A varredura** roda a cada 5 minutos pelo agendador do Core.
+  - Lista em `raw` só os workspaces com texto a conferir, agrupados no banco. É job cross-workspace, exceção do §3.3, fixada por teste estático.
+  - Decide no contexto de cada workspace, pelo client protegido, com o mesmo estado derivado, e apaga o texto dos terminais: `sent`, `uncertain` e `not_sent`.
+  - Percorre **todos** os workspaces, por cursor ordenado, e **todos** os pedidos com texto de cada um, por página (criação, id), com o índice `(workspaceId, createdAt)`. Tem orçamento de 60 s por passada; a seguinte retoma do workspace em que a anterior parou.
+
+**A revisão do fechamento (`reviewer` e `security`, 2026-10-28) e o que mudou por ela.** O `security` não achou P0 nem P1. O `reviewer` não achou bloqueante.
+
+- **A finalidade do vertical só vale pela origem dele** (achado importante do `reviewer`). Pelo Inbox, o template revisado para `clinics_reativacao`, que só tem campo do Core, saía sem as regras do vertical: sem as permissões dele, sem o bloqueio por alvo, sem o corpo neutro e sem a conferência contra o catálogo.
+  - **Decisão:** a porta declara as finalidades dela pela chave (`purposeKeys`, `<extensão>_<nome>`), validadas no boot como os campos.
+  - O Core recusa a finalidade de uma porta em qualquer outra origem (`precondition_unknown`), na conferência — na prévia, na aprovação e no despacho — e a tira das opções do compositor do Inbox.
+  - O sentido inverso, uma origem de vertical com finalidade do Core, fica a cargo do vertical. O Clinics exige as dele.
+- **A varredura percorre tudo** (P2 do `security`, menor do `reviewer`). Antes, ela lia no máximo 100 workspaces e os 500 pedidos mais antigos com texto. Um rascunho válido podia esconder os terminais para sempre.
+- **O teste de isolamento da varredura** (P2 do `security`):
+  - um teste com o par terminal e rascunho em dois workspaces, que prova também a retomada;
+  - um teste estático do único `raw`.
+- **O pedido não é apagado** (P3 do `security`). O gatilho `ClinicsOutreachRequest_no_delete` recusa a exclusão enquanto o workspace existe; a exclusão do workspace (LGPD) o leva em cascata. Apagar um pedido enviado ou incerto liberaria o alvo, e o pedido novo seria outra origem no Core.
+- **A prévia não sobrescreve o texto aprovado** (os dois). Ela grava sob a `validity:` do alvo, e só sem aprovação.
+- **A conferência contra o catálogo, na aprovação, usa o texto exato do item**, por uma prévia nova do Core com os dados de agora (`reviewer`). Antes usava a última prévia guardada, que podia ser de outro item, e era pulada sem texto.
+- **A falha ao gravar o texto depois da aprovação** só vai ao log (`reviewer`). Antes, virava `not_processed` ("nada foi gravado") com a mensagem já na fila.
+- **O fallback do lote no Core confere a permissão de novo** antes de devolver `approved` (`security`).
+- **A finalidade do Clinics tem a lista exata dos campos do vertical** (`reviewer`). A finalidade de confirmação sem a data ou a hora era recusada adiante, com um motivo que mandava tentar de novo.
+- **A trilha da invalidação não repete o enviado e o incerto** a cada mudança do alvo (`reviewer`).
+- **A porta não declara campo do Core,** nem pela extensão `contato` (os dois).
+- **A migration do Core trava `OutboundApproval` e depois `MessageDispatch`,** logo no começo, na ordem da guarda do despacho (`security`, com a correção da revisão do delta). O impasse com a guarda sacrificaria um envio que já saiu; com a aprovação, desfaz uma aprovação que ainda não enviou nada. O runbook roda as migrations com os jobs desligados.
+- **A revisão do delta (`security`)** não achou P0, P1 nem P2. Entraram os quatro P3:
+  - o erro de um workspace não para a passada da varredura;
+  - a conferência contra o catálogo, na aprovação, recusa com a porta indisponível em vez de seguir sem conferir;
+  - os lotes da varredura viraram parâmetros, e um teste com lotes de 1 prova a paginação;
+  - testes do fallback do lote com falha na conferência de permissão, da prévia que não sobrescreve o texto aprovado, da trilha que não repete o incerto e do catálogo que muda entre a prévia e a aprovação.
+- **Testes novos:**
+  - o replay sem a permissão da porta;
+  - o espião que prova que a porta nem é consultada sem as permissões dela;
+  - a ordem das travas nos quatro caminhos que travam linha;
+  - uma fumaça de aprovação e mudança concorrentes;
+  - o estado derivado em teste de unidade;
+  - a falha transitória que mantém o texto.
+
+  A fumaça da ordem global (`clinics-restriction-changes`) não foi estendida: a prova por caminho e a fumaça própria cobrem a ordem dos caminhos novos.
+
+**Residuais registrados (não corrigidos nesta subentrega):**
+
+- **O prazo da aprovação da confirmação** é o início menos duas horas, e por isso o `expiresAt` da aprovação e a trilha do Core (`business_outbound.approved`) revelam o horário do atendimento, dado derivado de classe S. Quem lê a auditoria já vê o `startsAt` na trilha do agendamento. A exposição a mais é pequena e fica aceita para o protótipo fictício; antes do uso real, entra na restrição de leitura do B1.
+- **O despacho não revalida quem aprovou.** O comportamento é da F4.1c-3, mas o teto de 24 horas da origem de vertical amplia de uma hora para até 24 horas a janela em que a aprovação de um membro removido ainda sai nas retentativas. É decisão para antes do uso real: conferir na reconferência que a membership de quem aprovou está ativa e tem as permissões da porta.
+- **O 409 dos caminhos da agenda** que esperam a `validity:` diz "uso em andamento para este contato", a mensagem do Core. É imprecisa na agenda, sem efeito.
+- **Os cancelamentos do Clinics e do pedido de parar não se serializam entre si.** O do Clinics trava a `validity:`; o do pedido de parar, o `address:`. A sobreposição não terminal é de no máximo uma linha (o despacho daquela origem para aquele número), e o impasse não acontece com uma linha. Se acontecesse, um dos dois seria desfeito (40P01), sem envio a mais. O comentário do cancelamento neutro foi corrigido.
 
 ## ADR-049 — Relógio de agendamento: quem compara define o relógio, e filas e leases usam o do banco
 
@@ -4881,7 +5012,7 @@ A skill `create-migration` traz o bloco de ensaio com as três evidências: os g
 
 ## ADR-052 — Mensagem iniciada pelo negócio: telefones normalizados, remetente sem atribuição silenciosa, template verificável, consentimento por finalidade e aprovação vinculada à prévia
 
-**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). **A F4.1a foi aprovada para implementação em 2026-10-23**, com as condições registradas no fim deste ADR, e publicada em 2026-10-26. **A F4.1b foi parcialmente aprovada em 2026-10-26:** finalidades, consentimentos, bloqueio, permissões e a recusa transitória dos templates estão liberados, e foram publicados e validados no mesmo dia, com a decisão 19 (ver o fechamento no fim deste ADR); a regra temporal da resposta depois do pedido de parar continua proposta. **A F4.1c foi aprovada em três subentregas em 2026-10-26**; a F4.1c-1 foi publicada e validada no mesmo dia (`e070bc6`), e a F4.1c-2 foi publicada e validada em 2026-10-27 (`60b7b16`). A F4.1c-3 foi publicada e validada em 2026-10-28 (`89da993`), e a F4.1c está completa. O plano da F4.2 está no ADR-048, adendo 9, para revisão antes do código. O resto continua PROPOSTO, e nenhum outro código da F4 está autorizado. · **Data:** 2026-10-23
+**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). **A F4.1a foi aprovada para implementação em 2026-10-23**, com as condições registradas no fim deste ADR, e publicada em 2026-10-26. **A F4.1b foi parcialmente aprovada em 2026-10-26:** finalidades, consentimentos, bloqueio, permissões e a recusa transitória dos templates estão liberados, e foram publicados e validados no mesmo dia, com a decisão 19 (ver o fechamento no fim deste ADR); a regra temporal da resposta depois do pedido de parar continua proposta. **A F4.1c foi aprovada em três subentregas em 2026-10-26**; a F4.1c-1 foi publicada e validada no mesmo dia (`e070bc6`), e a F4.1c-2 foi publicada e validada em 2026-10-27 (`60b7b16`). A F4.1c-3 foi publicada e validada em 2026-10-28 (`89da993`), e a F4.1c está completa. A F4.2 foi aprovada com condições e implementada em 2026-10-28 (ADR-048, adendo 9), em commit local. O resto continua PROPOSTO, e nenhum outro código da F4 está autorizado. · **Data:** 2026-10-23
 
 A revisão 0 está no `0eb4038`. A revisão 1 não foi comitada; ela passou pelo `reviewer` (mudanças necessárias) e pelo `security` (bloqueado, sem P0), e os achados dos dois estão incorporados aqui. A confirmação desta revisão 2 aprovou com ressalvas (o `reviewer`, com quatro achados importantes; o `security`, com dois P1 novos, os mesmos do `reviewer`), e as correções dela também estão no texto. A conferência final dessas correções aprovou: o `security`, sem ressalva bloqueante, e o `reviewer`, com uma ressalva importante (a regra ao reabrir conversa) e duas de qualidade. As três estão no texto, e os dois disseram que não é preciso nova rodada. Nenhum ADR aceito é alterado antes da aprovação deste; as emendas que ele implicaria estão listadas no fim, em "Emendas propostas".
 

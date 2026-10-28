@@ -141,6 +141,19 @@ describe('Clinics — retornos (integração, F3.2)', () => {
       );
       return Number(rows[0].n) > 0;
     }, `alguém esperando a trava de ${tabela}`);
+  /**
+   * Alguma sessão está esperando uma trava CONSULTIVA: a `validity:` do retorno,
+   * que toda mudança que invalida um pedido de envio pega exclusiva ANTES de
+   * qualquer linha (F4.2, ADR-048 adendo 9).
+   */
+  const alguemEsperaAConsultiva = () =>
+    ate(async () => {
+      const { rows } = await observador.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM pg_stat_activity
+          WHERE wait_event_type = 'Lock' AND wait_event = 'advisory'`,
+      );
+      return Number(rows[0].n) > 0;
+    }, 'alguém esperando uma trava consultiva');
 
   const novoPaciente = async (name: string, s: Session = owner) => {
     const contato = (await post('/api/contacts', s, { name }).expect(201)).body.id;
@@ -1452,7 +1465,9 @@ describe('Clinics — retornos (integração, F3.2)', () => {
       const primeira = vincular(r.id, b).then((x) => x);
       await pausa.chegou.aberto;
       const segunda = vincular(r.id, c).then((x) => x);
-      await alguemEspera('ClinicsAppointment');
+      // as duas trocas são do MESMO retorno: a segunda espera a `validity:` dele,
+      // antes de qualquer linha (F4.2)
+      await alguemEsperaAConsultiva();
       pausa.segue.abrir();
       expect((await primeira).status).toBe(201);
       expect((await segunda).status).toBe(409);

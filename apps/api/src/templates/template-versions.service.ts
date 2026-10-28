@@ -8,6 +8,7 @@ import {
 } from '../channels/meta-templates.catalog';
 import { CryptoService } from '../common/crypto.service';
 import { MudancasDeRestricao } from '../content-use/restriction-changes';
+import { OutboundPreconditionService } from '../extensions/outbound-precondition';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { canonizar, type MotivoDaRecusa } from './template-canonical';
 import { versaoDto, type LinhaDaVersao } from './template-dto';
@@ -76,6 +77,8 @@ export class TemplateVersionsService {
     private readonly crypto: CryptoService,
     @Inject(META_TEMPLATE_CATALOG) private readonly catalogo: CatalogoDeTemplates,
     private readonly restricao: MudancasDeRestricao,
+    // os campos de vertical que um parâmetro pode usar: os das portas do E7
+    private readonly precondicao: OutboundPreconditionService,
   ) {}
 
   /**
@@ -118,7 +121,11 @@ export class TemplateVersionsService {
       if (leitura.template.status !== 'APPROVED') {
         return { resultado: 'recusada', motivo: 'status_nao_aprovado' };
       }
-      const forma = canonizar(leitura.template, entrada.vinculos);
+      const forma = canonizar(
+        leitura.template,
+        entrada.vinculos,
+        this.precondicao.camposDasPortas(),
+      );
       if (!forma.ok) return { resultado: 'recusada', motivo: forma.motivo };
 
       const db = this.prisma.db as unknown as TxRunner;
@@ -268,7 +275,11 @@ export class TemplateVersionsService {
     if (leitura.tipo === 'falha') return 'falha';
     const forma =
       leitura.tipo === 'achado' && leitura.template.id === versao.metaTemplateId
-        ? canonizar(leitura.template, versao.bindings as Record<string, string>)
+        ? canonizar(
+            leitura.template,
+            versao.bindings as Record<string, string>,
+            this.precondicao.camposDasPortas(),
+          )
         : null;
     if (!forma || !forma.ok || forma.contentHash !== versao.contentHash) {
       await this.divergir(versao.workspaceId, versao.id, 'releitura');

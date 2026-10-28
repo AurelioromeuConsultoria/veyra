@@ -20,11 +20,11 @@ export type TemplateVersionStatus = z.infer<typeof templateVersionStatusSchema>;
 
 /**
  * O catálogo de campos do CORE que um parâmetro pode usar (decisão 4 do
- * usuário, 2026-10-26): só o nome do contato, vindo do servidor. Os campos do
- * vertical entram pelo E7 (F4.1c-3). O valor nunca é guardado na versão — só o
- * nome do campo.
+ * usuário, 2026-10-26): o nome do contato e, desde a F4.2, o primeiro nome
+ * (minimização, ADR-048 adendo 9), vindos do servidor. Os campos do vertical
+ * entram pelo E7. O valor nunca é guardado na versão — só o nome do campo.
  */
-export const CAMPOS_DO_CORE = ['contato.nome'] as const;
+export const CAMPOS_DO_CORE = ['contato.nome', 'contato.primeiro_nome'] as const;
 export type CampoDoCore = (typeof CAMPOS_DO_CORE)[number];
 
 /** O hash que a pessoa viu: a revisão só vale para ele. */

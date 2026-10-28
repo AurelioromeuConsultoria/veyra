@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AuthModule } from '../auth/auth.module';
 import { ChannelsModule } from '../channels/channels.module';
 import { TemplatesModule } from '../templates/templates.module';
 import { EnvioDoNegocioController } from './business-outbound.controller';
@@ -12,8 +13,10 @@ import { VerificadorDoNegocio } from './verificador';
  * `channels`. Importa `channels` e `templates`; nenhum dos dois importa este.
  */
 @Module({
-  imports: [ChannelsModule, TemplatesModule],
+  imports: [AuthModule, ChannelsModule, TemplatesModule],
   controllers: [EnvioDoNegocioController],
   providers: [ConferenciaDoEnvio, EnvioDoNegocioService, VerificadorDoNegocio],
+  // o vertical chama a prévia e a aprovação no mesmo processo (a rota dele)
+  exports: [EnvioDoNegocioService],
 })
 export class BusinessOutboundModule {}

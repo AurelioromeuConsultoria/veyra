@@ -22,6 +22,11 @@ import { agoraDoBanco } from '../prisma/relogio-do-banco';
 import { approvalHash, type FormaDaAprovacao } from './approval-hash';
 import { componentesDoEnvio, textoDaPrevia, valoresDosParametros } from './envio-do-template';
 
+/** O primeiro nome: a primeira palavra do nome do contato, sem os espaços em volta. */
+export function primeiroNome(nome: string): string {
+  return nome.trim().split(/\s+/)[0] ?? '';
+}
+
 /** O id do número na Meta: só dígitos (o CHECK da aprovação também exige). */
 const ID_DA_META = /^[0-9]{1,30}$/;
 
@@ -29,6 +34,8 @@ const ID_DA_META = /^[0-9]{1,30}$/;
 export interface Conferido {
   forma: Omit<FormaDaAprovacao, 'expiresAt'>;
   texto: string;
+  /** o limite do prazo pela regra da origem de vertical; `null` na do Core */
+  limiteDaOrigem: Date | null;
   credencial: { phoneNumberId: string; tokenCipher: string };
   envio: { to: string; template: { name: string; language: string }; params: ParametrosDoTemplate };
 }
@@ -100,7 +107,8 @@ export class ConferenciaDoEnvio {
     // a origem: a conversa do Inbox, que precisa ainda ser a do alvo, ou o E7
     const partes = partesDaOrigem(alvo.originRef);
     if (!partes) return recusa('precondition_unknown');
-    const veredito = await this.precondicao.consultar(workspaceId, alvo.originRef);
+    // pelo cliente da conferência: dentro da transação, a porta lê por ela
+    const veredito = await this.precondicao.consultar(db, workspaceId, alvo.originRef);
     if (veredito.tipo === 'desconhecida') return recusa('precondition_unknown');
     if (veredito.tipo === 'nao_vale') return recusa('precondition_failed');
     if (veredito.tipo === 'indisponivel') return recusa('precondition_unavailable');
@@ -147,8 +155,13 @@ export class ConferenciaDoEnvio {
     // a finalidade e o consentimento vigente de (contato, canal, número, versão)
     const finalidade = (await db.consentPurpose.findFirst({
       where: { id: alvo.purposeId },
-      select: { id: true, fields: true },
-    })) as { id: string; fields: string[] } | null;
+      select: { id: true, key: true, fields: true },
+    })) as { id: string; key: string; fields: string[] } | null;
+    // a finalidade de um vertical só vale pela origem dele: pelo Inbox, o
+    // template dela sairia sem as regras do vertical (revisão da F4.2)
+    if (finalidade && !this.precondicao.finalidadeDaOrigem(finalidade.key, alvo.originRef)) {
+      return recusa('precondition_unknown');
+    }
     const consentimento = finalidade
       ? await db.consent.findFirst({
           where: {
@@ -212,7 +225,12 @@ export class ConferenciaDoEnvio {
       // a porta respondeu outros campos que os da finalidade: fora do contrato
       return recusa(veredito.tipo === 'vale' ? 'precondition_unavailable' : 'field_value_invalid');
     }
-    const campos: Record<string, string> = { ...daPorta, 'contato.nome': contato.name };
+    const campos: Record<string, string> = {
+      ...daPorta,
+      'contato.nome': contato.name,
+      // o primeiro nome: a minimização da F4.2 (ADR-048 adendo 9)
+      'contato.primeiro_nome': primeiroNome(contato.name),
+    };
     const valores = valoresDosParametros(versao.bindings, campos);
     const params =
       valores && componentesDoEnvio(versao.components, versao.parameterFormat, valores);
@@ -237,6 +255,7 @@ export class ConferenciaDoEnvio {
           validityKeys: veredito.tipo === 'vale' ? veredito.chaves : [],
         },
         texto: textoDaPrevia(versao.components, valores),
+        limiteDaOrigem: veredito.tipo === 'vale' ? veredito.limite : null,
         credencial,
         envio: {
           to: alvo.number,

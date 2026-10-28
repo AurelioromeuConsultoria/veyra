@@ -16,6 +16,7 @@ import {
   type SendCredential,
   type SendOutcome,
 } from '../channels/meta.transport';
+import { CancelamentoDeDespachos } from '../channels/dispatch-cancellation.service';
 import { WhatsappSendService } from '../channels/whatsapp-send.service';
 import { CryptoService } from '../common/crypto.service';
 import { ConsentPurposesService } from '../consents/consent-purposes.service';
@@ -33,6 +34,7 @@ import { chaveDeCoincidencia } from '../contacts/phone-identity';
 import {
   OUTBOUND_PRECONDITION_PROVIDERS,
   OutboundPreconditionService,
+  type LeitorDaPreCondicao,
   type OutboundPreconditionAnswer,
   type OutboundPreconditionProvider,
 } from '../extensions/outbound-precondition';
@@ -54,6 +56,7 @@ import {
 import { resetDb } from '../../test/integration/harness';
 import { EnvioDoNegocioService } from './business-outbound.service';
 import { ConferenciaDoEnvio } from './conferencia';
+import type { AuthContext } from '../common/decorators';
 
 /**
  * F4.1c-3 (ADR-052 itens 6 a 9): o envio iniciado pelo negócio — a prévia, a
@@ -144,20 +147,42 @@ class MetaFalsa implements MetaTransport {
 /** A porta do vertical, de teste: o pedido vale só no workspace em que foi posto. */
 class PreCondicaoDeTeste implements OutboundPreconditionProvider {
   readonly prefix = 'teste.pedido';
+  // uma chave que o dono tem e o convidado não (F4.2: a porta declara)
+  readonly requiredPermissions = ['consents:manage'];
+  // os campos que ela fornece (F4.2): o médico existe para provar que o campo
+  // fora da finalidade não sai
+  readonly fields: string[] = ['teste.horario', 'teste.medico'];
+  // uma finalidade só desta origem: nunca pelo Inbox (F4.2)
+  readonly purposeKeys: string[] = ['teste_reservada'];
   validos = new Map<string, OutboundPreconditionAnswer>();
   foraDoAr = false;
   consultas: [string, string][] = [];
+  /** o cliente que a porta recebeu em cada consulta (F4.2: o de quem chama) */
+  leitores: LeitorDaPreCondicao[] = [];
+  /** quantos contatos a porta viu pelo leitor: a leitura é a do workspace do pedido */
+  contatosVistos: number[] = [];
   limpar(): void {
     this.validos.clear();
     this.foraDoAr = false;
     this.consultas = [];
+    this.leitores = [];
+    this.contatosVistos = [];
   }
-  async check(workspaceId: string, originId: string): Promise<OutboundPreconditionAnswer> {
+  async check(
+    leitor: LeitorDaPreCondicao,
+    workspaceId: string,
+    originId: string,
+  ): Promise<OutboundPreconditionAnswer> {
     this.consultas.push([workspaceId, originId]);
+    this.leitores.push(leitor);
+    this.contatosVistos.push(await leitor.contact.count());
     if (this.foraDoAr) throw new Error('porta fora do ar');
     return this.validos.get(`${workspaceId}:${originId}`) ?? { valid: false };
   }
 }
+
+/** O limite do pedido de teste: folgado, abaixo do teto de 24 h do Core. */
+const emDuasHoras = () => new Date(Date.now() + 2 * 60 * 60_000);
 
 const lembrete = (mudanca: Partial<TemplateDaMeta> = {}): TemplateDaMeta => ({
   id: ID_DO_TEMPLATE,
@@ -240,6 +265,8 @@ describe('F4.1c-3 — o envio iniciado pelo negócio (integração)', () => {
   let consentimentoA: string;
   let versaoA: string;
   let owner: Session;
+  let authDono: AuthContext;
+  let authConvidado: AuthContext;
   let ownerB: Session;
   let convidado: Session;
   let pidDaGuarda: number | null = null;
@@ -293,8 +320,36 @@ describe('F4.1c-3 — o envio iniciado pelo negócio (integração)', () => {
     ...mudanca,
   });
   /** A prévia de um item, que precisa passar, e o item pronto para aprovar. */
+  /**
+   * A rota do VERTICAL (F4.2): o serviço do Core no mesmo processo, com o
+   * acesso de quem pede — como a rota do Clinics fará. As rotas genéricas só
+   * aceitam a origem do Core.
+   */
+  const envio = () => app.get(EnvioDoNegocioService);
+  /** os itens da prévia, lidos como a resposta HTTP (o motivo ou o hash, conforme o caso) */
+  type ItemDaPrevia = {
+    ok: boolean;
+    reason?: string;
+    text?: string;
+    expiresAt?: string;
+    approvalHash?: string;
+  };
+  const previaV = async (items: unknown[], auth: AuthContext = authDono) => ({
+    body: (await noWorkspace(wsA.workspaceId, () =>
+      envio().previa(auth, { items } as never, 'vertical'),
+    )) as unknown as { items: ItemDaPrevia[] },
+  });
+  const aprovarV = async (items: unknown[], auth: AuthContext = authDono) => ({
+    body: await noWorkspace(wsA.workspaceId, () =>
+      envio().aprovar(auth, { items } as never, 'vertical'),
+    ),
+  });
+  const deVertical = (mudanca: Parameters<typeof alvo>[0]) =>
+    mudanca?.originRef?.startsWith('teste.pedido:') ?? false;
   const previsto = async (mudanca: Parameters<typeof alvo>[0] = {}) => {
-    const res = await previa([alvo(mudanca)]).expect(200);
+    const res = deVertical(mudanca)
+      ? await previaV([alvo(mudanca)])
+      : await previa([alvo(mudanca)]).expect(200);
     const [item] = res.body.items;
     if (!item.ok) throw new Error(`a prévia recusou: ${item.reason}`);
     return { ...alvo(mudanca), expiresAt: item.expiresAt, approvalHash: item.approvalHash };
@@ -302,7 +357,7 @@ describe('F4.1c-3 — o envio iniciado pelo negócio (integração)', () => {
   /** Prévia e aprovação de um item; devolve a mensagem. */
   const aprovado = async (mudanca: Parameters<typeof alvo>[0] = {}) => {
     const item = await previsto(mudanca);
-    const res = await aprovar([item]).expect(200);
+    const res = deVertical(mudanca) ? await aprovarV([item]) : await aprovar([item]).expect(200);
     const [resultado] = res.body.items;
     if (resultado.state !== 'approved') throw new Error(`recusado: ${resultado.reason}`);
     return resultado.messageId as string;
@@ -398,11 +453,23 @@ describe('F4.1c-3 — o envio iniciado pelo negócio (integração)', () => {
     wsA = await createWorkspaceFixture(prisma, 'acme');
     wsB = await createWorkspaceFixture(prisma, 'beta');
     const dono = await createUserFixture(prisma, 'dono@veyra.test');
-    await createMembershipFixture(prisma, wsA.workspaceId, dono, wsA.roles.owner);
+    authDono = {
+      userId: dono,
+      email: 'dono@veyra.test',
+      membershipId: await createMembershipFixture(prisma, wsA.workspaceId, dono, wsA.roles.owner),
+      workspaceId: wsA.workspaceId,
+      sessionId: 'teste',
+    };
     const donoB = await createUserFixture(prisma, 'dono-b@veyra.test');
     await createMembershipFixture(prisma, wsB.workspaceId, donoB, wsB.roles.owner);
     const visita = await createUserFixture(prisma, 'convidado@veyra.test');
-    await createMembershipFixture(prisma, wsA.workspaceId, visita, wsA.roles.guest);
+    authConvidado = {
+      userId: visita,
+      email: 'convidado@veyra.test',
+      membershipId: await createMembershipFixture(prisma, wsA.workspaceId, visita, wsA.roles.guest),
+      workspaceId: wsA.workspaceId,
+      sessionId: 'teste',
+    };
     const crypto = app.get(CryptoService);
     for (const [ws, waba, telefone, guardar] of [
       [wsA.workspaceId, WABA_A, PHONE_A, (id: string) => (canalA = id)],
@@ -760,10 +827,11 @@ describe('F4.1c-3 — o envio iniciado pelo negócio (integração)', () => {
         contactId: contatoA,
         values: {},
         validityKeys: [],
+        expiresAt: emDuasHoras(),
       });
       expect(
         await noWorkspace(wsB.workspaceId, () =>
-          precondicao.consultar(wsA.workspaceId, `teste.pedido:${conversaA}`),
+          precondicao.consultar(prisma.db, wsA.workspaceId, `teste.pedido:${conversaA}`),
         ),
       ).toEqual({ tipo: 'indisponivel' });
       expect(porta.consultas).toEqual([]);
@@ -835,13 +903,14 @@ describe('F4.1c-3 — o envio iniciado pelo negócio (integração)', () => {
         contactId: contatoA,
         values: {},
         validityKeys: [],
+        expiresAt: emDuasHoras(),
       });
       const doVertical = await previsto({ originRef: `teste.pedido:${pedido}` });
       const nivelZero = await segurar(
         CHAVE.ingestao(wsA.workspaceId, travas.nivelZero(wsA.workspaceId, chave)),
       );
       try {
-        const res = await aprovar([doVertical]).expect(200);
+        const res = await aprovarV([doVertical]);
         expect(res.body.items[0]).toMatchObject({ state: 'refused', reason: 'busy' });
       } finally {
         await nivelZero.query('ROLLBACK');
@@ -882,6 +951,8 @@ describe('F4.1c-3 — o envio iniciado pelo negócio (integração)', () => {
         ['number', '5511988887777'],
         ['phoneNumberId', 'abc123'],
         ['originRef', 'conversation:nao-e-uuid'],
+        // a origem de vertical sem a marca (F4.2)
+        ['originRef', `teste.pedido:${randomUUID()}`],
       ] as const) {
         const mensagem = await prisma.raw.message.create({
           data: {
@@ -1373,7 +1444,7 @@ describe('F4.1c-3 — o envio iniciado pelo negócio (integração)', () => {
           key: 'confirmacao',
           description: 'Confirmação de agendamento',
           category: 'utility',
-          fields: ['contato.nome', 'pedido.horario'],
+          fields: ['contato.nome', 'teste.horario'],
         })
       ).purposeId;
       await enviar(
@@ -1396,8 +1467,9 @@ describe('F4.1c-3 — o envio iniciado pelo negócio (integração)', () => {
       porta.validos.set(`${wsA.workspaceId}:${pedido}`, {
         valid: true,
         contactId: contatoA,
-        values: { 'pedido.horario': '10h' },
+        values: { 'teste.horario': '10h' },
         validityKeys: [chave],
+        expiresAt: emDuasHoras(),
       });
       await prisma.raw.conversation.deleteMany({ where: { id: conversaA } });
       const messageId = await aprovado({ ...doPedido, purposeId });
@@ -1429,7 +1501,7 @@ describe('F4.1c-3 — o envio iniciado pelo negócio (integração)', () => {
     it('não vale, indisponível e o prefixo desconhecido: recusa na aprovação; no despacho, de vez ou de novo', async () => {
       const purposeId = await comCampoDoVertical();
       const motivo = async (mudanca: Parameters<typeof alvo>[0]) =>
-        (await previa([alvo(mudanca)]).expect(200)).body.items[0].reason;
+        (await previaV([alvo(mudanca)])).body.items[0].reason;
       expect(await motivo({ ...doPedido, purposeId })).toBe('precondition_failed');
       expect(await motivo({ originRef: `outro.pedido:${pedido}`, purposeId })).toBe(
         'precondition_unknown',
@@ -1441,8 +1513,9 @@ describe('F4.1c-3 — o envio iniciado pelo negócio (integração)', () => {
       porta.validos.set(`${wsA.workspaceId}:${pedido}`, {
         valid: true,
         contactId: contatoA,
-        values: { 'pedido.horario': '10h' },
+        values: { 'teste.horario': '10h' },
         validityKeys: [chave],
+        expiresAt: emDuasHoras(),
       });
       const indisponivel = await aprovado({ ...doPedido, purposeId });
       porta.foraDoAr = true;
@@ -1472,15 +1545,17 @@ describe('F4.1c-3 — o envio iniciado pelo negócio (integração)', () => {
       porta.validos.set(`${wsA.workspaceId}:${pedido}`, {
         valid: true,
         contactId: contatoA,
-        values: { 'pedido.horario': '10h' },
+        values: { 'teste.horario': '10h' },
         validityKeys: [chave],
+        expiresAt: emDuasHoras(),
       });
       const messageId = await aprovado({ ...doPedido, purposeId });
       porta.validos.set(`${wsA.workspaceId}:${pedido}`, {
         valid: true,
         contactId: contatoA,
-        values: { 'pedido.horario': '10h' },
+        values: { 'teste.horario': '10h' },
         validityKeys: [`teste.agendamento:${randomUUID()}`],
+        expiresAt: emDuasHoras(),
       });
       await drain();
       expect(await despacho(messageId)).toMatchObject({
@@ -1491,12 +1566,13 @@ describe('F4.1c-3 — o envio iniciado pelo negócio (integração)', () => {
       porta.validos.set(`${wsA.workspaceId}:${pedido}`, {
         valid: true,
         contactId: contatoA,
-        values: { 'pedido.horario': '10h', 'pedido.medico': 'Dra Ficticia' },
+        values: { 'teste.horario': '10h', 'teste.medico': 'Dra Ficticia' },
         validityKeys: [chave],
+        expiresAt: emDuasHoras(),
       });
-      expect(
-        (await previa([alvo({ ...doPedido, purposeId })]).expect(200)).body.items[0].reason,
-      ).toBe('precondition_unavailable');
+      expect((await previaV([alvo({ ...doPedido, purposeId })])).body.items[0].reason).toBe(
+        'precondition_unavailable',
+      );
       expect(meta.templates).toEqual([]);
     });
 
@@ -1510,21 +1586,22 @@ describe('F4.1c-3 — o envio iniciado pelo negócio (integração)', () => {
       const resposta = (contactId: string) => ({
         valid: true as const,
         contactId,
-        values: { 'pedido.horario': '10h' },
+        values: { 'teste.horario': '10h' },
         validityKeys: [chave],
+        expiresAt: emDuasHoras(),
       });
       // o pedido é de outro contato: os valores dele não vão a este alvo
       porta.validos.set(`${wsA.workspaceId}:${pedido}`, resposta(outroContato));
-      expect(
-        (await previa([alvo({ ...doPedido, purposeId })]).expect(200)).body.items[0].reason,
-      ).toBe('precondition_failed');
+      expect((await previaV([alvo({ ...doPedido, purposeId })])).body.items[0].reason).toBe(
+        'precondition_failed',
+      );
       // aprovado para o contato certo, e o pedido muda de dono antes do despacho
       porta.validos.set(`${wsA.workspaceId}:${pedido}`, resposta(contatoA));
       const item = await previsto({ ...doPedido, purposeId });
       porta.validos.set(`${wsA.workspaceId}:${pedido}`, resposta(outroContato));
-      expect((await aprovar([item]).expect(200)).body.items[0].reason).toBe('precondition_failed');
+      expect((await aprovarV([item])).body.items[0].reason).toBe('precondition_failed');
       porta.validos.set(`${wsA.workspaceId}:${pedido}`, resposta(contatoA));
-      const messageId = (await aprovar([item]).expect(200)).body.items[0].messageId as string;
+      const messageId = (await aprovarV([item])).body.items[0].messageId as string;
       porta.validos.set(`${wsA.workspaceId}:${pedido}`, resposta(outroContato));
       await drain();
       expect(await despacho(messageId)).toMatchObject({
@@ -1539,8 +1616,9 @@ describe('F4.1c-3 — o envio iniciado pelo negócio (integração)', () => {
       porta.validos.set(`${wsA.workspaceId}:${pedido}`, {
         valid: true,
         contactId: contatoA,
-        values: { 'pedido.horario': '10h' },
+        values: { 'teste.horario': '10h' },
         validityKeys: [chave],
+        expiresAt: emDuasHoras(),
       });
       const messageId = await aprovado({ ...doPedido, purposeId });
       // no despacho, a porta não responde mais
@@ -1559,13 +1637,277 @@ describe('F4.1c-3 — o envio iniciado pelo negócio (integração)', () => {
       porta.validos.set(`${wsB.workspaceId}:${pedido}`, {
         valid: true,
         contactId: contatoA,
-        values: { 'pedido.horario': '10h' },
+        values: { 'teste.horario': '10h' },
         validityKeys: [chave],
+        expiresAt: emDuasHoras(),
       });
-      expect(
-        (await previa([alvo({ ...doPedido, purposeId })]).expect(200)).body.items[0].reason,
-      ).toBe('precondition_failed');
+      expect((await previaV([alvo({ ...doPedido, purposeId })])).body.items[0].reason).toBe(
+        'precondition_failed',
+      );
       expect(porta.consultas).toEqual([[wsA.workspaceId, pedido]]);
+    });
+  });
+
+  // ── A origem de vertical: a parte do Core da F4.2 ───────────────────────
+
+  describe('a origem de vertical (F4.2, a parte do Core)', () => {
+    const pedido = randomUUID();
+    const doPedido = { originRef: `teste.pedido:${pedido}` };
+    const vale = (expiresAt: Date = emDuasHoras()) =>
+      porta.validos.set(`${wsA.workspaceId}:${pedido}`, {
+        valid: true,
+        contactId: contatoA,
+        values: {},
+        validityKeys: [],
+        expiresAt,
+      });
+
+    it('as rotas genéricas só aceitam a origem do Core, e a do vertical só a de vertical — sem consultar a porta', async () => {
+      vale();
+      const pelaRotaDoCore = await previa([alvo(doPedido)]).expect(200);
+      expect(pelaRotaDoCore.body.items[0]).toMatchObject({
+        ok: false,
+        reason: 'precondition_unknown',
+      });
+      const pelaRotaDoVertical = await previaV([alvo()]);
+      expect(pelaRotaDoVertical.body.items[0]).toMatchObject({
+        ok: false,
+        reason: 'precondition_unknown',
+      });
+      expect(porta.consultas).toEqual([]);
+    });
+
+    it('as permissões da porta são conferidas ANTES de consultar a origem, na prévia e na aprovação', async () => {
+      vale();
+      const previaDoConvidado = await previaV([alvo(doPedido)], authConvidado);
+      expect(previaDoConvidado.body.items[0]).toMatchObject({
+        ok: false,
+        reason: 'precondition_unknown',
+      });
+      const item = await previsto(doPedido);
+      porta.consultas = [];
+      const aprovacaoDoConvidado = await aprovarV([item], authConvidado);
+      expect(aprovacaoDoConvidado.body.items[0]).toMatchObject({
+        state: 'refused',
+        reason: 'precondition_unknown',
+      });
+      // nada foi lido da origem nem gravado
+      expect(porta.consultas).toEqual([]);
+      expect(await prisma.raw.message.count()).toBe(0);
+    });
+
+    it('a porta lê pelo cliente de quem chama: o filtrado na prévia, a transação na aprovação', async () => {
+      // um contato no OUTRO workspace: o leitor filtrado não pode vê-lo
+      await enviar('post', '/api/contacts', ownerB, { name: 'Outro Ficticio' }).expect(201);
+      vale();
+      const item = await previsto(doPedido);
+      expect(porta.leitores).toEqual([prisma.db]);
+      porta.leitores = [];
+      expect((await aprovarV([item])).body.items[0]).toMatchObject({ state: 'approved' });
+      // a consulta antes das travas, pelo filtrado; a reconferência, pela transação
+      expect(porta.leitores).toHaveLength(2);
+      expect(porta.leitores[0]).toBe(prisma.db);
+      expect(porta.leitores[1]).not.toBe(prisma.db);
+      // as duas leituras veem os contatos do workspace do pedido, e só eles
+      const doA = await prisma.raw.contact.count({ where: { workspaceId: wsA.workspaceId } });
+      expect(await prisma.raw.contact.count()).toBeGreaterThan(doA);
+      expect(porta.contatosVistos).toEqual([doA, doA, doA]);
+    });
+
+    it('o corpo da mensagem do Core é neutro; o texto renderizado volta só a quem chama no processo', async () => {
+      vale();
+      const item = await previsto(doPedido);
+      const res = await aprovarV([item]);
+      const [aprovado] = res.body.items;
+      expect(aprovado).toMatchObject({ state: 'approved', reason: null });
+      expect(aprovado.texto).toBe(`Ola ${NOME}, seu horario esta confirmado.\n\nClinica Ficticia`);
+      const mensagem = await prisma.raw.message.findFirst({ where: { id: aprovado.messageId! } });
+      expect(mensagem?.body).toBe('Mensagem por template');
+      expect(JSON.stringify(mensagem)).not.toContain(NOME);
+      expect(
+        (await prisma.raw.outboundApproval.findFirst({ where: { messageId: aprovado.messageId! } }))
+          ?.originMark,
+      ).toBe(true);
+      // o despacho sai com os valores, que nunca passaram pela mensagem do Core
+      await drain();
+      expect(meta.templates[0].params).toEqual({ header: [], body: [{ text: NOME }] });
+    });
+
+    it('o vencimento é o menor entre o limite da origem e o teto de 24 h; o limite vencido não é elegível', async () => {
+      const conferencia = app.get(ConferenciaDoEnvio);
+      const agora = (await conferencia.agora()).getTime();
+      vale(new Date(agora + 48 * 60 * 60_000));
+      const longe = Date.parse((await previsto(doPedido)).expiresAt);
+      expect(Math.abs(longe - (agora + 24 * 60 * 60_000))).toBeLessThan(60_000);
+      const perto = new Date(agora + 30 * 60_000);
+      vale(perto);
+      expect((await previsto(doPedido)).expiresAt).toBe(perto.toISOString());
+      vale(new Date(agora - 1_000));
+      expect((await previaV([alvo(doPedido)])).body.items[0]).toMatchObject({
+        ok: false,
+        reason: 'precondition_failed',
+      });
+      // um prazo além do limite, com o hash VÁLIDO para ele: nunca prorrogado
+      vale(perto);
+      const conferido = await noWorkspace(wsA.workspaceId, () =>
+        conferencia.conferir(prisma.db, wsA.workspaceId, alvo(doPedido)),
+      );
+      if (!conferido.ok) throw new Error('a conferência recusou');
+      const alem = new Date(perto.getTime() + 60_000);
+      const res = await aprovarV([
+        {
+          ...alvo(doPedido),
+          expiresAt: alem.toISOString(),
+          approvalHash: conferencia.hash(conferido.conferido.forma, alem),
+        },
+      ]);
+      expect(res.body.items[0]).toMatchObject({ state: 'refused', reason: 'approval_stale' });
+    });
+
+    it('UMA aprovação por origem de vertical: a prévia nova do mesmo pedido não gera segunda mensagem, nem na corrida', async () => {
+      vale();
+      const primeiraPrevia = await previsto(doPedido);
+      const [primeira] = (await aprovarV([primeiraPrevia])).body.items;
+      expect(primeira.state).toBe('approved');
+      // a MESMA prévia (o limite da origem é fixo, logo o hash também): a mesma mensagem
+      const repetida = await aprovarV([await previsto(doPedido)]);
+      expect(repetida.body.items[0]).toMatchObject({
+        state: 'approved',
+        messageId: primeira.messageId,
+      });
+      // a origem mudou o limite: a prévia é outra, com outro hash, e a origem já foi aprovada
+      vale(new Date(Date.now() + 3 * 60 * 60_000));
+      const outraPrevia = await previsto(doPedido);
+      expect(outraPrevia.approvalHash).not.toBe(primeiraPrevia.approvalHash);
+      const segunda = await aprovarV([outraPrevia]);
+      expect(segunda.body.items[0]).toMatchObject({
+        state: 'refused',
+        reason: 'origin_already_approved',
+      });
+      // a corrida: a conferência rápida não vê a primeira, e o único do banco decide
+      const servico = envio();
+      jest
+        .spyOn(servico as unknown as { origemAprovada: () => Promise<boolean> }, 'origemAprovada')
+        .mockResolvedValueOnce(false);
+      const erros = jest.spyOn(
+        (servico as unknown as { logger: { error: (m: string) => void } }).logger,
+        'error',
+      );
+      vale(new Date(Date.now() + 4 * 60 * 60_000));
+      const terceira = await aprovarV([await previsto(doPedido)]);
+      expect(terceira.body.items[0]).toMatchObject({
+        state: 'refused',
+        reason: 'origin_already_approved',
+      });
+      expect(erros).not.toHaveBeenCalled();
+      expect(await prisma.raw.message.count()).toBe(1);
+      expect(
+        (await prisma.raw.outboundApproval.findFirst({ where: { originRef: doPedido.originRef } }))
+          ?.messageId,
+      ).toBe(primeira.messageId);
+      expect(await reservas()).toBe(1);
+    });
+
+    it('a finalidade declarada pela porta só vale pela origem dela: fora das opções do Inbox e recusada na conversa', async () => {
+      vale();
+      const reservada = (
+        await app.get(ConsentPurposesService).criarVersao('acme', {
+          key: 'teste_reservada',
+          description: 'Só pela origem do vertical',
+          category: 'utility',
+          fields: ['contato.nome'],
+        })
+      ).purposeId;
+      await enviar(
+        'post',
+        `/api/contacts/${contatoA}/consents`,
+        owner,
+        { channelId: canalA, number: NUMERO, purposeId: reservada, origin: 'in_person' },
+        randomUUID(),
+      ).expect(201);
+      const { contentHash } = (await prisma.raw.messageTemplateVersion.findFirst({
+        where: { id: versaoA },
+      }))!;
+      await enviar('post', `/api/templates/versions/${versaoA}/reviews`, owner, {
+        purposeId: reservada,
+        contentHash,
+      }).expect(201);
+      const opcoes = (
+        await request(http)
+          .get(`/api/business-outbound/options?conversationId=${conversaA}`)
+          .set('Cookie', owner.cookieHeader)
+          .expect(200)
+      ).body as { purposeKey: string }[];
+      expect(opcoes.map((o) => o.purposeKey)).toEqual(['lembrete']);
+      expect(
+        (await previa([alvo({ purposeId: reservada })]).expect(200)).body.items[0],
+      ).toMatchObject({ ok: false, reason: 'precondition_unknown' });
+      // pela origem dela, vale
+      expect(
+        (await previaV([alvo({ ...doPedido, purposeId: reservada })])).body.items[0],
+      ).toMatchObject({ ok: true });
+    });
+
+    it('o primeiro nome é campo do Core: a versão com ele mostra só o primeiro nome', async () => {
+      // a finalidade precisa permitir o campo: a de `lembrete` só permite o nome inteiro
+      const curta = (
+        await app.get(ConsentPurposesService).criarVersao('acme', {
+          key: 'lembrete_curto',
+          description: 'Lembretes com o primeiro nome',
+          category: 'utility',
+          fields: ['contato.primeiro_nome'],
+        })
+      ).purposeId;
+      await enviar(
+        'post',
+        `/api/contacts/${contatoA}/consents`,
+        owner,
+        { channelId: canalA, number: NUMERO, purposeId: curta, origin: 'in_person' },
+        randomUUID(),
+      ).expect(201);
+      const registro = await app.get(TemplateVersionsService).registrar('acme', {
+        channelId: canalA,
+        name: 'lembrete_horario',
+        language: 'pt_BR',
+        vinculos: { 'body.1': 'contato.primeiro_nome' },
+      });
+      if (registro.resultado !== 'registrada') throw new Error('o template não foi registrado');
+      await enviar('post', `/api/templates/versions/${registro.versionId}/reviews`, owner, {
+        purposeId: curta,
+        contentHash: registro.contentHash,
+      }).expect(201);
+      const res = await previa([
+        alvo({ templateVersionId: registro.versionId, purposeId: curta }),
+      ]).expect(200);
+      expect(res.body.items[0]).toMatchObject({
+        ok: true,
+        text: 'Ola Ana, seu horario esta confirmado.\n\nClinica Ficticia',
+        values: { 'body.1': 'Ana' },
+      });
+    });
+
+    it('o cancelamento neutro aceita o motivo `origin_invalidated`, e o despacho termina `canceled`', async () => {
+      const messageId = await aprovado();
+      await noWorkspace(wsA.workspaceId, async () =>
+        (
+          prisma.db as unknown as { $transaction<T>(fn: (tx: never) => Promise<T>): Promise<T> }
+        ).$transaction((tx) =>
+          app
+            .get(CancelamentoDeDespachos)
+            .cancelarNaTransacao(
+              tx,
+              wsA.workspaceId,
+              { messageIds: [messageId] },
+              'origin_invalidated',
+            ),
+        ),
+      );
+      expect(await despacho(messageId)).toMatchObject({
+        state: 'canceled',
+        errorCode: 'origin_invalidated',
+        reservationId: null,
+      });
+      expect(await reservas()).toBe(0);
     });
   });
 

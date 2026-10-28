@@ -84,6 +84,8 @@ export const BUSINESS_OUTBOUND_REASONS = [
   'busy',
   // uma falha inesperada naquele item: nada dele foi gravado, e os outros seguem
   'not_processed',
+  // a origem de vertical já tem uma aprovação (uma por origem, F4.2)
+  'origin_already_approved',
 ] as const;
 export type BusinessOutboundReason = (typeof BUSINESS_OUTBOUND_REASONS)[number];
 

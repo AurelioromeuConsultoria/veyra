@@ -17,12 +17,17 @@ import { Prisma } from '../../../generated/prisma/client';
 import { AuditService } from '../../../audit/audit.service';
 import { PermissionsService } from '../../../auth/permissions.service';
 import type { AuthContext } from '../../../common/decorators';
+import {
+  MudancasDeRestricao,
+  type ExecutorDeTransacao,
+} from '../../../content-use/restriction-changes';
 import { PrismaService, type Db } from '../../../prisma/prisma.service';
 import { trilha, type PackageRow } from '../care/clinics-packages.service';
 import { ROTULO } from './clinics-appointments.service';
+import { chaveDoAgendamento } from '../outreach/clinics-outreach.precondition';
+import { ValidadeDosPedidos } from '../outreach/clinics-outreach.validity';
 import { criarRetornoAutomatico, cumprirRetornoDoAgendamento } from './clinics-returns.service';
 
-type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
 type AttendanceRow = {
   id: string;
   appointmentId: string;
@@ -53,6 +58,8 @@ export class ClinicsAttendanceService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly permissions: PermissionsService,
+    private readonly restricao: MudancasDeRestricao,
+    private readonly validade: ValidadeDosPedidos,
   ) {}
 
   async record(
@@ -80,78 +87,86 @@ export class ClinicsAttendanceService {
       }
     }
     try {
-      const row = await (this.prisma.db as unknown as TxRunner).$transaction(async (tx) => {
-        // a repetição é consultada ANTES de qualquer consumo: o mesmo pedido
-        // funciona mesmo com o pacote já concluído ou cancelado
-        const existente = await registroDe(tx, appointmentId);
-        if (existente) return repeticao(existente, escolha);
-        // a transição TRAVA a linha: uma chamada concorrente espera aqui e,
-        // depois do commit desta, não acha mais o estado de origem
-        const { count } = await tx.clinicsAppointment.updateMany({
-          where: { id: appointmentId, status: { in: ATENDIVEIS } },
-          data: { status: 'attended' },
-        } as never);
-        if (count === 0) {
-          const vencedor = await registroDe(tx, appointmentId);
-          if (vencedor) return repeticao(vencedor, escolha);
+      const row = await this.restricao.naTransacaoInterativa(
+        this.prisma.db as unknown as ExecutorDeTransacao,
+        async (tx) => {
+          // o atendimento tira o agendamento de "marcado ou confirmado" (F4.2):
+          // a `validity:` exclusiva dele vem ANTES de qualquer linha
+          await this.validade.travar(tx, workspaceId, [chaveDoAgendamento(appointmentId)]);
+          // a repetição é consultada ANTES de qualquer consumo: o mesmo pedido
+          // funciona mesmo com o pacote já concluído ou cancelado
+          const existente = await registroDe(tx, appointmentId);
+          if (existente) return repeticao(existente, escolha);
+          // a transição TRAVA a linha: uma chamada concorrente espera aqui e,
+          // depois do commit desta, não acha mais o estado de origem
+          const { count } = await tx.clinicsAppointment.updateMany({
+            where: { id: appointmentId, status: { in: ATENDIVEIS } },
+            data: { status: 'attended' },
+          } as never);
+          if (count === 0) {
+            const vencedor = await registroDe(tx, appointmentId);
+            if (vencedor) return repeticao(vencedor, escolha);
+            const agendamento = (await tx.clinicsAppointment.findFirst({
+              where: { id: appointmentId },
+              select: { status: true },
+            })) as unknown as { status: ClinicsAppointmentStatus } | null;
+            if (!agendamento) throw new NotFoundException('Agendamento não encontrado');
+            throw new ConflictException(
+              `Agendamento com estado ${ROTULO[agendamento.status]} não aceita registro de atendimento`,
+            );
+          }
           const agendamento = (await tx.clinicsAppointment.findFirst({
             where: { id: appointmentId },
-            select: { status: true },
-          })) as unknown as { status: ClinicsAppointmentStatus } | null;
-          if (!agendamento) throw new NotFoundException('Agendamento não encontrado');
-          throw new ConflictException(
-            `Agendamento com estado ${ROTULO[agendamento.status]} não aceita registro de atendimento`,
-          );
-        }
-        const agendamento = (await tx.clinicsAppointment.findFirst({
-          where: { id: appointmentId },
-          select: { professionalId: true, patientId: true, serviceId: true, unitId: true },
-        })) as unknown as {
-          professionalId: string;
-          patientId: string;
-          serviceId: string;
-          unitId: string;
-        };
-        const consumido = escolha ? await consumir(tx, escolha, agendamento) : null;
-        const criado = (await tx.clinicsAttendance.create({
-          data: {
-            workspaceId,
-            appointmentId,
-            professionalId: agendamento.professionalId,
-            completedAt: new Date(),
-            recordedByMembershipId: auth.membershipId as string,
-            packageId: escolha,
-          },
-        } as never)) as unknown as AttendanceRow;
-        await this.audit.record(tx, workspaceId, 'clinics.attendance.recorded', {
-          entityType: 'clinicsAttendance',
-          entityId: criado.id,
-          actor: this.audit.actorFrom(auth),
-          after: {
-            appointmentId,
-            professionalId: criado.professionalId,
-            completedAt: criado.completedAt.toISOString(),
-            packageId: criado.packageId,
-          },
-        });
-        // a ÚLTIMA sessão concluiu o pacote, na mesma instrução do consumo: o
-        // fato entra na trilha do pacote, na mesma transação
-        if (consumido?.status === 'completed') {
-          await this.audit.record(tx, workspaceId, 'clinics.package.completed', {
-            entityType: 'clinicsPackage',
-            entityId: consumido.id,
+            select: { professionalId: true, patientId: true, serviceId: true, unitId: true },
+          })) as unknown as {
+            professionalId: string;
+            patientId: string;
+            serviceId: string;
+            unitId: string;
+          };
+          const consumido = escolha ? await consumir(tx, escolha, agendamento) : null;
+          const criado = (await tx.clinicsAttendance.create({
+            data: {
+              workspaceId,
+              appointmentId,
+              professionalId: agendamento.professionalId,
+              completedAt: new Date(),
+              recordedByMembershipId: auth.membershipId as string,
+              packageId: escolha,
+            },
+          } as never)) as unknown as AttendanceRow;
+          await this.audit.record(tx, workspaceId, 'clinics.attendance.recorded', {
+            entityType: 'clinicsAttendance',
+            entityId: criado.id,
             actor: this.audit.actorFrom(auth),
-            after: trilha(consumido),
+            after: {
+              appointmentId,
+              professionalId: criado.professionalId,
+              completedAt: criado.completedAt.toISOString(),
+              packageId: criado.packageId,
+            },
           });
-        }
-        // F3.2, na MESMA transação e só no caminho que cria o registro (a
-        // repetição não chega aqui): o retorno vinculado a este agendamento é
-        // cumprido por este registro, e o serviço com intervalo gera o próximo.
-        // Ordem das travas: agendamento → pacote → retorno
-        await cumprirRetornoDoAgendamento(tx, this.audit, auth, appointmentId, criado.id);
-        await criarRetornoAutomatico(tx, this.audit, auth, criado, agendamento);
-        return criado;
-      });
+          // a ÚLTIMA sessão concluiu o pacote, na mesma instrução do consumo: o
+          // fato entra na trilha do pacote, na mesma transação
+          if (consumido?.status === 'completed') {
+            await this.audit.record(tx, workspaceId, 'clinics.package.completed', {
+              entityType: 'clinicsPackage',
+              entityId: consumido.id,
+              actor: this.audit.actorFrom(auth),
+              after: trilha(consumido),
+            });
+          }
+          // F3.2, na MESMA transação e só no caminho que cria o registro (a
+          // repetição não chega aqui): o retorno vinculado a este agendamento é
+          // cumprido por este registro, e o serviço com intervalo gera o próximo.
+          // Ordem das travas: agendamento → pacote → retorno
+          await cumprirRetornoDoAgendamento(tx, this.audit, auth, appointmentId, criado.id);
+          await criarRetornoAutomatico(tx, this.audit, auth, criado, agendamento);
+          // o pedido de confirmação deste agendamento deixa de valer
+          await this.validade.invalidar(tx, auth, { appointmentId });
+          return criado;
+        },
+      );
       return toDto(row);
     } catch (error) {
       // última linha: o unique por agendamento venceu uma corrida que a trava

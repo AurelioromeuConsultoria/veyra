@@ -4,33 +4,87 @@ import type {
   ApproveBusinessOutboundItem,
   BusinessOutboundPreviewDto,
   BusinessOutboundReason,
-  BusinessOutboundResultDto,
   BusinessOutboundResultItemDto,
   BusinessOutboundTarget,
   PreviewBusinessOutboundInput,
   TemplateOptionDto,
 } from '@veyra/contracts';
 import { AuditService } from '../audit/audit.service';
+import { PermissionsService } from '../auth/permissions.service';
 import { PRAZO_DA_RELEITURA_MS } from '../channels/business-dispatch.port';
+import {
+  CancelamentoDeDespachos,
+  type ResultadoDoCancelamento,
+} from '../channels/dispatch-cancellation.service';
 import { WhatsappSendService } from '../channels/whatsapp-send.service';
 import type { AuthContext } from '../common/decorators';
 import { postgresErrorCode } from '../common/prisma-exception.filter';
 import { TravasDeIdentidade } from '../content-use/identity-locks';
 import { chaveDeCoincidencia } from '../contacts/phone-identity';
 import { MudancasDeRestricao, type ExecutorDeTransacao } from '../content-use/restriction-changes';
-import { OutboundPreconditionService, partesDaOrigem } from '../extensions/outbound-precondition';
+import {
+  OutboundPreconditionService,
+  PREFIXO_DO_CORE,
+  partesDaOrigem,
+} from '../extensions/outbound-precondition';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { TemplateVersionsService } from '../templates/template-versions.service';
 import { mesmoHash } from './approval-hash';
 import { ConferenciaDoEnvio } from './conferencia';
 
 /**
- * O prazo da aprovação, fixado na prévia pelo relógio do banco (ADR-049): uma
- * hora (recomendação da F4.1c-3). A pessoa aprova e o envio sai em segundos; o
- * prazo só limita a retentativa do outbox. O do vertical vem com a origem, na
- * F4.2.
+ * O prazo da aprovação, fixado na prévia pelo relógio do banco (ADR-049), e
+ * nunca prorrogado. Os TETOS são explícitos (decisão do usuário, F4.2):
+ * - a origem do Core (o Inbox): uma hora, fixa. A pessoa aprova e o envio sai
+ *   em segundos; o prazo só limita a retentativa do outbox;
+ * - a origem de vertical: o limite que a porta dá (a confirmação, até o início
+ *   menos duas horas), no máximo 24 horas.
  */
 export const PRAZO_DA_APROVACAO_MS = 60 * 60_000;
+export const TETO_DA_ORIGEM_DE_VERTICAL_MS = 24 * 60 * 60_000;
+
+/**
+ * O corpo da mensagem do Core na origem de vertical (decisão do usuário,
+ * F4.2): genérico, sem os valores, sem citar o vertical e sem afirmar que
+ * saiu — quem diz isso é o estado do despacho. O texto renderizado pertence
+ * ao armazenamento protegido do vertical.
+ */
+export const CORPO_NEUTRO = 'Mensagem por template';
+
+/**
+ * Por onde a origem entra: a rota genérica do Core aceita só a origem do Core
+ * (`conversation:`); a origem de vertical vem pelas rotas do vertical, que
+ * chamam este serviço no mesmo processo.
+ */
+export type RotaDoEnvio = 'core' | 'vertical';
+
+/** O item aprovado, com o texto renderizado só para quem chama no mesmo processo (o vertical). */
+export type ItemAprovado = BusinessOutboundResultItemDto & { texto: string | null };
+
+/** Os estados do despacho (o enum `DispatchState` do banco). */
+export type EstadoDoDespacho =
+  | 'reserved'
+  | 'sending'
+  | 'sent'
+  | 'failed_before_send'
+  | 'failed_permanent'
+  | 'unknown_after_dispatch'
+  | 'canceled';
+
+/**
+ * A situação de uma origem APROVADA (F4.2): a mensagem, o número aprovado, o
+ * prazo e o despacho. É o que o vertical precisa para derivar o estado do
+ * pedido dele, sem ler as tabelas do Core.
+ */
+export interface SituacaoDaOrigem {
+  messageId: string;
+  number: string;
+  expiresAt: Date;
+  estado: EstadoDoDespacho | null;
+  errorCode: string | null;
+  /** o marcador do despacho: a chamada pode ter começado */
+  emVoo: boolean;
+}
 
 function mesmasChaves(a: readonly string[], b: readonly string[]): boolean {
   const x = [...a].sort();
@@ -64,7 +118,35 @@ export class EnvioDoNegocioService {
     private readonly restricao: MudancasDeRestricao,
     private readonly travas: TravasDeIdentidade,
     private readonly audit: AuditService,
+    private readonly permissoes: PermissionsService,
+    private readonly cancelamento: CancelamentoDeDespachos,
   ) {}
+
+  /**
+   * A origem pode entrar por esta rota, com o acesso de quem pede? A do Core,
+   * só pela rota do Core. A de vertical, só pela do vertical e com TODAS as
+   * permissões que a porta registrada declara, conferidas pela membership
+   * autenticada ANTES de consultar a origem ou devolver conteúdo. A origem sem
+   * porta, ou sem o acesso, é recusada como inexistente.
+   */
+  async origemPermitida(auth: AuthContext, originRef: string, rota: RotaDoEnvio): Promise<boolean> {
+    const exigidas = this.precondicao.permissoesDaOrigem(originRef);
+    if (exigidas === null) return false;
+    if (exigidas.length === 0) return rota === 'core';
+    if (rota !== 'vertical' || !auth.membershipId) return false;
+    for (const chave of exigidas) {
+      if (!(await this.permissoes.membershipHas(auth.membershipId, chave as never))) return false;
+    }
+    return true;
+  }
+
+  /** O vencimento efetivo: o menor entre o limite da origem e o teto do Core. */
+  private teto(agora: Date, limiteDaOrigem: Date | null): Date {
+    if (!limiteDaOrigem) return new Date(agora.getTime() + PRAZO_DA_APROVACAO_MS);
+    return new Date(
+      Math.min(limiteDaOrigem.getTime(), agora.getTime() + TETO_DA_ORIGEM_DE_VERTICAL_MS),
+    );
+  }
 
   /**
    * As opções do compositor do Inbox com a janela fechada (item 6 do plano da
@@ -95,10 +177,15 @@ export class EnvioDoNegocioService {
       select: { purposeId: true },
     });
     if (consentidas.length === 0) return [];
+    // as finalidades de um vertical não são opção do Inbox: só a origem dele as usa
+    const doVertical = this.precondicao.finalidadesDasPortas();
     const finalidades = new Map(
       (
         await this.prisma.db.consentPurpose.findMany({
-          where: { id: { in: consentidas.map((c) => c.purposeId) } },
+          where: {
+            id: { in: consentidas.map((c) => c.purposeId) },
+            key: { notIn: [...doVertical] },
+          },
           select: { id: true, key: true, version: true, description: true },
         })
       ).map((f) => [f.id, f]),
@@ -162,26 +249,37 @@ export class EnvioDoNegocioService {
   }
 
   async previa(
-    workspaceId: string,
+    auth: AuthContext,
     input: PreviewBusinessOutboundInput,
+    rota: RotaDoEnvio,
   ): Promise<BusinessOutboundPreviewDto> {
+    const workspaceId = auth.workspaceId as string;
     const agora = await this.conferencia.agora();
-    const expiresAt = new Date(agora.getTime() + PRAZO_DA_APROVACAO_MS);
     const items: BusinessOutboundPreviewDto['items'] = [];
     for (const [index, alvo] of input.items.entries()) {
+      if (!(await this.origemPermitida(auth, alvo.originRef, rota))) {
+        items.push({ index, ok: false, reason: 'precondition_unknown' });
+        continue;
+      }
       const c = await this.conferencia.conferir(this.prisma.db, workspaceId, alvo);
-      items.push(
-        c.ok
-          ? {
-              index,
-              ok: true,
-              text: c.conferido.texto,
-              values: { ...c.conferido.forma.values },
-              expiresAt: expiresAt.toISOString(),
-              approvalHash: this.conferencia.hash(c.conferido.forma, expiresAt),
-            }
-          : { index, ok: false, reason: c.motivo },
-      );
+      if (!c.ok) {
+        items.push({ index, ok: false, reason: c.motivo });
+        continue;
+      }
+      const expiresAt = this.teto(agora, c.conferido.limiteDaOrigem);
+      // o limite da origem já passou: o pedido não é mais elegível
+      if (expiresAt.getTime() <= agora.getTime()) {
+        items.push({ index, ok: false, reason: 'precondition_failed' });
+        continue;
+      }
+      items.push({
+        index,
+        ok: true,
+        text: c.conferido.texto,
+        values: { ...c.conferido.forma.values },
+        expiresAt: expiresAt.toISOString(),
+        approvalHash: this.conferencia.hash(c.conferido.forma, expiresAt),
+      });
     }
     return { items };
   }
@@ -189,11 +287,12 @@ export class EnvioDoNegocioService {
   async aprovar(
     auth: AuthContext,
     input: ApproveBusinessOutboundInput,
-  ): Promise<BusinessOutboundResultDto> {
-    const items: BusinessOutboundResultItemDto[] = [];
+    rota: RotaDoEnvio,
+  ): Promise<{ items: ItemAprovado[] }> {
+    const items: ItemAprovado[] = [];
     for (const [index, item] of input.items.entries()) {
       try {
-        items.push(await this.aprovarItem(auth, index, item));
+        items.push(await this.aprovarItem(auth, index, item, rota));
       } catch (erro) {
         /**
          * Uma falha inesperada NAQUELE item. O lote não vira 500 depois de os
@@ -206,11 +305,14 @@ export class EnvioDoNegocioService {
         this.logger.error(
           `Item ${index} do envio do negócio não processado (${name ?? 'Error'} ${code ?? 'sem código'})`,
         );
-        const gravada = await this.aprovacaoDaPrevia(item).catch(() => null);
+        // a permissão de novo: a falha pode ter sido a própria conferência dela,
+        // e o `approved` de uma aprovação existente não sai a quem não a tem
+        const permitida = await this.origemPermitida(auth, item.originRef, rota).catch(() => false);
+        const gravada = permitida ? await this.aprovacaoDaPrevia(item).catch(() => null) : null;
         items.push(
           gravada && gravada !== 'outro_alvo'
-            ? { index, state: 'approved', messageId: gravada.messageId, reason: null }
-            : { index, state: 'refused', messageId: null, reason: 'not_processed' },
+            ? { index, state: 'approved', messageId: gravada.messageId, reason: null, texto: null }
+            : { index, state: 'refused', messageId: null, reason: 'not_processed', texto: null },
         );
       }
     }
@@ -221,23 +323,30 @@ export class EnvioDoNegocioService {
     auth: AuthContext,
     index: number,
     item: ApproveBusinessOutboundItem,
-  ): Promise<BusinessOutboundResultItemDto> {
-    const recusado = (reason: BusinessOutboundReason): BusinessOutboundResultItemDto => ({
+    rota: RotaDoEnvio,
+  ): Promise<ItemAprovado> {
+    const recusado = (reason: BusinessOutboundReason): ItemAprovado => ({
       index,
       state: 'refused',
       messageId: null,
       reason,
+      texto: null,
     });
     const workspaceId = auth.workspaceId as string;
     const membershipId = auth.membershipId as string;
     const { expiresAt: prazo, approvalHash: hashRecebido, ...alvo } = item;
     const expiresAt = new Date(prazo);
-    const aprovado = (messageId: string): BusinessOutboundResultItemDto => ({
+    const aprovado = (messageId: string, texto: string | null = null): ItemAprovado => ({
       index,
       state: 'approved',
       messageId,
       reason: null,
+      texto,
     });
+    // antes de tudo, inclusive da busca pela prévia: a origem e o acesso a ela
+    if (!(await this.origemPermitida(auth, alvo.originRef, rota))) {
+      return recusado('precondition_unknown');
+    }
 
     /**
      * UMA aprovação por prévia: o hash cobre o prazo com milissegundos, e o
@@ -250,6 +359,11 @@ export class EnvioDoNegocioService {
     const existente = await this.aprovacaoDaPrevia(item);
     if (existente === 'outro_alvo') return recusado('approval_stale');
     if (existente) return aprovado(existente.messageId);
+    // UMA aprovação por origem de vertical: outra prévia do mesmo pedido não gera
+    // segunda mensagem (o banco tem o único; esta é a resposta clara)
+    if (rota === 'vertical' && (await this.origemAprovada(alvo.originRef))) {
+      return recusado('origin_already_approved');
+    }
     // sem a chave do número não há travas a pegar: recusa antes delas
     if (!chaveDeCoincidencia(alvo.number)) return recusado('address_changed');
 
@@ -271,7 +385,11 @@ export class EnvioDoNegocioService {
 
     // as chaves de validade do E7, para travá-las ANTES de reconferir; a
     // reconferência, já sob elas, precisa achar as mesmas
-    const consultaAntesDasTravas = await this.precondicao.consultar(workspaceId, alvo.originRef);
+    const consultaAntesDasTravas = await this.precondicao.consultar(
+      this.prisma.db,
+      workspaceId,
+      alvo.originRef,
+    );
     const chaves = consultaAntesDasTravas.tipo === 'vale' ? consultaAntesDasTravas.chaves : [];
     /**
      * O relógio do banco (ADR-049), lido ANTES da transação: dentro dela, a
@@ -283,12 +401,13 @@ export class EnvioDoNegocioService {
     // 2. a quota, fora da transação; devolvida se o item não nascer
     const reserva = await this.send.reservarDoNegocio(workspaceId);
     if (reserva === 'quota_exceeded') return recusado('quota_exceeded');
-    let resultado: { messageId: string } | BusinessOutboundReason;
+    const deVertical = consultaAntesDasTravas.tipo !== 'core';
+    let resultado: { messageId: string; texto: string } | BusinessOutboundReason;
     try {
       const db = this.prisma.db as unknown as ExecutorDeTransacao;
       resultado = await this.restricao.naTransacaoInterativa(db, async (tx) => {
         // a origem do vertical pode ter de criar a conversa: o nível 0 do número
-        const criarConversa = consultaAntesDasTravas.tipo !== 'core';
+        const criarConversa = deVertical;
         await this.travas.paraEnvioDoNegocio(tx, {
           workspaceId,
           contactId: alvo.contactId,
@@ -301,9 +420,12 @@ export class EnvioDoNegocioService {
         if (!c.ok) return c.motivo;
         const { forma } = c.conferido;
         if (!mesmasChaves(forma.validityKeys, chaves)) return 'approval_stale';
-        // o prazo pelo relógio do banco: vencido, ou além do máximo
+        // o prazo pelo relógio do banco: vencido, ou além do teto (o menor
+        // entre o limite da origem, relido agora, e o do Core)
         if (expiresAt.getTime() <= agora.getTime()) return 'approval_expired';
-        if (expiresAt.getTime() > agora.getTime() + PRAZO_DA_APROVACAO_MS) return 'approval_stale';
+        if (expiresAt.getTime() > this.teto(agora, c.conferido.limiteDaOrigem).getTime()) {
+          return 'approval_stale';
+        }
         // o hash com os dados de AGORA: o que mudou desde a prévia não sai
         if (!mesmoHash(this.conferencia.hash(forma, expiresAt), hashRecebido)) {
           return 'approval_stale';
@@ -314,7 +436,9 @@ export class EnvioDoNegocioService {
           conversationId,
           channelId: alvo.channelId,
           reservationId: reserva,
-          body: c.conferido.texto,
+          // a origem de vertical não leva o texto à mensagem do Core
+          body: deVertical ? CORPO_NEUTRO : c.conferido.texto,
+          origemDeVertical: deVertical,
           aprovacao: {
             contactId: forma.contactId,
             number: forma.number,
@@ -346,7 +470,7 @@ export class EnvioDoNegocioService {
             expiresAt: expiresAt.toISOString(),
           },
         });
-        return { messageId };
+        return { messageId, texto: c.conferido.texto };
       });
     } catch (erro) {
       await this.send.releaseReservationId(reserva).catch(() => undefined);
@@ -356,6 +480,10 @@ export class EnvioDoNegocioService {
         const outra = await this.aprovacaoDaPrevia(item);
         if (outra === 'outro_alvo') return recusado('approval_stale');
         if (outra) return aprovado(outra.messageId);
+        // a corrida de duas prévias do mesmo pedido: o único da origem decidiu
+        if (deVertical && (await this.origemAprovada(alvo.originRef))) {
+          return recusado('origin_already_approved');
+        }
       }
       throw erro;
     }
@@ -363,7 +491,94 @@ export class EnvioDoNegocioService {
       await this.send.releaseReservationId(reserva).catch(() => undefined);
       return recusado(resultado);
     }
-    return aprovado(resultado.messageId);
+    // o texto vai só a quem chama no mesmo processo, e só na origem de vertical
+    return aprovado(resultado.messageId, deVertical ? resultado.texto : null);
+  }
+
+  /**
+   * O relógio do envio do negócio (ADR-049): o do banco, o mesmo que compara o
+   * prazo da aprovação. O vertical o usa para dizer, antes da prévia, que um
+   * pedido já não é elegível. Fora de transação.
+   */
+  agora(): Promise<Date> {
+    return this.conferencia.agora();
+  }
+
+  /**
+   * A situação de cada origem aprovada (F4.2). `db` é o client de quem chama:
+   * dentro da transação dele, a leitura vê o que ela trava. A origem sem
+   * aprovação não aparece no mapa.
+   */
+  async situacoesPorOrigem(
+    originRefs: readonly string[],
+    db: Db = this.prisma.db,
+  ): Promise<Map<string, SituacaoDaOrigem>> {
+    const situacoes = new Map<string, SituacaoDaOrigem>();
+    if (originRefs.length === 0) return situacoes;
+    const aprovacoes = await db.outboundApproval.findMany({
+      where: { originRef: { in: [...new Set(originRefs)] } },
+      select: { originRef: true, messageId: true, number: true, expiresAt: true },
+    });
+    const despachos = await db.messageDispatch.findMany({
+      where: { messageId: { in: aprovacoes.map((a) => a.messageId) } },
+      select: { messageId: true, state: true, errorCode: true, dispatchedAt: true },
+    });
+    const porMensagem = new Map(despachos.map((d) => [d.messageId, d]));
+    for (const a of aprovacoes) {
+      const d = porMensagem.get(a.messageId);
+      situacoes.set(a.originRef, {
+        messageId: a.messageId,
+        number: a.number,
+        expiresAt: a.expiresAt,
+        estado: (d?.state ?? null) as EstadoDoDespacho | null,
+        errorCode: d?.errorCode ?? null,
+        emVoo: d?.state === 'sending' && d.dispatchedAt !== null,
+      });
+    }
+    return situacoes;
+  }
+
+  /**
+   * A origem de vertical deixou de valer (F4.2): o cancelamento neutro dos
+   * despachos das mensagens aprovadas por estas origens, com o motivo
+   * `origin_invalidated`. Pré-condição: quem chama segura, EXCLUSIVA, a
+   * `validity:` das chaves que o despacho pega compartilhada — é a
+   * serialização que o cancelamento por lista exige. Devolve as contagens, para
+   * a trilha de quem chama, e a situação de cada origem depois dele.
+   */
+  async invalidarOrigensNaTransacao(
+    tx: Db,
+    workspaceId: string,
+    originRefs: readonly string[],
+  ): Promise<{ resultado: ResultadoDoCancelamento; situacoes: Map<string, SituacaoDaOrigem> }> {
+    // só origens de vertical: a do Core (o Inbox) não tem quem a invalide
+    for (const originRef of originRefs) {
+      const partes = partesDaOrigem(originRef);
+      if (!partes || partes.prefixo === PREFIXO_DO_CORE) {
+        throw new Error('Invalidação de origem fora do formato de vertical');
+      }
+    }
+    const antes = await this.situacoesPorOrigem(originRefs, tx);
+    const messageIds = [...antes.values()].map((s) => s.messageId);
+    const resultado =
+      messageIds.length > 0
+        ? await this.cancelamento.cancelarNaTransacao(
+            tx,
+            workspaceId,
+            { messageIds },
+            'origin_invalidated',
+          )
+        : { cancelados: 0, pedidos: 0, emVoo: 0 };
+    return { resultado, situacoes: await this.situacoesPorOrigem(originRefs, tx) };
+  }
+
+  /** A origem de vertical já tem aprovação (o único do banco é por origem). */
+  private async origemAprovada(originRef: string): Promise<boolean> {
+    const linha = await this.prisma.db.outboundApproval.findFirst({
+      where: { originRef },
+      select: { messageId: true },
+    });
+    return linha !== null;
   }
 
   /**

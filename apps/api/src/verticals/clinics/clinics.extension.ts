@@ -20,6 +20,7 @@ export const CLINICS_MODELS = [
   'ClinicsAttendance',
   'ClinicsPackage',
   'ClinicsReturn',
+  'ClinicsOutreachRequest',
 ] as const;
 
 export const clinicsExtension: CoreExtension = {
@@ -76,6 +77,7 @@ export const clinicsExtension: CoreExtension = {
         createdBy: 'Membership',
         attendance: 'ClinicsAttendance',
         returns: 'ClinicsReturn',
+        outreach: 'ClinicsOutreachRequest',
       },
       ClinicsAttendance: {
         workspace: 'Workspace',
@@ -104,6 +106,13 @@ export const clinicsExtension: CoreExtension = {
         assignee: 'Membership',
         createdBy: 'Membership',
         closedBy: 'Membership',
+        outreach: 'ClinicsOutreachRequest',
+      },
+      ClinicsOutreachRequest: {
+        workspace: 'Workspace',
+        appointment: 'ClinicsAppointment',
+        return: 'ClinicsReturn',
+        createdBy: 'Membership',
       },
       ClinicsContactRelease: {
         workspace: 'Workspace',
@@ -125,6 +134,7 @@ export const clinicsExtension: CoreExtension = {
         clinicsReturnsAssigned: 'ClinicsReturn',
         clinicsReturnsCreated: 'ClinicsReturn',
         clinicsReturnsClosed: 'ClinicsReturn',
+        clinicsOutreachCreated: 'ClinicsOutreachRequest',
       },
     },
   },
@@ -187,6 +197,16 @@ export const clinicsExtension: CoreExtension = {
       'fulfilledByAttendanceId',
       'assigneeMembershipId',
       'cancelReason',
+    ],
+    // classe S (ADR-048 adendo 9, F4.2): o alvo, o estado derivado e a marca.
+    // Nunca o texto, os valores nem o número
+    clinicsOutreachRequest: [
+      'kind',
+      'appointmentId',
+      'startsAt',
+      'returnId',
+      'state',
+      'activeMark',
     ],
   },
 };

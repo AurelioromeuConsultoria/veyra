@@ -1,8 +1,10 @@
 import { MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/common';
 import { AuthModule } from '../../auth/auth.module';
+import { BusinessOutboundModule } from '../../business-outbound/business-outbound.module';
 import { CorpoOpcionalMiddleware } from '../../common/corpo-opcional.middleware';
 import { ContactsModule } from '../../contacts/contacts.module';
 import { IntelligenceModule } from '../../intelligence/intelligence.module';
+import { JobsModule } from '../../jobs/jobs.module';
 import { ClinicsPackagesController } from './care/clinics-packages.controller';
 import { ClinicsPackagesService } from './care/clinics-packages.service';
 import { ClinicsCatalogController } from './catalog/clinics-catalog.controller';
@@ -15,6 +17,10 @@ import { ClinicsController } from './clinics.controller';
 import { ClinicsPatientsController } from './clinics-patients.controller';
 import { ClinicsPatientsService } from './clinics-patients.service';
 import { ClinicsReleasesService } from './clinics-releases.service';
+import { ClinicsOutreachController } from './outreach/clinics-outreach.controller';
+import { ClinicsOutreachService } from './outreach/clinics-outreach.service';
+import { VarreduraDosPedidos } from './outreach/clinics-outreach.sweep';
+import { ValidadeDosPedidos } from './outreach/clinics-outreach.validity';
 import { ClinicsAppointmentsController } from './schedule/clinics-appointments.controller';
 import { ClinicsAppointmentsService } from './schedule/clinics-appointments.service';
 import { ClinicsAttendanceService } from './schedule/clinics-attendance.service';
@@ -28,7 +34,9 @@ import { ClinicsReturnsService } from './schedule/clinics-returns.service';
  * importa — só a raiz de composição (`app.module.ts`, `composition.ts`).
  */
 @Module({
-  imports: [AuthModule, ContactsModule, IntelligenceModule],
+  // o envio do negócio (F4.2): a prévia e a aprovação pela rota do vertical, e
+  // o agendador do Core para a varredura do texto dos pedidos
+  imports: [AuthModule, BusinessOutboundModule, ContactsModule, IntelligenceModule, JobsModule],
   controllers: [
     ClinicsController,
     ClinicsCatalogController,
@@ -37,6 +45,7 @@ import { ClinicsReturnsService } from './schedule/clinics-returns.service';
     ClinicsPackagesController,
     ClinicsReturnsController,
     ClinicsNoShowController,
+    ClinicsOutreachController,
   ],
   providers: [
     ClinicsActivationService,
@@ -51,6 +60,9 @@ import { ClinicsReturnsService } from './schedule/clinics-returns.service';
     ClinicsPackagesService,
     ClinicsReturnsService,
     ClinicsNoShowService,
+    ClinicsOutreachService,
+    ValidadeDosPedidos,
+    VarreduraDosPedidos,
   ],
   exports: [ClinicsActivationService],
 })

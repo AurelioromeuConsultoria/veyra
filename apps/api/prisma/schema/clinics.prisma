@@ -242,14 +242,15 @@ model ClinicsAppointment {
   createdAt             DateTime                 @default(now())
   updatedAt             DateTime                 @updatedAt
 
-  workspace    Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  patient      ClinicsPatient      @relation(fields: [workspaceId, patientId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  professional ClinicsProfessional @relation(fields: [workspaceId, professionalId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  service      ClinicsService      @relation(fields: [workspaceId, serviceId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  unit         ClinicsUnit         @relation(fields: [workspaceId, unitId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  createdBy    Membership          @relation("ClinicsAppointmentCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  workspace    Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  patient      ClinicsPatient           @relation(fields: [workspaceId, patientId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  professional ClinicsProfessional      @relation(fields: [workspaceId, professionalId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  service      ClinicsService           @relation(fields: [workspaceId, serviceId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  unit         ClinicsUnit              @relation(fields: [workspaceId, unitId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  createdBy    Membership               @relation("ClinicsAppointmentCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
   attendance   ClinicsAttendance?
   returns      ClinicsReturn[]
+  outreach     ClinicsOutreachRequest[]
 
   @@unique([workspaceId, id])
   /// apoio da FK do vínculo do retorno: mesmo paciente, serviço e unidade (F3.2)
@@ -380,17 +381,18 @@ model ClinicsReturn {
   /// escrito pelo BANCO (trigger), na conclusão ou no cancelamento
   closedAt                DateTime?                  @db.Timestamptz(3)
 
-  workspace        Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  patient          ClinicsPatient      @relation(fields: [workspaceId, patientId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  service          ClinicsService      @relation(fields: [workspaceId, serviceId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  unit             ClinicsUnit         @relation(fields: [workspaceId, unitId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  originAttendance ClinicsAttendance?  @relation("ClinicsReturnOrigin", fields: [workspaceId, originAttendanceId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsReturn_originAttendance_fkey")
+  workspace        Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  patient          ClinicsPatient           @relation(fields: [workspaceId, patientId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  service          ClinicsService           @relation(fields: [workspaceId, serviceId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  unit             ClinicsUnit              @relation(fields: [workspaceId, unitId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  originAttendance ClinicsAttendance?       @relation("ClinicsReturnOrigin", fields: [workspaceId, originAttendanceId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsReturn_originAttendance_fkey")
   /// mesmo paciente, serviço e unidade, garantidos pelo banco
-  appointment      ClinicsAppointment? @relation(fields: [workspaceId, appointmentId, patientId, serviceId, unitId], references: [workspaceId, id, patientId, serviceId, unitId], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsReturn_appointment_fkey")
-  fulfilledBy      ClinicsAttendance?  @relation("ClinicsReturnFulfilledBy", fields: [workspaceId, appointmentId, fulfilledByAttendanceId], references: [workspaceId, appointmentId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsReturn_fulfilledBy_fkey")
-  assignee         Membership?         @relation("ClinicsReturnAssignee", fields: [workspaceId, assigneeMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsReturn_assignee_fkey")
-  createdBy        Membership          @relation("ClinicsReturnCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsReturn_createdBy_fkey")
-  closedBy         Membership?         @relation("ClinicsReturnClosedBy", fields: [workspaceId, closedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsReturn_closedBy_fkey")
+  appointment      ClinicsAppointment?      @relation(fields: [workspaceId, appointmentId, patientId, serviceId, unitId], references: [workspaceId, id, patientId, serviceId, unitId], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsReturn_appointment_fkey")
+  fulfilledBy      ClinicsAttendance?       @relation("ClinicsReturnFulfilledBy", fields: [workspaceId, appointmentId, fulfilledByAttendanceId], references: [workspaceId, appointmentId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsReturn_fulfilledBy_fkey")
+  assignee         Membership?              @relation("ClinicsReturnAssignee", fields: [workspaceId, assigneeMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsReturn_assignee_fkey")
+  createdBy        Membership               @relation("ClinicsReturnCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsReturn_createdBy_fkey")
+  closedBy         Membership?              @relation("ClinicsReturnClosedBy", fields: [workspaceId, closedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsReturn_closedBy_fkey")
+  outreach         ClinicsOutreachRequest[]
 
   @@unique([workspaceId, id])
   /// um retorno automático por atendimento
@@ -404,4 +406,55 @@ model ClinicsReturn {
   @@index([workspaceId, assigneeMembershipId])
   @@index([workspaceId, createdByMembershipId])
   @@index([workspaceId, closedByMembershipId])
+}
+
+/// Tipo do pedido de envio (ADR-048 adendos 8 e 9, F4.2).
+enum ClinicsOutreachKind {
+  confirmation
+  reactivation
+}
+
+/// Pedido de envio da clínica (ADR-048 adendos 8 e 9, F4.2). Classe S. É a
+/// ORIGEM do envio iniciado pelo negócio no Core (`clinics.outreach:<id>`):
+/// nasce ANTES da prévia, com o alvo — o agendamento com o início FIXADO
+/// (confirmação) ou o retorno (reativação). O canal, o número, a versão e a
+/// finalidade ficam na aprovação do Core, e o estado é DERIVADO dela e do
+/// despacho. O texto renderizado mora AQUI, e não na mensagem do Core, até o
+/// desfecho terminal (a varredura o apaga). A marca de ativo, com o único por
+/// alvo, garante no máximo um pedido que conta por alvo; ela só sai quando o
+/// pedido é comprovadamente não enviado, sob a `validity:` exclusiva, e nunca
+/// volta (gatilho). Sem texto livre de pessoa.
+model ClinicsOutreachRequest {
+  id                    String              @id @default(uuid()) @db.Uuid
+  workspaceId           String              @db.Uuid
+  kind                  ClinicsOutreachKind
+  /// a confirmação: o agendamento e o início fixado no pedido
+  appointmentId         String?             @db.Uuid
+  startsAt              DateTime?           @db.Timestamptz(3)
+  /// a reativação: o retorno
+  returnId              String?             @db.Uuid
+  /// `true` enquanto o pedido conta para o alvo; nula quando comprovadamente
+  /// não enviado. Nunca `false` (CHECK) e nunca volta a `true` (gatilho)
+  activeMark            Boolean?            @default(true)
+  /// o texto da prévia, com os valores; apagado no desfecho terminal
+  renderedText          String?
+  /// quando a varredura apagou o texto (o relógio do banco)
+  textClearedAt         DateTime?           @db.Timestamptz(3)
+  createdByMembershipId String              @db.Uuid
+  /// o relógio do banco: a reativação vale 24 horas a partir daqui
+  createdAt             DateTime            @default(dbgenerated("transaction_timestamp()")) @db.Timestamptz(3)
+
+  workspace   Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  appointment ClinicsAppointment? @relation(fields: [workspaceId, appointmentId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsOutreachRequest_appointment_fkey")
+  return      ClinicsReturn?      @relation(fields: [workspaceId, returnId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsOutreachRequest_return_fkey")
+  createdBy   Membership          @relation("ClinicsOutreachCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsOutreachRequest_createdBy_fkey")
+
+  @@unique([workspaceId, id])
+  /// no máximo um pedido que conta por (agendamento, início): a marca nula não colide
+  @@unique([workspaceId, appointmentId, startsAt, activeMark])
+  /// no máximo um pedido que conta por retorno
+  @@unique([workspaceId, returnId, activeMark])
+  @@index([workspaceId, createdByMembershipId])
+  /// a varredura do texto pagina por workspace e criação
+  @@index([workspaceId, createdAt])
 }
