@@ -17,6 +17,9 @@ import { ClinicsController } from './clinics.controller';
 import { ClinicsPatientsController } from './clinics-patients.controller';
 import { ClinicsPatientsService } from './clinics-patients.service';
 import { ClinicsReleasesService } from './clinics-releases.service';
+import { ClinicsCommercialController } from './commercial/clinics-commercial.controller';
+import { ClinicsDealLinksService } from './commercial/clinics-deal-links.service';
+import { ClinicsOutreachMetricsService } from './commercial/clinics-outreach-metrics.service';
 import { ClinicsOutreachController } from './outreach/clinics-outreach.controller';
 import { ClinicsOutreachService } from './outreach/clinics-outreach.service';
 import { VarreduraDosPedidos } from './outreach/clinics-outreach.sweep';
@@ -46,6 +49,7 @@ import { ClinicsReturnsService } from './schedule/clinics-returns.service';
     ClinicsReturnsController,
     ClinicsNoShowController,
     ClinicsOutreachController,
+    ClinicsCommercialController,
   ],
   providers: [
     ClinicsActivationService,
@@ -63,6 +67,8 @@ import { ClinicsReturnsService } from './schedule/clinics-returns.service';
     ClinicsOutreachService,
     ValidadeDosPedidos,
     VarreduraDosPedidos,
+    ClinicsDealLinksService,
+    ClinicsOutreachMetricsService,
   ],
   exports: [ClinicsActivationService],
 })

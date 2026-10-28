@@ -21,6 +21,7 @@ export const CLINICS_MODELS = [
   'ClinicsPackage',
   'ClinicsReturn',
   'ClinicsOutreachRequest',
+  'ClinicsAppointmentDeal',
 ] as const;
 
 export const clinicsExtension: CoreExtension = {
@@ -78,6 +79,7 @@ export const clinicsExtension: CoreExtension = {
         attendance: 'ClinicsAttendance',
         returns: 'ClinicsReturn',
         outreach: 'ClinicsOutreachRequest',
+        dealLink: 'ClinicsAppointmentDeal',
       },
       ClinicsAttendance: {
         workspace: 'Workspace',
@@ -114,6 +116,12 @@ export const clinicsExtension: CoreExtension = {
         return: 'ClinicsReturn',
         createdBy: 'Membership',
       },
+      ClinicsAppointmentDeal: {
+        workspace: 'Workspace',
+        appointment: 'ClinicsAppointment',
+        deal: 'Deal',
+        linkedBy: 'Membership',
+      },
       ClinicsContactRelease: {
         workspace: 'Workspace',
         contact: 'Contact',
@@ -135,6 +143,10 @@ export const clinicsExtension: CoreExtension = {
         clinicsReturnsCreated: 'ClinicsReturn',
         clinicsReturnsClosed: 'ClinicsReturn',
         clinicsOutreachCreated: 'ClinicsOutreachRequest',
+        clinicsDealLinksMade: 'ClinicsAppointmentDeal',
+      },
+      Deal: {
+        clinicsAppointmentLinks: 'ClinicsAppointmentDeal',
       },
     },
   },
@@ -208,5 +220,7 @@ export const clinicsExtension: CoreExtension = {
       'state',
       'activeMark',
     ],
+    // classe S (ADR-048 adendo 10, F4.3): só os ids do vínculo
+    clinicsAppointmentDeal: ['appointmentId', 'dealId'],
   },
 };

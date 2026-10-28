@@ -143,6 +143,7 @@ model Workspace {
   clinicsPackages             ClinicsPackage[]
   clinicsReturns              ClinicsReturn[]
   clinicsOutreachRequests     ClinicsOutreachRequest[]
+  clinicsAppointmentDeals     ClinicsAppointmentDeal[]
 }
 
 /// Catálogo GLOBAL de permissões (ADR-004): chaves estáveis do sistema —
@@ -252,6 +253,7 @@ model Membership {
   clinicsReturnsCreated      ClinicsReturn[]          @relation("ClinicsReturnCreatedBy")
   clinicsReturnsClosed       ClinicsReturn[]          @relation("ClinicsReturnClosedBy")
   clinicsOutreachCreated     ClinicsOutreachRequest[] @relation("ClinicsOutreachCreatedBy")
+  clinicsDealLinksMade       ClinicsAppointmentDeal[] @relation("ClinicsAppointmentDealLinkedBy")
 
   // Alvo de FK composta para Team/ownership futuros
   @@unique([workspaceId, id])
@@ -596,11 +598,13 @@ model Deal {
   company   Company?    @relation(fields: [workspaceId, companyId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
   owner     Membership? @relation("DealOwner", fields: [workspaceId, ownerMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
 
-  tasks          Task[]
-  notes          Note[]
-  activities     Activity[]
-  calendarEvents CalendarEvent[]
-  aiProposals    AiProposal[]
+  tasks                   Task[]
+  notes                   Note[]
+  activities              Activity[]
+  // o lado reverso do vínculo do Clinics (ADR-047 adendo 2, item 1)
+  clinicsAppointmentLinks ClinicsAppointmentDeal[]
+  calendarEvents          CalendarEvent[]
+  aiProposals             AiProposal[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, pipelineId, stageId, position])

@@ -238,6 +238,13 @@ model ClinicsAppointment {
   endsAt                DateTime                 @db.Timestamptz(3)
   status                ClinicsAppointmentStatus @default(scheduled)
   cancelReason          ClinicsCancelReason?
+  /// quando a equipe confirmou ESTE horário, pelo relógio do banco (F4.3). Só o
+  /// gatilho escreve: na transição para `confirmed`; zerado na volta a
+  /// `scheduled` (a remarcação); chegou, atendido e falta não o apagam
+  confirmedAt           DateTime?                @db.Timestamptz(3)
+  /// `false` só nos agendamentos que já existiam na F4.3 fora de `scheduled`:
+  /// a confirmação deles é desconhecida, e nenhuma data é inventada
+  confirmationTracked   Boolean                  @default(true)
   createdByMembershipId String                   @db.Uuid
   createdAt             DateTime                 @default(now())
   updatedAt             DateTime                 @updatedAt
@@ -251,6 +258,7 @@ model ClinicsAppointment {
   attendance   ClinicsAttendance?
   returns      ClinicsReturn[]
   outreach     ClinicsOutreachRequest[]
+  dealLink     ClinicsAppointmentDeal?
 
   @@unique([workspaceId, id])
   /// apoio da FK do vínculo do retorno: mesmo paciente, serviço e unidade (F3.2)
@@ -457,4 +465,31 @@ model ClinicsOutreachRequest {
   @@index([workspaceId, createdByMembershipId])
   /// a varredura do texto pagina por workspace e criação
   @@index([workspaceId, createdAt])
+}
+
+/// Vínculo do agendamento com um deal do Core (ADR-048 adendos 8 e 10, F4.3).
+/// Classe S: liga o paciente a uma oportunidade. No máximo um deal por
+/// agendamento; um deal com vários agendamentos. Vincular, trocar e
+/// desvincular só antes do atendimento (gatilho e trava da linha do
+/// agendamento). A FK para o deal é `NoAction`: excluir o deal vinculado dá o
+/// 409 genérico do Core (V3), e a cascata da exclusão do workspace passa. O
+/// vínculo cujo deal mudou de contato fica, mas não é válido nem conta.
+model ClinicsAppointmentDeal {
+  id                   String   @id @default(uuid()) @db.Uuid
+  workspaceId          String   @db.Uuid
+  appointmentId        String   @db.Uuid
+  dealId               String   @db.Uuid
+  linkedByMembershipId String   @db.Uuid
+  linkedAt             DateTime @default(dbgenerated("transaction_timestamp()")) @db.Timestamptz(3)
+
+  workspace   Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  appointment ClinicsAppointment @relation(fields: [workspaceId, appointmentId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsAppointmentDeal_appointment_fkey")
+  deal        Deal               @relation(fields: [workspaceId, dealId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsAppointmentDeal_deal_fkey")
+  linkedBy    Membership         @relation("ClinicsAppointmentDealLinkedBy", fields: [workspaceId, linkedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction, map: "ClinicsAppointmentDeal_linkedBy_fkey")
+
+  @@unique([workspaceId, id])
+  /// no máximo um deal por agendamento
+  @@unique([workspaceId, appointmentId])
+  @@index([workspaceId, dealId])
+  @@index([workspaceId, linkedByMembershipId])
 }

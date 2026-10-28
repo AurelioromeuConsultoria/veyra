@@ -947,3 +947,158 @@ export interface ClinicsOutreachResultItemDto {
 export interface ClinicsOutreachResultDto {
   items: ClinicsOutreachResultItemDto[];
 }
+
+// ── O vínculo com o deal e as métricas (F4.3, ADR-048 adendos 8 e 10) ────────
+
+/** Vincular (ou trocar) o deal de um agendamento: só antes do atendimento. */
+export const setClinicsAppointmentDealSchema = z.object({ dealId: z.uuid() }).strict();
+export type SetClinicsAppointmentDealInput = z.infer<typeof setClinicsAppointmentDealSchema>;
+
+/**
+ * O vínculo de um agendamento, lido com `pipelines:read` e
+ * `clinics:schedule:read`. A referência fica mesmo quando o contato do deal
+ * deixa de ser o do paciente, mas aí `valid` é `false`: não é vínculo válido,
+ * e as métricas não o contam (adendo 10, decisão 3).
+ */
+export interface ClinicsAppointmentDealDto {
+  appointmentId: string;
+  dealId: string | null;
+  dealTitle: string | null;
+  /** o deal ainda é do contato do paciente; `null` sem vínculo */
+  valid: boolean | null;
+}
+
+/** Um deal que pode ser vinculado: do mesmo contato do paciente. */
+export interface ClinicsDealOptionDto {
+  id: string;
+  title: string;
+  pipelineId: string;
+  createdAt: string;
+}
+
+/** Período das métricas: datas LOCAIS da unidade, `from` inclusivo, `to` exclusivo. */
+const periodoDaMetrica = {
+  from: localDate,
+  to: localDate,
+  /** obrigatória quando há mais de uma unidade ativa; define o fuso */
+  unitId: z.uuid().optional(),
+};
+const periodoValido = <T extends { from: string; to: string }>(schema: z.ZodType<T>) =>
+  schema
+    .refine((q) => q.from < q.to, {
+      message: 'O fim do período vem depois do início',
+      path: ['to'],
+    })
+    .refine(
+      (q) =>
+        (Date.parse(`${q.to}T00:00:00Z`) - Date.parse(`${q.from}T00:00:00Z`)) / 86_400_000 <= 366,
+      { message: 'O período tem no máximo 366 dias', path: ['to'] },
+    );
+
+export const clinicsMetricPeriodSchema = periodoValido(z.object(periodoDaMetrica).strict());
+export type ClinicsMetricPeriodQuery = z.infer<typeof clinicsMetricPeriodSchema>;
+
+/** A conversão: o período, a unidade (só o fuso) e o pipeline da base. */
+export const clinicsConversionQuerySchema = periodoValido(
+  z.object({ ...periodoDaMetrica, pipelineId: z.uuid() }).strict(),
+);
+export type ClinicsConversionQuery = z.infer<typeof clinicsConversionQuerySchema>;
+
+/**
+ * Uma etapa de métrica que pode não ser apurável por inteiro (adendo 10):
+ * - `complete`: `count` de todos os da base da etapa;
+ * - `partial`: `count` só dos `known` que puderam ser apurados — a cobertura é
+ *   parcial, e o número não é "de todos";
+ * - `no_data`: nenhum pôde ser apurado (`count` nulo, nunca zero);
+ * - `omitted`: quem pergunta não pode ver a contagem (`count` nulo, nunca zero).
+ */
+export interface ClinicsMetricStageDto {
+  status: 'complete' | 'partial' | 'no_data' | 'omitted';
+  count: number | null;
+  /** quantos da base da etapa puderam ser apurados */
+  known: number;
+  /** a base da etapa */
+  total: number;
+  reason:
+    | 'no_provider_confirmation'
+    | 'confirmation_time_unknown'
+    | 'no_conversation_access'
+    // a base da etapa está vazia: a taxa é indefinida, e não 0
+    | 'empty_base'
+    | null;
+}
+
+/** A taxa de falta de um grupo, pela regra da F3.3a. */
+export interface ClinicsNoShowGroupDto {
+  attended: number;
+  noShow: number;
+  /** `noShow / (attended + noShow)`; `null` = sem dados */
+  rate: number | null;
+}
+
+/**
+ * O funil da confirmação (adendo 8, 7.1). Cada agendamento conta uma vez. A
+ * falta por grupo é ASSOCIAÇÃO, não causa.
+ */
+export interface ClinicsConfirmationFunnelDto {
+  from: string;
+  to: string;
+  unitId: string;
+  /** os agendamentos com início no período, sem os cancelados */
+  base: number;
+  /** à parte */
+  canceled: number;
+  /** com pedido enviado para o horário final */
+  sent: number;
+  /** à parte: com envio (enviado, incerto ou em curso) só para um horário anterior */
+  sentForEarlierSlot: number;
+  /** à parte: o pedido do horário final aprovado e ainda sem desfecho */
+  pending: number;
+  /** grupo próprio: o pedido do horário final está incerto */
+  uncertain: number;
+  delivered: ClinicsMetricStageDto;
+  responded: ClinicsMetricStageDto;
+  confirmedByTeam: ClinicsMetricStageDto;
+  noShowBySendGroup: {
+    sent: ClinicsNoShowGroupDto;
+    uncertain: ClinicsNoShowGroupDto;
+    notSent: ClinicsNoShowGroupDto;
+  };
+}
+
+/**
+ * A conversão com janela por deal (adendo 8, 7.2). A base é a do pipeline; a
+ * unidade só dá o fuso. `open` = ainda em apuração; `window_closed` = as
+ * janelas acabaram, mas o resultado é recalculado pelo estado atual e pode
+ * mudar (adendo 10, decisão 3).
+ */
+export interface ClinicsConversionDto {
+  from: string;
+  to: string;
+  unitId: string;
+  pipelineId: string;
+  windowDays: number;
+  base: number;
+  converted: number;
+  rate: number | null;
+  status: 'open' | 'window_closed';
+}
+
+/**
+ * Os pacientes com retorno depois da reativação (adendo 8, 7.3): associação
+ * temporal, NÃO causa. Cada período mede as suas reativações: a soma de
+ * períodos não é um total de pacientes.
+ */
+export interface ClinicsReactivationDto {
+  from: string;
+  to: string;
+  unitId: string;
+  windowDays: number;
+  /** pacientes com ao menos uma reativação enviada no período */
+  base: number;
+  /** grupo próprio: os pacientes cujo envio no período ficou só incerto (fora da base) */
+  uncertain: number;
+  returned: number;
+  rate: number | null;
+  status: 'open' | 'window_closed';
+}

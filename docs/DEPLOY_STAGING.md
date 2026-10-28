@@ -602,6 +602,35 @@ muda o registro da migration e não desfaz nenhum objeto.
    ORDER BY 1, 2;
    ```
 
+   Para a `20261028200000_clinics_deal_link_and_confirmation` (F4.3, ADR-048
+   adendo 10), com **16 objetos**: as colunas `confirmedAt` e
+   `confirmationTracked` do agendamento; a tabela `ClinicsAppointmentDeal`, com
+   5 restrições (a chave e 4 FKs) e 4 índices; e as duas funções e os dois
+   gatilhos (a confirmação e a guarda do vínculo). A migration marca os
+   agendamentos que já existem fora de `scheduled` como sem rastreio da
+   confirmação, sem inventar data: um `UPDATE` sobre a agenda, pequeno.
+
+   ```sql
+   -- inventário da 20261028200000_clinics_deal_link_and_confirmation:
+   -- 0 linhas = nada ficou; 16 = inteira; outro número = estado parcial
+   SELECT 'coluna' AS k, column_name::text AS nome FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'ClinicsAppointment'
+       AND column_name IN ('confirmedAt', 'confirmationTracked')
+   UNION ALL SELECT 'tabela', c.relname::text FROM pg_class c
+     WHERE c.relkind = 'r' AND c.relname = 'ClinicsAppointmentDeal'
+   UNION ALL SELECT 'restricao', co.conname::text FROM pg_constraint co
+     JOIN pg_class c ON c.oid = co.conrelid
+     WHERE c.relname = 'ClinicsAppointmentDeal' AND co.contype <> 'n'
+   UNION ALL SELECT 'indice', i.relname::text FROM pg_index x
+     JOIN pg_class i ON i.oid = x.indexrelid JOIN pg_class c ON c.oid = x.indrelid
+     WHERE c.relname = 'ClinicsAppointmentDeal' AND NOT x.indisprimary
+   UNION ALL SELECT 'funcao', p.proname::text FROM pg_proc p
+     WHERE p.proname IN ('clinics_appointment_confirmation', 'clinics_appointment_deal_guard')
+   UNION ALL SELECT 'gatilho', tg.tgname::text FROM pg_trigger tg
+     WHERE tg.tgname IN ('ClinicsAppointment_confirmation', 'ClinicsAppointmentDeal_guard')
+   ORDER BY 1, 2;
+   ```
+
    Para outra migration, monte o inventário do mesmo jeito, a partir das
    instruções do arquivo: cada `CREATE` e cada `ADD CONSTRAINT`.
 
@@ -1282,7 +1311,8 @@ O marco do usuário: concluir a F4 e pôr uma demonstração funcionando, com da
   - `20261027120000_business_outbound` (F4.1c-3);
   - `20261028120000_business_outbound_vertical_origin` (F4.2, a parte do Core);
   - `20261028150000_clinics_outreach` (F4.2, a parte do Clinics);
-  - e as que a F4.3 e a F4.4 trouxerem.
+  - `20261028200000_clinics_deal_link_and_confirmation` (F4.3);
+  - e as que a F4.4 trouxer.
 - **As variáveis novas, no ambiente ANTES do deploy:** a `ADDRESS_LOCK_KEY` e a `OUTBOUND_APPROVAL_KEY`, independentes e estáveis. `META_TRANSPORT_MODE=fake` e `VEYRA_ENV=staging` continuam.
 
 **2. O que a demonstração ainda não tem, e precisa de decisão ou código:**
@@ -1329,7 +1359,7 @@ O marco do usuário: concluir a F4 e pôr uma demonstração funcionando, com da
 
 | Frente                                    | Situação                                                        | O que falta                                                                                                                                                                                                                                                                                                                                                                         |
 | ----------------------------------------- | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Funcionalidades**                       | F4.1 publicada; F4.2 publicada e validada (`ec2d224`, CI verde) | F4.3 (o vínculo com o deal e as métricas, plano no ADR-048 adendo 10, para revisão); F4.4 (as telas e o E2E: consentimento e pedido de parar, revisão de versão de template, as listas e o lote do Clinics, o vínculo e as métricas)                                                                                                                                                |
+| **Funcionalidades**                       | F4.1 publicada; F4.2 publicada e validada (`ec2d224`, CI verde) | F4.3 (o vínculo com o deal e as métricas, ADR-048 adendo 10) implementada, em commit local; F4.4 (as telas e o E2E: consentimento e pedido de parar, revisão de versão de template, as listas e o lote do Clinics, o vínculo e as métricas)                                                                                                                                         |
 | **Templates falsos**                      | decisão aprovada (ADR-052, fim)                                 | o código: o arquivo `demo_*` na imagem, lido pelo catálogo falso só com o transporte falso e `VEYRA_ENV=staging`, e o procedimento que cadastra e revisa as versões no workspace da demonstração. Para o Clinics, os templates vinculam `contato.primeiro_nome`, `clinics.data` e `clinics.hora`, e as finalidades `clinics_confirmacao` e `clinics_reativacao` têm só esses campos |
 | **Dados fictícios**                       | o desenho, no item 2                                            | o roteiro de carga no workspace da demonstração: contatos com números inventados, pacientes, a agenda (unidade, serviços, profissionais e expediente), as finalidades (CLI), os consentimentos (tela) e as revisões; o Owner `aurelioromeu@outlook.com`                                                                                                                             |
 | **Manutenção do deploy**                  | preparada no item 4                                             | executar com autorização: a imagem da árvore final da F4, a `ADDRESS_LOCK_KEY` e a `OUTBOUND_APPROVAL_KEY` no ambiente antes, as migrations da F4 na ordem do item 1 com os jobs desligados e o inventário de cada uma                                                                                                                                                              |

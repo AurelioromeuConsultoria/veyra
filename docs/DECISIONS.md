@@ -4747,7 +4747,7 @@ _No Clinics:_
 - **O 409 dos caminhos da agenda** que esperam a `validity:` diz "uso em andamento para este contato", a mensagem do Core. É imprecisa na agenda, sem efeito.
 - **Os cancelamentos do Clinics e do pedido de parar não se serializam entre si.** O do Clinics trava a `validity:`; o do pedido de parar, o `address:`. A sobreposição não terminal é de no máximo uma linha (o despacho daquela origem para aquele número), e o impasse não acontece com uma linha. Se acontecesse, um dos dois seria desfeito (40P01), sem envio a mais. O comentário do cancelamento neutro foi corrigido.
 
-### Adendo 10 (2026-10-28) — plano curto da F4.3: o vínculo com o deal e as métricas (APROVADO com as decisões do usuário)
+### Adendo 10 (2026-10-28) — plano curto da F4.3: o vínculo com o deal e as métricas (APROVADO com as decisões do usuário; implementado, commit local)
 
 **Situação: aprovado pelo usuário em 2026-10-28, com as decisões registradas no fim deste adendo, antes do código.** A situação original era PROPOSTO, pedido pelo usuário depois da F4.2. Dados fictícios e transporte falso; envio real e dados reais continuam bloqueados.
 
@@ -4847,7 +4847,7 @@ As telas ficam na F4.4.
   - O que está em `scheduled` não tem confirmação vigente e passa a ser rastreado.
 - **O vínculo (`ClinicsAppointmentDeal`):**
   - **cardinalidade:** único por agendamento;
-  - **FKs:** composta `NO ACTION` para o `Deal`, e não `RESTRICT`. O efeito na exclusão do deal é o mesmo (o 409 genérico, V3). O `RESTRICT` é conferido na hora e poderia recusar a cascata da exclusão do workspace conforme a ordem; o `NO ACTION` é conferido no fim da instrução, e a cascata passa (teste);
+  - **FKs:** composta `NO ACTION` para o `Deal`, o padrão das FKs do Clinics. A exclusão do deal vinculado dá o 409 genérico (V3), e a cascata da exclusão do workspace passa (teste). **Correção (mutação L4):** este texto dizia que o `RESTRICT` seria conferido na hora e poderia recusar a cascata. No Postgres, o `RESTRICT` é só o `NO ACTION` não adiável, e os dois são conferidos depois das cascatas da instrução. A escolha não muda o comportamento aqui;
   - **serialização:** a mudança trava a linha do agendamento e recusa o atendido. O registro do atendimento trava a mesma linha ao passar a `attended`, então os dois se serializam.
 - **A leitura neutra do Core por origem** (como a situação da F4.2) devolve, por origem aprovada:
   - o instante do envio;
@@ -4861,6 +4861,54 @@ As telas ficam na F4.4.
   - quando só parte delas tem recibo, a contagem sai com a cobertura parcial.
 
   É pelo dado, e não pelo modo do transporte.
+
+**A revisão do fechamento da F4.3 (`reviewer` e `security`, 2026-10-28) e o que mudou por ela.** Nenhum P0 nem P1. O ponto central, achado pelos dois:
+
+- **A resposta numa conversa RAI, ou numa conversa que hoje é de outro contato, era contada.** O adendo 8 diz que ela não conta, porque não se sabe de quem é, e o teste fixava o erro.
+  - Agora a resposta só conta na conversa identificada e ainda do contato do envio.
+  - Fora disso é "não respondeu" para **qualquer** leitor: o conteúdo nunca é lido, e a existência de uma RAI não aparece na métrica de quem não a pode ver (C13).
+  - Sem `conversations:read`, a etapa continua omitida.
+- **O pedido do horário final ainda pendente** e o envio enviado, incerto ou em curso só para um horário anterior ficam à parte, fora dos três grupos da falta. A pessoa pode ter recebido, e o grupo "sem solicitação" não pode ser contaminado.
+- **A etapa com a base vazia é "sem dados"** (`empty_base`), e não 0: a taxa é indefinida.
+- **Na reativação, o paciente cujo envio do período ficou só incerto** é grupo próprio (`uncertain`), fora da base.
+- **O vínculo usa a transação das mudanças,** com prazo de trava: dá 409, e a conexão do pool não fica presa atrás de um atendimento longo. O gatilho trava a linha do agendamento sem condição (`FOR NO KEY UPDATE`, o modo do UPDATE do atendimento) e só então confere o estado: um atendimento em curso, por qualquer caminho, termina antes, e o atendido é recusado (revisão do delta do `security`: com o estado no `WHERE`, a linha ainda não atendida não seria travada; teste com um vínculo gravado direto).
+- **As respostas vêm numa consulta agrupada,** e os pedidos de reativação criados depois do período ficam fora.
+- **Testes novos:**
+  - a resposta da mesma conversa vale para os dois envios;
+  - a base vazia;
+  - a exclusão do workspace com o agendamento atendido;
+  - o isolamento entre workspaces: o agendamento de B com o deal de A, as opções, o desvínculo e as métricas com a unidade e o pipeline de A;
+  - os limites das datas locais: 23:30 e 00:30, na criação do deal e no fim da janela;
+  - o incerto da reativação.
+
+**Implementação da F4.3 (2026-10-28): o que o código fixou.**
+
+- **A migration `20261028200000_clinics_deal_link_and_confirmation`** (ADR-051, ensaiada: 16 objetos):
+  - as duas colunas no agendamento;
+  - a marca dos existentes: o `scheduled` fica rastreado, o resto sem rastreio e sem data (provado no ensaio);
+  - os dois gatilhos;
+  - a tabela do vínculo.
+- **As rotas do vínculo:**
+  - `GET` e `PUT /clinics/appointments/:id/deal` e `POST …/deal/unlink`;
+  - `GET …/deal-options`, com só os deals do contato do paciente.
+
+  Ler exige `pipelines:read` e `clinics:schedule:read`; escolher e mudar exige `pipelines:read` e `clinics:schedule:write`. O deal de outro contato é recusado (400). Depois do atendimento, a mudança dá 409, e o gatilho recusa de novo qualquer outro caminho. O vínculo inválido mostra o `dealId` com `valid: false`, sem o título.
+
+- **As rotas das métricas,** só agregados:
+  - `GET /clinics/metrics/confirmation` exige `clinics:schedule:read`;
+  - `conversion` exige também `pipelines:read`;
+  - `reactivation` exige `clinics:schedule:read`.
+- **A leitura neutra do Core** (`EnvioDoNegocioService.desfechosPorOrigem`) traz, por origem enviada, os recibos e a resposta. A situação por origem ganhou o instante do envio (`enviadoEm`, o marcador do despacho).
+- **Consequências que o código tornou explícitas:**
+  - **A resposta é da conversa do número.** Com dois agendamentos do mesmo paciente no mesmo número, uma resposta depois dos dois envios conta para os dois. É a definição do adendo 8 ("mensagem do paciente na conversa daquele número depois do envio e antes do início"), e o teste a fixa.
+  - **O enviado só para um horário anterior** (remarcado depois do envio) fica à parte no funil e fora dos três grupos da falta: não é "sem solicitação".
+  - **A reativação mede os retornos da unidade escolhida** e os atendimentos nela, para não somar fusos.
+  - **O instante do envio vem do relógio do Node** (o marcador do despacho), e o da confirmação, do relógio do banco (o `now()` do início da transação, que pode ter esperado a trava `validity:`). A comparação "confirmado depois do envio" aceita a diferença dos dois relógios. Ela costuma ser de milissegundos, mas já foi medida em até cerca de 20 s com a VM do Docker sob carga (ADR-049). Uma confirmação nesses segundos pode cair do lado errado. É associação, não causa, e fica registrada como residual.
+- **Os exemplos do adendo 8 viraram testes:** os seis da conversão de novembro de 2030, mais um vínculo inválido, e os cinco da reativação, com o quinto também em outubro.
+- **As mutações (25):** 23 morrem por teste que falha. Duas são equivalentes e ficam registradas:
+  - **L4**, o `RESTRICT` na FK do deal. É o mesmo comportamento do `NO ACTION` aqui (ver a correção acima).
+  - **L7**, o gatilho do vínculo sem o ramo "o workspace já saiu". Na ordem atual da cascata, o agendamento já foi apagado quando o vínculo é apagado, e o ramo é redundante. Ele fica como garantia contra outra ordem.
+- **A revisão do delta (`security`)** achou que o `FOR SHARE` com o estado no `WHERE` não travava a linha ainda não atendida. Foi corrigido com a trava sem condição, com teste. A reativação ganhou também um limite inferior na consulta dos pedidos: os criados mais de 25 horas antes do período não podem ter saído nele.
 
 ## ADR-049 — Relógio de agendamento: quem compara define o relógio, e filas e leases usam o do banco
 

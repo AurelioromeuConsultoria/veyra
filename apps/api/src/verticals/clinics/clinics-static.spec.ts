@@ -114,6 +114,8 @@ describe('Clinics — garantias estáticas (ADR-047, ADR-048)', () => {
     expect(quem).toEqual([
       // o módulo, para a injeção
       'clinics.module.ts',
+      // as métricas leem a situação e o desfecho das origens (F4.3)
+      'commercial/clinics-outreach-metrics.service.ts',
       'outreach/clinics-outreach.service.ts',
       'outreach/clinics-outreach.sweep.ts',
       'outreach/clinics-outreach.validity.ts',

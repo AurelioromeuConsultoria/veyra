@@ -39,6 +39,8 @@ describe('o estado do pedido de envio', () => {
     estado: 'reserved',
     errorCode: null,
     emVoo: false,
+    enviadoEm: null,
+    despachadoEm: null,
     ...mudanca,
   });
 

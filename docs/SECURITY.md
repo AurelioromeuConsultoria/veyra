@@ -204,7 +204,13 @@ O webhook do WhatsApp é o **único caminho de escrita público e não autentica
 9. **O pedido de envio do Clinics (F4.2, ADR-048 adendo 9):** a origem `clinics.outreach:<id>` só entra pelas rotas do vertical, que exigem `clinics:schedule:read` **e** `clinics:schedule:write` além das três do Core. A leitura do pedido, só com a agenda, mascara o número e omite o motivo do não envio. O texto renderizado mora no pedido até o desfecho terminal, e a varredura periódica o apaga; o gatilho impede que volte. Toda mudança que invalida um pedido (o estado e a remarcação do agendamento, o atendimento, o vínculo e o cancelamento do retorno) pega a `validity:` exclusiva antes de qualquer linha e cancela os despachos não iniciados com `origin_invalidated`. O enviado e o incerto bloqueiam o alvo para sempre (C5), e o pedido não é apagado (gatilho), salvo pela exclusão do workspace. Residuais aceitos pelo usuário **exclusivamente** para a demonstração com dados fictícios e transporte falso, registrados no adendo 9, sem liberar uso real:
    - o prazo da aprovação da confirmação revela o horário do atendimento na trilha do Core. Continua vinculado ao B1 e à revisão das superfícies de leitura;
    - o despacho não revalida quem aprovou, numa janela de até 24 horas. **Requisito antes de qualquer envio real:** a reconferência valida a membership ativa do aprovador e as permissões exigidas dele, inclusive as da porta; remoção ou perda de acesso impede a chamada; indisponibilidade da checagem não autoriza o envio.
-10. **O que não se promete** (ADR-052 item 7): a mensagem pode sair depois de uma revogação se a guarda se perder — o caso fica `in_doubt`, nunca reenviado; e o Veyra só prova que pediu uma versão cujo conteúdo, segundo a Meta, tinha aquele hash momentos antes.
+10. **As métricas e o vínculo com o deal do Clinics (F4.3, ADR-048 adendo 10):**
+
+- **Só agregados.** As contagens de resposta exigem `conversations:read`; sem ela, a etapa é omitida, nunca zero. A resposta só conta na conversa identificada e ainda do contato do envio. A RAI e a conversa de outro contato são "não respondeu" para QUALQUER leitor: o conteúdo delas nunca é lido, e a métrica não revela a existência de uma RAI a quem não a pode ver (C13).
+- **O vínculo** (classe S) só liga ids. Ler exige `pipelines:read` e `clinics:schedule:read`; mudar, `pipelines:read` e `clinics:schedule:write`. Só antes do atendimento, serializado com ele pela trava da linha e conferido de novo por gatilho.
+- **A FK para o deal é `NO ACTION`:** a exclusão do deal vinculado dá o 409 genérico, e a exclusão do workspace passa.
+
+11. **O que não se promete** (ADR-052 item 7): a mensagem pode sair depois de uma revogação se a guarda se perder — o caso fica `in_doubt`, nunca reenviado; e o Veyra só prova que pediu uma versão cujo conteúdo, segundo a Meta, tinha aquele hash momentos antes.
 
 ## 8. Segredos e criptografia
 

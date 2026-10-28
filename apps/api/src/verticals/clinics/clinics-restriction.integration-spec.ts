@@ -639,6 +639,32 @@ describe('Clinics — restrição de conteúdo com a porta real e API de libera�
           },
         });
       },
+      // o vínculo com o deal passa pelo agendamento real e por um deal do Core (F4.3)
+      ClinicsAppointmentDeal: async () => {
+        const ag = await agendamentoComPais();
+        const pipeline = (await prisma.raw.pipeline.findFirst({
+          where: { workspaceId: wsA.workspaceId },
+          include: { stages: true },
+        }))!;
+        const deal = await prisma.raw.deal.create({
+          data: {
+            workspaceId: wsA.workspaceId,
+            pipelineId: pipeline.id,
+            stageId: pipeline.stages[0].id,
+            title: 'Deal ficticio',
+            contactId,
+            position: 1024,
+          },
+        });
+        return prisma.raw.clinicsAppointmentDeal.create({
+          data: {
+            workspaceId: wsA.workspaceId,
+            appointmentId: ag.id,
+            dealId: deal.id,
+            linkedByMembershipId: ag.createdByMembershipId,
+          },
+        });
+      },
       // o pedido de envio passa pelo agendamento real, que vem junto (F4.2)
       ClinicsOutreachRequest: async () => {
         const ag = await agendamentoComPais();

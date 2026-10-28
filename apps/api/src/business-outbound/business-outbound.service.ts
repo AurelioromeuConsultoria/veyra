@@ -84,6 +84,25 @@ export interface SituacaoDaOrigem {
   errorCode: string | null;
   /** o marcador do despacho: a chamada pode ter começado */
   emVoo: boolean;
+  /** o instante do envio (o marcador do despacho), só quando saiu */
+  enviadoEm: Date | null;
+  /** o marcador do despacho em qualquer estado: o incerto também o tem */
+  despachadoEm: Date | null;
+}
+
+/** Os recibos do provedor que o Core guarda (`MessageStatusEvent`). */
+export type ReciboDoProvedor = 'sent' | 'delivered' | 'read' | 'failed';
+
+/**
+ * O desfecho de uma origem ENVIADA, para as métricas do vertical (F4.3): os
+ * recibos do provedor e se houve resposta na conversa da mensagem. `respondeu`
+ * é `null` quando quem pergunta não pode ler as conversas: a contagem é
+ * omitida, nunca zero.
+ */
+export interface DesfechoDaOrigem {
+  enviadoEm: Date;
+  recibos: ReciboDoProvedor[];
+  respondeu: boolean | null;
 }
 
 function mesmasChaves(a: readonly string[], b: readonly string[]): boolean {
@@ -533,9 +552,111 @@ export class EnvioDoNegocioService {
         estado: (d?.state ?? null) as EstadoDoDespacho | null,
         errorCode: d?.errorCode ?? null,
         emVoo: d?.state === 'sending' && d.dispatchedAt !== null,
+        enviadoEm: d?.state === 'sent' ? (d.dispatchedAt ?? null) : null,
+        despachadoEm: d?.dispatchedAt ?? null,
       });
     }
     return situacoes;
+  }
+
+  /**
+   * O desfecho das origens ENVIADAS (F4.3), a leitura neutra das métricas do
+   * vertical: os recibos do provedor e a resposta — uma mensagem de entrada na
+   * conversa da mensagem, depois do envio e antes de `ate`. Só o fato, nunca o
+   * conteúdo.
+   *
+   * A resposta exige `conversations:read`; sem ela, `respondeu` é `null` e a
+   * contagem é omitida. E só conta a conversa IDENTIFICADA e ainda do contato
+   * do envio: a de "remetente a identificar" (RAI) ou a de outro contato não é
+   * resposta do paciente, porque não se sabe de quem é (adendo 8, item 7) — é
+   * `false` para QUALQUER leitor, e o conteúdo dela nunca é lido. Assim a
+   * existência de uma RAI não aparece na métrica de quem não a pode ver (C13).
+   * A origem que não saiu não aparece.
+   */
+  async desfechosPorOrigem(
+    auth: AuthContext,
+    consultas: readonly { originRef: string; ate: Date }[],
+  ): Promise<Map<string, DesfechoDaOrigem>> {
+    const desfechos = new Map<string, DesfechoDaOrigem>();
+    const situacoes = await this.situacoesPorOrigem(consultas.map((c) => c.originRef));
+    const enviadas = consultas.filter((c) => situacoes.get(c.originRef)?.enviadoEm);
+    if (enviadas.length === 0) return desfechos;
+    const situacaoDa = (c: { originRef: string }) => situacoes.get(c.originRef) as SituacaoDaOrigem;
+    const mensagens = enviadas.map((c) => situacaoDa(c).messageId);
+    const [recibos, aprovacoes, linhas, leConversas] = await Promise.all([
+      this.prisma.db.messageStatusEvent.findMany({
+        where: { messageId: { in: mensagens } },
+        select: { messageId: true, status: true },
+      }),
+      this.prisma.db.outboundApproval.findMany({
+        where: { messageId: { in: mensagens } },
+        select: { messageId: true, contactId: true },
+      }),
+      this.prisma.db.message.findMany({
+        where: { id: { in: mensagens } },
+        select: { id: true, conversationId: true },
+      }),
+      this.permissoes.has(auth, 'conversations:read'),
+    ]);
+    const contatoDoEnvio = new Map(aprovacoes.map((a) => [a.messageId, a.contactId]));
+    const conversaDa = new Map(linhas.map((m) => [m.id, m.conversationId]));
+    const conversas = new Map(
+      (
+        await this.prisma.db.conversation.findMany({
+          where: { id: { in: [...new Set(conversaDa.values())] } },
+          select: { id: true, senderStatus: true, contactId: true },
+        })
+      ).map((c) => [c.id, c]),
+    );
+    // a conversa conta só se identificada e ainda do contato do envio
+    const atribuivel = (messageId: string): string | null => {
+      const id = conversaDa.get(messageId);
+      const conversa = id ? conversas.get(id) : undefined;
+      return conversa?.senderStatus === 'identified' &&
+        conversa.contactId === contatoDoEnvio.get(messageId)
+        ? (id as string)
+        : null;
+    };
+    // as entradas das conversas atribuíveis, numa consulta só, na janela inteira
+    const contadas = leConversas
+      ? [...new Set(mensagens.map(atribuivel).filter((id): id is string => id !== null))]
+      : [];
+    const entradas =
+      contadas.length > 0
+        ? await this.prisma.db.message.findMany({
+            where: {
+              conversationId: { in: contadas },
+              direction: 'inbound',
+              createdAt: {
+                gt: new Date(Math.min(...enviadas.map((c) => situacaoDa(c).enviadoEm!.getTime()))),
+                lt: new Date(Math.max(...enviadas.map((c) => c.ate.getTime()))),
+              },
+            },
+            select: { conversationId: true, createdAt: true },
+          })
+        : [];
+    for (const consulta of enviadas) {
+      const situacao = situacaoDa(consulta);
+      const enviadoEm = situacao.enviadoEm as Date;
+      const conversa = atribuivel(situacao.messageId);
+      const respondeu = !leConversas
+        ? null
+        : conversa !== null &&
+          entradas.some(
+            (e) =>
+              e.conversationId === conversa &&
+              e.createdAt.getTime() > enviadoEm.getTime() &&
+              e.createdAt.getTime() < consulta.ate.getTime(),
+          );
+      desfechos.set(consulta.originRef, {
+        enviadoEm,
+        recibos: recibos
+          .filter((r) => r.messageId === situacao.messageId)
+          .map((r) => r.status as ReciboDoProvedor),
+        respondeu,
+      });
+    }
+    return desfechos;
   }
 
   /**
