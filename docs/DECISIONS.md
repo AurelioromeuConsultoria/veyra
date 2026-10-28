@@ -4370,7 +4370,7 @@ As travas, o ponto de decisão e o que se promete estão no ADR-052, itens 5 a 8
 - **A janela do deal** é [D, D + **J = 90 dias**), com D a data local da criação.
 - **O deal converte** se tem um agendamento vinculado `attended` que foi **criado na criação do deal ou depois dela** e começa **dentro da janela**. Cada deal conta uma vez.
 - **O estado do deal (ganho, perdido ou aberto) não muda a conta.** Quem decide é o atendimento.
-- **A apuração do deal se encerra** no fim da janela. O período fica "em apuração" até `até + J` e pode subir até lá; depois disso, fica fechado.
+- **A janela do deal se encerra** no fim de J. O período fica "em apuração" até `até + J` e pode subir até lá. **Janela encerrada não é resultado histórico congelado** (decisão do usuário de 2026-10-28, adendo 10): a métrica é recalculada pelo estado atual, e muda depois da janela se, por exemplo, o contato do deal mudar.
 
 Exemplos, com o período de novembro de 2030:
 
@@ -4747,9 +4747,9 @@ _No Clinics:_
 - **O 409 dos caminhos da agenda** que esperam a `validity:` diz "uso em andamento para este contato", a mensagem do Core. É imprecisa na agenda, sem efeito.
 - **Os cancelamentos do Clinics e do pedido de parar não se serializam entre si.** O do Clinics trava a `validity:`; o do pedido de parar, o `address:`. A sobreposição não terminal é de no máximo uma linha (o despacho daquela origem para aquele número), e o impasse não acontece com uma linha. Se acontecesse, um dos dois seria desfeito (40P01), sem envio a mais. O comentário do cancelamento neutro foi corrigido.
 
-### Adendo 10 (2026-10-28) — plano curto da F4.3: o vínculo com o deal e as métricas (PROPOSTO, para revisão antes do código)
+### Adendo 10 (2026-10-28) — plano curto da F4.3: o vínculo com o deal e as métricas (APROVADO com as decisões do usuário)
 
-**Situação: PROPOSTO.** Pedido pelo usuário depois da F4.2. Nenhum código da F4.3 está autorizado. Dados fictícios e transporte falso; envio real e dados reais continuam bloqueados.
+**Situação: aprovado pelo usuário em 2026-10-28, com as decisões registradas no fim deste adendo, antes do código.** A situação original era PROPOSTO, pedido pelo usuário depois da F4.2. Dados fictícios e transporte falso; envio real e dados reais continuam bloqueados.
 
 **O que fica como está (aprovado no adendo 8, revisão 3, com V3, V4 e V5):**
 
@@ -4807,6 +4807,60 @@ _No Clinics:_
 As telas ficam na F4.4.
 
 **Limite da demonstração:** com o transporte falso, não chegam recibos nem respostas reais. As etapas "entrega" e "resposta" ficam "sem dados" na demonstração, e nada é acrescentado para simulá-las.
+
+**As decisões do usuário (2026-10-28), antes do código.** As cinco recomendações foram aprovadas, com estas condições:
+
+1. **O instante da confirmação:** `confirmedAt`, pelo relógio do banco, na transição para `confirmed`.
+   - É zerado na remarcação.
+   - A evolução posterior para chegou, atendido ou falta **não** apaga a confirmação daquele horário.
+   - Nenhuma data é inventada para registro antigo.
+   - Com registros conhecidos e antigos sem data misturados, a etapa mostra a contagem conhecida com **cobertura parcial**.
+   - "Sem dados" vale quando a etapa não pode ser apurada; ausência de registro nunca vira zero em silêncio.
+2. **A cardinalidade:** no máximo um deal por agendamento; vários agendamentos por deal.
+   - Vincular, trocar e desvincular: auditados, e só antes do atendimento.
+   - A mudança do vínculo e o registro do atendimento são **serializados**: uma corrida não muda o vínculo depois que o atendimento foi confirmado.
+   - O isolamento por workspace fica preservado, e um teste prova que as FKs não impedem a exclusão do workspace inteiro.
+3. **A troca de contato do deal, aprovada para o protótipo:** só conta o vínculo cujo deal ainda é do contato do paciente, sem trava do vertical no Core.
+   - Consequência registrada: a métrica é recalculada pelo estado atual e pode mudar depois da janela de 90 dias. "Janela encerrada" não é "resultado histórico congelado"; o texto do adendo 8 (7.2) foi ajustado.
+   - A referência permanece, mas não aparece como vínculo válido quando os contatos divergem.
+4. **As permissões:** `clinics:schedule:read`, mais:
+   - `conversations:read` para as contagens de resposta;
+   - `pipelines:read` para a conversão e a leitura dos vínculos.
+
+   A leitura neutra do Core respeita também o acesso à conversa **concreta**, inclusive a RAI: não basta a chave geral. Sem autorização, a contagem é omitida, nunca zero.
+
+5. **A unidade da conversão, como referência de fuso:** com mais de uma unidade ativa, a escolha é obrigatória, e a unidade define as datas locais e a janela.
+   - A base continua sendo a do pipeline escolhido. O resultado não é apresentado como conversão daquela unidade, e resultados de fusos diferentes não são somados.
+   - Uma atribuição comercial por unidade fica fora desta entrega.
+
+**Na demonstração,** entrega e resposta ficam "sem dados" no transporte falso, explicando que não há confirmação do provedor. Nenhum evento artificial é criado para preencher a métrica.
+
+**O desenho que decorre das decisões (antes do código):**
+
+- **`confirmedAt` e `confirmationTracked` no agendamento,** escritos só por gatilho:
+  - na criação: nulo e rastreado;
+  - na transição para `confirmed`: `now()` do banco;
+  - na volta a `scheduled` (a remarcação): nulo e rastreado de novo;
+  - em qualquer outra mudança: inalterados. Chegou, atendido e falta não apagam.
+- **Os agendamentos que já existem na migration** e não estão em `scheduled` ficam com `confirmationTracked = false`. O instante e mesmo o fato da confirmação deles são desconhecidos, e nenhuma data é inventada.
+  - Na etapa, eles entram como desconhecidos: a contagem conhecida sai com a cobertura parcial.
+  - O que está em `scheduled` não tem confirmação vigente e passa a ser rastreado.
+- **O vínculo (`ClinicsAppointmentDeal`):**
+  - **cardinalidade:** único por agendamento;
+  - **FKs:** composta `NO ACTION` para o `Deal`, e não `RESTRICT`. O efeito na exclusão do deal é o mesmo (o 409 genérico, V3). O `RESTRICT` é conferido na hora e poderia recusar a cascata da exclusão do workspace conforme a ordem; o `NO ACTION` é conferido no fim da instrução, e a cascata passa (teste);
+  - **serialização:** a mudança trava a linha do agendamento e recusa o atendido. O registro do atendimento trava a mesma linha ao passar a `attended`, então os dois se serializam.
+- **A leitura neutra do Core por origem** (como a situação da F4.2) devolve, por origem aprovada:
+  - o instante do envio;
+  - os recibos do provedor (`MessageStatusEvent`);
+  - a resposta: mensagem de entrada na conversa da mensagem, depois do envio e antes do limite dado.
+
+  A resposta só vem para quem tem `conversations:read` e acesso à conversa concreta (a RAI só com `contacts:write`, C13); senão, vem como desconhecida, e a etapa é omitida.
+
+- **"Sem dados" por falta de confirmação do provedor:**
+  - nenhuma mensagem da coorte com recibo deixa entrega e resposta "sem dados", com o motivo;
+  - quando só parte delas tem recibo, a contagem sai com a cobertura parcial.
+
+  É pelo dado, e não pelo modo do transporte.
 
 ## ADR-049 — Relógio de agendamento: quem compara define o relógio, e filas e leases usam o do banco
 
