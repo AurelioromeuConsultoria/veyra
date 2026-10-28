@@ -4747,7 +4747,7 @@ _No Clinics:_
 - **O 409 dos caminhos da agenda** que esperam a `validity:` diz "uso em andamento para este contato", a mensagem do Core. É imprecisa na agenda, sem efeito.
 - **Os cancelamentos do Clinics e do pedido de parar não se serializam entre si.** O do Clinics trava a `validity:`; o do pedido de parar, o `address:`. A sobreposição não terminal é de no máximo uma linha (o despacho daquela origem para aquele número), e o impasse não acontece com uma linha. Se acontecesse, um dos dois seria desfeito (40P01), sem envio a mais. O comentário do cancelamento neutro foi corrigido.
 
-### Adendo 10 (2026-10-28) — plano curto da F4.3: o vínculo com o deal e as métricas (APROVADO com as decisões do usuário; implementado, commit local)
+### Adendo 10 (2026-10-28) — plano curto da F4.3: o vínculo com o deal e as métricas (APROVADO com as decisões do usuário; publicado e validado em `df3df82`)
 
 **Situação: aprovado pelo usuário em 2026-10-28, com as decisões registradas no fim deste adendo, antes do código.** A situação original era PROPOSTO, pedido pelo usuário depois da F4.2. Dados fictícios e transporte falso; envio real e dados reais continuam bloqueados.
 
@@ -4847,7 +4847,7 @@ As telas ficam na F4.4.
   - O que está em `scheduled` não tem confirmação vigente e passa a ser rastreado.
 - **O vínculo (`ClinicsAppointmentDeal`):**
   - **cardinalidade:** único por agendamento;
-  - **FKs:** composta `NO ACTION` para o `Deal`, o padrão das FKs do Clinics. A exclusão do deal vinculado dá o 409 genérico (V3), e a cascata da exclusão do workspace passa (teste). **Correção (mutação L4):** este texto dizia que o `RESTRICT` seria conferido na hora e poderia recusar a cascata. No Postgres, o `RESTRICT` é só o `NO ACTION` não adiável, e os dois são conferidos depois das cascatas da instrução. A escolha não muda o comportamento aqui;
+  - **FKs:** composta `NO ACTION` para o `Deal`, o padrão das FKs do Clinics. A exclusão do deal vinculado dá o 409 genérico (V3), e a cascata da exclusão do workspace passa (teste). **Precisão (F4.3, mutação L4; usuário, 2026-10-28):** neste schema e nos cenários testados, trocar `NO ACTION` por `RESTRICT` não mudou o comportamento: a exclusão do workspace passou nos dois. A equivalência é observada aqui, e não é afirmação geral de que os dois são sempre equivalentes. A escolha de `NO ACTION` se mantém. A versão anterior deste texto afirmava que o `RESTRICT` recusaria a cascata, e isso não foi observado;
   - **serialização:** a mudança trava a linha do agendamento e recusa o atendido. O registro do atendimento trava a mesma linha ao passar a `attended`, então os dois se serializam.
 - **A leitura neutra do Core por origem** (como a situação da F4.2) devolve, por origem aprovada:
   - o instante do envio;
@@ -4866,7 +4866,10 @@ As telas ficam na F4.4.
 
 - **A resposta numa conversa RAI, ou numa conversa que hoje é de outro contato, era contada.** O adendo 8 diz que ela não conta, porque não se sabe de quem é, e o teste fixava o erro.
   - Agora a resposta só conta na conversa identificada e ainda do contato do envio.
-  - Fora disso é "não respondeu" para **qualquer** leitor: o conteúdo nunca é lido, e a existência de uma RAI não aparece na métrica de quem não a pode ver (C13).
+  - Fora disso, a mensagem entra como **"sem resposta atribuível ao paciente segundo os critérios da métrica"**, para qualquer leitor. Isso não prova que ele não respondeu. O conteúdo nunca é lido, e a existência de uma RAI não aparece na métrica de quem não a pode ver (C13).
+  - **Regra confirmada pelo usuário (2026-10-28),** só para a contagem agregada:
+    - não autoriza devolver conteúdo, identificadores ou links de conversas que a pessoa não pode acessar;
+    - não substitui os controles futuros do B1.
   - Sem `conversations:read`, a etapa continua omitida.
 - **O pedido do horário final ainda pendente** e o envio enviado, incerto ou em curso só para um horário anterior ficam à parte, fora dos três grupos da falta. A pessoa pode ter recebido, e o grupo "sem solicitação" não pode ser contaminado.
 - **A etapa com a base vazia é "sem dados"** (`empty_base`), e não 0: a taxa é indefinida.
@@ -4880,6 +4883,8 @@ As telas ficam na F4.4.
   - o isolamento entre workspaces: o agendamento de B com o deal de A, as opções, o desvínculo e as métricas com a unidade e o pipeline de A;
   - os limites das datas locais: 23:30 e 00:30, na criação do deal e no fim da janela;
   - o incerto da reativação.
+
+**Publicação (2026-10-28):** `72c3d3a` e `df3df82` publicados, com os quatro jobs do CI verdes no run 40784361361 da árvore final.
 
 **Implementação da F4.3 (2026-10-28): o que o código fixou.**
 
@@ -4906,7 +4911,7 @@ As telas ficam na F4.4.
   - **O instante do envio vem do relógio do Node** (o marcador do despacho), e o da confirmação, do relógio do banco (o `now()` do início da transação, que pode ter esperado a trava `validity:`). A comparação "confirmado depois do envio" aceita a diferença dos dois relógios. Ela costuma ser de milissegundos, mas já foi medida em até cerca de 20 s com a VM do Docker sob carga (ADR-049). Uma confirmação nesses segundos pode cair do lado errado. É associação, não causa, e fica registrada como residual.
 - **Os exemplos do adendo 8 viraram testes:** os seis da conversão de novembro de 2030, mais um vínculo inválido, e os cinco da reativação, com o quinto também em outubro.
 - **As mutações (25):** 23 morrem por teste que falha. Duas são equivalentes e ficam registradas:
-  - **L4**, o `RESTRICT` na FK do deal. É o mesmo comportamento do `NO ACTION` aqui (ver a correção acima).
+  - **L4**, o `RESTRICT` na FK do deal: equivalente ao `NO ACTION` neste schema e nos cenários testados (ver a precisão acima), sem generalizar.
   - **L7**, o gatilho do vínculo sem o ramo "o workspace já saiu". Na ordem atual da cascata, o agendamento já foi apagado quando o vínculo é apagado, e o ramo é redundante. Ele fica como garantia contra outra ordem.
 - **A revisão do delta (`security`)** achou que o `FOR SHARE` com o estado no `WHERE` não travava a linha ainda não atendida. Foi corrigido com a trava sem condição, com teste. A reativação ganhou também um limite inferior na consulta dos pedidos: os criados mais de 25 horas antes do período não podem ter saído nele.
 
@@ -6260,7 +6265,7 @@ Continuam bloqueados deploy, ativação do Clinics, envio real e dados reais.
     - A versão é a seguinte à maior da mesma chave, e a criação é auditada (`consent_purpose.created`).
     - O workspace é resolvido pelo slug via `raw`, com justificativa (rotina administrativa); a escrita vai pelo client protegido, no contexto dele. O serviço não é exportado pelo módulo: a CLI o pega pelo contexto.
 14. **A idempotência considera quem pede** (achado das duas revisões; **emenda do ADR-020, aceita pelo usuário em 2026-10-26**). A resposta das rotas pela conversa depende da permissão de quem chamou (o número mascarado, a RAI). Por isso a membership autenticada — a da sessão, nunca informada pelo cliente — entra no hash da requisição, em todas as rotas idempotentes: outro membro com a mesma chave recebe 409, nunca a resposta guardada de outra pessoa. Uma chave gravada antes do deploy pode responder 409 durante a retenção (24 h); isso não deve provocar repetição automática com uma chave nova.
-15. **A FK do consentimento para a finalidade é `NO ACTION`**, e não `RESTRICT`. A `RESTRICT` é conferida linha a linha; na cascata da exclusão do workspace, sem ordem garantida, ela poderia barrar a exclusão. A `NO ACTION` é conferida no fim do comando, e continua impedindo apagar uma finalidade com consentimento. Há teste.
+15. **A FK do consentimento para a finalidade é `NO ACTION`**, e não `RESTRICT`. A justificativa registrada aqui foi que a `RESTRICT` seria conferida linha a linha e poderia barrar a cascata da exclusão do workspace. A `NO ACTION` é conferida no fim do comando, e continua impedindo apagar uma finalidade com consentimento. Há teste. **Precisão (F4.3, mutação L4; usuário, 2026-10-28):** neste schema e nos cenários testados, trocar `NO ACTION` por `RESTRICT` não mudou o comportamento: a exclusão do workspace passou nos dois. A equivalência é observada aqui, e não é afirmação geral de que os dois são sempre equivalentes. A escolha de `NO ACTION` se mantém.
 16. **Os índices:** saíram os que eram prefixo de um único (`Consent(workspaceId, contactId)` e `StopBlock(workspaceId, number)`); entraram os das FKs do canal e da finalidade.
 17. **O livro do preenchimento registra todo alvo**, inclusive o papel que já tinha a chave. É mais estrito que o texto do item 6 ("cada concessão feita"): a reaplicação não toca nem o papel que já tinha a chave e a perdeu depois. A auditoria registra só o que foi concedido de fato.
 18. **O replay pela conversa refaz o acesso de agora, sem reexecutar** (correção pedida pelo usuário em 2026-10-26). A membership no hash não protege a MESMA pessoa que perdeu o acesso: as rotas de parar e desbloquear pela conversa não exigem `contacts:read`, que decide entre o número completo e o mascarado, e a RAI depende de `contacts:write`. A `ConversationConsentReplayGuard` refaz, em cada repetição, a leitura da conversa com a visibilidade de agora e a projeção do número:
