@@ -156,11 +156,18 @@ function ordenado(valor: unknown): unknown {
   return valor;
 }
 
+/**
+ * O JSON com as chaves ordenadas em todo nível: a mesma forma para o mesmo
+ * conteúdo, venha na ordem que vier. É a base do hash da forma e da forma da
+ * aprovação do envio (F4.1c-3).
+ */
+export function jsonCanonico(valor: unknown): string {
+  return JSON.stringify(ordenado(valor));
+}
+
 /** O hash da forma canônica: SHA-256 do JSON com as chaves ordenadas, em hex. */
 export function hashDaForma(forma: FormaCanonica): string {
-  return createHash('sha256')
-    .update(JSON.stringify(ordenado(forma)))
-    .digest('hex');
+  return createHash('sha256').update(jsonCanonico(forma)).digest('hex');
 }
 
 export function canonizar(

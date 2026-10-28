@@ -163,6 +163,7 @@ function activateClinics(): void {
       JWT_SECRET: 'jwt-secret-de-e2e-nunca-em-producao-32ch',
       TOKEN_ENCRYPTION_KEY: 'chave-de-cifra-de-e2e-nunca-em-producao-32',
       ADDRESS_LOCK_KEY: 'chave-das-travas-de-endereco-de-e2e-32ch',
+      OUTBOUND_APPROVAL_KEY: 'chave-da-aprovacao-do-envio-de-e2e-32ch',
       DISABLE_JOBS: 'true',
     },
     stdio: 'inherit',

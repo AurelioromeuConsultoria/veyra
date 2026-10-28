@@ -1,6 +1,6 @@
 ---
 name: create-vertical
-description: Create or extend a vertical product (e.g. Veyra Clinics) on top of the Core — extension tables, own entities, the six ADR-047 composition points, activation lifecycle, data classification and content restriction. The Core must never learn about the vertical.
+description: Create or extend a vertical product (e.g. Veyra Clinics) on top of the Core — extension tables, own entities, the seven composition points (ADR-047, plus E7 from ADR-052), activation lifecycle, data classification and content restriction. The Core must never learn about the vertical.
 ---
 
 # create-vertical
@@ -10,7 +10,7 @@ Referências: `docs/ARCHITECTURE.md §6`, ADR-015, **ADR-047** (contrato de exte
 ## Passos
 
 1. **Cheque a direção da dependência.** O vertical importa services e contratos do Core; o Core **nunca** importa, referencia ou "prevê" o vertical. Só a raiz de composição (`app.module.ts`, raiz de rotas e navegação do web) importa `verticals/`, e isso é garantido por lint e por teste de fronteira. Se a feature exige mudar o Core, a mudança precisa ser universal, sem nome de vertical, e passa pelo `architect` com ADR.
-2. **Use só os seis pontos do ADR-047** (E1 modelos, E2 permissões e disponibilidade, E3 ativação e papéis, E4 auditoria, E5 navegação, E6 restrição de conteúdo). Precisou de um sétimo? Isso é ADR novo, nunca um gancho genérico. Não crie registro de plugins.
+2. **Use só os sete pontos do ADR-047** (E1 modelos, E2 permissões e disponibilidade, E3 ativação e papéis, E4 auditoria, E5 navegação, E6 restrição de conteúdo, E7 pré-condição do envio do negócio, pelo ADR-052 item 9). Precisou de um oitavo? Isso é ADR novo, nunca um gancho genérico. Não crie registro de plugins.
 3. **Classifique cada dado** como C, P ou S (ADR-048 §6). Na dúvida, vale a classe mais restrita. Dado S:
    - só existe em tabela do vertical, sob permissões próprias;
    - **nunca** é escrito em entidade do Core (título de tarefa, deal, nota, mensagem, notificação, `Activity`);

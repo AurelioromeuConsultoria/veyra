@@ -23,7 +23,7 @@ import {
   decideSend,
   MENSAGEM_NUMERO_NAO_CONFERE,
   MENSAGEM_REMETENTE_A_IDENTIFICAR,
-  MENSAGEM_TEMPLATE_INDISPONIVEL,
+  MENSAGEM_JANELA_FECHADA_TEMPLATE,
   SERVICE_WINDOW_MS,
 } from '../channels/send-policy';
 import { bloqueioAtivo, MENSAGEM_PEDIDO_DE_PARAR } from '../consents/consent-records';
@@ -482,8 +482,9 @@ export class ConversationsService {
   }
 
   /**
-   * Veredito do SERVIDOR sobre o que o compositor pode enviar agora. Na
-   * transição da F4.1b, só o texto livre: os templates não são oferecidos.
+   * Veredito do SERVIDOR sobre o que o compositor pode enviar agora: o texto
+   * livre com a janela aberta; com ela fechada, o template pelo envio do
+   * negócio (F4.1c-3), cujas opções e prévia vêm de rotas próprias.
    *
    * Existe para que a UI não recalcule política: ela não vê o pedido de parar
    * nem recibo atrasado, e uma segunda implementação da regra
@@ -587,9 +588,8 @@ export class ConversationsService {
      * permite texto livre, a janela está aberta; se recusa, o motivo já é a
      * explicação que a tela mostra.
      *
-     * Na transição da F4.1b, o consentimento da 9.1 é histórico e não autoriza
-     * nada (C7): o estado dele não aparece mais aqui, e os templates não são
-     * oferecidos — a janela fechada mostra a indisponibilidade do fluxo.
+     * O consentimento da 9.1 é histórico e não autoriza nada (C7): o estado
+     * dele não aparece mais aqui.
      */
     const decision = decideSend({
       lastInboundAt: row.lastInboundAt,
@@ -625,10 +625,16 @@ export class ConversationsService {
         templates: [],
       };
     }
+    /**
+     * A janela fechada (F4.1c-3): o template sai pelo envio do negócio — o
+     * compositor busca as opções revisadas e consentidas, mostra a prévia e
+     * aprova. A lista `templates` é a do envio comum, que não manda template:
+     * fica vazia.
+     */
     return {
       channelType,
-      mode: 'blocked',
-      reason: `Janela de 24h fechada. ${MENSAGEM_TEMPLATE_INDISPONIVEL}`,
+      mode: 'template',
+      reason: MENSAGEM_JANELA_FECHADA_TEMPLATE,
       windowExpiresAt,
       consentStatus: null,
       templates: [],

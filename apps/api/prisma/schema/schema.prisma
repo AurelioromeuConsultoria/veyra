@@ -115,6 +115,7 @@ model Workspace {
   messageTemplates       MessageTemplate[]
   templateVersions       MessageTemplateVersion[]
   templateReviews        TemplateReview[]
+  outboundApprovals      OutboundApproval[]
   channelConsents        ContactChannelConsent[]
   consentPurposes        ConsentPurpose[]
   consents               Consent[]
@@ -235,6 +236,7 @@ model Membership {
   grantedConsents            ContactChannelConsent[] @relation("ConsentGranter")
   purposeConsentsGranted     Consent[]               @relation("PurposeConsentGrantedBy")
   templateReviews            TemplateReview[]
+  outboundApprovals          OutboundApproval[]
   purposeConsentsRevoked     Consent[]               @relation("PurposeConsentRevokedBy")
   stopBlocksCreated          StopBlock[]             @relation("StopBlockCreatedBy")
   stopBlocksLifted           StopBlock[]             @relation("StopBlockLiftedBy")
@@ -382,6 +384,7 @@ model Contact {
   aiRuns                 AiRun[]
   contactChannelConsents ContactChannelConsent[]
   consents               Consent[]
+  outboundApprovals      OutboundApproval[]
   // lado reverso do vertical Clinics (ADR-047 adendo 2, item 1)
   clinicsContactReleases ClinicsContactRelease[]
   clinicsPatient         ClinicsPatient?
@@ -912,13 +915,14 @@ model Channel {
   systemMark  Boolean?
   createdAt   DateTime    @default(now())
 
-  workspace        Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  conversations    Conversation[]
-  messages         Message[]
-  credential       ChannelCredential?
-  messageTemplates MessageTemplate[]
-  templateVersions MessageTemplateVersion[]
-  consents         Consent[]
+  workspace         Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  conversations     Conversation[]
+  messages          Message[]
+  credential        ChannelCredential?
+  messageTemplates  MessageTemplate[]
+  templateVersions  MessageTemplateVersion[]
+  consents          Consent[]
+  outboundApprovals OutboundApproval[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, systemMark])
@@ -1008,6 +1012,7 @@ model Message {
   messageDispatches   MessageDispatch[]
   messageStatusEvents MessageStatusEvent[]
   inboundMedias       InboundMedia[]
+  outboundApproval    OutboundApproval?
 
   @@unique([workspaceId, id])
   // dedup de ingestão externa (nulos não colidem: mensagem interna não tem externalId)
@@ -1400,6 +1405,8 @@ enum ContentUseKind {
   ai_generation
   ai_message_dispatch
   webhook_delivery
+  /// o envio iniciado pelo negócio, aprovado sobre a prévia (ADR-052 item 7, F4.1c-3)
+  business_outbound
 }
 
 enum ContentUseStatus {
@@ -1835,9 +1842,10 @@ model MessageTemplateVersion {
   status            TemplateVersionStatus   @default(active)
   createdAt         DateTime                @default(dbgenerated("transaction_timestamp()"))
 
-  workspace Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  channel   Channel          @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  workspace Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  channel   Channel            @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
   reviews   TemplateReview[]
+  approvals OutboundApproval[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, channelId, name, language, version])
@@ -1861,6 +1869,7 @@ model TemplateReview {
   templateVersion MessageTemplateVersion @relation(fields: [workspaceId, templateVersionId], references: [workspaceId, id], onDelete: Cascade)
   purpose         ConsentPurpose         @relation(fields: [workspaceId, purposeId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
   reviewedBy      Membership             @relation(fields: [workspaceId, reviewedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  approvals       OutboundApproval[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, templateVersionId, purposeId])
@@ -1908,9 +1917,10 @@ model ConsentPurpose {
   fields      String[]
   createdAt   DateTime               @default(dbgenerated("transaction_timestamp()"))
 
-  workspace       Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  consents        Consent[]
-  templateReviews TemplateReview[]
+  workspace         Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  consents          Consent[]
+  templateReviews   TemplateReview[]
+  outboundApprovals OutboundApproval[]
 
   @@unique([workspaceId, id])
   @@unique([workspaceId, key, version])
@@ -1946,13 +1956,16 @@ model Consent {
   /// true enquanto ativo, NULL depois da revogação: o único por tupla só vale para o ativo
   activeMark            Boolean?                 @default(true)
 
-  workspace Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  contact   Contact        @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
-  channel   Channel        @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
-  purpose   ConsentPurpose @relation(fields: [workspaceId, purposeId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  grantedBy Membership     @relation("PurposeConsentGrantedBy", fields: [workspaceId, grantedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  revokedBy Membership?    @relation("PurposeConsentRevokedBy", fields: [workspaceId, revokedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  workspace Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contact   Contact            @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  channel   Channel            @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  purpose   ConsentPurpose     @relation(fields: [workspaceId, purposeId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  grantedBy Membership         @relation("PurposeConsentGrantedBy", fields: [workspaceId, grantedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  revokedBy Membership?        @relation("PurposeConsentRevokedBy", fields: [workspaceId, revokedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  approvals OutboundApproval[]
 
+  // alvo da FK composta da aprovação do envio (F4.1c-3)
+  @@unique([workspaceId, id])
   @@unique([workspaceId, receipt])
   @@unique([workspaceId, contactId, channelId, number, purposeId, activeMark])
   @@index([workspaceId, number])
@@ -2019,4 +2032,57 @@ model PermissionBackfill {
   permission Permission @relation(fields: [permissionKey], references: [key])
 
   @@unique([workspaceId, roleId, permissionKey])
+}
+
+// ── F4.1c-3: o envio iniciado pelo negócio (ADR-052 itens 6 a 8) ──
+
+/// O pedido APROVADO de um envio iniciado pelo negócio, 1:1 com a mensagem: o
+/// destinatário, o remetente, a versão e a revisão do template, a finalidade e
+/// o consentimento, a origem, o prazo e o `approvalHash` (HMAC do servidor).
+/// Os VALORES dos parâmetros não ficam aqui (minimização): o despacho os
+/// recalcula sob as travas, e o hash prova que são os aprovados. Imutável
+/// (append-only no client e gatilho no banco).
+model OutboundApproval {
+  messageId              String   @id @db.Uuid
+  workspaceId            String   @db.Uuid
+  contactId              String   @db.Uuid
+  /// "+dígitos": o número exato do contato, igual ao endereço da conversa
+  number                 String
+  channelId              String   @db.Uuid
+  /// o número da empresa NA META, na aprovação (entra no hash)
+  phoneNumberId          String
+  templateVersionId      String   @db.Uuid
+  templateReviewId       String   @db.Uuid
+  purposeId              String   @db.Uuid
+  consentId              String   @db.Uuid
+  /// `prefixo:uuid`: `conversation:` (o Inbox) ou o prefixo de um vertical (E7)
+  originRef              String
+  /// as chaves de validade fixadas na criação (E7); vazia na origem do Core
+  validityKeys           String[]
+  /// o prazo da aprovação, no relógio do banco (ADR-049)
+  expiresAt              DateTime
+  /// HMAC-SHA256 da forma canônica `v1`, em hex
+  approvalHash           String
+  approvedByMembershipId String   @db.Uuid
+  createdAt              DateTime @default(dbgenerated("transaction_timestamp()"))
+
+  workspace       Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  message         Message                @relation(fields: [workspaceId, messageId], references: [workspaceId, id], onDelete: Cascade)
+  contact         Contact                @relation(fields: [workspaceId, contactId], references: [workspaceId, id], onDelete: Cascade)
+  channel         Channel                @relation(fields: [workspaceId, channelId], references: [workspaceId, id], onDelete: Cascade)
+  // sem ação: a aprovação nunca some sem a mensagem dela (que cai em cascata
+  // pelo canal, pelo contato e pelo workspace) — sem a aprovação, o worker não
+  // acharia o caminho do negócio
+  templateVersion MessageTemplateVersion @relation(fields: [workspaceId, templateVersionId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  templateReview  TemplateReview         @relation(fields: [workspaceId, templateReviewId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  purpose         ConsentPurpose         @relation(fields: [workspaceId, purposeId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  consent         Consent                @relation(fields: [workspaceId, consentId], references: [workspaceId, id], onDelete: Cascade)
+  approvedBy      Membership             @relation(fields: [workspaceId, approvedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([workspaceId, messageId])
+  // uma aprovação por prévia: o hash cobre o prazo com milissegundos, e a
+  // repetição da mesma prévia devolve a mensagem que já existe
+  @@unique([workspaceId, approvalHash])
+  @@index([workspaceId, contactId])
+  @@index([workspaceId, originRef])
 }

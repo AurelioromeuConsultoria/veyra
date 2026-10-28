@@ -13,6 +13,8 @@ process.env.WEB_ORIGIN ??= 'http://localhost:5175';
 process.env.TOKEN_ENCRYPTION_KEY ??= 'chave-de-cifra-de-teste-de-integracao-32';
 // fixa: a chave das travas de endereço precisa ser estável (ADR-052 item 3)
 process.env.ADDRESS_LOCK_KEY ??= 'chave-das-travas-de-endereco-de-teste-32';
+// fixa também: a prévia e o despacho recalculam o `approvalHash` com ela
+process.env.OUTBOUND_APPROVAL_KEY ??= 'chave-da-aprovacao-do-envio-de-teste-32';
 // storage isolado por worker: os bytes dos testes nunca tocam o .storage de dev
 process.env.META_APP_SECRET ??= 'app-secret-de-teste-de-integracao';
 process.env.META_WEBHOOK_VERIFY_TOKEN ??= 'verify-token-de-teste-integracao';

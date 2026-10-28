@@ -19,13 +19,18 @@ export const MENSAGEM_NUMERO_NAO_CONFERE =
   'O número desta conversa não confere, de forma exata, com um telefone do cadastro do contato. Confira o contato antes de responder.';
 
 /**
- * Os templates na transição (ADR-052 item 5, F4.1b): consentimento antigo não
- * autoriza template, e a finalidade verificável só chega na F4.1c. Até lá, o
- * template é recusado no compositor, na API e no worker — com um motivo de
- * indisponibilidade do fluxo, nunca como se a pessoa tivesse revogado.
+ * O template pelo envio COMUM (F4.1b, mantido na F4.1c-3): consentimento
+ * antigo não autoriza template, e o parâmetro digitado nunca vira mensagem. O
+ * template sai só pelo envio do negócio — a prévia e a aprovação de uma versão
+ * revisada, para uma finalidade consentida. O envio comum com template é
+ * recusado no compositor, na API e no worker, com este motivo.
  */
 export const MENSAGEM_TEMPLATE_INDISPONIVEL =
-  'O envio por template está indisponível nesta versão, até a finalidade verificável (F4.1c)';
+  'O template não sai pelo envio comum: escolha uma versão revisada, veja a prévia e aprove o envio';
+
+/** A janela fechada, quando o template pode sair pelo envio do negócio (F4.1c-3). */
+export const MENSAGEM_JANELA_FECHADA_TEMPLATE =
+  'Janela de 24h fechada: envie um template revisado, para uma finalidade que o contato consentiu';
 
 /**
  * O remetente diante do envio: a conversa RAI, a identificada cujo número não

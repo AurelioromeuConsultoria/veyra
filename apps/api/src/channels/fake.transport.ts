@@ -1,6 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import type { FetchOutcome, MetaTransport, SendCredential, SendOutcome } from './meta.transport';
+import type {
+  FetchOutcome,
+  MetaTransport,
+  ParametrosDoTemplate,
+  SendCredential,
+  SendOutcome,
+} from './meta.transport';
 
 /**
  * Transporte FALSO do WhatsApp — existe para que STAGING exercite o caminho de
@@ -52,11 +58,12 @@ export class FakeMetaTransport implements MetaTransport {
     _credential: SendCredential,
     to: string,
     template: { name: string; language: string },
-    params: string[],
+    params: ParametrosDoTemplate,
   ): Promise<SendOutcome> {
+    // os VALORES não vão para o log (o nome do contato): só a contagem
     this.logger.warn(
       `envio FALSO de template "${template.name}" (${template.language}, ` +
-        `${params.length} parâmetro(s)) para ${mascarar(to)} — nada saiu`,
+        `${params.header.length + params.body.length} parâmetro(s)) para ${mascarar(to)} — nada saiu`,
     );
     return { ok: true, externalId: this.id() };
   }

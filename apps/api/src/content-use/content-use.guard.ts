@@ -134,7 +134,14 @@ class ChamadaPendente {
 type Fase = 'antes' | 'registro_incerto' | 'registrado' | 'iniciado';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ENTIDADE = /^(deal|task):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ENTIDADES = [
+  /^(deal|task):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+  // o envio do negócio (F4.1c-3): o endereço do número, pelo HMAC da
+  // `ADDRESS_LOCK_KEY` (nunca os dígitos), e as chaves de validade do E7,
+  // `validity:<prefixo>:<uuid>`
+  /^address:[0-9a-f]{64}$/,
+  /^validity:[a-z][a-z0-9_.-]{0,40}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+];
 /**
  * A lápide espera um registro em andamento pelo índice único; ele vive no
  * máximo dois prazos de instrução (o servidor derruba a transação ociosa dele).
@@ -220,7 +227,8 @@ const IDENTIFICADOR = /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,99}(@[0-9][0-9.-]{0,39})?$
 
 /**
  * "Só ids", por construção (adendo 7 §3.2): contatos, reservas e origem são
- * uuids, as entidades são 'deal:<uuid>' ou 'task:<uuid>', e os metadados do run
+ * uuids, as entidades são 'deal:<uuid>', 'task:<uuid>', o HMAC do endereço ou a
+ * chave de validade do E7 (F4.1c-3), e os metadados do run
  * são identificadores, números ou booleanos — sem espaço, então sem texto
  * livre nem e-mail. Por cima desse piso, a ESPECIFICAÇÃO do tipo (adendo 7 §9):
  * só as chaves de origem dela, e cada metadado só com o validador dele (lista
@@ -236,7 +244,9 @@ function validarUso(
   // o tipo precisa estar registrado, com a especificação e o tratador de origem
   if (!especificacao) throw erro('tipo sem registro');
   if (!uso.contactIds.every((id) => UUID.test(id))) throw erro('contactIds');
-  if (!(uso.entityKeys ?? []).every((chave) => ENTIDADE.test(chave))) throw erro('entityKeys');
+  if (!(uso.entityKeys ?? []).every((chave) => ENTIDADES.some((re) => re.test(chave)))) {
+    throw erro('entityKeys');
+  }
   for (const [chave, id] of Object.entries(uso.origem)) {
     if (!CHAVE_SIMPLES.test(chave) || !(id === null || UUID.test(id))) throw erro('origem');
     if (!especificacao.origem.includes(chave)) throw erro('origem');

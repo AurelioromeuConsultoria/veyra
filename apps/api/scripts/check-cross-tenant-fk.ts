@@ -73,6 +73,10 @@ const DOCUMENTED_LOOSE_COLUMNS = new Set([
   // divergir (`waba_trocada`). Uma FK travaria a troca ou apagaria a versão.
   'MessageTemplateVersion.businessAccountId',
   'MessageTemplateVersion.metaTemplateId',
+  // o número da empresa NA META na aprovação do envio do negócio (F4.1c-3): só
+  // dígitos por CHECK e imutável pelo gatilho. Entra no `approvalHash`, e o
+  // despacho o compara com o da credencial de agora — não é chave de busca
+  'OutboundApproval.phoneNumberId',
   // id da mídia NO PROVEDOR: opaco, e os bytes só existem lá até a coleta.
   // A integridade que importa é o unique (workspaceId, messageId,
   // providerMediaId), que impede referência duplicada. ADR-037.

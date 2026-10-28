@@ -235,8 +235,11 @@ export class TemplateVersionsService {
    * grava. Se a Meta voltar ao conteúdo original antes, a versão segue ativa:
    * o hash garante que só sai o conteúdo revisado, e `divergente` é terminal
    * para quem o recebeu (requisito da F4.1c-3).
+   *
+   * `signal`: o prazo ABSOLUTO da leitura (a aprovação e o despacho, F4.1c-3)
+   * — o `call` só tem o de ociosidade. Abortada, a leitura é `falha`, e nada muda.
    */
-  async reler(versionId: string): Promise<DesfechoDaReleitura> {
+  async reler(versionId: string, signal?: AbortSignal): Promise<DesfechoDaReleitura> {
     const versao = (await this.prisma.db.messageTemplateVersion.findFirst({
       where: { id: versionId },
     })) as unknown as VersaoLida | null;
@@ -260,6 +263,7 @@ export class TemplateVersionsService {
       { businessAccountId: versao.businessAccountId, token },
       versao.name,
       versao.language,
+      signal,
     );
     if (leitura.tipo === 'falha') return 'falha';
     const forma =

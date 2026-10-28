@@ -129,6 +129,9 @@ describe('relógio de agendamento (ADR-049)', () => {
       .map((f) => relative(SRC, f))
       .sort();
     expect(usam).toEqual([
+      // o prazo da aprovação do envio do negócio (F4.1c-3, ADR-052 item 8):
+      // fixado na prévia e conferido na aprovação e no despacho, num só lugar
+      'business-outbound/conferencia.ts',
       'verticals/clinics/schedule/clinics-no-show.service.ts',
       'verticals/clinics/schedule/clinics-returns.service.ts',
     ]);

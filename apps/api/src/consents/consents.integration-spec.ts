@@ -1620,13 +1620,13 @@ describe('F4.1b — consentimento, pedido de parar e templates na transição (i
       const r = await responder(conversa.id, {
         template: { name: 'retorno_consulta', language: 'pt_BR', params: ['quinta'] },
       }).expect(400);
-      expect(r.body.message).toMatch(/template está indisponível/);
+      expect(r.body.message).toMatch(/não sai pelo envio comum/);
       expect(await prisma.raw.message.count({ where: { direction: 'outbound' } })).toBe(0);
       expect(await prisma.raw.messageDispatch.count()).toBe(0);
       expect(await prisma.raw.usageReservation.count()).toBe(0);
     });
 
-    it('o compositor: janela fechada mostra a indisponibilidade, sem templates nem o estado da 9.1', async () => {
+    it('o compositor: a janela fechada aponta o envio do negócio, sem os templates nem o estado da 9.1', async () => {
       const ana = await contato('Ana Fictícia', [N_E164]);
       await comTemplateAntigo(ana);
       await chega();
@@ -1638,10 +1638,9 @@ describe('F4.1b — consentimento, pedido de parar e templates na transição (i
       const politica = await get(`/api/conversations/${conversa.id}/send-policy`, owner).expect(
         200,
       );
-      expect(politica.body).toMatchObject({ mode: 'blocked', consentStatus: null, templates: [] });
-      expect(politica.body.reason).toMatch(
-        /Janela de 24h fechada\. O envio por template está indisponível/,
-      );
+      // desde a F4.1c-3: o template sai pelo envio do negócio, e nada da 9.1 vira opção
+      expect(politica.body).toMatchObject({ mode: 'template', consentStatus: null, templates: [] });
+      expect(politica.body.reason).toMatch(/Janela de 24h fechada: envie um template revisado/);
       // dentro da janela, o texto livre segue, ainda sem templates oferecidos
       await prisma.raw.conversation.updateMany({
         where: { id: conversa.id },

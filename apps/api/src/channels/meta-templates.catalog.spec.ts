@@ -152,6 +152,26 @@ describe('o catálogo de templates pela Graph API (F4.1c-2)', () => {
     }
   });
 
+  it('o prazo absoluto vai a cada página; abortada, a leitura é falha, não ausência (F4.1c-3)', async () => {
+    const sinais: (AbortSignal | undefined)[] = [];
+    const chamar = (async (_url: string, o: { signal?: AbortSignal }) => {
+      sinais.push(o.signal);
+      if (o.signal?.aborted) throw new Error('This operation was aborted');
+      return resposta(200, { data: [] });
+    }) as unknown as typeof call;
+    const catalogo = new GraphTemplateCatalog(config, chamar);
+    const prazo = new AbortController();
+    expect(await catalogo.buscarPorNome(CRED, 'lembrete', 'pt_BR', prazo.signal)).toEqual({
+      tipo: 'ausente',
+    });
+    expect(sinais).toEqual([prazo.signal]);
+    prazo.abort();
+    expect(await catalogo.buscarPorNome(CRED, 'lembrete', 'pt_BR', prazo.signal)).toEqual({
+      tipo: 'falha',
+      failure: { networkFailure: true },
+    });
+  });
+
   it('a WABA que não é id da Meta nem chega a ser lida', async () => {
     const { catalogo, chamadas } = com(() => resposta(200, { data: [TEMPLATE] }));
     expect(

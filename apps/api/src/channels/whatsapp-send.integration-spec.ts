@@ -281,17 +281,17 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     expect(await prisma.raw.usageReservation.count()).toBe(0);
   });
 
-  it('na transição da F4.1b, o template é recusado — registrado ou não, com ou sem o consentimento da 9.1', async () => {
+  it('o template pelo envio COMUM é recusado (F4.1b, mantido na F4.1c-3) — registrado ou não, com ou sem o consentimento da 9.1', async () => {
     await prisma.raw.conversation.updateMany({
       where: { id: conversationId },
       data: { lastInboundAt: new Date(Date.now() - 25 * 60 * 60 * 1000) },
     });
     const comTemplate = { name: 'lembrete_consulta', language: 'pt_BR', params: ['Ana'] };
 
-    // template não registrado: o fluxo é que está indisponível, antes de olhar o registro
+    // template não registrado: o envio comum não manda template, antes de olhar o registro
     let res = await sendMessage({ direction: 'outbound', body: 'x', template: comTemplate });
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/template está indisponível/);
+    expect(res.body.message).toMatch(/não sai pelo envio comum/);
 
     await prisma.raw.messageTemplate.create({
       data: {
@@ -315,7 +315,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     // registrado e com o consentimento antigo: também recusado (C7, ADR-052 item 5)
     res = await sendMessage({ direction: 'outbound', body: 'x', template: comTemplate });
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/template está indisponível/);
+    expect(res.body.message).toMatch(/não sai pelo envio comum/);
     expect(await prisma.raw.usageReservation.count()).toBe(0);
     expect(await prisma.raw.messageDispatch.count()).toBe(0);
     await drain();
@@ -1251,7 +1251,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     expect(new Date(res.body.windowExpiresAt).getTime()).toBeGreaterThan(Date.now());
   });
 
-  it('política: janela fechada bloqueia e explica a indisponibilidade do template (F4.1b)', async () => {
+  it('política: a janela fechada aponta o template pelo envio do negócio (F4.1c-3)', async () => {
     await prisma.raw.conversation.updateMany({
       where: { id: conversationId },
       data: { lastInboundAt: new Date(Date.now() - 25 * 60 * 60_000) },
@@ -1262,10 +1262,8 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
       .set('Cookie', session.cookieHeader)
       .expect(200);
 
-    expect(res.body.mode).toBe('blocked');
-    expect(res.body.reason).toMatch(
-      /Janela de 24h fechada\. O envio por template está indisponível/,
-    );
+    expect(res.body).toMatchObject({ mode: 'template', templates: [] });
+    expect(res.body.reason).toMatch(/Janela de 24h fechada: envie um template revisado/);
     // e o instante mostrado é o de EXPIRAÇÃO, já no passado — não some da tela
     expect(new Date(res.body.windowExpiresAt).getTime()).toBeLessThan(Date.now());
   });
@@ -1301,8 +1299,8 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
       .set('Cookie', session.cookieHeader)
       .expect(200);
 
-    expect(res.body).toMatchObject({ mode: 'blocked', consentStatus: null, templates: [] });
-    expect(res.body.reason).toMatch(/template está indisponível/);
+    // a janela fechada aponta o envio do negócio, e nada da 9.1 vira opção
+    expect(res.body).toMatchObject({ mode: 'template', consentStatus: null, templates: [] });
   });
 
   it('P0: política e envio concordam — nos dois sentidos, em cada estado', async () => {
@@ -1322,17 +1320,17 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
     expect(res.body.mode).toBe('free_form');
     expect((await sendMessage({ direction: 'outbound', body: 'Dentro' })).status).toBe(201);
 
-    // (2) janela fechada sem opt-in: bloqueado, e o envio livre é recusado
+    // (2) janela fechada: só o template pelo envio do negócio, e o envio livre é recusado
     await prisma.raw.conversation.updateMany({
       where: { id: conversationId },
       data: { lastInboundAt: new Date(Date.now() - 25 * 60 * 60_000) },
     });
     res = await politica();
-    expect(res.body).toMatchObject({ mode: 'blocked' });
+    expect(res.body).toMatchObject({ mode: 'template', templates: [] });
     expect((await sendMessage({ direction: 'outbound', body: 'Fora' })).status).toBe(400);
 
-    // (3) com o opt-in da 9.1 e template aprovado: ainda bloqueado, e o envio por
-    // template é recusado — a transição da F4.1b nos dois lados
+    // (3) com o opt-in da 9.1 e o template da 9.1: nada disso vira opção, e o
+    // template pelo envio comum é recusado — nos dois lados
     await prisma.raw.contactChannelConsent.create({
       data: {
         workspaceId: wsA.workspaceId,
@@ -1352,7 +1350,7 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
       },
     });
     res = await politica();
-    expect(res.body).toMatchObject({ mode: 'blocked', templates: [] });
+    expect(res.body).toMatchObject({ mode: 'template', templates: [] });
     const recusado = await sendMessage({
       direction: 'outbound',
       body: 'Lembrete',

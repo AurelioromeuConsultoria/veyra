@@ -85,7 +85,7 @@ test.describe('Inbox (UI)', () => {
     await expect(page.getByText(nome).first()).toBeVisible();
   });
 
-  test('canal externo: janela fechada, template indisponível e o pedido de parar (F4.1b)', async ({
+  test('canal externo: janela fechada, o template pelo envio do negócio e o pedido de parar (F4.1b, F4.1c-3)', async ({
     page,
   }) => {
     const db = await openE2eDb();
@@ -134,9 +134,10 @@ test.describe('Inbox (UI)', () => {
       );
       /**
        * O consentimento da 9.1 e templates aprovados — MESMO NOME em dois
-       * idiomas, o caso que já expôs um defeito do compositor. Na transição da
-       * F4.1b, nada disso autoriza template: a tela explica a indisponibilidade
-       * e não oferece o compositor de template.
+       * idiomas, o caso que já expôs um defeito do compositor. Nada disso
+       * autoriza template (F4.1b): com a janela fechada, o painel do envio do
+       * negócio aparece, mas sem opção — não há versão revisada para uma
+       * finalidade consentida (F4.1c-3).
        */
       await db.query(
         `INSERT INTO "ContactChannelConsent"
@@ -162,13 +163,17 @@ test.describe('Inbox (UI)', () => {
       await expect(page.getByText('whatsapp', { exact: true }).first()).toBeVisible();
       const veredito = page.getByTestId('send-policy');
       await expect(veredito).toContainText('janela fechada');
-      await expect(veredito).toContainText(/template está indisponível/);
+      await expect(veredito).toContainText(/envie um template revisado/);
       // o estado da 9.1 não aparece mais: ele não autoriza nada (C7)
       await expect(veredito).not.toContainText('opt-in');
-      await expect(page.getByTestId('template-composer')).toHaveCount(0);
-      // bloqueado: o botão não envia, em vez de deixar o atendente descobrir pelo erro
+      // o painel do template, sem opção: nada da 9.1 vira template
+      const painel = page.getByTestId('template-composer');
+      await expect(painel).toContainText(/Nenhum template revisado para uma finalidade/);
+      // sem opção, não há o que pré-visualizar
+      await expect(painel.getByRole('button', { name: 'Ver prévia' })).toHaveCount(0);
+      // o texto livre não sai com a janela fechada: o botão não envia
       await page.getByLabel('Corpo da mensagem').fill('Podemos reagendar?');
-      await expect(page.getByRole('button', { name: /Enviada|Enviar template/ })).toBeDisabled();
+      await expect(page.getByRole('button', { name: 'Enviada' })).toBeDisabled();
 
       // o pedido de parar do número: a tela mostra o bloqueio, antes da janela
       await db.query(

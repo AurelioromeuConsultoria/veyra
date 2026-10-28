@@ -90,19 +90,20 @@ roteamento depender da ordem de leitura do proxy.
 Todas no painel, no recurso (não no serviço), marcando como **build-time = não**.
 A lista completa e comentada está em `deploy/staging/.env.example`; o mínimo:
 
-| Variável                                              | Observação                                                                   |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `VEYRA_HOST`                                          | `veyra-staging.malachdigital.com.br`                                         |
-| `VEYRA_ENV`                                           | `staging` — **é o que autoriza o transporte falso**                          |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | senha gerada, nunca reaproveitada                                            |
-| `JWT_SECRET`                                          | ≥32 caracteres, `openssl rand -base64 48`                                    |
-| `TOKEN_ENCRYPTION_KEY`                                | **independente** do JWT                                                      |
-| `ADDRESS_LOCK_KEY`                                    | **independente** e ESTÁVEL; rotação só em manutenção (`docs/SECURITY.md` §8) |
-| `META_APP_SECRET` / `META_WEBHOOK_VERIFY_TOKEN`       | valores de TESTE, nunca os do app real                                       |
-| `META_TRANSPORT_MODE`                                 | `fake` — nada sai para a Meta (ADR-046)                                      |
-| `ANTHROPIC_API_KEY`                                   | com chave, a IA funciona e o custo é real                                    |
-| `CLAMAV_HOST`                                         | **vazio** (scanner desligado, ver §2)                                        |
-| `RESTIC_REPOSITORY` / `RESTIC_PASSWORD` / `AWS_*`     | backup; pode ficar vazio até você decidir o destino                          |
+| Variável                                              | Observação                                                                                                       |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `VEYRA_HOST`                                          | `veyra-staging.malachdigital.com.br`                                                                             |
+| `VEYRA_ENV`                                           | `staging` — **é o que autoriza o transporte falso**                                                              |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | senha gerada, nunca reaproveitada                                                                                |
+| `JWT_SECRET`                                          | ≥32 caracteres, `openssl rand -base64 48`                                                                        |
+| `TOKEN_ENCRYPTION_KEY`                                | **independente** do JWT                                                                                          |
+| `ADDRESS_LOCK_KEY`                                    | **independente** e ESTÁVEL; rotação só em manutenção (`docs/SECURITY.md` §8)                                     |
+| `OUTBOUND_APPROVAL_KEY`                               | **independente**, a mesma em todos os processos; trocar invalida as aprovações pendentes (`docs/SECURITY.md` §8) |
+| `META_APP_SECRET` / `META_WEBHOOK_VERIFY_TOKEN`       | valores de TESTE, nunca os do app real                                                                           |
+| `META_TRANSPORT_MODE`                                 | `fake` — nada sai para a Meta (ADR-046)                                                                          |
+| `ANTHROPIC_API_KEY`                                   | com chave, a IA funciona e o custo é real                                                                        |
+| `CLAMAV_HOST`                                         | **vazio** (scanner desligado, ver §2)                                                                            |
+| `RESTIC_REPOSITORY` / `RESTIC_PASSWORD` / `AWS_*`     | backup; pode ficar vazio até você decidir o destino                                                              |
 
 > **Mudança de regra, e ela é sua para aceitar.** O pedido original dizia
 > "segredos exclusivamente em arquivo fora do repositório, por exemplo
@@ -508,6 +509,41 @@ muda o registro da migration e não desfaz nenhum objeto.
      WHERE p.proname IN ('template_version_guard', 'template_review_guard')
    UNION ALL SELECT 'gatilho', tg.tgname::text FROM pg_trigger tg
      WHERE tg.tgname IN ('template_version_guard', 'template_review_guard')
+   ORDER BY 1, 2;
+   ```
+
+   Para a `20261027120000_business_outbound` (F4.1c-3, ADR-052 itens 6 a 9),
+   com **23 objetos**: o valor `business_outbound` do `ContentUseKind`; o
+   único `Consent_workspaceId_id_key`; a tabela `OutboundApproval`, com 14
+   restrições (a chave, 9 FKs compostas ou para o workspace e 4 CHECKs) e 4
+   índices, entre eles o único do `approvalHash` (uma aprovação por prévia); e
+   a função e o gatilho `outbound_approval_guard`. A tabela nasce
+   vazia, e nada que já existe muda. **A variável `OUTBOUND_APPROVAL_KEY`
+   precisa estar no ambiente ANTES do deploy:** sem ela, a API não sobe. Com o
+   transporte falso, o envio do negócio exercita o caminho inteiro sem que
+   nada saia; o template só aparece no compositor depois de cadastrado
+   (`templates:register`, com o catálogo falso vazio em staging) e revisado.
+
+   ```sql
+   -- inventário da 20261027120000_business_outbound: 0 linhas = nada ficou;
+   -- 23 = inteira; qualquer outro número = estado parcial
+   SELECT 'enum' AS k, e.enumlabel::text AS nome FROM pg_enum e
+     JOIN pg_type t ON t.oid = e.enumtypid
+     WHERE t.typname = 'ContentUseKind' AND e.enumlabel = 'business_outbound'
+   UNION ALL SELECT 'indice', i.relname::text FROM pg_class i
+     WHERE i.relkind = 'i' AND i.relname = 'Consent_workspaceId_id_key'
+   UNION ALL SELECT 'tabela', c.relname::text FROM pg_class c
+     WHERE c.relkind = 'r' AND c.relname = 'OutboundApproval'
+   UNION ALL SELECT 'restricao', co.conname::text FROM pg_constraint co
+     JOIN pg_class c ON c.oid = co.conrelid
+     WHERE c.relname = 'OutboundApproval' AND co.contype <> 'n'
+   UNION ALL SELECT 'indice', i.relname::text FROM pg_index x
+     JOIN pg_class i ON i.oid = x.indexrelid JOIN pg_class c ON c.oid = x.indrelid
+     WHERE c.relname = 'OutboundApproval' AND NOT x.indisprimary
+   UNION ALL SELECT 'funcao', p.proname::text FROM pg_proc p
+     WHERE p.proname = 'outbound_approval_guard'
+   UNION ALL SELECT 'gatilho', tg.tgname::text FROM pg_trigger tg
+     WHERE tg.tgname = 'outbound_approval_guard'
    ORDER BY 1, 2;
    ```
 
@@ -1172,3 +1208,43 @@ decisão deve ficar registrada aqui quando você tomá-la.
   recuperação, que depende de nova autorização. Se a causa for código novo com
   schema antigo, vale a regra da manutenção: a imagem anterior não é rollback,
   e o acesso continua bloqueado até a recuperação definida.
+
+## 13. Pendências da demonstração da F4 (preparadas em 2026-10-27; nada executado)
+
+O marco do usuário: concluir a F4 e pôr uma demonstração funcionando, com dados fictícios, para ele acessar. Esta seção prepara o que falta. **Nada aqui está autorizado:** deploy, ativação do Clinics, envio real e dados reais continuam bloqueados, e o staging segue fora do ar (INC-2026-10-26-01).
+
+**1. Antes de qualquer deploy:**
+
+- **O incidente do staging:**
+  - o diagnóstico de leitura do §12 precisa ser feito por quem tem acesso ao host;
+  - a recuperação depende de nova autorização;
+  - sem a versão implantada e a última migration aplicada, não há como planejar o deploy.
+- **As migrations da F4, na ordem** (cada uma conforme o §4, com o inventário e o ensaio):
+  - `20261023120000_conversation_sender_and_phone_identity` (F4.1a), com a `ADDRESS_LOCK_KEY` e os passos do `phones:normalize` e do `identity:diagnose`;
+  - `20261026120000_consents_and_stop_block` (F4.1b);
+  - `20261026150000_dispatch_canceled` (F4.1c-1);
+  - `20261026200000_template_versions` (F4.1c-2);
+  - `20261027120000_business_outbound` (F4.1c-3);
+  - e as que a F4.2 a F4.4 trouxerem.
+- **As variáveis novas, no ambiente ANTES do deploy:** a `ADDRESS_LOCK_KEY` e a `OUTBOUND_APPROVAL_KEY`, independentes e estáveis. `META_TRANSPORT_MODE=fake` e `VEYRA_ENV=staging` continuam.
+
+**2. O que a demonstração ainda não tem, e precisa de decisão ou código:**
+
+- **O catálogo falso de staging nasce vazio, e por processo.** O cadastro pela CLI (`templates:register`) não acha nada, e a releitura no worker veria o template como ausente.
+  - Para demonstrar o envio por template, o catálogo falso precisa de templates fictícios fixos, os mesmos na API e na CLI.
+  - Recomendação: um arquivo de templates fictícios na imagem, lido pelo catálogo falso só em staging. É decisão nova, com ADR antes do código.
+- **As telas da F4.4:** o registro de consentimento e do pedido de parar, a revisão das versões de template e as listas do vertical.
+  - O compositor do Inbox com o template volta na F4.1c-3.
+  - Sem as outras telas, parte da demonstração só pela API ou pela CLI.
+- **O fluxo do Clinics (F4.2 e F4.3):** a confirmação e a reativação são do vertical. A demonstração delas exige a ativação do Clinics no workspace da demo, que hoje está bloqueada e precisa de autorização própria, mesmo com dados fictícios.
+- **Os dados fictícios da demo:**
+  - o workspace;
+  - os contatos com números inventados;
+  - as finalidades (CLI);
+  - os consentimentos;
+  - os templates do catálogo fictício e as revisões;
+  - o Owner (`aurelioromeu@outlook.com`, workspace `staging`).
+
+  Nenhum número real: o transporte falso não envia, mas o número ainda é dado pessoal.
+
+**3. O que não muda na demonstração:** o transporte é falso, e nada sai para a Meta. A Meta real, a WABA, os templates aprovados e o opt-in real são da F4.5.

@@ -80,6 +80,8 @@ export const WORKSPACE_MODELS = new Set<string>([
   // Templates versionados e revisados (F4.1c-2, ADR-052 item 4)
   'MessageTemplateVersion',
   'TemplateReview',
+  // O envio iniciado pelo negócio: o pedido aprovado (F4.1c-3, ADR-052 item 8)
+  'OutboundApproval',
 ]);
 
 /**
@@ -116,6 +118,8 @@ export const APPEND_ONLY_MODELS = new Set<string>([
   'PermissionBackfill',
   // F4.1c-2: a revisão de template é um ato registrado, e não se reescreve
   'TemplateReview',
+  // F4.1c-3: o que a pessoa aprovou não muda depois (o gatilho vale para o raw)
+  'OutboundApproval',
 ]);
 
 /**
@@ -195,6 +199,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     stopBlocksCreated: 'StopBlock',
     stopBlocksLifted: 'StopBlock',
     templateReviews: 'TemplateReview',
+    outboundApprovals: 'OutboundApproval',
     // alvo fora do perímetro: travessia via db é bloqueada (sessões só via raw)
     activeSessions: 'RefreshToken',
   },
@@ -227,6 +232,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     aiRuns: 'AiRun',
     contactChannelConsents: 'ContactChannelConsent',
     consents: 'Consent',
+    outboundApprovals: 'OutboundApproval',
   },
   Tag: {
     workspace: 'Workspace',
@@ -326,17 +332,20 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     workspace: 'Workspace',
     consents: 'Consent',
     templateReviews: 'TemplateReview',
+    outboundApprovals: 'OutboundApproval',
   },
   MessageTemplateVersion: {
     workspace: 'Workspace',
     channel: 'Channel',
     reviews: 'TemplateReview',
+    approvals: 'OutboundApproval',
   },
   TemplateReview: {
     workspace: 'Workspace',
     templateVersion: 'MessageTemplateVersion',
     purpose: 'ConsentPurpose',
     reviewedBy: 'Membership',
+    approvals: 'OutboundApproval',
   },
   Consent: {
     workspace: 'Workspace',
@@ -345,6 +354,18 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     purpose: 'ConsentPurpose',
     grantedBy: 'Membership',
     revokedBy: 'Membership',
+    approvals: 'OutboundApproval',
+  },
+  OutboundApproval: {
+    workspace: 'Workspace',
+    message: 'Message',
+    contact: 'Contact',
+    channel: 'Channel',
+    templateVersion: 'MessageTemplateVersion',
+    templateReview: 'TemplateReview',
+    purpose: 'ConsentPurpose',
+    consent: 'Consent',
+    approvedBy: 'Membership',
   },
   StopBlock: {
     workspace: 'Workspace',
@@ -399,6 +420,7 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     messageTemplates: 'MessageTemplate',
     templateVersions: 'MessageTemplateVersion',
     consents: 'Consent',
+    outboundApprovals: 'OutboundApproval',
   },
   Conversation: {
     workspace: 'Workspace',
@@ -476,5 +498,6 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     messageDispatches: 'MessageDispatch',
     messageStatusEvents: 'MessageStatusEvent',
     inboundMedias: 'InboundMedia',
+    outboundApproval: 'OutboundApproval',
   },
 };

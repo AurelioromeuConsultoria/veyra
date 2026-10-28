@@ -49,6 +49,8 @@ export interface CatalogoDeTemplates {
     credencial: { businessAccountId: string; token: string },
     nome: string,
     idioma: string,
+    /** o prazo absoluto da leitura inteira (todas as páginas), quando houver */
+    signal?: AbortSignal,
   ): Promise<LeituraDoCatalogo>;
 }
 
@@ -84,6 +86,7 @@ export class GraphTemplateCatalog implements CatalogoDeTemplates {
     credencial: { businessAccountId: string; token: string },
     nome: string,
     idioma: string,
+    signal?: AbortSignal,
   ): Promise<LeituraDoCatalogo> {
     if (!ID_DA_META.test(credencial.businessAccountId)) {
       return { tipo: 'falha', failure: {}, motivo: 'id_invalido' };
@@ -94,7 +97,7 @@ export class GraphTemplateCatalog implements CatalogoDeTemplates {
       `&fields=${CAMPOS}&limit=100`;
     let url: string | null = primeira;
     for (let pagina = 0; pagina < PAGINAS && url; pagina += 1) {
-      const resposta = await this.ler(url, credencial.token);
+      const resposta = await this.ler(url, credencial.token, signal);
       if ('falha' in resposta) {
         return {
           tipo: 'falha',
@@ -136,10 +139,12 @@ export class GraphTemplateCatalog implements CatalogoDeTemplates {
   private async ler(
     url: string,
     token: string,
+    signal?: AbortSignal,
   ): Promise<{ status: number; corpo: unknown } | { falha: TransportFailure; motivo?: 'teto' }> {
     let resposta: RawResponse;
     try {
-      resposta = await this.chamar(url, { method: 'GET', token });
+      // abortado pelo prazo, cai no catch como a falha de rede: `falha`
+      resposta = await this.chamar(url, { method: 'GET', token, ...(signal ? { signal } : {}) });
     } catch (erro) {
       if ((erro as Error).message === MENSAGEM_DO_TETO) return { falha: {}, motivo: 'teto' };
       // só o tipo: a mensagem poderia trazer a URL com ids

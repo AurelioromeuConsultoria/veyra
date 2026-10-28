@@ -2,6 +2,7 @@ export * from './activities';
 export * from './audit';
 export * from './auth';
 export * from './automations';
+export * from './business-outbound';
 export * from './calendar';
 export * from './common';
 export * from './companies';

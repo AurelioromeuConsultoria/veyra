@@ -4,7 +4,12 @@ import type { Prisma } from '../generated/prisma/client';
 import type { Db } from '../prisma/prisma.service';
 import { UsageService } from '../usage/usage.service';
 
-export type TipoDeUso = 'ai_generation' | 'ai_message_dispatch' | 'webhook_delivery';
+export type TipoDeUso =
+  | 'ai_generation'
+  | 'ai_message_dispatch'
+  | 'webhook_delivery'
+  // o envio iniciado pelo negócio (F4.1c-3, ADR-052 item 7)
+  | 'business_outbound';
 export type Detector =
   | 'commit'
   | 'change'

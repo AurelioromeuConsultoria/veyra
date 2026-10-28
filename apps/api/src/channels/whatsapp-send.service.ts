@@ -15,7 +15,7 @@ import {
   type DesfechoIncerto,
   type ResultadoDoUso,
 } from '../content-use/content-use.guard';
-import { OrigensDosUsos } from '../content-use/content-use.orphans';
+import { OrigensDosUsos, type EspecificacaoDoUso } from '../content-use/content-use.orphans';
 import { TravasDeIdentidade } from '../content-use/identity-locks';
 import { CONFIG_DA_GUARDA, type ConfigDaGuarda } from '../content-use/content-use.pools';
 import { ContentRestrictionService } from '../extensions/content-restriction';
@@ -23,10 +23,16 @@ import type { ClaimedEvent } from '../outbox/outbox.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { UsageService } from '../usage/usage.service';
+import {
+  PRAZO_DA_RELEITURA_MS,
+  PortaDoEnvioDoNegocio,
+  type AntesDasTravas,
+  type ReconferenciaDoNegocio,
+} from './business-dispatch.port';
 import { ehMotivoDoCancelamento } from './dispatch-cancellation.service';
 import { classifyFailure } from './meta-errors';
 import { META_TRANSPORT, type MetaTransport, type SendOutcome } from './meta.transport';
-import { coincideExatamente } from '../contacts/phone-identity';
+import { chaveDeCoincidencia, coincideExatamente } from '../contacts/phone-identity';
 import { bloqueioAtivo, MENSAGEM_PEDIDO_DE_PARAR } from '../consents/consent-records';
 import {
   decideSend,
@@ -99,6 +105,15 @@ export interface OutboundAuthor {
 }
 
 /**
+ * O veredito da reconferência de um tipo de uso, sob as travas da guarda: o
+ * motivo da recusa vira o `errorCode`; o da porta indisponível também.
+ */
+type VereditoDoTipo =
+  | { veredito: 'liberado' }
+  | { veredito: 'restrito'; recusa: string }
+  | { veredito: 'indisponivel'; codigo: string };
+
+/**
  * A conversa foi RELIGADA depois de o envio ser aprovado (ADR-052 item 2)? Ela
  * virou "remetente a identificar", ou o contato dela não está entre os
  * conferidos por quem aprovou o envio — os da aprovação do rascunho da IA, ou o
@@ -145,6 +160,7 @@ export class WhatsappSendService implements OnModuleInit {
     private readonly origens: OrigensDosUsos,
     @Inject(CONFIG_DA_GUARDA) private readonly configDaGuarda: ConfigDaGuarda,
     private readonly travas: TravasDeIdentidade,
+    private readonly porta: PortaDoEnvioDoNegocio,
   ) {}
 
   /** Chamado pelo caminho HTTP (atendente). Roda com CLS da request. */
@@ -273,6 +289,97 @@ export class WhatsappSendService implements OnModuleInit {
     } as never);
     await tx.conversation.updateMany({
       where: { id: prepared.conversationId },
+      data: { lastMessageAt: new Date() },
+    });
+    await this.outbox.enqueue(
+      tx,
+      workspaceId,
+      'whatsapp.send_pending',
+      { messageId },
+      `whatsapp.send_pending:${messageId}`,
+    );
+    return { messageId };
+  }
+
+  /**
+   * O PREPARO do envio do negócio (F4.1c-3): só a quota, FORA de transação. A
+   * política dele é o contrato da aprovação — o destinatário, o consentimento,
+   * a versão e o hash —, que o serviço do envio do negócio confere sob as
+   * travas; a janela de 24 h não se aplica ao template. Quem reserva devolve
+   * se o item não nascer (`releaseReservationId`).
+   */
+  async reservarDoNegocio(workspaceId: string): Promise<string | 'quota_exceeded'> {
+    await this.usage.ensureCounterRow(workspaceId, 'messages_sent');
+    const reserva = await this.usage.reserve(workspaceId, 'messages_sent', 1);
+    return reserva === 'quota_exceeded' ? reserva : reserva.reservationId;
+  }
+
+  async releaseReservationId(reservationId: string): Promise<void> {
+    await this.usage.release(reservationId);
+  }
+
+  /**
+   * A ESCRITA do envio do negócio, na transação da aprovação (F4.1c-3): a
+   * mensagem (o texto renderizado, de autoria de quem aprovou), o despacho
+   * `reserved`, a APROVAÇÃO e o evento do outbox nascem juntos, ou não nascem.
+   * Não existe despacho do negócio sem aprovação: é ela que leva o worker ao
+   * caminho dele, e nenhum outro caminho escreve uma.
+   */
+  async escreverDoNegocioNaTransacao(
+    tx: Db,
+    workspaceId: string,
+    entrada: {
+      conversationId: string;
+      channelId: string;
+      reservationId: string;
+      body: string;
+      aprovacao: {
+        contactId: string;
+        number: string;
+        phoneNumberId: string;
+        templateVersionId: string;
+        templateReviewId: string;
+        purposeId: string;
+        consentId: string;
+        originRef: string;
+        validityKeys: readonly string[];
+        expiresAt: Date;
+        approvalHash: string;
+        approvedByMembershipId: string;
+      };
+    },
+  ): Promise<{ messageId: string }> {
+    const message = await tx.message.create({
+      data: {
+        conversationId: entrada.conversationId,
+        channelId: entrada.channelId,
+        direction: 'outbound',
+        authorType: 'user',
+        authorMembershipId: entrada.aprovacao.approvedByMembershipId,
+        body: entrada.body,
+      },
+    } as never);
+    const messageId = (message as unknown as { id: string }).id;
+    await tx.messageDispatch.create({
+      data: {
+        messageId,
+        state: 'reserved',
+        reservationId: entrada.reservationId,
+        // o contato conferido na aprovação, como na mensagem de pessoa
+        approvalContactIds: [entrada.aprovacao.contactId],
+        fromAiProposal: false,
+      },
+    } as never);
+    await tx.outboundApproval.create({
+      data: {
+        messageId,
+        channelId: entrada.channelId,
+        ...entrada.aprovacao,
+        validityKeys: [...entrada.aprovacao.validityKeys],
+      },
+    } as never);
+    await tx.conversation.updateMany({
+      where: { id: entrada.conversationId },
       data: { lastMessageAt: new Date() },
     });
     await this.outbox.enqueue(
@@ -429,6 +536,16 @@ export class WhatsappSendService implements OnModuleInit {
       });
       return 'done';
     }
+    /**
+     * O despacho com APROVAÇÃO é o envio iniciado pelo negócio (F4.1c-3): sai
+     * só pelo caminho dele — a releitura, a guarda e o hash —, nunca pela
+     * política do texto livre.
+     */
+    const aprovado = await this.prisma.db.outboundApproval.findFirst({
+      where: { messageId },
+      select: { messageId: true },
+    });
+    if (aprovado) return this.enviarDoNegocio(workspaceId, messageId, dispatch);
 
     const message = (await this.prisma.db.message.findFirst({
       where: { id: messageId },
@@ -537,41 +654,13 @@ export class WhatsappSendService implements OnModuleInit {
       return 'done';
     }
 
-    /**
-     * A reserva precisa estar VIVA antes da chamada. Duas razões para ela não
-     * estar: uma tentativa anterior a liberou, ou o TTL (10 min) venceu antes de
-     * o backoff do outbox (até 25 min) trazer o evento de volta — e nesse caso o
-     * job de expurgo já devolveu o valor ao orçamento. Confiar num id morto
-     * fazia a mensagem sair mesmo com o teto ocupado por outro uso, e a cobrança
-     * acontecia DEPOIS do efeito externo.
-     */
-    let reservationId = dispatch.reservationId;
-    if (reservationId && !(await this.usage.isReservationAlive(reservationId))) {
-      /**
-       * Expirada mas talvez NÃO expurgada: o TTL é de 10 min e a varredura roda
-       * a cada 5, então há uma janela em que a reserva ainda ocupa +1 no
-       * contador. Devolver antes de reservar de novo evita o absurdo de o envio
-       * ser recusado pela própria vaga que ele já havia pago.
-       */
-      await this.usage.release(reservationId);
-      reservationId = null;
-    }
-    if (!reservationId) {
-      const nova = await this.usage.reserve(workspaceId, 'messages_sent', 1);
-      if (nova === 'quota_exceeded') {
-        // sem vaga no teto: NÃO chama o transporte. O envio é recusado antes de
-        // existir, em vez de acontecer e ser cobrado fora do limite.
-        await this.finish(messageId, dispatch.claimToken, 'failed_permanent', {
-          errorCode: 'quota_exceeded',
-        });
-        return 'done';
-      }
-      reservationId = nova.reservationId;
-      await this.prisma.db.messageDispatch.updateMany({
-        where: { messageId, claimToken: dispatch.claimToken, state: 'sending' },
-        data: { reservationId },
-      });
-    }
+    const reservationId = await this.reservaViva(
+      workspaceId,
+      messageId,
+      dispatch.claimToken,
+      dispatch.reservationId,
+    );
+    if (!reservationId) return 'done';
 
     // MARCADOR DE DESPACHO, gravado com fencing imediatamente antes de chamar:
     // é o que impede outro worker de reenviar se morrermos na chamada. O da
@@ -650,10 +739,14 @@ export class WhatsappSendService implements OnModuleInit {
         dispatch.claimToken,
         reservationId,
         {
+          kind: 'ai_message_dispatch',
           contatos: contatosDoEnvio,
-          sujeitos: sujeitosDoEnvio,
-          conversationId: conversation.id,
-          contatosDaAprovacao: dispatch.approvalContactIds ?? [],
+          reconferir: () =>
+            this.reconferirDaIa(workspaceId, {
+              sujeitos: sujeitosDoEnvio,
+              conversationId: conversation.id,
+              contatosDaAprovacao: dispatch.approvalContactIds ?? [],
+            }),
         },
         enviar,
       );
@@ -715,16 +808,17 @@ export class WhatsappSendService implements OnModuleInit {
   }
 
   /**
-   * A ESPECIFICAÇÃO do uso `ai_message_dispatch` (ADR-047 adendo 7 §9, G3.2),
-   * registrada no Core antes de qualquer envio da IA existir: a origem é o
-   * despacho daquela tentativa (`messageId` + `claimToken`), sem metadados. Em
-   * dúvida, o despacho daquele `claimToken`, ainda `sending`, vai para
+   * As ESPECIFICAÇÕES dos usos de despacho, registradas no Core antes de
+   * qualquer envio existir: `ai_message_dispatch` (ADR-047 adendo 7 §9, G3.2) e
+   * `business_outbound` (ADR-052 item 7, F4.1c-3). A origem é o despacho
+   * daquela tentativa (`messageId` + `claimToken`), sem metadados. Em dúvida, o
+   * despacho daquele `claimToken`, ainda `sending`, vai para
    * `unknown_after_dispatch` e NUNCA é reenviado. A reserva, o detector cobra
    * pelo teto; a referência dela sai do despacho para nenhuma varredura cobrar
    * de novo. A transação pode ser `raw` (ativação): `workspaceId` explícito.
    */
   onModuleInit(): void {
-    this.origens.registrar('ai_message_dispatch', {
+    const despacho: EspecificacaoDoUso = {
       origem: ['messageId', 'claimToken'],
       metadados: {},
       marcarIncerta: async (tx, uso) => {
@@ -746,27 +840,32 @@ export class WhatsappSendService implements OnModuleInit {
           },
         });
       },
-    });
+    };
+    this.origens.registrar('ai_message_dispatch', despacho);
+    this.origens.registrar('business_outbound', despacho);
   }
 
   /**
-   * O envio da mensagem da IA SOB A GUARDA de uso externo (ADR-047 adendo 7 §9,
-   * G3.2). O marcador de despacho já foi gravado (antes da guarda: entre a
-   * prova de vida e o início não pode haver I/O). A guarda trava e reconfere os
-   * contatos da APROVAÇÃO somados ao da conversa, registra o uso antes do
-   * envio e conclui o despacho na transação dela. A reserva é entregue à
-   * guarda: daqui em diante só ela e os detectores a acertam.
+   * O envio SOB A GUARDA de uso externo: o da mensagem da IA (ADR-047 adendo 7
+   * §9, G3.2) e o do negócio (ADR-052 item 7, F4.1c-3). O marcador de despacho
+   * já foi gravado (antes da guarda: entre a prova de vida e o início não pode
+   * haver I/O). A guarda trava, reconfere — o pedido de cancelamento primeiro,
+   * depois o do tipo de uso —, registra o uso antes do envio e conclui o
+   * despacho na transação dela. A reserva é entregue à guarda: daqui em diante
+   * só ela e os detectores a acertam.
    */
   private async enviarSobGuarda(
     workspaceId: string,
     messageId: string,
     claimToken: string,
     reservationId: string,
-    escopo: {
-      contatos: string[];
-      sujeitos: (string | null)[];
-      conversationId: string;
-      contatosDaAprovacao: readonly string[];
+    uso: {
+      kind: 'ai_message_dispatch' | 'business_outbound';
+      contatos: readonly string[];
+      /** o `address:` do número e as chaves de validade, no envio do negócio */
+      entityKeys?: readonly string[];
+      /** a reconferência do tipo de uso, depois do pedido de cancelamento */
+      reconferir: (tx: Db) => Promise<VereditoDoTipo>;
     },
     enviar: (signal: AbortSignal) => Promise<SendOutcome>,
   ): Promise<'done' | 'retry'> {
@@ -777,11 +876,10 @@ export class WhatsappSendService implements OnModuleInit {
       emDuvida: false,
     };
     let resultado: ResultadoDoUso<'done' | 'retry'>;
-    // a reconferência viu a conversa religada, o número que não confere ou o
-    // pedido de parar: o motivo é esse, não a restrição
-    let recusa:
-      'conversation_relinked' | 'number_not_exact' | 'stop_requested' | 'cancel_requested' | null =
-      null;
+    // o motivo da recusa vista na reconferência (a conversa religada, o
+    // número, o pedido de parar, o do negócio), e o da porta indisponível
+    let recusa: string | null = null;
+    let indisponivel: string | null = null;
     // o pedido de cancelamento visto na reconferência: o despacho que não
     // começou vai a `canceled`, com o motivo do pedido
     let cancelado = false;
@@ -791,20 +889,21 @@ export class WhatsappSendService implements OnModuleInit {
       await this.usage.ensureCounterRow(workspaceId, 'messages_sent');
       resultado = await this.guarda.executar<SendOutcome, 'done' | 'retry'>({
         workspaceId,
-        kind: 'ai_message_dispatch',
-        contactIds: escopo.contatos,
-        // o envio decide pelo número exato: espera a importação e a
+        kind: uso.kind,
+        contactIds: uso.contatos,
+        ...(uso.entityKeys ? { entityKeys: uso.entityKeys } : {}),
+        // os dois decidem pelo número exato: esperam a importação e a
         // normalização, como todo leitor de telefone (F4.1c-1)
         telefones: true,
         prazoMs: this.configDaGuarda.prazoDaMetaMs,
         origem: { messageId, claimToken },
         reservas: [reservationId],
-        reconferir: async () => {
+        reconferir: async (tx) => {
           /**
            * O pedido de cancelamento do despacho já marcado (F4.1c-1), PRIMEIRO:
-           * o cancelamento neutro não desfaz o marcador da IA — ela o grava
-           * antes da guarda —, e é aqui, antes de a chamada começar, que o
-           * pedido vale, com o motivo gravado junto (o do pedido de parar é
+           * o cancelamento neutro não desfaz o marcador — ele é gravado antes
+           * da guarda —, e é aqui, antes de a chamada começar, que o pedido
+           * vale, com o motivo gravado junto (o do pedido de parar é
            * `stop_requested`). Depois do início, o desfecho é o da chamada.
            */
           const despacho = await this.prisma.db.messageDispatch.findFirst({
@@ -818,38 +917,10 @@ export class WhatsappSendService implements OnModuleInit {
               : 'cancel_requested';
             return 'restrito';
           }
-          const atual = await this.prisma.db.conversation.findFirst({
-            where: { id: escopo.conversationId },
-            select: { contactId: true, senderStatus: true, externalAddress: true },
-          });
-          // a conversa RELIDA sob as travas (ADR-052 item 2): religada depois
-          // da aprovação, o rascunho foi escrito para outra pessoa
-          if (!atual || religadaDesdeOEnvio(atual, escopo.contatosDaAprovacao)) {
-            recusa = 'conversation_relinked';
-            return 'restrito';
-          }
-          /**
-           * O número EXATO, de novo, sob as travas: uma troca de telefone que
-           * comitou depois da checagem rápida esperou a guarda até aqui, e o
-           * rascunho não sai para um número que já não confere (revisão da
-           * F4.1a). Sob a guarda, o escritor de telefone espera o contato.
-           */
-          if ((await this.remetenteDoEnvio(atual)) !== 'confere') {
-            recusa = 'number_not_exact';
-            return 'restrito';
-          }
-          /**
-           * O pedido de parar, de novo, sob as travas (F4.1b): o bloqueio que
-           * existia antes do claim, sem pedido no despacho. O pedido trava os
-           * contatos do número, que a guarda segura compartilhados.
-           */
-          if (await bloqueioAtivo(this.prisma.db, atual.externalAddress)) {
-            recusa = 'stop_requested';
-            return 'restrito';
-          }
-          const veredito = await this.restriction.check(workspaceId, 'ai', escopo.sujeitos);
-          if (veredito.unavailable) return 'indisponivel';
-          return veredito.restricted.some(Boolean) ? 'restrito' : 'liberado';
+          const doTipo = await uso.reconferir(tx);
+          if (doTipo.veredito === 'restrito') recusa = doTipo.recusa;
+          if (doTipo.veredito === 'indisponivel') indisponivel = doTipo.codigo;
+          return doTipo.veredito;
         },
         iniciar: async (signal) => {
           visto.iniciou = true;
@@ -920,10 +991,224 @@ export class WhatsappSendService implements OnModuleInit {
         // passa pela guarda e reconfere
         await this.finish(messageId, claimToken, 'failed_before_send', {
           errorCode:
-            resultado.motivo === 'indisponivel' ? 'restriction_unavailable' : 'not_started',
+            resultado.motivo === 'indisponivel'
+              ? (indisponivel ??
+                (uso.kind === 'business_outbound'
+                  ? 'precondition_unavailable'
+                  : 'restriction_unavailable'))
+              : 'not_started',
         });
         return 'retry';
     }
+  }
+
+  /**
+   * A reconferência da mensagem de ORIGEM DA IA, sob as travas da guarda: a
+   * conversa religada, o número exato, o pedido de parar e a porta de
+   * restrição (E6), com leituras novas.
+   */
+  private async reconferirDaIa(
+    workspaceId: string,
+    escopo: {
+      sujeitos: (string | null)[];
+      conversationId: string;
+      contatosDaAprovacao: readonly string[];
+    },
+  ): Promise<VereditoDoTipo> {
+    const atual = await this.prisma.db.conversation.findFirst({
+      where: { id: escopo.conversationId },
+      select: { contactId: true, senderStatus: true, externalAddress: true },
+    });
+    // a conversa RELIDA sob as travas (ADR-052 item 2): religada depois
+    // da aprovação, o rascunho foi escrito para outra pessoa
+    if (!atual || religadaDesdeOEnvio(atual, escopo.contatosDaAprovacao)) {
+      return { veredito: 'restrito', recusa: 'conversation_relinked' };
+    }
+    /**
+     * O número EXATO, de novo, sob as travas: uma troca de telefone que
+     * comitou depois da checagem rápida esperou a guarda até aqui, e o
+     * rascunho não sai para um número que já não confere (revisão da
+     * F4.1a). Sob a guarda, o escritor de telefone espera o contato.
+     */
+    if ((await this.remetenteDoEnvio(atual)) !== 'confere') {
+      return { veredito: 'restrito', recusa: 'number_not_exact' };
+    }
+    /**
+     * O pedido de parar, de novo, sob as travas (F4.1b): o bloqueio que
+     * existia antes do claim, sem pedido no despacho. O pedido trava os
+     * contatos do número, que a guarda segura compartilhados.
+     */
+    if (await bloqueioAtivo(this.prisma.db, atual.externalAddress)) {
+      return { veredito: 'restrito', recusa: 'stop_requested' };
+    }
+    const veredito = await this.restriction.check(workspaceId, 'ai', escopo.sujeitos);
+    if (veredito.unavailable) {
+      return { veredito: 'indisponivel', codigo: 'restriction_unavailable' };
+    }
+    return veredito.restricted.some(Boolean)
+      ? { veredito: 'restrito', recusa: 'content_restricted' }
+      : { veredito: 'liberado' };
+  }
+
+  /**
+   * O despacho do envio iniciado pelo NEGÓCIO (ADR-052 item 7, F4.1c-3), na
+   * ordem da G3.2, depois do claim e do pedido de cancelamento:
+   *
+   * 2. a releitura do template na Meta e o prazo da aprovação, FORA das
+   *    travas, com prazo absoluto — a divergência é final, a falha volta;
+   * 3. a reserva viva e o MARCADOR, numa transação própria, com fencing;
+   * 4. a guarda: o contato, o `address:` do número, a `validity:` das chaves e
+   *    os escritores em massa, compartilhados; a reconferência com leituras
+   *    novas e o hash recalculado;
+   * 5. o início da chamada, pela guarda — o ponto de decisão;
+   * 6. o desfecho, sob as travas.
+   *
+   * A porta E6 não é consultada (C14): a mensagem só nasce da aprovação, com o
+   * texto revisado e os valores do resolvedor, e nenhum caminho converte um
+   * rascunho da IA nela.
+   */
+  private async enviarDoNegocio(
+    workspaceId: string,
+    messageId: string,
+    dispatch: { reservationId: string | null; claimToken: string },
+  ): Promise<'done' | 'retry'> {
+    const encerrar = async (
+      estado: 'failed_permanent' | 'failed_before_send',
+      errorCode: string,
+    ): Promise<'done' | 'retry'> => {
+      if (dispatch.reservationId) await this.usage.release(dispatch.reservationId);
+      await this.finish(messageId, dispatch.claimToken, estado, { errorCode });
+      return estado === 'failed_before_send' ? 'retry' : 'done';
+    };
+    const verificador = this.porta.verificador;
+    // erro de composição, não do pedido: tenta de novo até o prazo da aprovação
+    if (!verificador) return encerrar('failed_before_send', 'business_outbound_unavailable');
+
+    let antes: AntesDasTravas;
+    try {
+      antes = await verificador.antesDasTravas(
+        workspaceId,
+        messageId,
+        AbortSignal.timeout(PRAZO_DA_RELEITURA_MS),
+      );
+    } catch (erro) {
+      // só o tipo: a mensagem de um erro do Prisma traria os argumentos
+      this.logger.warn(
+        `Envio do negócio ${messageId} sem a releitura (${(erro as Error)?.name ?? 'Error'})`,
+      );
+      return encerrar('failed_before_send', 'template_unverified');
+    }
+    if (antes.tipo === 'recusa') return encerrar(antes.estado, antes.errorCode);
+    const chave = chaveDeCoincidencia(antes.numero);
+    // sem a chave do número não há `address:` a travar: nada sai
+    if (!chave) return encerrar('failed_permanent', 'address_changed');
+
+    const reservationId = await this.reservaViva(
+      workspaceId,
+      messageId,
+      dispatch.claimToken,
+      dispatch.reservationId,
+    );
+    if (!reservationId) return 'done';
+    // o MARCADOR, como o da IA: antes da guarda, que reconfere o pedido de
+    // cancelamento sob as travas dela
+    const { count } = await this.prisma.db.messageDispatch.updateMany({
+      where: { messageId, claimToken: dispatch.claimToken, state: 'sending' },
+      data: { dispatchedAt: new Date() },
+    });
+    if (count === 0) {
+      this.logger.warn(`Lease de envio ${messageId} perdido antes do despacho`);
+      await this.usage.release(reservationId);
+      return 'done';
+    }
+
+    let envio: Extract<ReconferenciaDoNegocio, { tipo: 'liberado' }>['envio'] | null = null;
+    let token: string | null = null;
+    return this.enviarSobGuarda(
+      workspaceId,
+      messageId,
+      dispatch.claimToken,
+      reservationId,
+      {
+        kind: 'business_outbound',
+        contatos: [antes.contactId],
+        entityKeys: [
+          this.travas.endereco(workspaceId, chave),
+          ...antes.validityKeys.map((k) => `validity:${k}`),
+        ],
+        reconferir: async (tx) => {
+          const r = await verificador.reconferir(tx, workspaceId, messageId);
+          if (r.tipo === 'recusa') return { veredito: 'restrito', recusa: r.errorCode };
+          if (r.tipo === 'indisponivel') return { veredito: 'indisponivel', codigo: r.errorCode };
+          try {
+            // decifrado ANTES de começar: um erro aqui é "não saiu", não incerto
+            token = this.crypto.decrypt(r.envio.credencial.tokenCipher);
+          } catch {
+            return { veredito: 'restrito', recusa: 'no_credential' };
+          }
+          envio = r.envio;
+          return { veredito: 'liberado' };
+        },
+      },
+      (signal) => {
+        const pronto = envio as Extract<ReconferenciaDoNegocio, { tipo: 'liberado' }>['envio'];
+        return this.transport.sendTemplate(
+          { phoneNumberId: pronto.credencial.phoneNumberId, token: token as string },
+          pronto.to,
+          pronto.template,
+          pronto.params,
+          signal,
+        );
+      },
+    );
+  }
+
+  /**
+   * A reserva VIVA da tentativa: a herdada, se ainda vale, ou uma nova. Sem
+   * vaga no teto, o despacho termina `quota_exceeded` e devolve `null`.
+   */
+  private async reservaViva(
+    workspaceId: string,
+    messageId: string,
+    claimToken: string,
+    herdada: string | null,
+  ): Promise<string | null> {
+    /**
+     * A reserva precisa estar VIVA antes da chamada. Duas razões para ela não
+     * estar: uma tentativa anterior a liberou, ou o TTL (10 min) venceu antes de
+     * o backoff do outbox (até 25 min) trazer o evento de volta — e nesse caso o
+     * job de expurgo já devolveu o valor ao orçamento. Confiar num id morto
+     * fazia a mensagem sair mesmo com o teto ocupado por outro uso, e a cobrança
+     * acontecia DEPOIS do efeito externo.
+     */
+    let reservationId = herdada;
+    if (reservationId && !(await this.usage.isReservationAlive(reservationId))) {
+      /**
+       * Expirada mas talvez NÃO expurgada: o TTL é de 10 min e a varredura roda
+       * a cada 5, então há uma janela em que a reserva ainda ocupa +1 no
+       * contador. Devolver antes de reservar de novo evita o absurdo de o envio
+       * ser recusado pela própria vaga que ele já havia pago.
+       */
+      await this.usage.release(reservationId);
+      reservationId = null;
+    }
+    if (!reservationId) {
+      const nova = await this.usage.reserve(workspaceId, 'messages_sent', 1);
+      if (nova === 'quota_exceeded') {
+        // sem vaga no teto: NÃO chama o transporte. O envio é recusado antes de
+        // existir, em vez de acontecer e ser cobrado fora do limite.
+        await this.finish(messageId, claimToken, 'failed_permanent', {
+          errorCode: 'quota_exceeded',
+        });
+        return null;
+      }
+      reservationId = nova.reservationId;
+      await this.prisma.db.messageDispatch.updateMany({
+        where: { messageId, claimToken, state: 'sending' },
+        data: { reservationId },
+      });
+    }
+    return reservationId;
   }
 
   /**

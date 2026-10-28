@@ -24,6 +24,7 @@ import { EmptyState } from '../components/ui/page';
 import { WindowChip, WindowMeter } from '../components/ui/window-meter';
 import { api, ApiError, toQuery } from '../lib/api';
 import { SenderPanel } from './InboxSender';
+import { MOTIVO_DO_ENVIO_DO_NEGOCIO, TemplatePanel } from './InboxTemplate';
 import { dayLabel, fullStamp, relativeStamp, timeOfDay } from '../lib/format';
 import { hasPermission, useSession } from '../lib/session';
 
@@ -98,12 +99,14 @@ function ConsentBadge({ status }: { status: ConsentStatus | null }) {
 
 /** Código do provedor não é mensagem: quem atende lê a frase, não o número. */
 const DISPATCH_ERROR_LABEL: Record<string, string> = {
+  // o envio do negócio (F4.1c-3): os mesmos motivos da prévia e da aprovação
+  ...MOTIVO_DO_ENVIO_DO_NEGOCIO,
   window_closed_needs_template: 'janela de 24h fechada',
   // os três seguintes só aparecem em despacho anterior à F4.1b
   template_requires_consent: 'falta consentimento registrado',
   template_unknown: 'template não aprovado',
   template_params_mismatch: 'parâmetros não correspondem ao template',
-  template_flow_unavailable: 'envio por template indisponível nesta versão',
+  template_flow_unavailable: 'o template não sai pelo envio comum',
   stop_requested: 'a pessoa pediu para parar: nada é enviado a este número',
   cancel_requested: 'cancelado antes de sair',
   quota_exceeded: 'limite do plano atingido',
@@ -120,6 +123,7 @@ const DISPATCH_ERROR_LABEL: Record<string, string> = {
   content_restricted: 'mensagem de origem da IA bloqueada: o conteúdo deste contato é restrito',
   restriction_unavailable: 'conferência de restrição indisponível — nova tentativa agendada',
   not_sent_guard_aborted: 'a guarda interrompeu antes do envio, sem cobrança',
+  business_outbound_unavailable: 'envio por template indisponível agora',
 };
 
 /**
@@ -191,9 +195,6 @@ export function InboxPage() {
   /** id vindo de fora que ainda não foi localizado na lista carregada */
   const [linking, setLinking] = useState<string | null>(deepLink);
   const [draft, setDraft] = useState('');
-  /** template escolhido no compositor, quando a janela exige um */
-  const [templateName, setTemplateName] = useState('');
-  const [templateParams, setTemplateParams] = useState<string[]>([]);
   const [attachments, setAttachments] = useState<FileObjectDto[]>([]);
   const [summary, setSummary] = useState<ConversationSummaryDto | null>(null);
   /** rascunho da IA em revisão: editável ANTES de aprovar (ADR-044) */
@@ -332,31 +333,12 @@ export function InboxPage() {
   const externo = selected !== null && selected.channelType !== 'internal';
   const modo: SendPolicyDto['mode'] = policy.data?.mode ?? (externo ? 'blocked' : 'free_form');
   /**
-   * Chave é (nome, IDIOMA). O catálogo da Meta permite o mesmo nome em idiomas
-   * diferentes (`@@unique(workspaceId, channelId, name, language)`), e resolver
-   * só pelo nome tornava a segunda opção inselecionável, mandava o idioma do
-   * primeiro achado e podia renderizar a quantidade errada de parâmetros.
-   */
-  const template =
-    policy.data?.templates.find((t) => `${t.name}:${t.language}` === templateName) ?? null;
-  /**
-   * Itera os ÍNDICES do template, não o array: ele é preenchido por posição e
-   * tem buracos (preencher o campo 2 antes do 1 deixa `[undefined, 'x']`).
-   * `filter(p => p.trim())` estourava `TypeError` no render e derrubava o inbox.
-   */
-  const paramsCompletos =
-    template === null ||
-    Array.from({ length: template.paramCount }).every((_, i) => templateParams[i]?.trim());
-
-  /**
-   * Trocar de conversa ZERA o compositor. Sem isto, o template e o parâmetro da
+   * Trocar de conversa ZERA o compositor. Sem isto, o rascunho e os anexos da
    * conversa A chegavam prontos e habilitados na conversa B — um Enter mandaria
-   * para o contato B o horário combinado com o contato A. O rascunho e os anexos
-   * são a mesma classe de erro e vão junto.
+   * ao contato B o que foi escrito para o A. O painel do template é por
+   * conversa (a chave do React), e a prévia de A nunca aparece em B.
    */
   useEffect(() => {
-    setTemplateName('');
-    setTemplateParams([]);
     setDraft('');
     setAttachments([]);
     setError(null);
@@ -419,15 +401,6 @@ export function InboxPage() {
       api.post<MessageDto>(`/api/conversations/${selectedId}/messages`, {
         direction,
         body: draft.trim(),
-        ...(modo === 'template' && template
-          ? {
-              template: {
-                name: template.name,
-                language: template.language,
-                params: templateParams.slice(0, template.paramCount),
-              },
-            }
-          : {}),
         attachmentIds: attachments.map((file) => file.id),
       }),
     onSuccess: () => {
@@ -439,12 +412,12 @@ export function InboxPage() {
     onError: (e) => setError(e instanceof ApiError ? e.message : 'Falha ao registrar mensagem'),
   });
 
-  /** Predicado ÚNICO de "pode enviar": botão e submissão do form usam este. */
-  const podeEnviar =
-    draft.trim().length > 0 &&
-    !send.isPending &&
-    modo !== 'blocked' &&
-    (modo !== 'template' || (template !== null && paramsCompletos));
+  /**
+   * Predicado ÚNICO de "pode enviar" o texto livre: botão e submissão do form
+   * usam este. Com a janela fechada (`template`), o texto livre não sai: o envio
+   * é pelo painel do template, com a prévia e a aprovação.
+   */
+  const podeEnviar = draft.trim().length > 0 && !send.isPending && modo === 'free_form';
 
   /** Resumo é sinal, não chat: aparece no contexto da conversa e some com ela. */
   const summarize = useMutation({
@@ -1077,41 +1050,14 @@ export function InboxPage() {
                 <PolicyBanner policy={policy.data} />
               ) : null}
               {modo === 'template' ? (
-                <div className="mb-2.5 space-y-1.5" data-testid="template-composer">
-                  <Select
-                    full
-                    aria-label="Template aprovado"
-                    value={templateName}
-                    onChange={(e) => {
-                      setTemplateName(e.target.value);
-                      setTemplateParams([]);
-                    }}
-                  >
-                    <option value="">Escolha um template aprovado…</option>
-                    {policy.data?.templates.map((t) => (
-                      <option key={`${t.name}:${t.language}`} value={`${t.name}:${t.language}`}>
-                        {t.name} ({t.language}) · {t.paramCount} parâmetro(s)
-                      </option>
-                    ))}
-                  </Select>
-                  {template
-                    ? Array.from({ length: template.paramCount }).map((_, index) => (
-                        <Input
-                          key={index}
-                          aria-label={`Parâmetro ${index + 1}`}
-                          placeholder={`Parâmetro ${index + 1}`}
-                          value={templateParams[index] ?? ''}
-                          onChange={(e) =>
-                            setTemplateParams((current) => {
-                              const proximo = [...current];
-                              proximo[index] = e.target.value;
-                              return proximo;
-                            })
-                          }
-                        />
-                      ))
-                    : null}
-                </div>
+                <TemplatePanel
+                  key={selected.id}
+                  conversationId={selected.id}
+                  podeVer={
+                    hasPermission(user, 'contacts:read') && hasPermission(user, 'consents:read')
+                  }
+                  onSent={invalidate}
+                />
               ) : null}
               {attachments.length > 0 ? (
                 <ul className="mb-2 flex flex-wrap gap-1.5">
@@ -1178,13 +1124,13 @@ export function InboxPage() {
                   variant="primary"
                   size="sm"
                   /* o veredito é do servidor: `blocked` não envia, e `template`
-                     exige template escolhido com os parâmetros completos */
+                     envia só pelo painel do template, com a prévia */
                   disabled={!podeEnviar}
                   title={
-                    modo === 'blocked' ? (policy.data?.reason ?? 'Envio bloqueado') : undefined
+                    modo === 'free_form' ? undefined : (policy.data?.reason ?? 'Envio bloqueado')
                   }
                 >
-                  <Send size={13} /> {modo === 'template' ? 'Enviar template' : 'Enviada'}
+                  <Send size={13} /> Enviada
                 </Button>
               </div>
             </form>

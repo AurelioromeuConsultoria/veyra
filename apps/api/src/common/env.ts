@@ -44,6 +44,16 @@ const envSchema = z.object({
    * rotação é só em manutenção (docs/SECURITY.md §8)
    */
   ADDRESS_LOCK_KEY: z.string().min(32, 'ADDRESS_LOCK_KEY precisa de ao menos 32 caracteres'),
+  /**
+   * Chave do HMAC da aprovação do envio do negócio (`approvalHash`, ADR-052
+   * item 8, F4.1c-3). Obrigatória e sem default: a prévia, a aprovação e o
+   * despacho recalculam o hash com ela, então precisa ser a MESMA entre
+   * processos. Separada do JWT, da cifra e das travas. Trocá-la invalida as
+   * aprovações pendentes (`approval_stale`), que nunca saem em silêncio
+   */
+  OUTBOUND_APPROVAL_KEY: z
+    .string()
+    .min(32, 'OUTBOUND_APPROVAL_KEY precisa de ao menos 32 caracteres'),
   // Kill switch dos jobs (worker do outbox)
   // z.coerce.boolean() faria DISABLE_JOBS='false' virar TRUE (Boolean('false')),
   // desligando o worker em silêncio — comparação explícita
@@ -137,6 +147,17 @@ export function validateEnv(config: Record<string, unknown>): Env {
   }
   if (NODE_ENV === 'production' && /^troque/i.test(ADDRESS_LOCK_KEY)) {
     throw new Error('ADDRESS_LOCK_KEY ainda tem o valor de exemplo; gere uma chave própria');
+  }
+  // a do `approvalHash` também é independente: com ela, quem tem outra chave
+  // forjaria a aprovação de um envio (F4.1c-3)
+  const { OUTBOUND_APPROVAL_KEY } = parsed.data;
+  if ([JWT_SECRET, TOKEN_ENCRYPTION_KEY, ADDRESS_LOCK_KEY].includes(OUTBOUND_APPROVAL_KEY)) {
+    throw new Error(
+      'OUTBOUND_APPROVAL_KEY precisa ser diferente de JWT_SECRET, TOKEN_ENCRYPTION_KEY e ADDRESS_LOCK_KEY',
+    );
+  }
+  if (NODE_ENV === 'production' && /^troque/i.test(OUTBOUND_APPROVAL_KEY)) {
+    throw new Error('OUTBOUND_APPROVAL_KEY ainda tem o valor de exemplo; gere uma chave própria');
   }
 
   return parsed.data;

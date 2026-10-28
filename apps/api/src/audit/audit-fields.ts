@@ -107,4 +107,16 @@ export const AUDIT_FIELDS: Record<string, readonly string[]> = {
     'motivo',
   ],
   templateReview: ['templateVersionId', 'purposeId', 'contentHash'],
+  // a aprovação do envio do negócio: os ids, a origem e o prazo — nunca o
+  // número nem os valores dos parâmetros (F4.1c-3)
+  outboundApproval: [
+    'contactId',
+    'channelId',
+    'templateVersionId',
+    'templateReviewId',
+    'purposeId',
+    'consentId',
+    'originRef',
+    'expiresAt',
+  ],
 };

@@ -11,6 +11,7 @@ import {
   GraphTemplateCatalog,
   META_TEMPLATE_CATALOG,
 } from './meta-templates.catalog';
+import { PortaDoEnvioDoNegocio } from './business-dispatch.port';
 import { CancelamentoDeDespachos } from './dispatch-cancellation.service';
 import { MediaCollectorService } from './media-collector.service';
 import { WhatsappSendService } from './whatsapp-send.service';
@@ -26,6 +27,7 @@ import { WhatsappService } from './whatsapp.service';
     WhatsappSendService,
     MediaCollectorService,
     CancelamentoDeDespachos,
+    PortaDoEnvioDoNegocio,
     CryptoService,
     /**
      * Transporte real por padrão; o falso SÓ quando `META_TRANSPORT_MODE=fake`,
@@ -69,6 +71,7 @@ import { WhatsappService } from './whatsapp.service';
     MediaCollectorService,
     CancelamentoDeDespachos,
     META_TEMPLATE_CATALOG,
+    PortaDoEnvioDoNegocio,
   ],
 })
 export class ChannelsModule {}

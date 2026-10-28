@@ -6,6 +6,11 @@ import {
   type ContentRestrictionProvider,
 } from './content-restriction';
 import type { CoreExtension } from './extension';
+import {
+  OUTBOUND_PRECONDITION_PROVIDERS,
+  OutboundPreconditionService,
+  type OutboundPreconditionProvider,
+} from './outbound-precondition';
 import { PermissionCatalogCheck } from './permission-catalog.check';
 import { EXTENSION_REGISTRY, composeRegistry } from './registry';
 
@@ -13,6 +18,11 @@ export interface ExtensionsOptions {
   extensions: readonly CoreExtension[];
   /** implementações da porta do E6, com injeção de dependência normal */
   contentRestrictionProviders?: readonly Type<ContentRestrictionProvider>[];
+  /**
+   * implementações da porta do E7 (a pré-condição do envio do negócio, F4.1c-3),
+   * uma por prefixo de origem
+   */
+  outboundPreconditionProviders?: readonly Type<OutboundPreconditionProvider>[];
 }
 
 /**
@@ -27,6 +37,7 @@ export class ExtensionsModule {
   static forRoot(options: ExtensionsOptions): DynamicModule {
     const registry = composeRegistry(options.extensions);
     const providerClasses = [...(options.contentRestrictionProviders ?? [])];
+    const precondicoes = [...(options.outboundPreconditionProviders ?? [])];
     return {
       module: ExtensionsModule,
       imports: [DiscoveryModule],
@@ -39,9 +50,16 @@ export class ExtensionsModule {
           inject: providerClasses,
         },
         ContentRestrictionService,
+        ...precondicoes,
+        {
+          provide: OUTBOUND_PRECONDITION_PROVIDERS,
+          useFactory: (...instances: OutboundPreconditionProvider[]) => instances,
+          inject: precondicoes,
+        },
+        OutboundPreconditionService,
         PermissionCatalogCheck,
       ],
-      exports: [EXTENSION_REGISTRY, ContentRestrictionService],
+      exports: [EXTENSION_REGISTRY, ContentRestrictionService, OutboundPreconditionService],
     };
   }
 }

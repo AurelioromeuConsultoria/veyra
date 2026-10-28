@@ -614,6 +614,8 @@ Sem pontos de extensão, a única forma de o Clinics existir seria editar esses 
 | E5  | Navegação e rotas (web)                               | O vertical contribui rotas e entradas para o mapa único de seções na raiz do web. As entradas só aparecem quando `GET /api/clinics/status` responde que está ativo **e** a pessoa tem a permissão da seção.                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `nav.ts` continua sendo o mapa único (ADR-045).                                                                                                                                                                                                   |
 | E6  | Restrição de conteúdo por contato, **por consumidor** | O Core declara uma porta neutra: dado um workspace, um **consumidor** (`ai` ou `webhook`) e um conjunto de contatos, quais estão **restritos para aquele consumidor**. O vertical implementa a porta, com as regras do ADR-048 §6.4. Uma liberação para um consumidor **nunca** vale para outro. Os pontos de checagem no Core estão listados no ADR-048 §6.3: toda chamada ao provedor de IA, a leitura de resultados e propostas persistidos, a aprovação, o despacho de mensagem de autoria da IA e a entrega a webhooks (conferida **na entrega**, não só na emissão). Quando a porta responde com erro, o contato é tratado como restrito. O resultado **não é guardado em cache**. | O Core não sabe **por que** um contato é restrito, só **que** é, e para qual consumidor. Workspace sem o vertical segue o comportamento normal do Core. Mensagem escrita por pessoa não é afetada: a clínica continua conversando com o paciente. |
 
+**O sétimo ponto (2026-10-27).** O **E7**, a pré-condição do envio do negócio (`OutboundPrecondition`), entrou pelo ADR-052 item 9, com o C10 aprovado pelo usuário em 2026-10-26, e foi implementado na F4.1c-3: porta neutra, só de leitura, por prefixo da origem do pedido, com falha fechada. A tabela acima fica como foi decidida; a lista vigente está no ARCHITECTURE §6.
+
 **4. Ciclo de vida da ativação (E3).**
 
 Estados: _ausente_ → `active` ⇄ `disabled`. O estado fica em `ClinicsSettings` (1:1 com o workspace), com `activatedAt` e `disabledAt`. A ativação e a desativação acontecem **só pela CLI administrativa do vertical**, com `raw` justificado como em `provision`. Não existe ativação pela interface (ADR-014).
@@ -4714,7 +4716,7 @@ A skill `create-migration` traz o bloco de ensaio com as três evidências: os g
 
 ## ADR-052 — Mensagem iniciada pelo negócio: telefones normalizados, remetente sem atribuição silenciosa, template verificável, consentimento por finalidade e aprovação vinculada à prévia
 
-**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). **A F4.1a foi aprovada para implementação em 2026-10-23**, com as condições registradas no fim deste ADR, e publicada em 2026-10-26. **A F4.1b foi parcialmente aprovada em 2026-10-26:** finalidades, consentimentos, bloqueio, permissões e a recusa transitória dos templates estão liberados, e foram publicados e validados no mesmo dia, com a decisão 19 (ver o fechamento no fim deste ADR); a regra temporal da resposta depois do pedido de parar continua proposta. **A F4.1c foi aprovada em três subentregas em 2026-10-26**; a F4.1c-1 foi publicada e validada no mesmo dia (`e070bc6`), e a F4.1c-2 foi publicada e validada em 2026-10-27 (`60b7b16`). A F4.1c-3 tem o desenho registrado antes do código (ver o fim deste ADR). O resto continua PROPOSTO, e nenhum outro código da F4 está autorizado. · **Data:** 2026-10-23
+**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). **A F4.1a foi aprovada para implementação em 2026-10-23**, com as condições registradas no fim deste ADR, e publicada em 2026-10-26. **A F4.1b foi parcialmente aprovada em 2026-10-26:** finalidades, consentimentos, bloqueio, permissões e a recusa transitória dos templates estão liberados, e foram publicados e validados no mesmo dia, com a decisão 19 (ver o fechamento no fim deste ADR); a regra temporal da resposta depois do pedido de parar continua proposta. **A F4.1c foi aprovada em três subentregas em 2026-10-26**; a F4.1c-1 foi publicada e validada no mesmo dia (`e070bc6`), e a F4.1c-2 foi publicada e validada em 2026-10-27 (`60b7b16`). A F4.1c-3 está implementada, revisada e validada em 2026-10-28, em commit local, sem push (ver o fim deste ADR). O resto continua PROPOSTO, e nenhum outro código da F4 está autorizado. · **Data:** 2026-10-23
 
 A revisão 0 está no `0eb4038`. A revisão 1 não foi comitada; ela passou pelo `reviewer` (mudanças necessárias) e pelo `security` (bloqueado, sem P0), e os achados dos dois estão incorporados aqui. A confirmação desta revisão 2 aprovou com ressalvas (o `reviewer`, com quatro achados importantes; o `security`, com dois P1 novos, os mesmos do `reviewer`), e as correções dela também estão no texto. A conferência final dessas correções aprovou: o `security`, sem ressalva bloqueante, e o `reviewer`, com uma ressalva importante (a regra ao reabrir conversa) e duas de qualidade. As três estão no texto, e os dois disseram que não é preciso nova rodada. Nenhum ADR aceito é alterado antes da aprovação deste; as emendas que ele implicaria estão listadas no fim, em "Emendas propostas".
 
@@ -6624,7 +6626,7 @@ A unidade fixa o corpo da requisição à Graph, e o transporte falso guarda o q
 
 **11. O template no Inbox (item 6 do plano), por último.**
 
-- **As opções da conversa:** `GET /api/conversations/:id/template-options` lista as versões ativas do canal que têm revisão para uma finalidade com consentimento ativo do número da conversa.
+- **As opções da conversa:** `GET /api/business-outbound/options?conversationId=` lista as versões ativas do canal que têm revisão para uma finalidade com consentimento ativo do número da conversa, cada uma com o alvo pronto (corrigido na implementação: a rota é do módulo do envio do negócio).
 - **O compositor:**
   - com a janela fechada, oferece essas opções e mostra a prévia;
   - aprova pelo mesmo lote, com um item, a origem `conversation:<id>` e um `Idempotency-Key` gerado pelo web.
@@ -6651,7 +6653,7 @@ A unidade fixa o corpo da requisição à Graph, e o transporte falso guarda o q
 - **O lote:** sem a chave, 400; a mesma chave com outro lote, 409; o replay sem a prévia.
 - **As mutações e a bateria completa,** no fechamento.
 
-**13. A migration (ADR-051, com o ensaio).** Uma só, `20261027120000_business_outbound`, como a do `canceled` na F4.1c-1: o valor `business_outbound` do `ContentUseKind`, sem uso na mesma transação; o único `(workspaceId, id)` do `Consent`, alvo da FK composta; a tabela `OutboundApproval`, com as FKs compostas, os índices e as restrições do hash, do número, do id da Meta e da origem; e o gatilho de imutabilidade. São 22 objetos.
+**13. A migration (ADR-051, com o ensaio).** Uma só, `20261027120000_business_outbound`, como a do `canceled` na F4.1c-1: o valor `business_outbound` do `ContentUseKind`, sem uso na mesma transação; o único `(workspaceId, id)` do `Consent`, alvo da FK composta; a tabela `OutboundApproval`, com as FKs compostas, os índices e as restrições do hash, do número, do id da Meta e da origem; e o gatilho de imutabilidade. São 22 objetos (23 depois da revisão, com o único do hash).
 
 **14. Fora desta subentrega:**
 
@@ -6669,3 +6671,154 @@ A unidade fixa o corpo da requisição à Graph, e o transporte falso guarda o q
 - o `nao_vale` do E7 como `failed_permanent`;
 - o template pausado como `failed_before_send` até o prazo;
 - os valores fora da aprovação.
+
+**Implementação da F4.1c-3 (2026-10-27): o contrato do `business_outbound`.** Segue o desenho acima. Dados fictícios, o catálogo falso e o transporte falso.
+
+- **O que existe:**
+  - o contrato `business-outbound.ts`;
+  - o módulo `business-outbound`: a conferência única, a prévia, a aprovação em lote e o verificador do despacho;
+  - a porta do despacho em `channels` e o caminho do negócio no worker;
+  - a porta do E7 em `extensions`, com a lista `outboundPreconditionProviders`, vazia na composição até a F4.2;
+  - o `sendTemplate` com cabeçalho e `NAMED`;
+  - a releitura com prazo absoluto;
+  - a chave `OUTBOUND_APPROVAL_KEY`;
+  - a migration `20261027120000_business_outbound`.
+- **O que mudou em relação ao desenho, e por quê:**
+  - **Uma migration só**, como a do `canceled` na F4.1c-1: o valor do enum sem uso na mesma transação. O item 13 do desenho foi corrigido.
+  - **O relógio do banco é o terceiro uso do `agoraDoBanco`,** concentrado na conferência e decidido aqui, como a lista do teste estático exige. O prazo da aprovação é comparado com o relógio do banco (ADR-049), lido fora da transação de quem chama, por outra conexão, como a reconferência da IA já faz; o `now()` da transação seria o do começo dela. O client protegido não ganhou modelo novo de SQL.
+  - **A guarda passou a aceitar duas formas de chave de entidade,** além de `deal:` e `task:`: o `address:` pelo HMAC (nunca os dígitos) e a `validity:<prefixo>:<uuid>`. As mudanças marcam os órfãos pela chave exata, então o protocolo da guarda vale para elas sem mudança.
+  - **A credencial do envio é a lida sob as travas,** a mesma cujo `phoneNumberId` entrou no hash recalculado. Uma rotação no meio dá `approval_stale`, nunca um envio por outro número.
+  - **A origem do Inbox exige a conversa do alvo:** identificada, com o mesmo canal, contato e endereço. Senão, `conversation_relinked`, antes das outras conferências.
+  - **Dois motivos novos:**
+    - `field_value_invalid`: o valor vazio, longo, com quebra de linha, tabulação ou cinco espaços, que a Meta recusaria; nada é cortado nem completado;
+    - `busy`: o item cuja espera pela trava estourou, sem efeito, enquanto os outros itens do lote seguem.
+  - **O prazo da origem do vertical também é de 1 hora nesta subentrega.** A F4.2 traz o prazo do pedido pela porta.
+  - **O cliente HTTP do transporte é substituível,** como o do catálogo, para a unidade fixar o corpo da requisição à Graph.
+- **Os testes:**
+  - na unidade: a montagem do envio, o hash (a forma canônica escrita à mão e cada campo mudando o hash), a porta do E7, o corpo do `sendTemplate`, o prazo da leitura do catálogo e a chave nova no boot;
+  - a suíte de integração `business-outbound.integration-spec.ts`, com 34 testes:
+    - a prévia e a aprovação: o texto, o prazo, o hash, a gravação sem os valores e a trilha sem o número; a idempotência do lote e o item por item; cada recusa e o que mudou desde a prévia; a releitura antes das travas; a espera pelas travas (`busy`); a imutabilidade e os CHECKs; o P0; o 403;
+    - o despacho: o caminho feliz; cada mudança antes das travas; o pedido de parar (`canceled`); o prazo vencido antes do despacho e o que vence entre a releitura e as travas; a versão que diverge nesse intervalo; a mudança durante a reconferência e durante a chamada; a guarda perdida; os dois crashes do ponto de decisão; a nova tentativa depois da leitura que falhou;
+    - o E7: vale, com a conversa criada e as chaves nas travas e no uso; não vale, indisponível e o prefixo desconhecido; as chaves mudadas e o campo fora da finalidade; o P0;
+    - a guarda: as formas novas de chave e a recusa das outras.
+
+**Implementação da F4.1c-3 (2026-10-27): o template no Inbox, depois do contrato validado.** O contrato passou pelos testes focados e pelas 46 mutações (abaixo) antes desta parte.
+
+- **As opções do compositor:** `GET /api/business-outbound/options?conversationId=`, com as mesmas permissões da prévia.
+  - Vêm as versões ativas do canal com revisão do mesmo hash para uma finalidade com consentimento vigente do número exato da conversa.
+  - Cada opção traz o **alvo pronto** (a origem, o canal, o contato e o número), e o web só o devolve à prévia: não monta o destinatário.
+  - A conversa RAI, sem contato ou sem número, não tem opção; a de outro workspace é 404.
+- **A política de envio, com a janela fechada,** passa de `blocked` a `template`, com o motivo que aponta o envio do negócio. A lista `templates` do envio comum fica sempre vazia, e o template pelo envio comum continua recusado (`template_flow_unavailable`), agora com a mensagem que diz por onde o template sai.
+- **O web:**
+  - o compositor antigo, com o parâmetro digitado, saiu;
+  - o painel do template mostra as opções, a prévia (o texto exato, com o prazo) e "Aprovar e enviar";
+  - a chave de idempotência nasce com a prévia, e repetir a aprovação da mesma prévia usa a mesma chave;
+  - a recusa aparece pelo motivo, em pt-BR, e os mesmos motivos rotulam o despacho;
+  - o painel só consulta com `contacts:read` e `consents:read`.
+- **Os testes:**
+  - as opções e a política na integração (o alvo que passa na prévia, a revogada, a divergente, a RAI, o P0 e o 403);
+  - as suítes da F4.1b que fixavam a indisponibilidade, atualizadas para a semântica nova (a tela e o envio continuam concordando, nos dois sentidos);
+  - o componente do painel no web: a prévia do alvo do servidor, a mesma chave na repetição depois da falha de rede, o hash e o prazo da prévia na aprovação, a recusa pelo motivo e a tela sem permissão;
+  - o e2e do Inbox: a janela fechada mostra o painel sem opção, e nada da 9.1 vira template.
+
+**As mutações do contrato (2026-10-27): 46, todas mortas por teste que falha na suíte alvo.** Cobrem:
+
+- a montagem do envio (5);
+- o hash (4);
+- a porta do E7 (3);
+- o transporte e o catálogo (3);
+- a conferência (9);
+- a aprovação (6);
+- o despacho (9);
+- a guarda (1);
+- o registro dos modelos (1);
+- o banco (5).
+
+Os casos que pediram trabalho:
+
+- **S1 e W2 morriam por compilação:** o TypeScript estreitava a releitura trocada. Foram reescritos e morreram com "N failed".
+- **R1 sobreviveu e revelou um teste fraco.** O teste da imutabilidade pelo client esperava "qualquer erro", e a consulta do Prisma, devolvida sem `await` de dentro do contexto, falhava pela proteção multitenant, não pelo append-only. Corrigido no teste: o `await` dentro do contexto, e a mensagem esperada.
+- **Por isso, a R1 e as D1 a D5,** mortas pelo mesmo teste, foram repetidas contra a suíte corrigida, e todas morreram.
+- **Para completar a cobertura, entraram testes novos:**
+  - a versão que diverge e o prazo que vence entre a releitura e as travas (o status e o prazo conferidos sob a guarda);
+  - a espera da aprovação pelas travas (`busy`, inclusive o nível 0 na origem do vertical);
+  - a imutabilidade e os CHECKs da aprovação;
+  - o marcador gravado antes da chamada.
+
+**O ensaio da `20261027120000_business_outbound`:**
+
+- a falha forçada antes do COMMIT deixa o schema intacto (inventário 0);
+- a aplicação limpa dá o inventário 22 e o `migrate diff` vazio;
+- a única linha de definição existente que muda é a do `ContentUseKind`: o último valor ganha a vírgula do valor novo. Nenhuma outra definição muda.
+
+**Uma rodada do e2e invalidada (2026-10-27):** a máquina dormiu com a tampa fechada, na bateria, das 14:32 às 14:40, e quatro testes de outras telas estouraram o tempo dentro dessa janela. A rodada não conta. O e2e do Inbox foi repetido com a tampa aberta, sem sono, e passou; o e2e completo é da bateria do fechamento.
+
+**A revisão da F4.1c-3 (`reviewer` e `security`, 2026-10-28) e as correções.** Os dois aprovaram com ajustes, sem item bloqueante nem P0, e confirmaram o contrato: o hash cobre o que deve, a aprovação e o despacho o recalculam com leituras novas sob as travas, o envio sai pela credencial, pelos valores e pelo número da mesma conferência, a refatoração da guarda deixou o envio da IA equivalente, a ordem das travas não tem ciclo, e nada liga o cancelamento por lista nem converte conteúdo de IA no fluxo. O que mudou:
+
+- **A mesma prévia podia gerar duas mensagens** (os dois): o item repetido no lote; a repetição do lote, com a mesma chave, depois de um erro inesperado num item posterior (o interceptor libera a chave no erro, e os itens anteriores já tinham comitado); a mesma prévia com outra chave; e, no web, uma prévia nova depois de uma falha de rede na aprovação. **Corrigido:**
+  - o `approvalHash` é único no workspace, na mesma migration (o inventário passou a 23): uma aprovação por prévia;
+  - a aprovação procura a da prévia antes de tudo e devolve a mensagem que existe, sem nova reserva nem nova leitura da Meta; a corrida que a busca não vê cai no único do banco (P2002) e tem a mesma resposta;
+  - a falha inesperada de um item vira recusa dele (`not_processed`, motivo novo do contrato), e o lote nunca vira 500 depois de efeitos parciais;
+  - o web trava a escolha e a prévia nova enquanto o desfecho da aprovação é incerto (rede, 5xx, 409), e só deixa repetir a mesma aprovação, com a mesma chave.
+- **O E7 não ligava o pedido ao destinatário** (`security`, P1 latente: nenhuma porta está composta). **Corrigido:** a resposta `vale` diz o contato do pedido, e a conferência recusa o alvo que não for ele (`precondition_failed`), na prévia, na aprovação e no despacho.
+- **O relógio do banco na aprovação** (os dois): era lido dentro da transação, numa segunda conexão do pool principal. **Corrigido:** é lido antes da transação, e o despacho confere o prazo de novo, sob a guarda — lá, a leitura é de outra conexão, e a guarda tem pool próprio. A justificativa anterior ("como a reconferência da IA") só vale para o despacho.
+- **A releitura da aprovação não tinha prazo absoluto** (os dois). **Corrigido:** o mesmo prazo do despacho (`PRAZO_DA_RELEITURA_MS`), compartilhado pela porta; um teste prova que o sinal chega à releitura nos dois lados.
+- **As FKs da versão e da revisão estavam em cascata,** contra o desenho (os dois). **Corrigido:** sem ação, como a finalidade e quem aprovou. A aprovação nunca some sem a mensagem, e o worker nunca cai no caminho do texto livre por falta dela.
+- **O prazo da porta era o orçamento inteiro da reconferência** (`reviewer`). **Corrigido:** 2 s, abaixo dos 3 s da reconferência, e o código de "indisponível" sem motivo próprio passou a ser o do tipo de uso (`precondition_unavailable` no envio do negócio).
+- **A conferência e a porta conferem o contexto** (`security`, defesa em profundidade): o workspace do CLS precisa ser o explícito.
+- **As opções do Inbox para a conversa RAI** davam `[]`; agora 404, como nas rotas de conversa (C13).
+- **Sem o verificador registrado,** o despacho vai a `failed_before_send`, e não a `failed_permanent`: é erro de composição, não do pedido.
+- **O número sem chave de coincidência** é recusado antes das travas (`address_changed`), em vez de lançar dentro delas.
+- **Os testes:**
+  - o prazo além do máximo, agora com o HMAC válido para ele (antes, quem recusava era o hash);
+  - o P0 da aprovação, com o motivo e sem reserva;
+  - a deduplicação;
+  - a corrida pelo P2002;
+  - o item com falha inesperada;
+  - o contexto;
+  - o contato do pedido;
+  - a porta lenta no despacho;
+  - a importação durante a reconferência;
+  - a versão que não se apaga com aprovação;
+  - no e2e, a asserção trivial trocada pela ausência do botão da prévia.
+- **Registrado, sem mudança:**
+  - **a matriz de mudanças concorrentes** tem um representante por caminho de trava: a revogação (o contato e o `address:` exclusivos, o mesmo caminho do pedido de parar e da edição do telefone) e a importação (os escritores em massa exclusivos). A `validity:` exclusiva é do vertical (F4.2). A edição do nome não pega trava, e não precisa: o valor que sai é o aprovado, pelo hash;
+  - **a resposta do E7 fora do contrato** é "indisponível" e tenta de novo até o prazo da aprovação: um defeito do vertical corrigido por deploy dentro do prazo não perde o pedido, e nada sai enquanto isso;
+  - **a ordem das conferências:** a credencial, a origem (a conversa do Inbox, ou a porta), o destinatário, o bloqueio, a finalidade e o consentimento, o conteúdo e os valores. O despacho confere o prazo antes da releitura: o pedido vencido não gasta uma leitura da Meta.
+- **Para a F4.2, antes de compor qualquer porta** (os dois):
+  - cada porta do E7 declara as permissões do vertical exigidas pelo seu prefixo, e o Core as confere na prévia, na aprovação e no replay;
+  - um ADR define quais classes de dado podem ser valores do E7 e o que vai ao `Message.body` renderizado: a confirmação de agendamento ("quem, serviço, quando") é dado de classe S, e o ADR-048 §6.2.2 proíbe escrevê-lo em entidade do Core;
+  - a porta, chamada na conferência dentro da transação da aprovação, não pode prender uma segunda conexão do pool principal.
+
+**A validação da F4.1c-3 (2026-10-28).** Na árvore de trabalho sobre o `04344e7`, sem push. Dados fictícios, o catálogo falso e o transporte falso.
+
+- **As mutações:** 63 casos contra a árvore final, todos mortos por teste que falha na suíte alvo ("N failed" no jest; os do web, no vitest), nenhum por compilação nem equivalente.
+  - Às 46 do contrato somaram-se as das duas rodadas de revisão: a busca pelo hash e o alvo dela, o P2002 da corrida, o `not_processed` e a busca antes dele, as opções da RAI, os dois prazos da releitura, o contato do pedido, os dois contextos, o contrato da porta, o único do hash, a FK sem ação e as duas do web (o desfecho incerto e a recusa transitória).
+  - **A P6** (o prazo da porta em 3 s) sobreviveu na primeira rodada: com o fallback do tipo de uso, o resultado era o mesmo. O teste de unidade da fronteira (pendente em 1.999 ms, indisponível em 2.000 ms) passou a matá-la.
+  - **A S8** (a corrida sem o P2002) sobreviveu depois da busca antes do `not_processed`, que também respondia "aprovado". O teste da corrida passou a exigir que ela não seja registrada como falha inesperada, e a matou. **A S9** morria por compilação e foi reescrita.
+  - As rodadas foram feitas na bateria do Mac, com a tampa aberta e sem sono nas janelas.
+- **O ensaio da `20261027120000_business_outbound`, com o único do hash e as FKs sem ação:**
+  - a falha forçada antes do COMMIT deixa o schema intacto (inventário 0);
+  - a aplicação limpa dá o inventário 23 e o `migrate diff` vazio;
+  - a única linha de definição existente que muda é a do último valor do `ContentUseKind`.
+- **A bateria completa** (b70, em blocos, na bateria do Mac, com a tampa aberta e sem sono em nenhum bloco), antes da revisão do delta:
+  - lint, formatação e build: OK;
+  - a unidade: 351 testes;
+  - o web: 146;
+  - a integração: 1.082, duas rodadas;
+  - o `migrate diff`, as migrations do zero e o `check:fk`: OK;
+  - o e2e: 49.
+- **Depois da revisão do delta,** repetido o que as correções afetaram (sem mudança de schema): lint, formatação e build OK; a unidade, 353; o web, 147; o grupo da integração com a suíte do envio do negócio, 206 nas duas rodadas (ele também prova o boot com o contexto obrigatório da porta); e o e2e, 49. Sem sono nos blocos.
+
+**A revisão do delta da F4.1c-3 (`reviewer` e `security`, 2026-10-28).** Os dois aprovaram as correções (o `reviewer` com ajustes de qualidade, que entraram no mesmo commit sem nova rodada), sem item bloqueante nem P0, e não acharam caminho novo entre workspaces nem de duplicação no servidor. O que mudou:
+
+- **A aprovação achada pelo hash é conferida contra o alvo** (os dois): a origem, o canal, o contato, o número, a versão, a finalidade e o prazo. O hash de uma aprovação mandado com outro alvo dá `approval_stale`, em vez de responder "aprovado" para um item que não saiu.
+- **Antes de responder `not_processed`, o hash é procurado** (`security`): a conexão pode cair no COMMIT com a aprovação gravada, e o item responde aprovado.
+- **O web mantém a prévia nas recusas transitórias** (`busy`, `not_processed`), só com chave nova, e recarrega a conversa quando o desfecho é incerto (`reviewer`).
+- **O contexto da porta é obrigatório** (os dois): sem o CLS, a defesa sumiria em silêncio. O teste de unidade passa o contexto, e um caso novo prova o contexto alheio.
+- **A fronteira do prazo da porta tem teste de unidade** (`reviewer`): pendente em 1.999 ms, indisponível em 2.000 ms. Com ele, a P6 deixa de ser equivalente.
+- **A exclusão do workspace com uma aprovação** tem teste: as FKs sem ação não a travam (LGPD).
+- **Os textos atrasados:** a ordem das conferências e a leitura do relógio, na conferência; os 2 s, na porta; o grafo do ARCHITECTURE; e as pendências da F4.2 no SECURITY §7-G.
+- **Resíduos declarados:**
+  - a trava do web contra a prévia nova vale enquanto o painel está aberto. Trocar de conversa ou recarregar a página a desfaz, e uma prévia nova depois de um desfecho incerto ainda pode gerar uma segunda mensagem. A garantia do servidor é "uma aprovação por prévia";
+  - sem o verificador registrado (erro de composição), o despacho fica em `failed_before_send` até o outbox desistir: o prazo da aprovação é conferido pelo próprio verificador, e por isso o código final nunca é `approval_expired`.

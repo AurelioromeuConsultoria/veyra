@@ -15,7 +15,7 @@ describe('FakeMetaTransport', () => {
       credencial,
       '+5511999998888',
       { name: 'retorno', language: 'pt_BR' },
-      ['10h'],
+      { header: [], body: [{ text: '10h' }] },
     );
 
     expect(texto.ok).toBe(true);

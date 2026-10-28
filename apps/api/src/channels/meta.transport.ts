@@ -21,6 +21,21 @@ export type SendOutcome =
 export type FetchOutcome =
   { ok: true; bytes: Buffer; mimeType: string } | { ok: false; failure: TransportFailure };
 
+/** Um parâmetro do template: o texto e, no formato `NAMED`, o nome. */
+export interface ParametroDoTemplate {
+  text: string;
+  name?: string;
+}
+
+/**
+ * Os parâmetros do template por componente (F4.1c-3): o cabeçalho e o corpo,
+ * já na ordem que a Meta espera (a numérica, no posicional).
+ */
+export interface ParametrosDoTemplate {
+  header: readonly ParametroDoTemplate[];
+  body: readonly ParametroDoTemplate[];
+}
+
 export interface MetaTransport {
   /**
    * `signal`: o prazo ABSOLUTO da guarda de uso externo, com a conexão
@@ -37,7 +52,7 @@ export interface MetaTransport {
     credential: SendCredential,
     to: string,
     template: { name: string; language: string },
-    params: string[],
+    params: ParametrosDoTemplate,
     signal?: AbortSignal,
   ): Promise<SendOutcome>;
   fetchMedia(credential: SendCredential, mediaId: string): Promise<FetchOutcome>;
@@ -137,7 +152,11 @@ export class GraphApiTransport implements MetaTransport {
   private readonly logger = new Logger(GraphApiTransport.name);
   private readonly version: string;
 
-  constructor(config: ConfigService) {
+  constructor(
+    config: ConfigService,
+    // o cliente HTTP, substituível no teste de unidade que fixa o corpo
+    private readonly chamar: typeof call = call,
+  ) {
     this.version = config.get<string>('META_GRAPH_VERSION') ?? 'v21.0';
   }
 
@@ -160,9 +179,20 @@ export class GraphApiTransport implements MetaTransport {
     credential: SendCredential,
     to: string,
     template: { name: string; language: string },
-    params: string[],
+    params: ParametrosDoTemplate,
     signal?: AbortSignal,
   ): Promise<SendOutcome> {
+    // o nome vai como `parameter_name` no formato NAMED; o componente sem
+    // parâmetro não vai
+    const parametros = (lista: readonly ParametroDoTemplate[]) =>
+      lista.map((p) => ({
+        type: 'text',
+        text: p.text,
+        ...(p.name !== undefined ? { parameter_name: p.name } : {}),
+      }));
+    const components = (['header', 'body'] as const)
+      .filter((tipo) => params[tipo].length > 0)
+      .map((tipo) => ({ type: tipo, parameters: parametros(params[tipo]) }));
     return this.send(credential, signal, {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
@@ -171,9 +201,7 @@ export class GraphApiTransport implements MetaTransport {
       template: {
         name: template.name,
         language: { code: template.language },
-        components: params.length
-          ? [{ type: 'body', parameters: params.map((text) => ({ type: 'text', text })) }]
-          : [],
+        components,
       },
     });
   }
@@ -186,7 +214,7 @@ export class GraphApiTransport implements MetaTransport {
     const url = `https://graph.facebook.com/${this.version}/${credential.phoneNumberId}/messages`;
     let response: RawResponse;
     try {
-      response = await call(url, {
+      response = await this.chamar(url, {
         method: 'POST',
         token: credential.token,
         json: payload,

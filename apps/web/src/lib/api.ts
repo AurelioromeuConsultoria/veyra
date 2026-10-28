@@ -173,7 +173,8 @@ function conferirSessao(epoca: number, res?: Response): void {
   }
 }
 
-type Corpo = { json: unknown } | { form: FormData } | undefined;
+/** `chave`: o `Idempotency-Key` das rotas que a exigem (o lote do envio do negócio). */
+type Corpo = { json: unknown; chave?: string } | { form: FormData } | undefined;
 
 /**
  * O protocolo de sessão, num lugar só para JSON e upload: época, abort, escopo
@@ -204,6 +205,7 @@ async function enviar<T>(
       headers: {
         // upload: o browser monta o boundary do multipart, sem Content-Type nosso
         ...(corpo && 'json' in corpo ? { 'Content-Type': 'application/json' } : {}),
+        ...(corpo && 'json' in corpo && corpo.chave ? { 'Idempotency-Key': corpo.chave } : {}),
         ...(method !== 'GET' ? { 'x-csrf-token': csrfToken() } : {}),
         ...(isLogin ? {} : escopoEsperado()),
       },
@@ -260,6 +262,12 @@ export const api = {
   get: <T>(path: string) => enviar<T>('GET', path, undefined),
   upload: <T>(path: string, file: File) => upload<T>(path, file),
   post: <T>(path: string, body?: unknown) => enviar<T>('POST', path, json(body)),
+  /**
+   * POST com `Idempotency-Key`: a MESMA chave na repetição (a rede caiu, o
+   * botão de novo) devolve a resposta guardada, sem segundo efeito.
+   */
+  postIdempotente: <T>(path: string, body: unknown, chave: string) =>
+    enviar<T>('POST', path, { json: body, chave }),
   patch: <T>(path: string, body?: unknown) => enviar<T>('PATCH', path, json(body)),
   put: <T>(path: string, body?: unknown) => enviar<T>('PUT', path, json(body)),
   delete: <T>(path: string) => enviar<T>('DELETE', path, undefined),

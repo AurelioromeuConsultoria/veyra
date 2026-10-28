@@ -167,9 +167,9 @@ export interface MessageTemplateDto {
 export interface SendPolicyDto {
   channelType: 'internal' | 'email' | 'whatsapp';
   /**
-   * `free_form` = texto livre; `template` = fora da janela, exige aprovado. Na
-   * transição da F4.1b (ADR-052 item 5) o servidor não devolve `template`: o
-   * fluxo está indisponível até a finalidade verificável (F4.1c)
+   * `free_form` = texto livre; `template` = fora da janela: o template sai pelo
+   * envio do negócio (F4.1c-3), com as opções de `GET
+   * /api/business-outbound/options`, a prévia e a aprovação
    */
   mode: 'free_form' | 'template' | 'blocked';
   /** motivo curto quando `blocked` ou `template` — texto já em pt-BR */
@@ -181,7 +181,10 @@ export interface SendPolicyDto {
    * `consents:read`, nas rotas próprias
    */
   consentStatus: ConsentStatus | null;
-  /** vazio quando o canal não usa template (interno) e na transição da F4.1b */
+  /**
+   * os templates do envio COMUM, sempre vazio desde a F4.1b: o template não sai
+   * pelo envio comum. As opções do envio do negócio vêm de rota própria
+   */
   templates: MessageTemplateDto[];
 }
 

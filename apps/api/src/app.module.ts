@@ -18,6 +18,7 @@ import { CompaniesModule } from './companies/companies.module';
 import { ConversationsModule } from './conversations/conversations.module';
 import { ConsentsModule } from './consents/consents.module';
 import { TemplatesModule } from './templates/templates.module';
+import { BusinessOutboundModule } from './business-outbound/business-outbound.module';
 import { ChannelsModule } from './channels/channels.module';
 import { AutomationsModule } from './automations/automations.module';
 import { UsageModule } from './usage/usage.module';
@@ -84,6 +85,7 @@ import { ClinicsModule } from './verticals/clinics/clinics.module';
     ConversationsModule,
     ConsentsModule,
     TemplatesModule,
+    BusinessOutboundModule,
     NotificationsModule,
     CalendarModule,
     FilesModule,

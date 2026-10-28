@@ -186,6 +186,44 @@ export class TravasDeIdentidade {
   }
 
   /**
+   * A aprovação do envio do NEGÓCIO (F4.1c-3), por destinatário, na ordem
+   * global: o nível 0 do número, EXCLUSIVO, quando a conversa pode ter de ser
+   * criada (a origem do vertical) — serial com a ingestão do mesmo número, que
+   * cria a mesma conversa; depois o workspace, os escritores em massa, o
+   * contato, o `address:` do número e a `validity:` das chaves fixadas,
+   * COMPARTILHADOS, como a guarda do despacho. Uma mudança que comitou enquanto
+   * a aprovação esperava é vista pela reconferência; a que chega depois espera
+   * a aprovação.
+   */
+  async paraEnvioDoNegocio(
+    tx: Db,
+    escopo: {
+      workspaceId: string;
+      contactId: string;
+      numero: string;
+      validityKeys: readonly string[];
+      criarConversa: boolean;
+    },
+  ): Promise<void> {
+    const chave = chaveDeCoincidencia(escopo.numero);
+    // a aprovação recusa antes das travas (`address_changed`); aqui é a segunda camada
+    if (!chave) throw new Error('Número sem chave de coincidência');
+    await prazoDeTrava(tx, this.guarda.mudancaTravaMs);
+    if (escopo.criarConversa) {
+      await travarIngestao(tx, escopo.workspaceId, [this.nivelZero(escopo.workspaceId, chave)]);
+    }
+    await travarParaUso(tx, {
+      workspaceId: escopo.workspaceId,
+      telefones: true,
+      contactIds: [escopo.contactId],
+      entityKeys: [
+        this.endereco(escopo.workspaceId, chave),
+        ...escopo.validityKeys.map((k) => `validity:${k}`),
+      ],
+    });
+  }
+
+  /**
    * A importação de contatos (F4.1c-1): a trava dos escritores em massa,
    * exclusiva, com o prazo CURTO da importação — enquanto ela espera, os
    * pedidos novos da compartilhada do workspace esperam atrás dela. Sem a

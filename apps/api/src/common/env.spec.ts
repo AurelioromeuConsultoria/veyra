@@ -11,6 +11,7 @@ const minimo = {
   JWT_SECRET: 'a'.repeat(32),
   TOKEN_ENCRYPTION_KEY: 'b'.repeat(32),
   ADDRESS_LOCK_KEY: 'c'.repeat(32),
+  OUTBOUND_APPROVAL_KEY: 'd'.repeat(32),
 };
 
 describe('validateEnv', () => {
@@ -59,6 +60,27 @@ describe('validateEnv', () => {
       validateEnv({ ...minimo, NODE_ENV: 'production', ADDRESS_LOCK_KEY: exemplo }),
     ).toThrow(/valor de exemplo/);
     expect(validateEnv({ ...minimo, ADDRESS_LOCK_KEY: exemplo }).ADDRESS_LOCK_KEY).toBe(exemplo);
+  });
+
+  it('OUTBOUND_APPROVAL_KEY é obrigatória, longa e independente (F4.1c-3): sem ela, não sobe', () => {
+    const semChave: Record<string, string> = { ...minimo };
+    delete semChave.OUTBOUND_APPROVAL_KEY;
+    expect(() => validateEnv(semChave)).toThrow(/OUTBOUND_APPROVAL_KEY/);
+    expect(() => validateEnv({ ...minimo, OUTBOUND_APPROVAL_KEY: 'curta' })).toThrow(
+      /OUTBOUND_APPROVAL_KEY/,
+    );
+    for (const outra of [minimo.JWT_SECRET, minimo.TOKEN_ENCRYPTION_KEY, minimo.ADDRESS_LOCK_KEY]) {
+      expect(() => validateEnv({ ...minimo, OUTBOUND_APPROVAL_KEY: outra })).toThrow(
+        /OUTBOUND_APPROVAL_KEY precisa ser diferente/,
+      );
+    }
+    const exemplo = 'troque-por-uma-chave-da-aprovacao-independente';
+    expect(() =>
+      validateEnv({ ...minimo, NODE_ENV: 'production', OUTBOUND_APPROVAL_KEY: exemplo }),
+    ).toThrow(/valor de exemplo/);
+    expect(validateEnv({ ...minimo, OUTBOUND_APPROVAL_KEY: exemplo }).OUTBOUND_APPROVAL_KEY).toBe(
+      exemplo,
+    );
   });
 
   it('AI_MODEL fora do formato de id de modelo NÃO sobe (ADR-047 adendo 7 §9)', () => {
