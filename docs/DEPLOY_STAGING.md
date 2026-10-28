@@ -1248,3 +1248,22 @@ O marco do usuário: concluir a F4 e pôr uma demonstração funcionando, com da
   Nenhum número real: o transporte falso não envia, mas o número ainda é dado pessoal.
 
 **3. O que não muda na demonstração:** o transporte é falso, e nada sai para a Meta. A Meta real, a WABA, os templates aprovados e o opt-in real são da F4.5.
+
+**4. O plano da demonstração (2026-10-28; preparado, nada executado).** Na ordem, cada passo com a própria autorização:
+
+1. **O diagnóstico do staging** (§12): quem tem acesso ao host roda o diagnóstico de leitura; com a causa, a proposta de recuperação.
+2. **A manutenção do deploy:**
+   - a imagem da árvore final da F4, fixada no commit;
+   - as variáveis novas no ambiente antes;
+   - as migrations da F4 na ordem do item 1, cada uma com o inventário;
+   - a manutenção com tudo parado onde o runbook pede (a da F4.1a).
+
+   A imagem anterior não é rollback.
+
+3. **Os templates fictícios,** pela decisão do ADR-052 (fim):
+   - um arquivo versionado na imagem, com templates `demo_*` de ids inventados e uma WABA fictícia;
+   - o arquivo é lido pelo catálogo falso só com o transporte falso e `VEYRA_ENV=staging`;
+   - um procedimento cadastra e revisa as versões no workspace da demonstração, explícito pelo slug;
+   - nada aparece em outro workspace, nada cria consentimento, e nada toca a Meta.
+4. **A ativação do Clinics no workspace da demonstração,** com dados fictícios: os pacientes, a agenda, as finalidades (CLI) e os consentimentos registrados na tela, com números inventados.
+5. **As telas da F4.4** que a demonstração usa, e o acesso do Owner.

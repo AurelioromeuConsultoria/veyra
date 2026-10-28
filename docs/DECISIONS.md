@@ -4433,6 +4433,93 @@ Pelo exemplo 5, o mesmo paciente também conta em outubro, com a âncora em 28/1
 
 **Continuam bloqueados** o código da F4, deploy, ativação do Clinics, envio real e dados reais.
 
+### Adendo 9 (2026-10-28) — plano da F4.2: o Clinics na porta do E7 (PROPOSTO, para revisão antes do código)
+
+**Situação: PROPOSTO.** Pedido pelo usuário com o CI verde da F4.1c-3, antes de ligar o Clinics ao E7. Nenhum código da F4.2 está autorizado. Dados fictícios, o transporte falso e o catálogo falso; continuam bloqueados envio real e dados reais.
+
+**O que muda em relação ao adendo 8.** O adendo 8 previa a prévia no corpo da mensagem do Core. O usuário vetou ligar dado clínico às mensagens comuns do Core, nem como solução provisória (2026-10-28). Este plano refaz os itens 1 (a fronteira), 2 (o conteúdo) e 3 (o pedido) por esse critério. O resto do adendo 8 vale: a validade, o lote, as métricas e as entregas.
+
+**1. As permissões: consultar a origem, gerar a prévia e aprovar.**
+
+- **A lista de candidatos** (os agendamentos dos próximos dias, os retornos vencidos), com o que impede cada envio: `clinics:schedule:read`, `contacts:read` e `consents:read`. Ela mostra o paciente, o horário e a situação do consentimento.
+- **A prévia e a aprovação:** as três do Core (`conversations:write`, `contacts:read`, `consents:read`), **mais `clinics:schedule:write`**, todas juntas.
+- **Pela porta, e não pela rota:** cada porta do E7 declara as permissões do vertical exigidas pelo seu prefixo, e o Core as confere na prévia, na aprovação e no replay. Sem elas, a origem do vertical é recusada como se não existisse. É o requisito da revisão da F4.1c-3, e muda o contrato do E7 no Core.
+- **O `Profissional` não envia,** e a D7 não é reaberta.
+
+**2. O conteúdo mínimo da mensagem.**
+
+| Finalidade            | Texto fixo (revisado) e campos                                  | Nunca entra                                                    |
+| --------------------- | --------------------------------------------------------------- | -------------------------------------------------------------- |
+| `clinics.confirmacao` | o primeiro nome, a data e a hora do horário, no fuso da unidade | o serviço, o procedimento, o profissional, a unidade, o estado |
+| `clinics.reativacao`  | só o primeiro nome                                              | o serviço, a data do último atendimento, a unidade, o pacote   |
+
+- **A recomendação é tirar o nome da unidade** que o adendo 8 permitia: ele pode carregar a especialidade, e a pessoa sabe onde marcou.
+- **O primeiro nome é campo do Core** (`contato.primeiro_nome`, derivado do nome do contato), ao lado do `contato.nome`. A data e a hora vêm da porta.
+- **A conferência de apoio do adendo 8 continua:** o vertical recusa o texto que contenha nome de serviço ou de profissional do catálogo. Quem libera o texto fixo é a revisão humana.
+
+**3. Onde o conteúdo fica, e quem lê.**
+
+- **O corpo da mensagem do Core, na origem do vertical, é neutro:** "Mensagem de template enviada pelo Clinics", sem os valores e sem o texto renderizado. O Core decide pela origem: a do vertical nunca grava o texto renderizado no `Message.body`. **É mudança no Core,** e vale para toda porta.
+- **O texto renderizado e os valores ficam no pedido do Clinics** (`ClinicsOutreachRequest`, classe S), sob `clinics:schedule:read`. Ficam só até o desfecho do despacho; depois fica o HMAC, pela minimização do adendo 8.
+- **O que continua no Core, e por isso depende do B1-(A) antes do uso real:**
+  - a conversa com o número do paciente;
+  - a mensagem neutra;
+  - as respostas do paciente, em texto livre.
+
+  Com dados fictícios, a demonstração não depende do B1-(A).
+
+- **O Inbox mostra a mensagem neutra** a quem lê a conversa. A tela do Clinics (F4.4) mostra o texto do pedido a quem tem a permissão do vertical.
+
+**4. A confirmação e a reativação sobre o que já existe.**
+
+- **A origem e a porta.**
+  - A origem é o pedido: `clinics.outreach:<id do pedido>`, um prefixo só, com uma porta.
+  - A porta responde `vale` só com o pedido em `aguardando_envio` e o alvo ainda válido:
+    - a confirmação vale com o agendamento `scheduled` ou `confirmed`, com o mesmo início fixado no pedido;
+    - a reativação vale com o retorno `pending`, sem agendamento vinculado.
+  - A resposta `vale` leva o contato do paciente, os valores e as chaves.
+- **As chaves de validade:** `clinics.appointment:<id>` e `clinics.return:<id>`, fixadas na aprovação.
+- **O prazo vem da porta** (mudança do contrato do E7), com o teto do Core:
+  - a confirmação vale até o início menos 2 horas. O candidato que começa em menos de 2 horas não entra no lote;
+  - a reativação vale 24 horas.
+  - O Core recusa o prazo acima do teto.
+- **A validade:** toda mudança que invalida um pedido abre com `MudancasDeRestricao`, pegando a `validity:` **exclusiva antes de qualquer linha própria**. São elas:
+  - mudar o status do agendamento (cancelar, falta, atender);
+  - remarcar;
+  - concluir, cancelar ou vincular um retorno.
+
+  Os caminhos de hoje travam a linha primeiro, e a refatoração entra na fumaça da ordem global.
+
+- **O cancelamento:** sob essa trava, o vertical cancela os despachos dos pedidos ativos do alvo, pelo cancelamento neutro por lista de mensagens.
+  - É o chamador por lista, com a serialização exigida: a `validity:` exclusiva é a que o despacho pega compartilhada.
+  - O motivo novo, `origin_invalidated`, entra na lista fechada e na restrição do banco, por migration.
+  - O despacho que chegar depois ainda passa pela porta, que diz "não vale".
+- **A idempotência por alvo:** uma marca de ativo no pedido, com único parcial por alvo.
+  - O pedido novo para o mesmo alvo só nasce depois de o anterior estar comprovadamente não enviado. O vertical confere o despacho dele sob a trava e tira a marca.
+  - Depois de `enviado` ou `incerto`, nada mais para aquele alvo (C5).
+- **O estado do pedido é derivado do despacho do Core:** `aguardando_envio`, `enviado`, `nao_enviado` (com o motivo) ou `incerto`. Não há sincronização: o vertical lê o despacho pela mensagem do pedido.
+
+**5. O que é da demonstração e o que é do uso real.**
+
+- **A demonstração fictícia precisa de:**
+  - a F4.2;
+  - as telas da F4.4;
+  - os templates fictícios (ver a decisão na F4.1c-3, no ADR-052);
+  - o staging de volta;
+  - a ativação do Clinics no workspace da demonstração, com autorização própria.
+- **O uso real depende, além disso, de:**
+  - o B1-(A): a restrição de leitura, inclusive das respostas;
+  - a F4.5: a WABA, os templates aprovados na Meta, o opt-in real, o preço e o jurídico;
+  - a D7 e a D8;
+  - a retenção do §9.
+
+**6. A ordem proposta.**
+
+1. O Core: o contrato do E7 com as permissões e o prazo; o corpo neutro da origem do vertical; o `contato.primeiro_nome`; o motivo `origin_invalidated`.
+2. O Clinics: o pedido, a porta, a refatoração das travas, o cancelamento e o lote.
+
+Cada parte com testes focados durante os ajustes, uma revisão e as mutações pertinentes no fechamento, e a bateria antes do commit local.
+
 ## ADR-049 — Relógio de agendamento: quem compara define o relógio, e filas e leases usam o do banco
 
 **Status:** aceito (plano aprovado pela revisão de 2026-10-19; a entrega segue para revisão) · **Data:** 2026-10-19
@@ -4716,7 +4803,7 @@ A skill `create-migration` traz o bloco de ensaio com as três evidências: os g
 
 ## ADR-052 — Mensagem iniciada pelo negócio: telefones normalizados, remetente sem atribuição silenciosa, template verificável, consentimento por finalidade e aprovação vinculada à prévia
 
-**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). **A F4.1a foi aprovada para implementação em 2026-10-23**, com as condições registradas no fim deste ADR, e publicada em 2026-10-26. **A F4.1b foi parcialmente aprovada em 2026-10-26:** finalidades, consentimentos, bloqueio, permissões e a recusa transitória dos templates estão liberados, e foram publicados e validados no mesmo dia, com a decisão 19 (ver o fechamento no fim deste ADR); a regra temporal da resposta depois do pedido de parar continua proposta. **A F4.1c foi aprovada em três subentregas em 2026-10-26**; a F4.1c-1 foi publicada e validada no mesmo dia (`e070bc6`), e a F4.1c-2 foi publicada e validada em 2026-10-27 (`60b7b16`). A F4.1c-3 está implementada, revisada e validada em 2026-10-28, em commit local, sem push (ver o fim deste ADR). O resto continua PROPOSTO, e nenhum outro código da F4 está autorizado. · **Data:** 2026-10-23
+**Status:** PROPOSTO (F4.0, revisão 2, 2026-10-23). **A F4.1a foi aprovada para implementação em 2026-10-23**, com as condições registradas no fim deste ADR, e publicada em 2026-10-26. **A F4.1b foi parcialmente aprovada em 2026-10-26:** finalidades, consentimentos, bloqueio, permissões e a recusa transitória dos templates estão liberados, e foram publicados e validados no mesmo dia, com a decisão 19 (ver o fechamento no fim deste ADR); a regra temporal da resposta depois do pedido de parar continua proposta. **A F4.1c foi aprovada em três subentregas em 2026-10-26**; a F4.1c-1 foi publicada e validada no mesmo dia (`e070bc6`), e a F4.1c-2 foi publicada e validada em 2026-10-27 (`60b7b16`). A F4.1c-3 foi publicada e validada em 2026-10-28 (`89da993`), e a F4.1c está completa. O plano da F4.2 está no ADR-048, adendo 9, para revisão antes do código. O resto continua PROPOSTO, e nenhum outro código da F4 está autorizado. · **Data:** 2026-10-23
 
 A revisão 0 está no `0eb4038`. A revisão 1 não foi comitada; ela passou pelo `reviewer` (mudanças necessárias) e pelo `security` (bloqueado, sem P0), e os achados dos dois estão incorporados aqui. A confirmação desta revisão 2 aprovou com ressalvas (o `reviewer`, com quatro achados importantes; o `security`, com dois P1 novos, os mesmos do `reviewer`), e as correções dela também estão no texto. A conferência final dessas correções aprovou: o `security`, sem ressalva bloqueante, e o `reviewer`, com uma ressalva importante (a regra ao reabrir conversa) e duas de qualidade. As três estão no texto, e os dois disseram que não é preciso nova rodada. Nenhum ADR aceito é alterado antes da aprovação deste; as emendas que ele implicaria estão listadas no fim, em "Emendas propostas".
 
@@ -6822,3 +6909,22 @@ Os casos que pediram trabalho:
 - **Resíduos declarados:**
   - a trava do web contra a prévia nova vale enquanto o painel está aberto. Trocar de conversa ou recarregar a página a desfaz, e uma prévia nova depois de um desfecho incerto ainda pode gerar uma segunda mensagem. A garantia do servidor é "uma aprovação por prévia";
   - sem o verificador registrado (erro de composição), o despacho fica em `failed_before_send` até o outbox desistir: o prazo da aprovação é conferido pelo próprio verificador, e por isso o código final nunca é `approval_expired`.
+
+**A F4.1c-3 publicada e validada (2026-10-28).** O usuário autorizou o push do `04344e7` e do `89da993`, nessa ordem. Os quatro jobs do CI da árvore final (`89da993`) terminaram verdes no run 40742023120: lint e formatação, tipos e build, testes, e e2e. Com isso, a F4.1c está completa: as três subentregas publicadas e validadas.
+
+**As decisões do usuário sobre a F4.1c-3 (2026-10-28), na autorização do push.** Aprovadas, com estas precisões:
+
+- **o prazo de uma hora no Inbox** conta desde a prévia, sem renovação automática;
+- **as permissões existentes** são exigidas em conjunto;
+- **o template pausado na Meta** volta pelo outbox só quando a chamada de envio comprovadamente não começou — a releitura vem antes do marcador —, até o prazo, e com todas as verificações refeitas;
+- **os valores são recalculados no despacho,** sem armazenamento separado dos parâmetros;
+- **nenhuma retentativa cria outra mensagem para a mesma aprovação** (a nova tentativa é o mesmo despacho, e a aprovação é uma por prévia) **nem reenvia um resultado incerto** (`unknown_after_dispatch` não é elegível ao claim).
+
+**A precisão sobre "os valores não são guardados" (decisão do usuário).** A frase vale para a aprovação e o despacho: nenhum deles guarda os parâmetros. Ela **não** quer dizer que o conteúdo enviado não fica armazenado. **O texto renderizado, com os valores no lugar dos parâmetros, permanece no `Message.body` da mensagem do Core,** visível a quem lê a conversa. Para a origem do Inbox, o único valor é o nome do contato, que a conversa já mostra. Para a origem de um vertical, o plano da F4.2 (ADR-048, adendo 9) propõe o corpo neutro, sem os valores: o dado clínico não vai à mensagem do Core.
+
+**Os templates fictícios da demonstração (decisão do usuário, 2026-10-28).** Aprovado preparar templates fictícios versionados e um procedimento reproduzível para carregá-los no ambiente de demonstração. As condições:
+
+- **funcionam só com o catálogo e o transporte falsos,** num workspace explícito;
+- **não aparecem sozinhos na configuração real,** não criam consentimento nenhum e não passam por templates aprovados na Meta: ids e nomes inventados, e uma WABA fictícia que só o canal da demonstração usa.
+
+A forma (um arquivo versionado lido pelo catálogo falso do staging, e o cadastro e a revisão pelo procedimento) entra no plano da demonstração (DEPLOY_STAGING §13) e é implementada com ele, sem abrir nova frente de funcionalidades.
