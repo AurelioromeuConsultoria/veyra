@@ -20,6 +20,9 @@
  * fora por definição.
  *
  * USO: pnpm --filter @veyra/api check:fk  (exit 0 limpo; exit 1 se achar algo)
+ *      na imagem, no container da `api`: node dist/cli/check-cross-tenant-fk.js
+ *      (compilado desde a F4.4c, ADR-048 adendo 13: a varredura de DADOS do
+ *      staging roda na janela de manutenção, só de leitura)
  *
  * NOTA DE COBERTURA: em CI este check roda contra o banco de teste (valida o
  * SCHEMA; os dados foram truncados pelos testes). O scan de DADOS tem valor

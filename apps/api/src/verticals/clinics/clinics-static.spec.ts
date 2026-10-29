@@ -85,8 +85,10 @@ describe('Clinics — garantias estáticas (ADR-047, ADR-048)', () => {
   });
 
   // Garantia PARCIAL nos imports: o `ContactsService` (que publica no outbox) é
-  // importado legitimamente desde a F2.1, para ler e travar contatos. Para a
-  // agenda, quem prova a fronteira é o teste de integração que conta os eventos.
+  // importado legitimamente desde a F2.1, para ler e travar contatos; desde a
+  // F4.4c, também pela carga da demonstração, que CRIA contato fictício (a
+  // exceção do teste seguinte). Para a agenda, quem prova a fronteira é o teste
+  // de integração que conta os eventos.
   it('o vertical NÃO escreve em entidades do Core nem no outbox, e não importa os serviços de tarefa, atividade, notificação, webhook, deal, conversa e canal (adendo 2, item 7)', () => {
     // dado classe S não pode ir parar em tarefa, atividade, nota, notificação,
     // deal, conversa, mensagem ou evento — nem por escrita direta, nem por serviço
@@ -101,6 +103,34 @@ describe('Clinics — garantias estáticas (ADR-047, ADR-048)', () => {
       })
       .map((file) => relative(ROOT, file));
     expect(ofensas).toEqual([]);
+  });
+
+  it('a ÚNICA escrita de contato do vertical no Core: a carga da demonstração, com dados fictícios (F4.4c, ADR-048 adendo 13)', () => {
+    // lista FECHADA: quem importa o serviço de contatos do Core, e o que chama
+    // nele. Só leitura (`get`), menos a carga da demonstração, que cria contato
+    // fictício (grava a entidade e publica no outbox)
+    const IMPORTA = /from '(\.\.\/)+contacts\/contacts\.service'/;
+    const CHAMADA = /(ContactsService\)|this\.contacts\w*|this\.contatos\w*)\s*\.\s*(\w+)\s*\(/g;
+    const PERMITIDO: Record<string, string[]> = {
+      'cli/demo-carregar.core.ts': ['create'],
+      'clinics-patients.service.ts': ['get'],
+      'clinics-releases.service.ts': ['get'],
+    };
+    const quem = walk(ROOT)
+      .filter((file) => IMPORTA.test(readFileSync(file, 'utf8')))
+      .map((file) => relative(ROOT, file))
+      .sort();
+    expect(quem).toEqual(Object.keys(PERMITIDO).sort());
+    for (const arquivo of quem) {
+      const metodos = [...readFileSync(join(ROOT, arquivo), 'utf8').matchAll(CHAMADA)].map(
+        (m) => m[2],
+      );
+      expect(metodos.length).toBeGreaterThan(0);
+      expect({ arquivo, fora: metodos.filter((m) => !PERMITIDO[arquivo].includes(m)) }).toEqual({
+        arquivo,
+        fora: [],
+      });
+    }
   });
 
   it('a ÚNICA exceção à fronteira de escrita no Core: o envio do negócio, só pelos arquivos do pedido de envio (F4.2)', () => {

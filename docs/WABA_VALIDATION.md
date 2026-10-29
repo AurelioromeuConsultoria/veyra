@@ -27,7 +27,9 @@ Os nomes exatos estão em `.env.example`, na raiz — é a fonte, não esta tabe
 | `META_WEBHOOK_VERIFY_TOKEN` | você escolhe (mín. 16 caracteres) | desafio `GET` de verificação do webhook        |
 | `META_GRAPH_VERSION`        | opcional (default `v21.0`)        | fixar a versão da Graph API                    |
 
-Cadastro do canal (ato administrativo, sem endpoint — ADR-037):
+Cadastro do canal (ato administrativo, sem endpoint — ADR-037). É uma CLI
+compilada desde a F4.4c (ADR-048 adendo 13); na imagem, no container da `api`,
+o comando é `node dist/cli/channel-whatsapp.js` com os mesmos argumentos:
 
 ```
 pnpm --filter @veyra/api channel:whatsapp \
@@ -36,7 +38,7 @@ pnpm --filter @veyra/api channel:whatsapp \
 
 **O token nunca vai na linha de comando.** `argv` é legível por outros usuários da
 máquina em `ps` e fica no histórico do shell — não imprimir depois não desfaz
-isso. Por padrão o script **pergunta sem eco**; `--token` é recusado com um aviso
+isso. Por padrão a CLI **pergunta sem eco**; `--token` é recusado com um aviso
 para rotacionar o que acabou de ser exposto. Para automação existe `--token-stdin`:
 
 ```
@@ -46,11 +48,11 @@ printf '%s' "$TOKEN" | pnpm --filter @veyra/api channel:whatsapp \
 ```
 
 Mesmo assim, `TOKEN` numa variável de ambiente do shell pode acabar no histórico
-dependendo de como foi atribuída — no uso manual, deixe o script perguntar.
+dependendo de como foi atribuída — no uso manual, deixe a CLI perguntar.
 
 O token vai **cifrado** (AES-256-GCM, `TOKEN_ENCRYPTION_KEY`) e nunca é impresso.
 Reexecutar com o mesmo `--phone-number-id` **rotaciona** o token; se o número já
-pertencer a outro workspace, o script **para** — reatribuir entregaria as
+pertencer a outro workspace, a CLI **para** — reatribuir entregaria as
 mensagens daquele número ao tenant errado. Os três caminhos foram verificados
 contra banco real.
 

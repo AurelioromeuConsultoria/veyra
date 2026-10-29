@@ -13,7 +13,7 @@ import type {
 import { AuditService } from '../audit/audit.service';
 import { PermissionsService } from '../auth/permissions.service';
 import { PRAZO_DA_RELEITURA_MS } from '../channels/business-dispatch.port';
-import { transporteSimulado } from '../channels/fake.transport';
+import { transporteSimulado } from '../common/transporte-simulado';
 import {
   CancelamentoDeDespachos,
   type ResultadoDoCancelamento,

@@ -5010,7 +5010,9 @@ A revisão do delta (`security`) aprovou as correções, sem P0, P1 nem P2. Os q
 
 **Consequência registrada:** esconder é usabilidade; quem garante é o servidor. Toda rota usada pelas telas já confere as permissões, a origem e o conteúdo.
 
-### Adendo 12 (2026-10-29) — F4.4b: o consentimento e o pedido de parar na tela, os templates fictícios, o fluxo completo da demonstração e a conciliação da aprovação repetida (APROVADO pelo usuário; implementada, revisada e validada; commit local, sem push)
+### Adendo 12 (2026-10-29) — F4.4b: o consentimento e o pedido de parar na tela, os templates fictícios, o fluxo completo da demonstração e a conciliação da aprovação repetida (publicada e validada em `fe87bc1`)
+
+**Publicação (2026-10-29).** O usuário autorizou o push de `1ebde0e` e `fe87bc1`, nessa ordem, sem force. O run do `1ebde0e` foi cancelado pela concorrência do workflow. Os quatro jobs do CI da árvore final (`fe87bc1`) terminaram verdes no run 40886775897: lint e formatação, tipos e build, testes, e e2e. O acompanhamento local perdeu a conexão com a API do GitHub no meio (tempo esgotado de rede) e foi refeito até o fim do run; isso não foi falha do CI.
 
 **As decisões do usuário (2026-10-29), na autorização do push da F4.4:**
 
@@ -5191,7 +5193,7 @@ Nada muda no staging.
 - integração 1.141 (180, 243, 162, 297 e 259 nos cinco blocos);
 - E2E 53, com as duas pilhas: os 52 da pilha principal e o cenário completo da demonstração.
 
-### Adendo 13 (2026-10-29) — F4.4c: o cadastro do canal compilado e a carga da demonstração (APROVADO pelo usuário; desenho antes do código)
+### Adendo 13 (2026-10-29) — F4.4c: o cadastro do canal compilado e a carga da demonstração (APROVADO pelo usuário; implementada, revisada e validada; commit local, sem push)
 
 **As decisões do usuário (2026-10-29), na autorização do push da F4.4b:**
 
@@ -5272,6 +5274,86 @@ Nada muda no staging.
   - a revisão (`reviewer` e `security`, uma vez);
   - as mutações das garantias novas;
   - a bateria em blocos, com log e com a tampa aberta.
+
+**Implementação e revisão (2026-10-29).** Segue o desenho acima, com os desvios e as correções abaixo.
+
+**Os desvios da implementação:**
+
+- **A recusa "sem unidade ativa":** a carga recusa o workspace sem unidade ativa (a ativação cria uma), antes de gravar.
+- **A unidade explícita:** o agendamento e o retorno levam a unidade, sem depender de haver uma só.
+- **A paciente do E2E** passou a ser a primeira da carga, a Carla.
+- **O ator do marcador** é o ator da carga.
+
+**A revisão do fechamento (`reviewer` e `security`, uma rodada).** O `security` bloqueou por um P1, e o `reviewer` pediu mudanças com dois P1 no roteiro do §14. Não houve P0. Todos os achados foram tratados nesta entrega:
+
+- **A fronteira do vertical (security, P1).** A carga importava `transporteSimulado` de `channels/fake.transport`, e o teste estático que proíbe o vertical de importar o canal (adendo 2, item 7) ficou vermelho. A função foi para `common/transporte-simulado.ts`, lida pelo canal e pelos procedimentos, e a regra do teste não mudou.
+- **A escrita de contato pelo vertical (security, P2).** A carga cria contato pelo serviço do Core, que grava a entidade e publica no outbox. É uma **exceção ao adendo 2, item 7**, aprovada no desenho, só com dados fictícios. Um teste estático novo a fixa: o único arquivo do vertical que cria, altera ou apaga contato é `cli/demo-carregar.core.ts`.
+- **A trilha da carga (security, P2).** Cada registro sai em nome do ator, e o `requestId` passa a levar `cli:demo-carregar:<uuid>`, o mesmo numa execução. O `:` fica fora do formato que o cabeçalho HTTP aceita, e nenhuma requisição o forja. O cadastro do canal faz o mesmo, com `cli:channel-whatsapp:<uuid>`.
+- **O cadastro do canal (security, P2):**
+  - qualquer forma de token por argumento (`--token X`, `--token=X`) é recusada antes de tudo, com o aviso de rotação;
+  - o argumento desconhecido ou posicional também é recusado;
+  - o `--token-stdin` com a entrada no terminal é recusado, porque ecoaria o token;
+  - as escritas vão pelo client protegido, no contexto do workspace, e o `raw` fica só no slug e no `phoneNumberId` global, comentado;
+  - o cadastro ganhou trilha (`channel.credential_registered` e `channel.credential_rotated`), com os ids e a troca de WABA, nunca o token;
+  - o `AppModule` só sobe depois das recusas;
+  - o erro do Prisma mostra o tipo e o código, nunca a mensagem.
+  - A linha de comando ficou testável (`executarCadastroDoCanal`). Os testes cobrem as três formas de token por argumento, o uso, o terminal, o pipe e a falha do Prisma com o token na mensagem.
+- **A recusa de um item na carga (reviewer, P2).** Antes, uma recusa de regra no meio (a profissional arquivada pela tela, o horário fora do expediente) derrubava a carga, e a reexecução parava sempre no mesmo ponto. Agora ela vira item pulado, com o motivo, e a carga segue até o fim.
+- **O catálogo pulado (reviewer, P2).** Com o catálogo mudado pela tela, os agendamentos e o retorno também ficam de fora, como o desenho dizia.
+- **O dia da carga (reviewer, P2).** A data de hoje é a do fuso da unidade (`hojeNaUnidade`), e os dias úteis pulam o domingo. As duas regras têm teste de unidade com datas fixas.
+- **Os testes (reviewer, P2):**
+  - os comentários corrigidos;
+  - o marcador de outro workspace, que não conta (P0).
+- **O `check:fk` (security, P2):** foi para `src/cli`, compila na imagem e roda na janela, só de leitura, para a varredura de dados.
+- **O roteiro do §14,** reescrito:
+  - a barreira antes do backup (reviewer, P1);
+  - o snapshot da janela conferido antes do deploy (reviewer, P1);
+  - o ensaio isolado com a espera real do Postgres, `--exit-on-error`, as contagens de restrições e gatilhos, o volume apagado, `umask` e `trap` (os dois revisores);
+  - as chaves conferidas no painel e no container, com valor não vazio;
+  - as condições de parada das migrations, com os comandos da imagem;
+  - a classificação do que estava em andamento;
+  - a falha na retomada;
+  - o bloco da etapa A no próprio repositório;
+  - os requisitos da barreira para o ADR da F4.4d;
+  - a conferência por dentro, fora do loopback.
+
+**Os limites registrados, sem mudança de código:**
+
+- **O contato apagado ou com o número trocado pela tela, numa carga interrompida** (sem o marcador), volta a nascer na reexecução, porque a chave é o número fictício. Depois da carga completa, nada é tocado.
+- **O que ficou pulado não é tentado de novo:** a carga que chega ao fim grava o marcador, com o que pulou.
+- **O marcador vive na trilha,** com a retenção dela.
+- **Duas cargas ao mesmo tempo** no mesmo workspace não são coordenadas.
+- **O `backup.sh` e o `restore.sh` sem `pipefail`** (a etapa B3 do §14) ficam para uma correção com autorização própria. Até lá, a janela faz o próprio dump com `pipefail`, sem a retenção que apagaria o reserva do dia, e o confere lendo o fluxo inteiro. Depois de uma restauração, as contagens do ensaio são repetidas antes de tirar a barreira.
+
+**As mutações (27), uma vez, no fim:** todas morrem por teste que falha, nunca por compilação. São 10 no cadastro do canal (o número de outro workspace, a troca de WABA, o token vazio, a rotação, a cifra, as formas de token por argumento, o terminal, a mensagem do erro e a trilha) e 17 na carga (as recusas, o marcador, o catálogo fora do plano, os duplicados, a recusa de item, os dependentes, a marca na trilha, o retorno vencido, o domingo e o fuso). Na primeira passada, 23 morreram:
+
+- **D14, a recusa de item que derruba a carga:** a mutação deixava código inalcançável e falhava na compilação, o que não prova nada; reescrita, morre por teste.
+- **D9, D10 e D15, os duplicados e os dependentes:** sobreviveram por lacuna real. Nenhum teste fazia a reexecução sem o marcador com o catálogo intacto, nem a carga com um serviço a mais no catálogo e os pacientes ainda sem agendamento. Os dois testes entraram, e as três morrem.
+
+**A bateria b78, em blocos com log, com a tampa aberta e sem sono:**
+
+- lint, build, `drift`, `fromzero` e `check:fk`;
+- unidade 383 e web 181;
+- integração 1.162 (264, 213, 263, 179 e 243 nos cinco blocos);
+- E2E 53, com o cenário da demonstração preparado só pelos procedimentos compilados.
+
+A formatação acusou um arquivo de teste que pedia uma segunda passada do Prettier (só quebra de linha). Ele foi formatado, e só a formatação foi repetida, verde.
+
+**A revisão do delta (`security`, 2026-10-29):** aprovado com ressalvas, sem P0 nem P1. O P1 e os P2 da rodada anterior estão resolvidos. Os três P2 novos foram corrigidos nesta entrega:
+
+- **o dump da janela:** a conferência só pela lista passaria um dump truncado; agora a janela faz o dump com `pipefail` e o confere lendo o fluxo inteiro;
+- **a limpeza do ensaio:** o `trap` num terminal interativo só rodava ao fechar a sessão; agora o bloco roda num subshell com `set -eu`;
+- **o teste estático do contato:** a regex deixava passar outros métodos de escrita; agora é uma lista fechada de quem importa o serviço e do que chama nele.
+
+Os informativos tratados:
+
+- o aviso de token comprometido em qualquer recusa de argumento;
+- a pergunta interrompida, que agora é recusa, e não saída com sucesso;
+- a rotação que não gravou, que agora é recusada;
+- o isolamento do cadastro, conferido no teste;
+- a perda de acesso no meio da carga, que interrompe;
+- o texto do SECURITY sobre a auditoria;
+- no roteiro: o commit fixado já na barreira, a proibição de Restart antes do deploy e a variável da B1 sem padrão.
 
 ## ADR-049 — Relógio de agendamento: quem compara define o relógio, e filas e leases usam o do banco
 

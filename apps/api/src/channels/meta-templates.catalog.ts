@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { CATALOGO_DA_DEMONSTRACAO, WABA_DA_DEMONSTRACAO } from '../demo/catalogo-da-demonstracao';
-import { transporteSimulado } from './fake.transport';
+import { transporteSimulado } from '../common/transporte-simulado';
 import type { TransportFailure } from './meta-errors';
 import { call, MENSAGEM_DO_TETO, type RawResponse } from './meta.transport';
 

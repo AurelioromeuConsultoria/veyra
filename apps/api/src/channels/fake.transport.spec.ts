@@ -1,5 +1,6 @@
 import type { ConfigService } from '@nestjs/config';
-import { FakeMetaTransport, transporteSimulado } from './fake.transport';
+import { transporteSimulado } from '../common/transporte-simulado';
+import { FakeMetaTransport } from './fake.transport';
 
 const credencial = { phoneNumberId: '1', token: 't' };
 

@@ -34,9 +34,11 @@ test.describe('A demonstração: o envio da clínica de ponta a ponta, simulado'
     test.setTimeout(240_000);
     const db = await openE2eDb(E2E_DEMO_DATABASE_URL);
     try {
-      const { rows } = await db.query<{ contato: string; data: string }>(
+      const { rows } = await db.query<{ contato: string; data: string; dia: string; hora: string }>(
         `SELECT c."id" AS contato,
-                to_char(a."startsAt" AT TIME ZONE u."timezone", 'DD/MM/YYYY') AS data
+                to_char(a."startsAt" AT TIME ZONE u."timezone", 'DD/MM/YYYY') AS data,
+                to_char(a."startsAt" AT TIME ZONE u."timezone", 'YYYY-MM-DD') AS dia,
+                to_char(a."startsAt" AT TIME ZONE u."timezone", 'HH24:MI') AS hora
            FROM "Contact" c
            JOIN "ClinicsPatient" p ON p."contactId" = c."id"
            JOIN "ClinicsAppointment" a ON a."patientId" = p."id"
@@ -45,7 +47,9 @@ test.describe('A demonstração: o envio da clínica de ponta a ponta, simulado'
         [PACIENTE_DEMO],
       );
       expect(rows).toHaveLength(1);
-      const { contato, data } = rows[0];
+      const { contato, data, dia, hora } = rows[0];
+      // o agendamento da carga é no primeiro dia útil seguinte: a lista começa nele
+      const aPartirDoAgendamento = () => page.getByLabel('A partir de').fill(dia);
       const confirmacao = FINALIDADES_DEMO[0];
 
       // ── o consentimento, pela ficha do contato ──────────────────────────
@@ -73,8 +77,9 @@ test.describe('A demonstração: o envio da clínica de ponta a ponta, simulado'
       expect(await (await transporte).json()).toEqual({ simulated: true });
       await expect(page.getByTestId('envio-simulado')).toContainText('Envio simulado.');
 
+      await aPartirDoAgendamento();
       await page
-        .getByRole('checkbox', { name: `Escolher ${PACIENTE_DEMO}, ${data} 10:00` })
+        .getByRole('checkbox', { name: `Escolher ${PACIENTE_DEMO}, ${data} ${hora}` })
         .check();
       await page.getByLabel('Template revisado').selectOption({
         label: `${CANAL_DEMO} · demo_confirmacao_horario (pt_BR) v1 · ${confirmacao.description}`,
@@ -83,7 +88,7 @@ test.describe('A demonstração: o envio da clínica de ponta a ponta, simulado'
       const previa = page.getByTestId('previa-da-clinica');
       // o texto exato, com o primeiro nome só, e o rodapé fictício do template
       await expect(previa).toContainText(
-        `Olá Paciente, você confirma o seu horário em ${data} às 10:00?`,
+        `Olá Carla, você confirma o seu horário em ${data} às ${hora}?`,
       );
       await expect(previa).toContainText('Demonstração: mensagem fictícia');
 
@@ -107,6 +112,7 @@ test.describe('A demonstração: o envio da clínica de ponta a ponta, simulado'
       });
       await expect(async () => {
         await page.reload();
+        await aPartirDoAgendamento();
         await expect(acompanhar).toHaveText('Enviado (simulado)', { timeout: 3_000 });
       }).toPass({ timeout: 150_000, intervals: [10_000] });
 

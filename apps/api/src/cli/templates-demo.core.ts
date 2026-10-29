@@ -2,7 +2,7 @@ import type { INestApplicationContext } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ClsService } from 'nestjs-cls';
 import { PermissionsService } from '../auth/permissions.service';
-import { transporteSimulado } from '../channels/fake.transport';
+import { transporteSimulado } from '../common/transporte-simulado';
 import type { AuthContext } from '../common/decorators';
 import { WABA_DA_DEMONSTRACAO } from '../demo/catalogo-da-demonstracao';
 import { TEMPLATES_DA_DEMONSTRACAO } from '../demo/templates-da-demonstracao';

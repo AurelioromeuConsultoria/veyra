@@ -36,9 +36,13 @@ export const E2E_DEMO_WEB_PORT = 5186;
 export const E2E_DEMO_WEB_ORIGIN = `http://localhost:${E2E_DEMO_WEB_PORT}`;
 /** o Owner do workspace `demo`, que também revisa os templates fictícios */
 export const OWNER_DEMO = 'owner-demo@e2e.veyra';
-/** o paciente fictício da demonstração e o número dele, de prefixo fictício */
-export const PACIENTE_DEMO = 'Paciente Demonstração';
-export const NUMERO_DEMO = '+5511900000101';
+/**
+ * A paciente fictícia da demonstração que o cenário usa, criada pelo
+ * `demo:carregar` (o primeiro paciente da carga), e o número dela, de prefixo
+ * fictício
+ */
+export const PACIENTE_DEMO = 'Carla Demonstração';
+export const NUMERO_DEMO = '+5511900000201';
 export const CANAL_DEMO = 'WhatsApp da demonstração';
 /** as finalidades dos templates fictícios, criadas pela CLI `consents:purpose` */
 export const FINALIDADES_DEMO = [

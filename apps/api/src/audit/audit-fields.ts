@@ -92,6 +92,9 @@ export const AUDIT_FIELDS: Record<string, readonly string[]> = {
     'dispatchesInFlight',
   ],
   consentPurpose: ['key', 'version', 'category', 'fields'],
+  // o cadastro do canal pela CLI (F4.4c): os ids da Meta e a troca de WABA,
+  // nunca o token
+  channelCredential: ['channelId', 'phoneNumberId', 'businessAccountId', 'trocouWaba'],
   // F4.1c-2: o que identifica a versão e o conteúdo (o hash), nunca o texto
   templateVersion: [
     'channelId',

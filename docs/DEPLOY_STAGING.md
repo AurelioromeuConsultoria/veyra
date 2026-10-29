@@ -1083,11 +1083,12 @@ descartável é o que distingue backup de esperança.
 ## 7. Operação do dia a dia
 
 **A WABA do canal não muda na rotação do token** sem `--trocar-waba`
-(`pnpm --filter @veyra/api channel:whatsapp`, F4.1c-2): as versões de template
-ficam presas à WABA de onde saíram, e trocá-la diverge todas na próxima
-releitura, que pedem cadastro e revisão de novo. Um erro de digitação ali
-custaria isso. A recusa não tem teste automatizado (o script fica fora do
-`tsconfig` do build); confira à mão na primeira rotação.
+(`channel:whatsapp`, F4.1c-2): as versões de template ficam presas à WABA de
+onde saíram, e trocá-la diverge todas na próxima releitura, que pedem cadastro e
+revisão de novo. Um erro de digitação ali custaria isso. Desde a F4.4c (ADR-048
+adendo 13), o cadastro é uma CLI compilada, na imagem (`node
+dist/cli/channel-whatsapp.js` no container da `api`), e a recusa tem teste de
+integração.
 
 ```bash
 # logs (json-file, 10 MB × 5 por container — rotação no próprio Docker)
@@ -1320,7 +1321,7 @@ O marco do usuário: concluir a F4 e pôr uma demonstração funcionando, com da
 **2. O que a demonstração ainda não tem, e precisa de decisão ou código:**
 
 - **Os templates fictícios (F4.4b, ADR-048 adendo 12, item 2):** o catálogo falso do staging traz os templates `demo_*` de `src/demo/catalogo-da-demonstracao.ts`, na WABA fictícia `000000000000100`, e só responde a ela. O procedimento `templates:demo --slug <ws> --channel <id> --reviewer <e-mail>` cadastra e revisa as versões pelos serviços de sempre, depois das finalidades (`consents:purpose`). Na imagem, ele roda como as outras CLIs compiladas (`node dist/cli/templates-demo.js`).
-  - **Atenção para o plano do staging:** o cadastro do canal (`channel:whatsapp`) é um script `tsx` em `apps/api/scripts/`, que NÃO está na imagem de runtime (nem o `tsx`). O canal da demonstração precisa de outro caminho, a decidir no plano: rodar o script de fora do container contra o banco, ou levá-lo a uma CLI compilada.
+  - **O cadastro do canal** (`channel:whatsapp`) é, desde a F4.4c (ADR-048 adendo 13), uma CLI compilada, na imagem: `node dist/cli/channel-whatsapp.js`, com o token pela entrada padrão. Os dados clínicos fictícios vêm do `demo:carregar` (`node dist/verticals/clinics/cli/demo-carregar.js`), pelos serviços do domínio.
   - **Antes de o staging voltar ao transporte da Graph,** as versões `demo_*` precisam sair de uso (hoje nada sairia: a releitura contra a WABA fictícia falha fechada).
 - **As telas:** as do Clinics (os envios, o vínculo com a oportunidade e as métricas, com o aviso de envio simulado) estão publicadas (F4.4, `be288bf`). As do consentimento e do pedido de parar (a ficha do contato e a conversa do Inbox) são da F4.4b, e a conciliação da aprovação repetida também. O compositor do Inbox com o template voltou na F4.1c-3 e mostra o aviso de envio simulado.
   - **A tela de revisão de template fica fora da demonstração (decisão do usuário, 2026-10-29):** a revisão dos templates fictícios é do procedimento `templates:demo`.
@@ -1339,7 +1340,9 @@ O marco do usuário: concluir a F4 e pôr uma demonstração funcionando, com da
 
 **3. O que não muda na demonstração:** o transporte é falso, e nada sai para a Meta. A Meta real, a WABA, os templates aprovados e o opt-in real são da F4.5.
 
-**4. O plano da demonstração (2026-10-28; preparado, nada executado).** Na ordem, cada passo com a própria autorização:
+**4. O plano da demonstração (2026-10-28; substituído pelo §14 em 2026-10-29).** O roteiro executável, com as correções do usuário e os pontos de parada, está no §14. O texto abaixo fica como histórico.
+
+Na ordem, cada passo com a própria autorização:
 
 1. **O diagnóstico do staging** (§12): quem tem acesso ao host roda o diagnóstico de leitura; com a causa, a proposta de recuperação.
 2. **A manutenção do deploy:**
@@ -1360,11 +1363,271 @@ O marco do usuário: concluir a F4 e pôr uma demonstração funcionando, com da
 
 **5. O que falta para o usuário acessar o sistema (acompanhamento; atualizar a cada entrega).** Nenhum item abaixo autoriza execução: cada passo no staging tem autorização própria. Nada novo entra no caminho da demonstração.
 
-| Frente                                    | Situação                                                           | O que falta                                                                                                                                                                                                                                                                   |
-| ----------------------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Funcionalidades**                       | F4.1 a F4.4 publicadas e validadas (a F4.4 em `be288bf`, CI verde) | a F4.4b, em commit local: as telas do consentimento e do pedido de parar, a conciliação da aprovação repetida e o fluxo completo no E2E; a tela de revisão de template fica fora da demonstração                                                                              |
-| **Templates falsos**                      | implementados na F4.4b (ADR-048 adendo 12), em commit local        | o canal da demonstração na WABA fictícia (o script do canal não está na imagem: decidir o caminho no plano), as finalidades pela CLI e o `templates:demo` no workspace da demonstração, cada passo com autorização                                                            |
-| **Dados fictícios**                       | o desenho, no item 2; o caminho provado no E2E da demonstração     | o roteiro de carga no workspace da demonstração: contatos com números inventados, pacientes, a agenda (unidade, serviços, profissionais e expediente), as finalidades (CLI) e as revisões (`templates:demo`); os consentimentos pela tela; o Owner `aurelioromeu@outlook.com` |
-| **Manutenção do deploy**                  | preparada no item 4                                                | executar com autorização: a imagem da árvore final da F4, a `ADDRESS_LOCK_KEY` e a `OUTBOUND_APPROVAL_KEY` no ambiente antes, as migrations da F4 na ordem do item 1 com os jobs desligados e o inventário de cada uma                                                        |
-| **Diagnóstico do staging**                | INC-2026-10-26-01 aberto; staging fora do ar                       | o diagnóstico de leitura do §12 por quem tem acesso ao host, e a proposta de recuperação com a causa                                                                                                                                                                          |
-| **Ativação do workspace de demonstração** | bloqueada                                                          | a autorização própria para ativar o Clinics só no workspace da demonstração, com dados fictícios                                                                                                                                                                              |
+| Frente                                    | Situação                                                             | O que falta                                                                                                                                       |
+| ----------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Funcionalidades**                       | F4.1 a F4.4b publicadas e validadas (a F4.4b em `fe87bc1`, CI verde) | a F4.4c, em commit local: o cadastro do canal compilado e o `demo:carregar`; a barreira contínua de manutenção (F4.4d, proposta no §14, etapa B1) |
+| **Templates falsos**                      | publicados na F4.4b (ADR-048 adendo 12)                              | o canal fictício (CLI compilada), as finalidades e o `templates:demo` no workspace `demo`: §14, etapa D                                           |
+| **Dados fictícios**                       | o `demo:carregar` (F4.4c, em commit local)                           | rodar no workspace `demo`: §14, etapa D; os consentimentos, pela tela                                                                             |
+| **Manutenção do deploy**                  | o roteiro consolidado no §14 (etapas B e C)                          | a barreira contínua (B1), o ensaio de restauração isolado (B2) e a janela (C), cada um com autorização                                            |
+| **Diagnóstico do staging**                | INC-2026-10-26-01 aberto; o bloco curto enviado ao usuário           | a saída do diagnóstico (§14, etapa A) e a proposta de recuperação                                                                                 |
+| **Ativação do workspace de demonstração** | decidida: workspace dedicado `demo` (decisão de 2026-10-29)          | executar na etapa D do §14, com autorização                                                                                                       |
+
+## 14. Plano operacional da demonstração (2026-10-29; nada executado)
+
+Consolida o §13 com as correções do usuário e das revisões de 2026-10-29. Cada etapa termina num **ponto de parada**: a autorização de uma etapa cobre os comandos dela e nada além, sem aprovação comando a comando. Continuam fora: envio real, dados reais e a F4.5.
+
+**Os princípios:**
+
+- **Em falha, a manutenção continua.** Voltar a imagem anterior não é recuperação, e restaurar o backup também não basta. A recuperação é uma de duas:
+  - a restauração compatível com o código que vai rodar e com as proteções dele (§5 e §6);
+  - uma correção para frente.
+
+  Até ela existir, a barreira fica.
+
+- **A barreira é contínua,** do primeiro passo da janela até a retomada. Parar a ingestão e os jobs não bloqueia o acesso.
+  - Hoje, a barreira é parar os containers e tirar o domínio. O deploy recria os containers, e o Coolify pode gerar uma rota padrão por alguns segundos (§4, "Resíduo da barreira de acesso").
+  - É por isso que o deploy está bloqueado desde 2026-10-21, e é isso que a etapa B1 resolve.
+  - **Uma imagem anterior à B1 ignora o `MAINTENANCE_MODE`.** Durante a janela, nunca faça Redeploy de um commit anterior: ele tiraria a barreira em silêncio.
+- **As migrations pendentes saem do estado real do banco e do commit final,** e não de uma lista fixa. A lista do §13, item 1, é só o que se espera encontrar.
+- **As chaves novas só nascem se estiverem ausentes,** no painel e no container. Uma chave existente não é trocada sem avaliar o que depende dela.
+- **O ensaio de restauração é num banco isolado,** sem rede, e nunca no banco do staging. A janela confere o próprio snapshot antes do deploy.
+
+**As ferramentas, por lugar** (o que cada passo usa):
+
+- **Container `api`** (a imagem de runtime): `node`, `npx --no-install prisma` (é dependência de produção), `curl` e as CLIs compiladas em `dist/`:
+  - `cli/provision.js`;
+  - `cli/consent-purpose.js`;
+  - `cli/channel-whatsapp.js`;
+  - `cli/templates-demo.js`;
+  - `cli/phones-normalize.js`;
+  - `cli/identity-diagnose.js`;
+  - `cli/check-cross-tenant-fk.js` (a varredura de FKs, só de leitura);
+  - `verticals/clinics/cli/clinics.js`;
+  - `verticals/clinics/cli/demo-carregar.js`.
+
+  Há também `seed-permissions.js` e `templates-register.js`, que este plano não usa. Não há `pnpm`, `tsx` nem `psql`. Os comandos do §4 escritos com `pnpm` viram `node dist/...` aqui.
+
+- **Container `db`:** `psql` e `wget` (busybox), com as credenciais do próprio container (`sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'`).
+- **Container `backup`:** `backup.sh`, `restore.sh`, `restic` e `pg_restore` 17.
+- **Host** (o terminal do **servidor** no Coolify, não o do container): `docker` e `openssl`.
+
+### Etapa A — Diagnóstico e preservação (só leitura, já autorizada)
+
+Os logs inteiros ficam guardados antes de qualquer recuperação. Nenhum comando imprime segredo: das variáveis, só aparecem com valor o modo do transporte, o ambiente e o `DISABLE_JOBS`; as chaves, só pelo nome. Os `.log` ficam no host, com acesso só do root: não são compartilhados (só trechos conferidos) e saem quando o INC fechar.
+
+```bash
+# A1. preserva e lista os containers (nome | projeto | serviço | estado | imagem | criado)
+D=/root/veyra-inc-2026-10-26; umask 077; mkdir -p "$D"; chmod 700 "$D"; date -u > "$D/quando.txt"
+docker ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}|{{.Status}}|{{.Image}}|{{.CreatedAt}}' | tee "$D/containers.txt" | grep -iE 'veyra|api|web|db|clamav|backup'
+```
+
+```bash
+# A2. com o projeto do Veyra copiado da saída acima
+P='COLE-AQUI-O-PROJETO'; D=/root/veyra-inc-2026-10-26; umask 077
+for c in $(docker ps -a --filter "label=com.docker.compose.project=$P" --format '{{.Names}}'); do
+  docker logs --timestamps "$c" > "$D/$c.log" 2>&1
+  docker inspect "$c" --format '{{.Name}} | {{.State.Status}} | saude={{if .State.Health}}{{.State.Health.Status}}{{else}}-{{end}} | reinicios={{.RestartCount}} | desde={{.State.StartedAt}} | saiu={{.State.FinishedAt}} cod={{.State.ExitCode}} oom={{.State.OOMKilled}} | {{.Config.Image}}'
+  grep -iE 'error|fatal|exception|unhealthy|P[0-9]{4}|migrat|ECONN' "$D/$c.log" | tail -6 | cut -c1-220
+done
+uptime; free -h; df -h / /var/lib/docker 2>/dev/null
+DB=$(docker ps --filter "label=com.docker.compose.project=$P" --filter "label=com.docker.compose.service=db" --format '{{.Names}}')
+[ -n "$DB" ] && docker exec "$DB" sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT migration_name, finished_at, rolled_back_at FROM _prisma_migrations ORDER BY started_at DESC LIMIT 5" -Atc "SELECT count(*) FROM \"ClinicsSettings\""'
+API=$(docker ps -a --filter "label=com.docker.compose.project=$P" --filter "label=com.docker.compose.service=api" --format '{{.Names}}' | head -1)
+# só o NOME das chaves com valor (=.): vazia conta como ausente
+docker inspect "$API" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -oE '^(ADDRESS_LOCK_KEY|OUTBOUND_APPROVAL_KEY)=.' | cut -d= -f1 | sort
+docker inspect "$API" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^(META_TRANSPORT_MODE|VEYRA_ENV|DISABLE_JOBS)='
+```
+
+No painel:
+
+- o último deploy: o commit, o status, a hora e o log, copiado;
+- se o Auto Deploy está ligado;
+- quais chaves existem nas variáveis do recurso. O `docker inspect` mostra o ambiente do último deploy, e o painel, o do próximo.
+
+**Parada A:** a causa identificada e a proposta de recuperação, para autorização. Nada é reiniciado nem alterado.
+
+### Etapa B — O que precisa existir antes da janela (sem tocar o staging)
+
+1. **B1. A barreira contínua de manutenção** (código; F4.4d, proposta, com ADR antes). É um modo de manutenção na própria API, ligado por variável (`MAINTENANCE_MODE=true`). Os requisitos que o ADR precisa fixar (revisão de segurança de 2026-10-29):
+   - **Toda requisição recebe 503:** o login, o webhook da Meta, a rota inexistente, o OPTIONS e a saúde vista de fora.
+   - **A única exceção é `GET /api/health` pelo loopback,** decidido pelo endereço do SOCKET (`127.0.0.1`, `::1`, `::ffff:127.0.0.1`). Nunca por `X-Forwarded-For`, `X-Real-IP` ou `req.ip`: o nginx do `web` repassa o XFF do cliente.
+   - **O primeiro `app.use` do `configureHttp`,** antes dos cookies e do corpo do webhook. Não pode ser guard: o `JwtAuthGuard` consulta o banco antes, e o banco é o que a janela protege.
+   - **Falha fechada na configuração:** um enum estrito no `env.ts`, sem padrão, em que valor inválido OU ausente recusa a subida; no compose, `${MAINTENANCE_MODE:?}`, nunca um padrão silencioso como o do `DISABLE_JOBS`.
+   - **A manutenção desliga os jobs:** com `MAINTENANCE_MODE=true`, os jobs não sobem, qualquer que seja o `DISABLE_JOBS`.
+   - **Os testes:** cada rota acima com 503, o XFF forjado com 503, a saúde pelo loopback com 200, e a mutação que tira o middleware.
+   - **O limite:** o `web` ainda serve o HTML da SPA com 200 numa rota gerada. O critério "nenhum 2xx" vale para `/api/*`.
+
+   As CLIs por `docker exec` continuam funcionando, porque não passam pelo HTTP. **Sem B1, o deploy continua bloqueado** (decisão de 2026-10-21, §4).
+
+2. **B2. O ensaio de restauração em banco isolado,** no host, com limpeza garantida também em falha. O dump é de staging, com dados fictícios, mas o arquivo e o banco restaurado são tratados como sensíveis: contêm hashes de senha e tokens cifrados. O bloco roda num subshell com `set -eu`: a primeira falha interrompe, e o `trap` limpa ao sair do subshell, não só quando o terminal fecha.
+
+   ```bash
+   docker exec <container-backup> sh -c 'restic snapshots --compact --tag banco'
+   (
+     set -eu
+     E=/root/veyra-ensaio; umask 077; mkdir -p "$E"; chmod 700 "$E"
+     limpar() { docker rm -f -v veyra-ensaio-db >/dev/null 2>&1 || true; rm -f "$E/banco.dump"; rmdir "$E" 2>/dev/null || true; }
+     trap limpar EXIT
+     docker exec <container-backup> sh -c 'restic dump <snapshot-id> /banco.dump' > "$E/banco.dump"
+     test -s "$E/banco.dump"
+     # a MESMA imagem do container db (sem baixar nada), SEM rede
+     IMG=$(docker inspect <container-db> --format '{{.Config.Image}}')
+     docker run -d --name veyra-ensaio-db --network none -e POSTGRES_PASSWORD=ensaio "$IMG" >/dev/null
+     n=0; until docker exec veyra-ensaio-db pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1; do n=$((n+1)); [ "$n" -lt 120 ]; sleep 1; done
+     docker cp "$E/banco.dump" veyra-ensaio-db:/tmp/banco.dump
+     docker exec veyra-ensaio-db sh -c 'createdb -U postgres ensaio && pg_restore --exit-on-error --no-owner --no-privileges -U postgres -d ensaio /tmp/banco.dump'
+     docker exec veyra-ensaio-db psql -U postgres -d ensaio -Atc 'SELECT count(*) FROM _prisma_migrations' -Atc 'SELECT max(migration_name) FROM _prisma_migrations' -Atc 'SELECT count(*) FROM pg_constraint' -Atc 'SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal' -Atc 'SELECT count(*) FROM "Workspace"' -Atc 'SELECT count(*) FROM "User"'
+     echo ENSAIO_OK
+   )
+   ```
+
+   As mesmas contagens são lidas no banco de origem, pelo container `db`, e precisam bater. Sem `ENSAIO_OK` no fim, o ensaio falhou; a limpeza já rodou de qualquer forma.
+
+3. **B3, a registrar:** o `backup.sh` roda `pg_dump … | restic backup --stdin` sem `pipefail`. Um `pg_dump` que falha no meio pode gravar um dump truncado, e o script diz que concluiu. O `restore.sh` também restaura sobre o banco vivo sem `pipefail`, `--exit-on-error` nem `--single-transaction`. As duas correções são pequenas, com autorização própria. Até lá:
+   - a janela faz o próprio dump com `pipefail` e o confere lendo o fluxo inteiro (C2);
+   - depois de qualquer restauração, as contagens da B2 são repetidas no banco restaurado antes de tirar a barreira.
+
+**Parada B:** B1 entregue, revisado e publicado, e B2 com as contagens iguais.
+
+### Etapa C — A janela de manutenção (autorização própria)
+
+1. **A barreira, antes de tudo:**
+   - no painel: o Auto Deploy desligado e o recurso fixado no commit final já aqui; `MAINTENANCE_MODE=true` e `DISABLE_JOBS=true`; e o domínio do `web` retirado (`SERVICE_FQDN_WEB_8080` vazio);
+   - **entre este passo e o deploy (passo 5), nada de Restart nem Start do recurso:** a imagem que está lá é anterior à B1 e ignora o `MAINTENANCE_MODE`;
+   - no host, `docker stop <container-web> <container-api>`. Não use o Stop do recurso, que para o banco. O `backup` e o `db` seguem de pé;
+   - de fora, nenhuma resposta 2xx:
+
+     ```bash
+     curl -sS -o /dev/null -w '%{http_code}\n' https://veyra-staging.malachdigital.com.br/api/health
+     ```
+
+2. **O backup da janela, conferido antes de seguir.** O dump é feito à mão, com `pipefail` e SEM a retenção do `backup.sh`: o `forget --prune` dele apagaria o snapshot noturno do mesmo dia, que é o reserva imediato. A tag `janela` o separa dos diários.
+
+   ```bash
+   docker exec <container-backup> sh -c 'set -eo pipefail; pg_dump --format=custom --no-owner --no-privileges | restic backup --stdin --stdin-filename banco.dump --tag banco --tag staging --tag janela --host veyra-staging'
+   docker exec <container-backup> sh -c 'restic snapshots --compact --tag janela | tail -3'
+   # a conferência lê o fluxo INTEIRO: um dump truncado falha aqui (a lista sozinha passaria)
+   docker exec <container-backup> sh -c 'set -o pipefail; restic dump <snapshot-id-da-janela> /banco.dump | pg_restore -f /dev/null && echo DUMP_INTEIRO'
+   ```
+
+   O ponto de restauração é este snapshot: o estado exato antes de qualquer migration. Sem `DUMP_INTEIRO`, a janela não segue. O ideal é repetir a B2 sobre ele: com a escrita congelada, as contagens precisam bater exatamente com as da origem.
+
+3. **A classificação do que estava em andamento** (§4, passo 3), pelo container `db`. Os números são anotados para a retomada: os despachos `reserved`, `failed_before_send` e `sending`, com e sem marcador, e os usos `authorized` (só se a G1 já estiver aplicada).
+4. **As chaves, só se ausentes:**
+   - confira o painel e o container (A2: só o nome, com valor não vazio);
+   - **ausente nos dois:** gere no host (`openssl rand -base64 48`) e cole no painel como segredo, em runtime, não em build (§3.3). Limpe o terminal depois (`clear`). A `ADDRESS_LOCK_KEY` e a `OUTBOUND_APPROVAL_KEY` são independentes;
+   - **presente:** fica. Trocá-la só depois de avaliar o que depende dela:
+     - a `ADDRESS_LOCK_KEY` está nas chaves `address:` dos usos registrados, e a rotação só é em manutenção (SECURITY §8);
+     - trocar a `OUTBOUND_APPROVAL_KEY` invalida as aprovações pendentes (`approval_stale`);
+   - **presente só no painel** (o caso de um deploy que caiu): fica a do painel, que é a do próximo deploy.
+5. **A imagem nova, atrás da barreira:**
+   - com o recurso já fixado no commit final e o Auto Deploy desligado (passo 1), faça o **Deploy**, com `MAINTENANCE_MODE=true`, `DISABLE_JOBS=true`, `META_TRANSPORT_MODE=fake` e `VEYRA_ENV=staging`;
+   - depois do deploy:
+     - `docker stop <container-web>`;
+     - as labels conferidas (§4, passo 4.2);
+     - de fora, nenhum 2xx em `/api/*`;
+     - **por dentro, fora do loopback, 503** — a barreira de fato ligada:
+
+       ```bash
+       docker exec <container-db> wget -S -O /dev/null http://api:3001/api/health 2>&1 | grep -E 'HTTP/'
+       ```
+
+     - pelo loopback, a saúde: `docker exec <container-api> curl -fsS http://127.0.0.1:3001/api/health`.
+
+   Com `DISABLE_JOBS=true`, a API nova não abre workers nem a reconciliação da subida, e a checagem de boot é só de código: nada toca o banco até as migrations. Por isso, atrás da barreira, a regra do ADR-049 ("migration antes do código", da `scheduling_clock`) não se aplica: não há tráfego nem worker para quebrar.
+
+6. **As migrations pendentes, pelo estado real:**
+
+   ```bash
+   docker exec <container-api> npx --no-install prisma migrate status
+   docker exec <container-db> sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Atc "SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NULL AND rolled_back_at IS NULL"'
+   ```
+
+   - **Parada imediata:** uma migration em andamento ou falhada, com `finished_at` e `rolled_back_at` nulos. Segue "Falha de migration" (§4), em manutenção. Um `rolled_back_at` preenchido, seguido de uma reaplicação concluída, é histórico normal.
+   - **Parada imediata:** o `status` mostra migration aplicada no banco que não existe no commit final. O código seria mais antigo que o schema.
+   - **A F4.1a** (`20261023120000_conversation_sender_and_phone_identity`), se pendente: siga o passo do §4 dela, com os comandos da imagem.
+     - O `node dist/cli/identity-diagnose.js` roda ANTES do `migrate deploy`.
+     - Grupo encontrado é parada: o tratamento é humano.
+     - Depois da migration, o `node dist/cli/phones-normalize.js`, como o §4 manda.
+   - **As de `lock_timeout`** seguem o §4.
+   - Então: `docker exec <container-api> npx --no-install prisma migrate deploy`, e o inventário de cada migration (§4).
+
+7. **As conferências, ainda em manutenção:**
+   - `migrate status` sem pendentes;
+   - `SELECT count(*) FROM "ClinicsSettings"` igual ao lido na etapa A, porque nenhum workspace foi ativado nesta etapa;
+   - as consultas pós-migration do §4;
+   - a varredura de FKs nos dados: `docker exec <container-api> node dist/cli/check-cross-tenant-fk.js`, que precisa terminar limpa.
+
+**Parada C:** o banco no schema do commit final, conferido, ainda atrás da barreira. **Em falha em qualquer passo,** a barreira fica, e a recuperação é a do primeiro princípio, a partir do snapshot conferido no passo 2. Depois de uma restauração, as contagens da B2 são repetidas no banco restaurado antes de qualquer outro passo.
+
+### Etapa D — O workspace da demonstração (autorização própria; ainda em manutenção)
+
+Pelas CLIs, no container `api`. O que protege o workspace `staging` é o Clinics continuar inativo nele (§7.1); o `demo` é dedicado por decisão do usuário.
+
+1. **O workspace `demo`.** A conta do Owner existe, e ele entra como Owner direto:
+
+   ```bash
+   docker exec <container-api> node dist/cli/provision.js --name "Demonstração" --slug demo --owner-email aurelioromeu@outlook.com
+   ```
+
+2. **A ativação do Clinics só no `demo`.** Ela é irreversível nele: a IA fica restrita nos contatos, e os webhooks de contato param (§7.1). Depois dela, `ClinicsSettings` deve dar o valor da etapa A mais 1:
+
+   ```bash
+   docker exec <container-api> node dist/verticals/clinics/cli/clinics.js enable --slug demo
+   ```
+
+3. **O canal fictício,** com o token fictício por pipe. O `-i` leva o pipe para dentro do container. O token literal só é aceitável por ser fictício; um token real vai por `docker exec -it`, sem `--token-stdin`, pela pergunta sem eco:
+
+   ```bash
+   printf '%s' 'token-ficticio-da-demonstracao' | docker exec -i <container-api> node dist/cli/channel-whatsapp.js --slug demo --phone-number-id 000000000000011 --waba 000000000000100 --name "WhatsApp da demonstração" --token-stdin
+   ```
+
+4. **As três finalidades,** com os campos da demonstração:
+
+   ```bash
+   docker exec <container-api> node dist/cli/consent-purpose.js --slug demo --key clinics_confirmacao --category utility --description "Lembretes e confirmação dos seus horários na clínica (demonstração)" --fields contato.primeiro_nome,clinics.data,clinics.hora
+   docker exec <container-api> node dist/cli/consent-purpose.js --slug demo --key clinics_reativacao --category utility --description "Aviso de retorno pendente na clínica (demonstração)" --fields contato.primeiro_nome
+   docker exec <container-api> node dist/cli/consent-purpose.js --slug demo --key atendimento_retomada --category utility --description "Retomar o seu atendimento por mensagem (demonstração)" --fields contato.nome
+   ```
+
+5. **Os templates fictícios,** cadastrados e revisados em nome do usuário. É a autorização explícita dele, nesta etapa, limitada aos `demo_*`:
+
+   ```bash
+   docker exec <container-api> node dist/cli/templates-demo.js --slug demo --channel <channelId do passo 3> --reviewer aurelioromeu@outlook.com
+   ```
+
+6. **Os dados clínicos fictícios:**
+
+   ```bash
+   docker exec <container-api> node dist/verticals/clinics/cli/demo-carregar.js --slug demo --actor aurelioromeu@outlook.com
+   ```
+
+7. **As conferências:**
+   - o Clinics só no `demo`;
+   - as três versões revisadas;
+   - a carga concluída, sem itens pulados: rodar de novo diz "já terminou".
+
+**Parada D:** a demonstração pronta, ainda atrás da barreira.
+
+### Etapa E — A retomada (autorização própria)
+
+1. No painel:
+   - `MAINTENANCE_MODE=false` e `DISABLE_JOBS=false`;
+   - o domínio do `web` devolvido;
+   - **Redeploy** do MESMO commit.
+2. De fora: `curl -fsS https://veyra-staging.malachdigital.com.br/api/health`.
+3. O login do Owner. Os workspaces `staging` e `demo` no seletor, e o aviso de envio simulado no `demo`.
+4. **Se a retomada falhar,** volte à barreira: `docker stop <container-web> <container-api>`, `MAINTENANCE_MODE=true` e `DISABLE_JOBS=true` no painel, e a conferência de fora. Nada de Redeploy de commit anterior.
+5. O INC-2026-10-26-01 fechado no §12, com a causa e o que foi feito, e os `.log` da etapa A apagados.
+
+**Parada E:** a demonstração no ar, para o uso do usuário.
+
+### Etapa F — O uso
+
+O usuário entra e troca para o workspace Demonstração. Depois:
+
+1. Na ficha de um paciente fictício, registra o consentimento (a confirmação de horário).
+2. Nos Envios, escolhe o paciente, vê a prévia, aprova e acompanha até "Enviado (simulado)". O outbox roda a cada minuto.
+3. Nas Métricas, a entrega e a resposta aparecem como "Sem dados", por desenho. Nada sai para a Meta.
+
+**Antes de voltar o staging à Graph,** algum dia, as versões `demo_*` saem de uso.

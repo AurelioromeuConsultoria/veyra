@@ -168,6 +168,16 @@ export const clinicsExtension: CoreExtension = {
       'archivedAt',
     ],
     clinicsUnit: ['name', 'timezone'],
+    // o marcador da carga da demonstração (ADR-048 adendo 13): só as contagens
+    clinicsDemoLoad: [
+      'servicos',
+      'profissionais',
+      'contatos',
+      'pacientes',
+      'agendamentos',
+      'retornos',
+      'pulados',
+    ],
     // classe P: ids, vínculo e arquivamento; o NOME vira [changed]. Horários e
     // serviços habilitados entram como o fato e os ids (quantidade, lista)
     clinicsProfessional: ['membershipId', 'archivedAt', 'serviceIds', 'intervalCount'],
