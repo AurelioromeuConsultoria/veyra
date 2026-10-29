@@ -8,6 +8,8 @@ import { TEST_DATABASE_URL, assertIsTestDb } from './db-url';
 assertIsTestDb();
 process.env.DATABASE_URL = TEST_DATABASE_URL;
 process.env.NODE_ENV ??= 'test';
+// obrigatória (ADR-053): os testes de integração rodam fora da manutenção
+process.env.MAINTENANCE_MODE ??= 'false';
 process.env.JWT_SECRET ??= 'jwt-secret-de-teste-de-integracao-32ch';
 process.env.WEB_ORIGIN ??= 'http://localhost:5175';
 process.env.TOKEN_ENCRYPTION_KEY ??= 'chave-de-cifra-de-teste-de-integracao-32';

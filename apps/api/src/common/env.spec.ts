@@ -12,9 +12,25 @@ const minimo = {
   TOKEN_ENCRYPTION_KEY: 'b'.repeat(32),
   ADDRESS_LOCK_KEY: 'c'.repeat(32),
   OUTBOUND_APPROVAL_KEY: 'd'.repeat(32),
+  MAINTENANCE_MODE: 'false',
 };
 
 describe('validateEnv', () => {
+  it('MAINTENANCE_MODE é obrigatória e só aceita true ou false (ADR-053)', () => {
+    const semAVariavel: Record<string, unknown> = { ...minimo };
+    delete semAVariavel.MAINTENANCE_MODE;
+    expect(() => validateEnv(semAVariavel)).toThrow(
+      /MAINTENANCE_MODE é obrigatória: true ou false/,
+    );
+    for (const invalido of ['', 'sim', '1', 'TRUE', 'on']) {
+      expect(() => validateEnv({ ...minimo, MAINTENANCE_MODE: invalido })).toThrow(
+        /MAINTENANCE_MODE/,
+      );
+    }
+    expect(validateEnv({ ...minimo, MAINTENANCE_MODE: 'true' }).MAINTENANCE_MODE).toBe(true);
+    expect(validateEnv({ ...minimo, MAINTENANCE_MODE: 'false' }).MAINTENANCE_MODE).toBe(false);
+  });
+
   it('aceita o conjunto mínimo e aplica os defaults', () => {
     const env = validateEnv({ ...minimo });
     expect(env.PORT).toBe(3001);

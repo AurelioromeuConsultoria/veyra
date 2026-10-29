@@ -5226,7 +5226,9 @@ Nada muda no staging.
 - integração 1.141 (180, 243, 162, 297 e 259 nos cinco blocos);
 - E2E 53, com as duas pilhas: os 52 da pilha principal e o cenário completo da demonstração.
 
-### Adendo 13 (2026-10-29) — F4.4c: o cadastro do canal compilado e a carga da demonstração (APROVADO pelo usuário; implementada, revisada e validada; commit local, sem push)
+### Adendo 13 (2026-10-29) — F4.4c: o cadastro do canal compilado e a carga da demonstração (publicada e validada em `c378367`)
+
+**Publicação (2026-10-29).** O usuário autorizou o push de `234fb37` e `c378367`, nessa ordem, sem force. Os quatro jobs do CI da árvore final (`c378367`) terminaram verdes no run 40908871982: lint e formatação, tipos e build, testes, e e2e.
 
 **As decisões do usuário (2026-10-29), na autorização do push da F4.4b:**
 
@@ -7835,7 +7837,7 @@ A forma (um arquivo versionado lido pelo catálogo falso do staging, e o cadastr
 
    Ele também prova que, sem a variável ou com valor inválido, a API não sobe. **Depois do diagnóstico, ele roda de novo no ponto real do staging.**
 
-6. **O limite, declarado:** o `web` (nginx) continua servindo o HTML estático da SPA. A tela abre, mas toda chamada à API recebe 503, e nenhum dado aparece nem operação é feita. O critério de conferência da janela é "nenhum 2xx em `/api/*`", nunca "toda URL dá 503".
+6. **O limite, declarado:** o `web` (nginx) continua servindo o HTML estático da SPA. A tela abre, mas toda chamada à API recebe 503, e nenhum dado aparece nem operação é feita. O critério de conferência da janela é "nenhum 2xx em `/api/`", com a barra (o `/api` sem ela é rota da SPA, e o `web` responde 200 com o `index.html`), nunca "toda URL dá 503".
 
 **Alternativas consideradas:**
 
@@ -7848,3 +7850,22 @@ A forma (um arquivo versionado lido pelo catálogo falso do staging, e o cadastr
 - A janela do §14 fica contínua: a imagem antiga é parada antes do backup e substituída pela imagem protegida, que já sobe em manutenção, sem janela de acesso.
 - Toda configuração (local, CI, E2E, staging) declara a variável.
 - **Uma imagem anterior a este ADR ignora a variável.** Durante a janela, nunca se faz Redeploy de um commit anterior.
+
+**Implementação (2026-10-29).** O que o código fixou, e o que as revisões de fechamento mudaram:
+
+- **A costura dos testes:** `configureHttp(app, origem, { manutencao })`. A opção só LIGA a barreira; o produto lê `MAINTENANCE_MODE` do `ConfigService`, e `false` na opção não desliga o que o ambiente pediu.
+- **Fail-closed também contra o tipo:** a barreira e os jobs liberam só com o `false` validado (`config !== false`). A chave ausente, renomeada ou lida como string conta como manutenção: o erro aparece como 503 em tudo, e nunca como barreira desligada em silêncio. Testes de unidade do `configureHttp` e do `JobsService`, com config falsa, provam o caminho do produto: com o ambiente em `true` e sem opção, o primeiro `app.use` é a barreira e responde 503; com a chave ausente ou a string `"false"`, também.
+- **A resposta:** 503 com `Retry-After: 300` e `Cache-Control: no-store`. O `HEAD /api/health` também é barrado: a exceção é só o `GET`, pelo socket de loopback, e o caminho exato.
+- **O teste pela rede** (integração) sobe um segundo servidor HTTP com a mesma app no endereço IPv4 da máquina e forja `X-Forwarded-For` e `X-Real-IP`. Sem endereço de rede, o teste FALHA; só `VEYRA_TESTE_SEM_REDE=1` o dispensa, de propósito.
+- **O ensaio do schema antigo** (item 5) roda com o ambiente do staging (`NODE_ENV=production`, `VEYRA_ENV=staging`, transporte simulado) e ganhou:
+  - **a medida dos inicializadores** (item 4): a soma de `seq_scan + idx_scan` e das escritas de `pg_stat_user_tables` é a mesma antes e depois da subida e das requisições barradas. Uma leitura de contraste prova que a medida registra;
+  - os casos negativos (sem a variável, vazia, `sim`) com prazo e com o motivo conferido;
+  - a porta conferida livre antes e depois, para provar que quem respondia era a API do ensaio;
+  - o processo em segundo plano por `exec`, para o `kill` encerrar o `node`, e não um subshell. A primeira versão deixou a API órfã, e as migrations "com a API parada" rodaram com ela viva;
+  - a recusa com `DOCKER_HOST` ou um contexto Docker remoto.
+
+  Rodou verde até `20261022120000_clinics_returns`, com zero leituras e escritas de tabela na subida.
+
+- **A documentação da janela** (DEPLOY_STAGING §5, §6 e §14) passou a exigir `MAINTENANCE_MODE=true`:
+  - a volta à barreira é sempre um **Deploy** do mesmo commit, nunca Start, Restart ou Rollback, porque o container guarda o ambiente de quando foi criado;
+  - a conferência do container novo inclui o `docker inspect` do ambiente não secreto.

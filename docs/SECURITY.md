@@ -219,6 +219,15 @@ O webhook do WhatsApp é o **único caminho de escrita público e não autentica
 
 11. **O que não se promete** (ADR-052 item 7): a mensagem pode sair depois de uma revogação se a guarda se perder — o caso fica `in_doubt`, nunca reenviado; e o Veyra só prova que pediu uma versão cujo conteúdo, segundo a Meta, tinha aquele hash momentos antes.
 
+## 7-H. A barreira de manutenção (ADR-053)
+
+1. **`MAINTENANCE_MODE` é obrigatória, sem padrão.** Ausente ou inválida, a aplicação não sobe, e as CLIs também não. O compose do staging recusa sem ela (`${MAINTENANCE_MODE:?}`). No código, a barreira e os jobs só liberam com o `false` validado: um valor de outro tipo ou a chave ausente contam como manutenção.
+2. **Com `true`, toda requisição à API recebe 503,** com `code: "maintenance"`, `Retry-After` e `Cache-Control: no-store`. O middleware é o primeiro `app.use`: a requisição barrada não lê cookie nem corpo, não autentica e não toca o banco. Isso vale para o login, o webhook da Meta, as rotas autenticadas, a rota inexistente, o OPTIONS e a saúde vista de fora.
+3. **A única exceção é `GET /api/health` pelo SOCKET de loopback** (`127.0.0.1`, `::1`, `::ffff:127.0.0.1`), para o healthcheck do container. Nunca por `req.ip`, `X-Forwarded-For` ou `X-Real-IP`: o nginx do `web` repassa o XFF do cliente.
+4. **A manutenção desliga os jobs no processo da API,** qualquer que seja o `DISABLE_JOBS`: nenhum worker, varredura ou reconciliação da API toca o banco na janela. Os inicializadores também não leem nem escrevem tabela no boot; o ensaio do schema antigo mede isso pelos contadores do Postgres (ADR-053, nota de implementação).
+5. **O limite:** a barreira protege a API e a execução de tarefas. O `web` continua servindo o HTML estático da SPA, sem dado nem operação. Ela não promete que toda URL responda 503.
+6. **Uma imagem anterior ao ADR-053 ignora a variável.** Na janela, os containers antigos são parados antes do backup, e nenhum commit anterior é reimplantado (DEPLOY_STAGING §14).
+
 ## 8. Segredos e criptografia
 
 - Segredos **jamais** em DTOs, logs, front, commits ou mensagens de erro. Hook `guard-secrets.sh` **nega** commit de `.env`, chaves privadas e tokens reais (só `.env.example` com placeholders).

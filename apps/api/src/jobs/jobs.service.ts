@@ -55,6 +55,14 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   async onModuleInit(): Promise<void> {
+    // a manutenção desliga os jobs QUALQUER que seja o DISABLE_JOBS (ADR-053):
+    // nenhum worker, varredura ou reconciliação toca o banco na janela.
+    // Fail-closed: só o `false` validado libera; um valor de outro tipo ou a
+    // chave ausente contam como manutenção
+    if (this.config.get<boolean>('MAINTENANCE_MODE') !== false) {
+      this.logger.log('Jobs desabilitados (manutenção)');
+      return;
+    }
     const disabled =
       this.config.get<boolean>('DISABLE_JOBS') === true ||
       this.config.get<string>('NODE_ENV') === 'test';

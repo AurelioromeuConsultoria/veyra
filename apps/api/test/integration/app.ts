@@ -11,6 +11,8 @@ import { configureHttp } from '../../src/bootstrap';
 export async function createTestApp(
   extraControllers: Type<unknown>[] = [],
   overrides: { provide: unknown; useValue: unknown }[] = [],
+  /** a barreira de manutenção ligada (ADR-053); o padrão é o do ambiente (`false`) */
+  opcoes: { manutencao?: boolean } = {},
 ): Promise<INestApplication> {
   let builder = Test.createTestingModule({
     imports: [AppModule],
@@ -24,7 +26,7 @@ export async function createTestApp(
   const app = moduleRef.createNestApplication({ bodyParser: false });
   // MESMA configuração do bootstrap de produção: o parser com `verify` (corpo
   // bruto para a assinatura do webhook) precisa existir aqui também
-  configureHttp(app, process.env.WEB_ORIGIN as string);
+  configureHttp(app, process.env.WEB_ORIGIN as string, opcoes);
   try {
     await app.init();
   } catch (error) {

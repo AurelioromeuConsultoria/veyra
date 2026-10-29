@@ -145,7 +145,8 @@ Direção de dependência: vertical → Core. Nunca o contrário. A skill `creat
 
 ## 8. Jobs, outbox e efeitos externos
 
-- **pg-boss** no mesmo Postgres (ADR-007). Kill switch `DISABLE_JOBS`.
+- **pg-boss** no mesmo Postgres (ADR-007). Kill switch `DISABLE_JOBS`; a manutenção prevalece sobre ele.
+- **A barreira de manutenção** (ADR-053) é o primeiro middleware do `configureHttp` (`common/manutencao.ts`). Com `MAINTENANCE_MODE=true` (obrigatória, sem padrão), toda requisição à API recebe 503, menos a saúde pelo socket de loopback, e o `JobsService` não sobe o pg-boss, qualquer que seja o `DISABLE_JOBS`.
 - Jobs cross-workspace usam o padrão `runForAllWorkspaces`: itera workspaces via `raw` (justificado) e abre `cls.run()` com o `workspaceId` de cada um, try/catch por workspace — falha de um não derruba os outros.
 - **Outbox transacional**: efeito externo (webhook out, e-mail, mensagem) nunca é disparado na transação de domínio. A transação grava `OutboxEvent`; um worker pg-boss entrega com retry/backoff exponencial e idempotência (`dedupeKey` + unique tenant-scoped, capturando P2002).
 - **Idempotência HTTP**: endpoints de mutação da API pública aceitam `Idempotency-Key` (armazenada por workspace com TTL).

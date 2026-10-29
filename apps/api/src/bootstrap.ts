@@ -1,7 +1,9 @@
 import type { INestApplication } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import cookieParser from 'cookie-parser';
 import { SESSION_ISSUED_HEADER, SESSION_SCOPE_HEADER } from '@veyra/contracts';
 import { json } from 'express';
+import { barreiraDeManutencao } from './common/manutencao';
 
 /**
  * Configuração HTTP compartilhada entre `main.ts` e o harness de testes.
@@ -11,7 +13,22 @@ import { json } from 'express';
  * estava só no bootstrap, e no harness o `rawBody` vinha vazio. Os testes
  * NEGATIVOS passavam por acidente, o que é a pior forma de falso verde.
  */
-export function configureHttp(app: INestApplication, webOrigin: string): void {
+export function configureHttp(
+  app: INestApplication,
+  webOrigin: string,
+  /**
+   * só os testes passam, e só para LIGAR a barreira: o produto lê
+   * `MAINTENANCE_MODE` do ambiente validado, e `false` aqui não a desliga
+   */
+  opcoes: { manutencao?: boolean } = {},
+): void {
+  // fail-closed: basta um dos dois dizer manutenção, e só o `false` validado
+  // do ambiente libera (um valor de outro tipo ou a chave ausente, não)
+  const manutencao =
+    opcoes.manutencao === true || app.get(ConfigService).get<boolean>('MAINTENANCE_MODE') !== false;
+  // a BARREIRA vem antes de tudo (ADR-053): nenhum cookie, corpo, CORS, guard
+  // ou rota roda para a requisição barrada
+  if (manutencao) app.use(barreiraDeManutencao());
   app.setGlobalPrefix('api');
   app.use(cookieParser());
   // limite explícito de body: comporta o import de 1000 contatos (~500KB) e

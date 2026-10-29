@@ -61,6 +61,15 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
+  /**
+   * A barreira de manutenção (ADR-053): `true` recusa toda requisição (503),
+   * menos a saúde pelo loopback, e não sobe os jobs. OBRIGATÓRIA e sem padrão:
+   * ausente ou inválida, nada sobe — uma barreira que se desliga em silêncio
+   * por esquecimento não é barreira.
+   */
+  MAINTENANCE_MODE: z
+    .enum(['true', 'false'], { message: 'MAINTENANCE_MODE é obrigatória: true ou false' })
+    .transform((value) => value === 'true'),
   AUDIT_RETENTION_DAYS: z.coerce.number().int().min(30).max(3650).default(365),
   /**
    * Prazo do CONTEÚDO derivado de conversa em `AiRun.result` (ADR-042). Menor

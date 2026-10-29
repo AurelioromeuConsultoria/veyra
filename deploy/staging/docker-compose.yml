@@ -80,6 +80,9 @@ services:
       # deploy da guarda sobe o código novo com `true` até as migrations
       # (DEPLOY_STAGING §4). Fora disso, `false`.
       DISABLE_JOBS: ${DISABLE_JOBS:-false}
+      # a barreira de manutenção (ADR-053): OBRIGATÓRIA e SEM padrão — ausente,
+      # o compose recusa; um padrão silencioso desligaria a barreira por esquecimento
+      MAINTENANCE_MODE: ${MAINTENANCE_MODE:?MAINTENANCE_MODE é obrigatória (true ou false; ADR-053)}
     depends_on:
       db:
         condition: service_healthy

@@ -162,6 +162,7 @@ export function cli(
       DATABASE_URL: url,
       ...E2E_CHAVES,
       DISABLE_JOBS: 'true',
+      MAINTENANCE_MODE: 'false',
       ...extra,
     },
     input: entrada,
