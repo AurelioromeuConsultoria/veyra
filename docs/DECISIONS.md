@@ -573,6 +573,39 @@ Implementado com duas decisões que só apareceram ao escrever: a seleção é p
 
 **Residual aceito:** com transporte falso, nenhum recibo de status volta da Meta — o `MessageDispatch` fica em `sent` para sempre e a quota é cobrada. Na tela, "enviada" fica indistinguível do envio real para quem não olha o banco; o `externalId` marcado (`wamid.FAKE-…`) é o que distingue.
 
+### Adendo 1 (2026-10-29) — o backup e a restauração que falham de verdade (APROVADO pelo usuário; desenho antes do código)
+
+**Contexto.** A revisão do roteiro da demonstração (ADR-048 adendo 13; DEPLOY_STAGING §14) achou dois defeitos nos scripts do item 7. O usuário aprovou corrigi-los, num commit próprio, com testes de falha.
+
+- **O `backup.sh`:**
+  - O agendador chama `if executar_backup; then`, e dentro da condição de um `if` o `set -e` fica desligado. Uma falha no meio não interrompe o ciclo: o log diz "dump concluído", a retenção roda e a mensagem final é de sucesso.
+  - O `pg_dump | restic backup --stdin` não tem `pipefail`. Pior: quando o `pg_dump` falha, o `restic` grava um snapshot com o que recebeu até ali. Um snapshot parcial, com a tag `banco`, vira o "mais recente".
+- **O `restore.sh`:** restaura sobre o banco sem `pipefail`, `--exit-on-error` nem `--single-transaction`. Um dump truncado ou um erro no meio deixa o banco parcialmente aplicado, e o log diz "concluída".
+
+**As decisões do usuário (2026-10-29):**
+
+- corrigir, incluindo o caminho agendado;
+- não considerar `set -e` e `pipefail` suficientes sem conferir a propagação dentro do `if`;
+- testes de falha que provem:
+  - a falha do `pg_dump` ou do `restic` não produz mensagem de sucesso;
+  - o ciclo interrompe e não aplica a retenção depois de um backup falho;
+  - o agendador registra a falha e tenta de novo no próximo horário;
+  - um dump truncado ou um erro de restauração não deixa aplicação parcial no banco de teste;
+  - as falhas preservam os pontos de recuperação que já existem;
+- a validação no shell e na imagem que os scripts de fato usam;
+- todo ensaio de restauração em banco descartável, nunca no staging.
+
+**A decisão:**
+
+1. **O dump pelo próprio `restic`:** `restic backup --stdin-from-command -- pg_dump …` (restic 0.17, o da imagem). O `restic` roda o `pg_dump` e não cria snapshot se ele sair com erro. Nada de arquivo temporário com dado no disco, como antes, e nenhum snapshot parcial.
+2. **Cada ciclo é um processo próprio.** O agendador chama o próprio script (`backup.sh --ciclo`), e não a função dentro do `if`. O `set -eu` e o `pipefail` do processo filho valem de fato. Além disso, cada passo confere o próprio resultado e sai com erro explícito: a correção não depende de o `set -e` estar ativo.
+   - **A ordem:** o banco, o storage, a retenção, a verificação. A retenção só roda depois que o dump e o storage terminaram bem.
+   - **A falha:** o filho sai com código diferente de zero, sem mensagem de sucesso. O agendador registra "ciclo falhou (código N)" e dorme até o próximo horário.
+3. **A restauração em uma transação:** `pg_restore --single-transaction --exit-on-error` (o `--clean --if-exists` continua). O fluxo do `restic dump` vai por um pipe com `pipefail`. Um dump truncado, um `restic` que falha ou um erro de restauração desfazem tudo, e o log diz que falhou. A restauração de storage não muda.
+4. **Os testes** (`deploy/staging/backup/testes/falhas.sh`) rodam na imagem construída do próprio Dockerfile, com o shell e as versões de `restic` e do cliente Postgres dela. Usam um Postgres descartável e um repositório `restic` local, numa rede própria. Cobrem cada falha da lista acima. Nada toca o staging.
+
+**Consequências:** a mensagem "ciclo concluído com sucesso" passa a significar o que diz. Um dump que falha não vira o snapshot mais recente. A retenção nunca roda depois de uma falha. A restauração é tudo ou nada. O roteiro da janela (DEPLOY_STAGING §14) continua fazendo o próprio dump conferido, porque o container que estiver no ar antes do deploy ainda roda o script antigo.
+
 ## ADR-047 — Contrato de extensão do Core: seis pontos de composição, nenhum registro de plugins
 
 **Status:** aceito · **Data:** 2026-10-19 · Aprovação da F0 (documental): aprova o desenho, não código nem migrations; nada implementado até a F1
@@ -7763,3 +7796,55 @@ Os casos que pediram trabalho:
 - **não aparecem sozinhos na configuração real,** não criam consentimento nenhum e não passam por templates aprovados na Meta: ids e nomes inventados, e uma WABA fictícia que só o canal da demonstração usa.
 
 A forma (um arquivo versionado lido pelo catálogo falso do staging, e o cadastro e a revisão pelo procedimento) entra no plano da demonstração (DEPLOY_STAGING §13) e é implementada com ele, sem abrir nova frente de funcionalidades. O desenho está no ADR-048, adendo 12, item 2 (2026-10-29): o arquivo `demo_*`, o catálogo falso que só responde à WABA fictícia e o procedimento `templates:demo`, que cadastra e revisa pelos serviços existentes, com o revisor que tem `templates:review`.
+
+## ADR-053 — Modo de manutenção da API: a barreira contínua da janela de deploy
+
+**Status:** APROVADO pelo usuário (2026-10-29); desenho antes do código · **Data:** 2026-10-29
+
+**Contexto.** O deploy está bloqueado desde 2026-10-21 (DEPLOY_STAGING §4), porque a barreira da janela de manutenção não é contínua. Hoje ela é parar os containers e tirar o domínio do `web`. O deploy recria os containers, e o Coolify pode gerar uma rota padrão por alguns segundos. `DISABLE_JOBS` desliga os workers, mas não bloqueia requisições. Uma falha de schema também não é barreira. O plano da demonstração (ADR-048 adendo 13; DEPLOY_STAGING §14) depende de uma barreira que não dependa do proxy.
+
+**As decisões do usuário (2026-10-29):**
+
+- a manutenção bloqueia as requisições antes da autenticação, da leitura do corpo e do acesso ao banco;
+- só a saúde interna, pelo socket de loopback, fica acessível, sem confiar em cabeçalho encaminhado;
+- a manutenção impede iniciar jobs e reconciliações, mesmo com `DISABLE_JOBS=false`;
+- a configuração ausente ou inválida impede a subida;
+- conferir os inicializadores: desligar os workers não prova, sozinho, que a imagem nova sobe com o schema antigo. O cenário é testado antes de o deploy depender dele;
+- o HTML estático pode continuar acessível, desde que não exponha dados nem permita operações. A barreira protege a API e a execução de tarefas; ela não promete que toda URL responde 503;
+- a versão antiga ignora a variável. O roteiro preserva a parada dos containers antigos antes do backup e a troca pela imagem protegida, sem janela de acesso.
+
+**A decisão:**
+
+1. **A variável `MAINTENANCE_MODE`:** `true` ou `false`, obrigatória, sem padrão, no `env.ts`. Ausente ou com outro valor, a aplicação não sobe, e as CLIs também não, porque validam o mesmo ambiente.
+   - **No compose do staging:** `${MAINTENANCE_MODE:?…}`, que recusa sem ela, e nunca um padrão silencioso como o do `DISABLE_JOBS`.
+   - **Nos ambientes de desenvolvimento, teste e E2E,** ela é declarada `false`.
+2. **O middleware da barreira** (`common/manutencao.ts`) é o PRIMEIRO `app.use` do `configureHttp`. Ele vem antes dos cookies, do corpo (o JSON e o corpo bruto do webhook), do CORS, dos guards e de qualquer rota. Por isso a requisição barrada não autentica, não lê o corpo e não toca o banco.
+   - **A resposta:** 503, com `code: "maintenance"`, `Retry-After` e `Cache-Control: no-store`. Ela vale para tudo: o login, o webhook da Meta, as rotas autenticadas, a rota inexistente, o OPTIONS do CORS e a saúde vista de fora.
+   - **A única exceção é `GET /api/health`,** quando o endereço do SOCKET é de loopback (`127.0.0.1`, `::1` ou `::ffff:127.0.0.1`). Nunca `req.ip`, `X-Forwarded-For` ou `X-Real-IP`: o nginx do `web` repassa o XFF do cliente, e o `req.ip` depende de `trust proxy`. É o healthcheck do container e a conferência por dentro.
+3. **Os jobs:** com `MAINTENANCE_MODE=true`, o `JobsService` não sobe o pg-boss, qualquer que seja o `DISABLE_JOBS`. Isso inclui os workers do outbox, as varreduras, a reconciliação dos usos e a da subida, e os trabalhos periódicos dos verticais, porque `agendarPeriodico` não agenda sem o pg-boss.
+4. **Os inicializadores,** conferidos um a um. Com a manutenção, nenhum lê ou escreve tabela do domínio no boot:
+   - o registro das especificações de uso (IA, webhook, despacho) e da porta do verificador é só em memória;
+   - a checagem do catálogo de permissões é só de código;
+   - o `PrismaService` conecta e lê `SHOW TimeZone`, que é uma configuração do servidor, não uma tabela.
+5. **O teste do schema antigo** (`deploy/staging/ensaios/manutencao-com-schema-antigo.sh`). Ele roda a API compilada num banco descartável, no ponto do histórico de migrations que se pedir (o padrão é o último antes da F4), com `MAINTENANCE_MODE=true` e `DISABLE_JOBS=false`, e prova:
+   - que ela sobe;
+   - que a saúde pelo loopback dá 200, e a pelo endereço da rede dá 503;
+   - que o login pelo loopback dá 503;
+   - que o schema do pg-boss não nasce;
+   - que as migrations pendentes se aplicam depois, com a API parada.
+
+   Ele também prova que, sem a variável ou com valor inválido, a API não sobe. **Depois do diagnóstico, ele roda de novo no ponto real do staging.**
+
+6. **O limite, declarado:** o `web` (nginx) continua servindo o HTML estático da SPA. A tela abre, mas toda chamada à API recebe 503, e nenhum dado aparece nem operação é feita. O critério de conferência da janela é "nenhum 2xx em `/api/*`", nunca "toda URL dá 503".
+
+**Alternativas consideradas:**
+
+- **A barreira no proxy:** alterar o proxy compartilhado da VPS não está autorizado, e ele é de outros projetos.
+- **Um guard:** o `JwtAuthGuard` consulta o banco antes de qualquer guard nosso, e a janela protege justamente o banco.
+- **Confiar no `DISABLE_JOBS` sozinho:** ele não bloqueia requisições.
+
+**Consequências:**
+
+- A janela do §14 fica contínua: a imagem antiga é parada antes do backup e substituída pela imagem protegida, que já sobe em manutenção, sem janela de acesso.
+- Toda configuração (local, CI, E2E, staging) declara a variável.
+- **Uma imagem anterior a este ADR ignora a variável.** Durante a janela, nunca se faz Redeploy de um commit anterior.
