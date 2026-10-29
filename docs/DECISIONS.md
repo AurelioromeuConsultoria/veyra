@@ -4915,7 +4915,9 @@ As telas ficam na F4.4.
   - **L7**, o gatilho do vínculo sem o ramo "o workspace já saiu". Na ordem atual da cascata, o agendamento já foi apagado quando o vínculo é apagado, e o ramo é redundante. Ele fica como garantia contra outra ordem.
 - **A revisão do delta (`security`)** achou que o `FOR SHARE` com o estado no `WHERE` não travava a linha ainda não atendida. Foi corrigido com a trava sem condição, com teste. A reativação ganhou também um limite inferior na consulta dos pedidos: os criados mais de 25 horas antes do período não podem ter saído nele.
 
-### Adendo 11 (2026-10-28) — F4.4: as telas e o E2E do envio da clínica (implementada e revisada; commit local, sem push)
+### Adendo 11 (2026-10-28) — F4.4: as telas e o E2E do envio da clínica (publicada e validada em `be288bf`)
+
+**Publicação (2026-10-29).** O usuário autorizou o push de `e7a70e8` e `be288bf`, nessa ordem, sem force. O run do `e7a70e8` foi cancelado pela concorrência do workflow, que cancela o anterior do mesmo ramo. Os quatro jobs do CI da árvore final (`be288bf`) terminaram verdes no run 40811895290: lint e formatação, tipos e build, testes, e e2e. A única anotação foi o aviso do GitHub sobre a migração do `ubuntu-latest`, que não é falha.
 
 **Escopo, pela instrução do usuário de 2026-10-28:** as telas de candidatos, prévia, aprovação e acompanhamento dos pedidos; o vínculo com o deal; as métricas, com "sem dados", cobertura parcial, estados incertos e permissões corretamente apresentados. A demonstração usa envio simulado, e isso fica visível. Nenhum evento é criado para fazer a entrega ou a resposta parecerem confirmadas pelo provedor. Dados fictícios; envio real e dados reais continuam bloqueados.
 
@@ -5007,6 +5009,131 @@ A revisão do delta (`security`) aprovou as correções, sem P0, P1 nem P2. Os q
 **Residual registrado (anterior, da F4.2), sem segunda mensagem:** na repetição de uma aprovação sem resultado guardado, o Clinics faz as próprias conferências (a indisponibilidade da conferência e o nome do catálogo no texto) antes da busca do Core pelo hash. Num caso raro, um item já gravado pode voltar como "Recusado: …", enquanto a lista mostra "Aprovado: aguardando o envio". Fica para uma decisão futura do backend.
 
 **Consequência registrada:** esconder é usabilidade; quem garante é o servidor. Toda rota usada pelas telas já confere as permissões, a origem e o conteúdo.
+
+### Adendo 12 (2026-10-29) — F4.4b: o consentimento e o pedido de parar na tela, os templates fictícios, o fluxo completo da demonstração e a conciliação da aprovação repetida (APROVADO pelo usuário; desenho antes do código)
+
+**As decisões do usuário (2026-10-29), na autorização do push da F4.4:**
+
+1. **O consentimento e o pedido de parar, antes da demonstração.** A lista da instrução da F4.4 resumiu o trabalho e não retirou estas telas do planejamento.
+   - Entram a consulta, a concessão e a revogação do consentimento, o registro do pedido de parar e o desbloqueio, cada ação com as permissões já aprovadas (ADR-052, F4.1b, item 2).
+   - As rotas são as existentes. O número vem do cadastro ou da conversa, nunca digitado.
+   - Com o resultado indefinido, a chave de idempotência continua a mesma.
+   - A exceção da resposta depois do pedido de parar (ADR-052, F4.1b, item 4) **não** entra: o bloqueio continua impedindo todo envio.
+2. **A tela de revisão de template fica fora da demonstração (adiamento registrado).** Os templates fictícios fixos são cadastrados e revisados pelo procedimento administrativo, pelos mecanismos existentes de validação, permissão e auditoria. Nenhuma gravação direta no banco contorna esse fluxo.
+3. **O fluxo completo pelo navegador, antes de liberar a demonstração,** com o catálogo e o transporte falsos:
+   - o consentimento registrado pela tela;
+   - a escolha do destinatário e a prévia;
+   - a aprovação;
+   - o acompanhamento até "Enviado (simulado)".
+
+   Repetir a aprovação não cria outra mensagem. Nenhum recibo de entrega nem resposta do paciente é inventado. O cenário roda sem credenciais reais da Meta e sem tráfego real. O E2E atual da recusa continua.
+
+4. **O resultado contraditório na repetição.** O residual do adendo 11 continua registrado. Antes da demonstração, a tela concilia o resultado com o acompanhamento do pedido e não mostra como definitivamente recusado um item já aprovado. Sem confirmação, ela mostra a incerteza e preserva a tentativa original, sem sugerir novo envio.
+5. **Validação proporcional; depois, o plano executável** do staging e da demonstração. Nada disto autoriza alteração no staging, ativação, envio real ou dados reais.
+
+**1. As telas do consentimento e do pedido de parar (Core).** Duas entradas, pelas rotas da F4.1b:
+
+- **Na ficha do contato** (Contatos), a seção "Consentimentos e pedido de parar", com `consents:read` e `contacts:read` (a leitura pela rota do contato):
+  - os números exatos do contato, como o servidor os aceita, cada um com o pedido de parar ativo (recibo `PAR-`, origem e quando);
+  - os consentimentos, ativos e revogados (o histórico não se apaga): a finalidade e a versão, a descrição aceita, o canal, o número, a origem, o recibo `CON-` e a revogação;
+  - **registrar o consentimento** (`consents:manage`): o canal, um dos números exatos, a versão mais recente de cada finalidade e a origem da lista fechada. A tela mostra a descrição que a pessoa aceita antes de registrar. O número sob pedido de parar não é oferecido, e o servidor o recusa (409) de qualquer forma;
+  - **revogar** (`consents:manage`), uma vez, com a origem;
+  - **registrar o pedido de parar** de um número exato (`consents:manage`) e **retirá-lo** (`consents:unblock`), com a origem da NOVA solicitação. A tela diz que o desbloqueio não restaura consentimento nenhum.
+- **Na conversa de WhatsApp** (Inbox), o botão "Consentimento", com `consents:read` e `conversations:read` (na RAI, também `contacts:write`, a C13 que o servidor confere):
+  - o número da conversa (completo só com `contacts:read`, como o servidor o manda), o pedido de parar ativo e os consentimentos do contato para esse número;
+  - **registrar o pedido de parar** e **retirá-lo** pela rota da conversa, inclusive na RAI, sem atribuí-la a um contato;
+  - conceder e revogar não têm rota pela conversa: a tela leva à ficha do contato, quando a conversa é identificada e a pessoa lê contatos.
+- **O aviso do bloqueio:** com o pedido de parar ativo, nada sai para o número, nem resposta, nem template, nem envio da clínica.
+- **A chave de idempotência** nasce na primeira submissão de cada ação.
+  - **O resultado indefinido** é a rede, o 5xx ou o 409 do interceptor que pede a repetição. A tela guarda a chave e o corpo, trava a seção e só oferece repetir o MESMO registro.
+  - **O 4xx definitivo**, inclusive o 409 de domínio ("sob pedido de parar", "já revogado"), mostra o motivo do servidor e descarta a chave.
+  - Toda resposta relê a seção.
+
+**As três mudanças pequenas no servidor que as telas exigem:**
+
+- **`GET /api/consent-channels`** (nova, só de leitura), sob `consents:read`: os canais de WhatsApp do workspace, só `id` e `name`. Nenhuma rota listava os canais, e a concessão exige o canal. Não traz credencial nem o número do negócio. Tem teste de isolamento (o canal de outro workspace não aparece) e de permissão.
+- **`ContactConsentsDto.numbers`:** os números exatos do contato, pela mesma regra (`numerosExatos`) que a concessão e o pedido de parar conferem. A tela não normaliza telefone: escolhe entre os números que o servidor aceita. A rota já exige `contacts:read`.
+- **O código do 409 do interceptor de idempotência.** As respostas que pedem a repetição da mesma requisição passam a levar `code: "idempotency_retry"`, com a mesma mensagem. São elas:
+  - a requisição em processamento;
+  - a corrida da reserva;
+  - a tentativa anterior abandonada;
+  - a chave expirada.
+
+  O 409 da chave usada noutra requisição fica sem código: é definitivo. O web passa a ler o `code` no `ApiError`. Sem o código, o 409 de domínio do consentimento e o de "em processamento" eram indistinguíveis. As telas da F4.4 (Envios e Inbox) continuam tratando todo 409 como incerto: lá, as recusas de domínio da aprovação vêm no corpo, por item.
+
+**2. Os templates fictícios e o procedimento (ADR-052, fim).**
+
+- **O arquivo:** `apps/api/src/demo/templates-da-demonstracao.ts`, compilado na imagem. É dado da demonstração, fora dos módulos do Core, e traz:
+  - a WABA fictícia e os templates `demo_*`, com ids inventados que começam com zero (a Meta não emite id assim), em `pt_BR`, categoria `UTILITY`, só o corpo, com parâmetros posicionais;
+  - para o procedimento, o vínculo de cada parâmetro e a chave da finalidade que o revisa:
+
+    | Template                   | Vínculos                                                | Finalidade             |
+    | -------------------------- | ------------------------------------------------------- | ---------------------- |
+    | `demo_confirmacao_horario` | `contato.primeiro_nome`, `clinics.data`, `clinics.hora` | `clinics_confirmacao`  |
+    | `demo_reativacao_retorno`  | `contato.primeiro_nome`                                 | `clinics_reativacao`   |
+    | `demo_retomar_conversa`    | `contato.nome`                                          | `atendimento_retomada` |
+
+  - O Core lê só o conteúdo do catálogo, o que a Meta mostraria. Os vínculos são do procedimento.
+- **O catálogo falso:** com `transporteSimulado` (o transporte falso e `VEYRA_ENV=staging`), a fábrica do canal cria o catálogo falso com os templates do arquivo, na WABA fictícia. Ele só responde a uma credencial dessa WABA: nenhum canal de outra WABA vê os templates. Os testes continuam criando o catálogo vazio.
+- **O procedimento `templates:demo`** (CLI compilada, como `templates:register`), com `--slug`, `--channel` e `--reviewer <e-mail>`:
+  - **as recusas:** sem o transporte simulado, ou com o canal cuja credencial não está na WABA fictícia;
+  - **o cadastro** de cada template do arquivo, pelo `TemplateVersionsService.registrar`, o mesmo da CLI existente: a leitura do catálogo, a forma canônica, o hash e as versões;
+  - **a revisão,** pelo `TemplateReviewsService.revisar`, a mesma da rota: a versão ativa, a WABA, o hash, a categoria e os campos da finalidade, e a trilha `template_review.created`;
+  - **a permissão da revisão:** o revisor é a membership ativa do e-mail no workspace, e o papel dela precisa ter `templates:review`, pela mesma fonte do guard (`PermissionsService.membershipHas`). A revisão fica em nome dele, na trilha, e o procedimento roda com a autorização dessa pessoa;
+  - **a finalidade** é a versão mais recente da chave no workspace. Sem ela, o procedimento recusa e manda criá-la pela CLI `consents:purpose`: ele não cria finalidade nem consentimento;
+  - **rodar de novo não muda nada:** a versão sem mudança e a revisão existente voltam como estão;
+  - **a saída** traz só nomes, versões e resultados, nunca o token nem a resposta do catálogo.
+- **Nada aparece sozinho:** o workspace e o canal são explícitos. Outro workspace só veria os templates se alguém rodasse o procedimento nele, num canal da WABA fictícia, com o transporte simulado.
+
+**3. O fluxo completo da demonstração no E2E.** O E2E existente sobe a API com os jobs desligados e o transporte da Graph, e a recusa dele continua provada ali. O fluxo completo precisa do worker e do transporte simulado, e roda numa segunda pilha, isolada:
+
+- **O banco `veyra_e2e_demo`** (o nome contém `e2e`, como a trava exige) é recriado pelo próprio servidor da pilha antes de subir. O Playwright sobe os servidores antes do setup global, e o worker não pode nascer num banco que será recriado.
+- **A preparação, pelos procedimentos administrativos:**
+  - a base por SQL, como o setup do E2E: o catálogo de permissões, o workspace `demo`, os papéis de sistema e o Owner;
+  - a ativação do Clinics pela CLI;
+  - os dados clínicos fictícios por SQL, como os testes do Clinics: o serviço, o profissional, o expediente, o contato com número fictício e o paciente com um agendamento amanhã;
+  - o canal pelo script `channel:whatsapp`, com um token fictício pela entrada padrão e a WABA fictícia. O token é cifrado como na operação;
+  - as finalidades pela CLI `consents:purpose`;
+  - os templates e as revisões pelo `templates:demo`.
+
+  Nenhum template, revisão, consentimento ou finalidade nasce por SQL.
+
+- **A API da pilha:** `META_TRANSPORT_MODE=fake`, `VEYRA_ENV=staging`, os jobs ligados, porta e origem próprias. Um segundo servidor do web aponta para ela.
+- **O cenário:**
+  - o consentimento registrado pela ficha do contato, com o recibo `CON-` na tela;
+  - nos Envios, o paciente escolhido, a prévia com o texto exato e a aprovação;
+  - o acompanhamento até "Enviado (simulado)", pelo worker e pelo transporte falso;
+  - o aviso "Envio simulado" visível;
+  - **a repetição:** a mesma aprovação de novo, com a mesma chave, devolve a resposta guardada; com outra chave, o item é recusado. Nos dois casos, o banco tem uma só aprovação, uma só mensagem e um só despacho;
+  - **nada inventado:** o despacho fica `sent`, sem recibo de entrega nem de leitura, e a métrica da entrega fica "Sem dados".
+- **Sem a Meta:** com `transporteSimulado`, só o transporte e o catálogo falsos são instanciados. O token fictício só prova que a credencial decifra.
+
+**4. A conciliação da aprovação (Clinics, web).** Depois de toda resposta da aprovação, cada item recusado é conferido no acompanhamento (`GET /api/clinics/outreach/requests/:id`):
+
+- **o pedido ainda em rascunho:** a recusa vale, com o motivo;
+- **o pedido já aprovado** (`pending`, `sent` ou `uncertain`) **ou terminado** (`not_sent`): a tela mostra o estado do acompanhamento ("conforme o acompanhamento do pedido"), nunca "Recusado";
+- **a leitura que falhou:** o item fica "Não foi possível confirmar no acompanhamento". A prévia da tentativa e a trava continuam, e só a MESMA aprovação pode ser repetida. Nada sugere um novo envio.
+
+O residual do adendo 11 continua no servidor e continua registrado; a tela só deixa de contradizer o acompanhamento.
+
+**5. Fora desta entrega:**
+
+- a tela de revisão de template (adiada, item 2);
+- a exceção da resposta depois do pedido de parar;
+- o que vem no plano seguinte, cada passo com autorização própria:
+  - o roteiro de carga dos dados fictícios do staging;
+  - a manutenção do deploy;
+  - a ativação do workspace da demonstração.
+
+Nada muda no staging.
+
+**6. A verificação:**
+
+- testes focados durante o trabalho;
+- no fechamento:
+  - a revisão (`reviewer` e `security`, uma vez);
+  - as mutações das garantias novas;
+  - a bateria em blocos, com log, com as duas pilhas do E2E.
 
 ## ADR-049 — Relógio de agendamento: quem compara define o relógio, e filas e leases usam o do banco
 
@@ -7415,4 +7542,4 @@ Os casos que pediram trabalho:
 - **funcionam só com o catálogo e o transporte falsos,** num workspace explícito;
 - **não aparecem sozinhos na configuração real,** não criam consentimento nenhum e não passam por templates aprovados na Meta: ids e nomes inventados, e uma WABA fictícia que só o canal da demonstração usa.
 
-A forma (um arquivo versionado lido pelo catálogo falso do staging, e o cadastro e a revisão pelo procedimento) entra no plano da demonstração (DEPLOY_STAGING §13) e é implementada com ele, sem abrir nova frente de funcionalidades.
+A forma (um arquivo versionado lido pelo catálogo falso do staging, e o cadastro e a revisão pelo procedimento) entra no plano da demonstração (DEPLOY_STAGING §13) e é implementada com ele, sem abrir nova frente de funcionalidades. O desenho está no ADR-048, adendo 12, item 2 (2026-10-29): o arquivo `demo_*`, o catálogo falso que só responde à WABA fictícia e o procedimento `templates:demo`, que cadastra e revisa pelos serviços existentes, com o revisor que tem `templates:review`.
