@@ -101,6 +101,7 @@ A lista completa e comentada está em `deploy/staging/.env.example`; o mínimo:
 | `OUTBOUND_APPROVAL_KEY`                               | **independente**, a mesma em todos os processos; trocar invalida as aprovações pendentes (`docs/SECURITY.md` §8) |
 | `META_APP_SECRET` / `META_WEBHOOK_VERIFY_TOKEN`       | valores de TESTE, nunca os do app real                                                                           |
 | `META_TRANSPORT_MODE`                                 | `fake` — nada sai para a Meta (ADR-046)                                                                          |
+| `MAINTENANCE_MODE`                                    | **obrigatória**, `true` ou `false`: `true` só na janela de manutenção (ADR-053, §14)                             |
 | `ANTHROPIC_API_KEY`                                   | com chave, a IA funciona e o custo é real                                                                        |
 | `CLAMAV_HOST`                                         | **vazio** (scanner desligado, ver §2)                                                                            |
 | `RESTIC_REPOSITORY` / `RESTIC_PASSWORD` / `AWS_*`     | backup; pode ficar vazio até você decidir o destino                                                              |
@@ -804,7 +805,9 @@ precisa de um prazo de leitura igual ou maior. Se cortar antes, a pessoa recebe
 504 com o run já gravado e cobrado, e paga de novo ao repetir.
 
 > **BLOQUEIO antes de qualquer deploy desta atualização** (decisão do usuário,
-> 2026-10-21; ADR-048 adendo 6). A **barreira contínua de manutenção** ainda não
+> 2026-10-21; ADR-048 adendo 6). **Atualização de 2026-10-29:** a barreira
+> contínua é o `MAINTENANCE_MODE` (ADR-053), e o roteiro que a usa é o §14. O
+> texto abaixo descreve a situação de antes dela. A **barreira contínua de manutenção** ainda não
 > existe. O procedimento abaixo **detecta** uma rota aberta depois do deploy, mas
 > não **impede** o acesso durante toda a janela, e detectar não cumpre a
 > exigência. Não use este procedimento num deploy até a barreira estar
@@ -1004,27 +1007,31 @@ O Coolify guarda os deploys anteriores, mas o **Redeploy** de um commit anterior
 só vale para um commit que tenha **as mesmas proteções** e seja compatível com o
 schema aplicado. Por isso o recurso aponta para tag/commit, nunca para `main`.
 
-**Em falha, permaneça em manutenção**: acesso externo bloqueado e conferido de
-fora, e `DISABLE_JOBS=true` (§4, "Deploy da guarda de uso externo", passos 2 e
-4). Só saia dela quando a recuperação compatível estiver definida:
+**Em falha, permaneça em manutenção.** Desde o ADR-053, a manutenção é a
+barreira da própria API: `MAINTENANCE_MODE=true`, que barra toda requisição
+com 503 e não sobe os jobs, mais o `web` parado e o domínio retirado. Ela entra
+como na etapa C do §14: os containers parados antes de tudo, e a imagem
+protegida, que já sobe em manutenção, por um **Deploy**. Só saia dela quando a
+recuperação compatível estiver definida:
 
 - uma correção para frente, num commit novo com as proteções;
 - ou a restauração do banco (§6), seguida de um código com as proteções que
   seja compatível com ele.
 
 Religar o container antigo para "voltar ao ar" reabre a regra antiga e não é
-recuperação.
+recuperação. **Voltar à barreira é sempre um Deploy** do mesmo commit com
+`MAINTENANCE_MODE=true`, seguido de parar o `web`. Nunca Start, Restart nem
+Rollback do Coolify: o container guarda o ambiente de quando foi criado (talvez
+com `false`), e o Rollback volta a uma imagem anterior, talvez de antes do
+ADR-053, que ignora a variável.
 
 **Migration não tem rollback automático, e isto é deliberado**: `migrate deploy`
 não desfaz. Se uma migration falhar ou deixar o banco num estado que o código
 com as proteções não aceita, a volta é pela restauração de banco (§6), sempre
-em manutenção e seguida de um código com as proteções. Por isso o backup roda
-ANTES de todo deploy com migration:
-
-```bash
-# pelo terminal do Coolify, no container `backup`
-/usr/local/bin/backup.sh
-```
+em manutenção e seguida de um código com as proteções. Por isso todo deploy
+com migration começa pelo snapshot da janela, com a escrita já congelada,
+conferido por inteiro (§14, passo C2). O `backup.sh` sob demanda não serve para
+isso: ele aplica a retenção, e o snapshot dele não é marcado como o da janela.
 
 ## 6. Backup e restauração
 
@@ -1039,46 +1046,121 @@ Pelo terminal do Coolify, no container `backup`:
 /usr/local/bin/restore.sh listar    # o que existe no destino
 ```
 
-Restauração do banco. **Pare a API antes**: restaurar com escrita em curso
-produz estado que nenhum dos dois lados reconhece. **Restaurar é manutenção**:
-o acesso externo fica bloqueado e conferido de fora do começo ao fim (§4,
-"Deploy da guarda de uso externo", passo 2). A API que sobe é sempre a do
-código com as proteções, nunca a de um commit anterior (§5). No host, com os nomes reais
-que você anotou na §3.6:
+**A restauração do banco é sempre num banco NOVO, trocado pelo nome**
+(ADR-046 adendo 1). O `restore.sh` nunca restaura sobre o banco vivo: recusa o
+nome dele e o de qualquer banco que já exista, cria o banco novo e restaura
+numa transação só. Restaurar por cima de um banco já migrado falharia sempre,
+porque as tabelas novas têm FK para as do dump, ou deixaria objetos que o dump
+não conhece. Restaurar é manutenção, do começo ao fim.
 
-1. **Manutenção:** o passo 2 do "Deploy da guarda de uso externo" (§4). O
-   domínio do `web` sai, o `web` e a API param, e o bloqueio é conferido de
-   fora.
-2. **Restaure:**
+**Um snapshot anterior ao congelamento desfaz o que veio depois dele,**
+inclusive o que protege o acesso: sessões revogadas (`RefreshToken` e
+`tokenVersion`), memberships removidas ou desativadas, senhas trocadas e
+exclusões de dados (LGPD). O mesmo vale para o storage, que traz de volta
+arquivos apagados. No staging, com dados fictícios, a restauração prevista é a
+do snapshot da janela (§14), tirado com a API parada: a diferença é zero.
+Restaurar um snapshot mais antigo exige, antes da retomada, revogar todas as
+sessões e reaplicar o que foi revogado ou excluído depois dele. Esse
+procedimento ainda não existe nem foi ensaiado (dívida registrada, com
+gatilho, em `docs/MEMORY/technical-debt.md`), e até lá não se restaura snapshot
+antigo com acesso de pessoas reais.
+
+Antes do passo 2, confira o espaço livre no host (`df -h /var/lib/docker`). A
+restauração cria uma segunda cópia inteira do banco no mesmo cluster, e disco
+cheio derruba também o banco vivo.
+
+No host, com os nomes reais que você anotou na §3.6:
+
+1. **A barreira** (§14, passo C1): `MAINTENANCE_MODE=true` e
+   `DISABLE_JOBS=true` no painel, o domínio do `web` retirado, e
+   `docker stop <container-web> <container-api>`. O `db` e o `backup` seguem
+   de pé. De fora, nenhum 2xx em `/api/`.
+2. **Restaure num banco novo.** O nome só aceita `a-z`, `0-9` e `_`:
 
    ```bash
-   docker exec -it <container-backup> /usr/local/bin/restore.sh banco <snapshot-id>
+   docker exec <container-backup> /usr/local/bin/restore.sh banco <snapshot-id> <banco>_restaurado_<AAAAMMDD>
    ```
 
-3. **Volte pelos passos 4 a 7 do §4**: deploy do commit com as proteções, sem
-   domínio e com `DISABLE_JOBS=true`; o `web` parado de novo e as labels
-   conferidas; a conferência de fora; `migrate deploy` no container novo; e só
-   então a retomada.
+   Em qualquer falha (dump truncado, erro do `restic` ou do `pg_restore`), o
+   banco novo é descartado, e o vivo não foi tocado.
+
+3. **Confira o banco novo antes de trocar:** as contagens do PO-2 (§14) e, para
+   o snapshot da janela, as anotadas no passo C2. Contagens iguais são uma
+   conferência a mais, não prova de equivalência.
+
+   ```bash
+   docker exec <container-db> sh -c 'psql -U "$POSTGRES_USER" -d <banco>_restaurado_<AAAAMMDD> -Atc "SELECT count(*) FROM _prisma_migrations" -Atc "SELECT max(migration_name) FROM _prisma_migrations" -Atc "SELECT count(*) FROM pg_constraint" -Atc "SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal" -Atc "SELECT count(*) FROM \"Workspace\"" -Atc "SELECT count(*) FROM \"User\""'
+   ```
+
+4. **Troque pelo nome, numa transação só,** conectado ao `postgres`, nunca ao
+   banco que vai ser renomeado. O banco antigo fica guardado para diagnóstico,
+   e só sai com autorização, depois de o INC fechar:
+
+   ```bash
+   printf '%s\n' \
+     "SELECT count(pg_terminate_backend(pid)) AS encerradas FROM pg_stat_activity WHERE datname = :'vivo' AND pid <> pg_backend_pid();" \
+     'BEGIN;' 'ALTER DATABASE :"vivo" RENAME TO :"falho";' 'ALTER DATABASE :"novo" RENAME TO :"vivo";' 'COMMIT;' \
+     | docker exec -i <container-db> sh -c 'psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -v vivo="$POSTGRES_DB" -v novo=<banco>_restaurado_<AAAAMMDD> -v falho=<banco>_falho_<AAAAMMDD>'
+   ```
+
+   O SQL vai por `printf`, e não por heredoc: copiado com a indentação do
+   roteiro, o terminador de um heredoc não fecharia.
+
+   Se alguém reconectar entre o encerramento e a troca, o `ALTER` falha ("is
+   being accessed by other users"), e a transação desfaz as duas trocas: rode
+   de novo. Nenhum momento fica sem um banco com o nome do vivo.
+
+5. **Volte pela etapa C do §14, a partir do passo 5:** o **Deploy** do commit
+   com as proteções, com `MAINTENANCE_MODE=true`; as migrations pendentes,
+   pelo estado real; as conferências; e só então a retomada (etapa E).
 
 **Nunca `docker start` nos containers antigos.** O `web` antigo ainda carrega
 as labels do Traefik com o domínio, e religá-lo reabre a rota no meio da
-manutenção. A API antiga sobe com os jobs que tinha ao ser criada, antes de
-qualquer migration, e pode ser de um commit sem as proteções (§5).
+manutenção. A API antiga sobe com o ambiente de quando foi criada, talvez com
+`MAINTENANCE_MODE=false`, ou de um commit anterior ao ADR-053, que ignora a
+variável (§5).
 
-Restauração do storage: o volume é montado somente-leitura no `backup`, então
-a cópia de volta vai por um container temporário com o volume real montado
-para escrita — os nomes saem da §3.6. A mesma regra de manutenção vale aqui:
-comece pelo passo 2 do §4, sem `docker start` de container antigo no fim, e
-volte pelos passos 4 a 7.
+**A restauração do storage.** O volume é montado somente-leitura no `backup`,
+então a cópia de volta vai por um container temporário, com o volume real
+montado para escrita (os nomes saem da §3.6). As credenciais do destino vêm do
+próprio container `backup`, por `--env-file`, sem passar pelo histórico do
+shell. O `restic` recria o caminho original (`data/storage`) dentro do destino:
+por isso a restauração vai para um diretório temporário e é copiada para a raiz
+do volume. A mesma regra de manutenção vale aqui: comece pelo passo 1 acima,
+com o serviço parado, e volte pelo passo 5. No bash do host:
 
 ```bash
-docker run --rm -v <volume-storage>:/destino -v <volume-restic-cache>:/cache \
-  -e RESTIC_REPOSITORY -e RESTIC_PASSWORD <imagem-backup> \
-  /usr/local/bin/restore.sh storage <snapshot-id> /destino
+IMG=$(docker inspect <container-backup> --format '{{.Config.Image}}')
+docker run --rm --user 0 -v <volume-storage>:/alvo \
+  --env-file <(docker exec <container-backup> env | grep -E '^(RESTIC_REPOSITORY|RESTIC_PASSWORD|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY)=') \
+  "$IMG" sh -c 'restore.sh storage <snapshot-id> /tmp/r && cp -a /tmp/r/data/storage/. /alvo/'
 ```
 
-**Teste a restauração antes de precisar dela.** Um ensaio trimestral em banco
-descartável é o que distingue backup de esperança.
+Os arquivos mais novos que o snapshot continuam no volume, sem linha no banco
+restaurado.
+
+**Teste a restauração antes de precisar dela,** sempre fora do staging: o
+ensaio de restaurabilidade é o PO-2 do §14, num Postgres descartável e sem
+rede. Um ensaio trimestral é o que distingue backup de esperança.
+
+**As falhas, desde o ADR-046 adendo 1:**
+
+- **O backup:**
+  - o repositório só é inicializado quando não existe (código 10 do `restic`); a senha errada (12), o destino fora do ar ou um lock são falha, nunca um `init` por cima;
+  - o dump vai pelo próprio `restic` (`--stdin-from-command`), que não grava snapshot se o `pg_dump` falhar, nem no meio do fluxo;
+  - um storage com arquivo ilegível faz o `restic` gravar um snapshot incompleto (código 3): ele é removido pelo id, e o ciclo falha;
+  - uma falha encerra o ciclo sem mensagem de sucesso e sem a retenção;
+  - cada ciclo do agendador é um processo próprio (`/bin/sh backup.sh`): a falha fica no log como "ciclo falhou (código N)", e o próximo horário tenta de novo;
+  - a retenção mantém os snapshots com a tag `janela` (`--keep-tag janela`), que saem à mão;
+  - o cálculo da espera lê os campos do relógio sem o zero à esquerda: antes, `08` e `09` (octais inválidos no shell) derrubavam o laço nesses horários.
+- **`backup.sh --ciclo`** roda um ciclo como o agendador e sai sempre com 0: a falha fica só no log. Para conferir à mão, use `backup.sh` sem argumento, que devolve o código.
+- **A restauração** é num banco novo e numa transação só: um dump truncado, um erro do `restic` (mesmo depois de entregar o fluxo inteiro) ou do `pg_restore` descartam o banco novo, e o vivo não é tocado.
+- **Um `restic dump` interrompido deixa um lock no repositório.** Quando quem lê o fluxo para antes do fim (um `pg_restore` que sai no começo, um `head`), o `restic` morre sem soltar o lock, e a retenção do ciclo seguinte falha com "repository is already locked". O ciclo falha de forma visível, mas os seguintes também falham, até o lock sair. A recuperação, ensaiada na imagem: `docker exec <container-backup> restic unlock`, sem `--remove-all`. Ele remove só os locks velhos, inclusive o de um processo que já terminou no mesmo container. Nunca use `--remove-all` com um ciclo em curso.
+- **Os testes de falha** rodam na imagem do próprio Dockerfile, com um Postgres e um repositório descartáveis, no Docker local. As falhas são provocadas por comandos substitutos no `PATH` da imagem (o `pg_dump` que cai no meio, o `restic` que falha só no `backup` ou que sai com erro depois do fluxo, o `sleep` do agendador que não dorme):
+
+  ```bash
+  sh deploy/staging/backup/testes/falhas.sh   # termina com TESTES_DE_FALHA_OK
+  ```
 
 ## 7. Operação do dia a dia
 
@@ -1363,14 +1445,14 @@ Na ordem, cada passo com a própria autorização:
 
 **5. O que falta para o usuário acessar o sistema (acompanhamento; atualizar a cada entrega).** Nenhum item abaixo autoriza execução: cada passo no staging tem autorização própria. Nada novo entra no caminho da demonstração.
 
-| Frente                                    | Situação                                                             | O que falta                                                                                                                                       |
-| ----------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Funcionalidades**                       | F4.1 a F4.4b publicadas e validadas (a F4.4b em `fe87bc1`, CI verde) | a F4.4c, em commit local: o cadastro do canal compilado e o `demo:carregar`; a barreira contínua de manutenção (F4.4d, proposta no §14, etapa B1) |
-| **Templates falsos**                      | publicados na F4.4b (ADR-048 adendo 12)                              | o canal fictício (CLI compilada), as finalidades e o `templates:demo` no workspace `demo`: §14, etapa D                                           |
-| **Dados fictícios**                       | o `demo:carregar` (F4.4c, em commit local)                           | rodar no workspace `demo`: §14, etapa D; os consentimentos, pela tela                                                                             |
-| **Manutenção do deploy**                  | o roteiro consolidado no §14 (etapas B e C)                          | a barreira contínua (B1), o ensaio de restauração isolado (B2) e a janela (C), cada um com autorização                                            |
-| **Diagnóstico do staging**                | INC-2026-10-26-01 aberto; o bloco curto enviado ao usuário           | a saída do diagnóstico (§14, etapa A) e a proposta de recuperação                                                                                 |
-| **Ativação do workspace de demonstração** | decidida: workspace dedicado `demo` (decisão de 2026-10-29)          | executar na etapa D do §14, com autorização                                                                                                       |
+| Frente                                    | Situação                                                                  | O que falta                                                                                                                         |
+| ----------------------------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| **Funcionalidades**                       | F4.1 a F4.4c publicadas e validadas (a F4.4c em `c378367`, CI verde)      | em commit local: a barreira de manutenção (PO-1, ADR-053) e o backup e a restauração que falham de verdade (PO-3, ADR-046 adendo 1) |
+| **Templates falsos**                      | publicados na F4.4b (ADR-048 adendo 12)                                   | o canal fictício (CLI compilada), as finalidades e o `templates:demo` no workspace `demo`: §14, etapa D                             |
+| **Dados fictícios**                       | o `demo:carregar` (F4.4c, em commit local)                                | rodar no workspace `demo`: §14, etapa D; os consentimentos, pela tela                                                               |
+| **Manutenção do deploy**                  | o roteiro consolidado no §14 (os pré-requisitos PO-1 a PO-3 e a janela C) | a barreira contínua (PO-1), o ensaio de restauração isolado (PO-2) e a janela (C), cada um com autorização                          |
+| **Diagnóstico do staging**                | INC-2026-10-26-01 aberto; o bloco curto enviado ao usuário                | a saída do diagnóstico (§14, etapa A) e a proposta de recuperação                                                                   |
+| **Ativação do workspace de demonstração** | decidida: workspace dedicado `demo` (decisão de 2026-10-29)               | executar na etapa D do §14, com autorização                                                                                         |
 
 ## 14. Plano operacional da demonstração (2026-10-29; nada executado)
 
@@ -1386,8 +1468,8 @@ Consolida o §13 com as correções do usuário e das revisões de 2026-10-29. C
 
 - **A barreira é contínua,** do primeiro passo da janela até a retomada. Parar a ingestão e os jobs não bloqueia o acesso.
   - Hoje, a barreira é parar os containers e tirar o domínio. O deploy recria os containers, e o Coolify pode gerar uma rota padrão por alguns segundos (§4, "Resíduo da barreira de acesso").
-  - É por isso que o deploy está bloqueado desde 2026-10-21, e é isso que a etapa B1 resolve.
-  - **Uma imagem anterior à B1 ignora o `MAINTENANCE_MODE`.** Durante a janela, nunca faça Redeploy de um commit anterior: ele tiraria a barreira em silêncio.
+  - É por isso que o deploy está bloqueado desde 2026-10-21, e é isso que o PO-1 (ADR-053) resolve.
+  - **Uma imagem anterior ao PO-1 ignora o `MAINTENANCE_MODE`.** Durante a janela, nunca faça Redeploy de um commit anterior: ele tiraria a barreira em silêncio.
 - **As migrations pendentes saem do estado real do banco e do commit final,** e não de uma lista fixa. A lista do §13, item 1, é só o que se espera encontrar.
 - **As chaves novas só nascem se estiverem ausentes,** no painel e no container. Uma chave existente não é trocada sem avaliar o que depende dela.
 - **O ensaio de restauração é num banco isolado,** sem rede, e nunca no banco do staging. A janela confere o próprio snapshot antes do deploy.
@@ -1413,7 +1495,7 @@ Consolida o §13 com as correções do usuário e das revisões de 2026-10-29. C
 
 ### Etapa A — Diagnóstico e preservação (só leitura, já autorizada)
 
-Os logs inteiros ficam guardados antes de qualquer recuperação. Nenhum comando imprime segredo: das variáveis, só aparecem com valor o modo do transporte, o ambiente e o `DISABLE_JOBS`; as chaves, só pelo nome. Os `.log` ficam no host, com acesso só do root: não são compartilhados (só trechos conferidos) e saem quando o INC fechar.
+Os logs inteiros ficam guardados antes de qualquer recuperação. Nenhum comando imprime segredo: das variáveis, só aparecem com valor o modo do transporte, o ambiente, o `DISABLE_JOBS` e o `MAINTENANCE_MODE` (ausente na imagem atual); as chaves, só pelo nome. Os `.log` ficam no host, com acesso só do root: não são compartilhados (só trechos conferidos) e saem quando o INC fechar.
 
 ```bash
 # A1. preserva e lista os containers (nome | projeto | serviço | estado | imagem | criado)
@@ -1435,7 +1517,7 @@ DB=$(docker ps --filter "label=com.docker.compose.project=$P" --filter "label=co
 API=$(docker ps -a --filter "label=com.docker.compose.project=$P" --filter "label=com.docker.compose.service=api" --format '{{.Names}}' | head -1)
 # só o NOME das chaves com valor (=.): vazia conta como ausente
 docker inspect "$API" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -oE '^(ADDRESS_LOCK_KEY|OUTBOUND_APPROVAL_KEY)=.' | cut -d= -f1 | sort
-docker inspect "$API" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^(META_TRANSPORT_MODE|VEYRA_ENV|DISABLE_JOBS)='
+docker inspect "$API" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^(META_TRANSPORT_MODE|VEYRA_ENV|DISABLE_JOBS|MAINTENANCE_MODE)='
 ```
 
 No painel:
@@ -1446,54 +1528,69 @@ No painel:
 
 **Parada A:** a causa identificada e a proposta de recuperação, para autorização. Nada é reiniciado nem alterado.
 
-### Etapa B — O que precisa existir antes da janela (sem tocar o staging)
+### Etapa B — Os pré-requisitos operacionais, antes da janela (sem tocar o staging)
 
-1. **B1. A barreira contínua de manutenção** (código; F4.4d, proposta, com ADR antes). É um modo de manutenção na própria API, ligado por variável (`MAINTENANCE_MODE=true`). Os requisitos que o ADR precisa fixar (revisão de segurança de 2026-10-29):
-   - **Toda requisição recebe 503:** o login, o webhook da Meta, a rota inexistente, o OPTIONS e a saúde vista de fora.
-   - **A única exceção é `GET /api/health` pelo loopback,** decidido pelo endereço do SOCKET (`127.0.0.1`, `::1`, `::ffff:127.0.0.1`). Nunca por `X-Forwarded-For`, `X-Real-IP` ou `req.ip`: o nginx do `web` repassa o XFF do cliente.
-   - **O primeiro `app.use` do `configureHttp`,** antes dos cookies e do corpo do webhook. Não pode ser guard: o `JwtAuthGuard` consulta o banco antes, e o banco é o que a janela protege.
-   - **Falha fechada na configuração:** um enum estrito no `env.ts`, sem padrão, em que valor inválido OU ausente recusa a subida; no compose, `${MAINTENANCE_MODE:?}`, nunca um padrão silencioso como o do `DISABLE_JOBS`.
-   - **A manutenção desliga os jobs:** com `MAINTENANCE_MODE=true`, os jobs não sobem, qualquer que seja o `DISABLE_JOBS`.
-   - **Os testes:** cada rota acima com 503, o XFF forjado com 503, a saúde pelo loopback com 200, e a mutação que tira o middleware.
-   - **O limite:** o `web` ainda serve o HTML da SPA com 200 numa rota gerada. O critério "nenhum 2xx" vale para `/api/*`.
+Os nomes são **PO-1 a PO-3** (pré-requisito operacional). Não confundir com os bloqueios B1–B4 do ADR-048, que são os de dados reais do Clinics e continuam como estão.
 
-   As CLIs por `docker exec` continuam funcionando, porque não passam pelo HTTP. **Sem B1, o deploy continua bloqueado** (decisão de 2026-10-21, §4).
+1. **PO-1. A barreira contínua de manutenção** (ADR-053; F4.4d). A variável `MAINTENANCE_MODE` é obrigatória, sem padrão: ausente ou inválida, nada sobe, e o compose recusa. Com `true`:
+   - **Toda requisição à API recebe 503:** o login, o webhook da Meta, as rotas autenticadas, a rota inexistente, o OPTIONS e a saúde vista de fora. O middleware é o primeiro do `configureHttp`, antes de cookie, corpo, autenticação e banco.
+   - **A única exceção é `GET /api/health` pelo socket de loopback,** sem confiar em `X-Forwarded-For`, `X-Real-IP` nem `req.ip`.
+   - **Os jobs não sobem,** qualquer que seja o `DISABLE_JOBS`: nenhum worker, varredura ou reconciliação.
+   - **O limite:** a barreira protege a API e a execução de tarefas, e não promete que toda URL responda 503. O `web` continua servindo o HTML estático da SPA: a tela abre, mas toda chamada à API dá 503, e nada aparece nem é feito. A conferência da janela é "nenhum 2xx em `/api/`", com a barra: `/api`, sem ela, é uma rota da SPA, e o `web` devolve o `index.html` com 200.
+   - **Testado antes de o deploy depender dele:** `deploy/staging/ensaios/manutencao-com-schema-antigo.sh [migration-alvo]`. Ele sobe a API compilada em manutenção, com `DISABLE_JOBS=false` e o ambiente do staging (`NODE_ENV=production`, `VEYRA_ENV=staging`, transporte simulado), sobre um schema antigo, num banco descartável local, e prova:
+     - a subida;
+     - a saúde pelo loopback 200;
+     - a saúde pela rede (com `X-Forwarded-For` forjado), o login e o webhook 503;
+     - nenhum schema do pg-boss criado e nenhum erro no log;
+     - **nenhuma leitura nem escrita de tabela** na subida e nas requisições barradas, pelos contadores do Postgres (`pg_stat_user_tables`), com uma leitura de contraste que prova que a medida registra;
+     - as migrations pendentes aplicadas depois, com a API de fato parada (a porta volta a recusar);
+     - sem a variável, vazia ou inválida, a API não sobe, pela `MAINTENANCE_MODE`, com prazo.
 
-2. **B2. O ensaio de restauração em banco isolado,** no host, com limpeza garantida também em falha. O dump é de staging, com dados fictícios, mas o arquivo e o banco restaurado são tratados como sensíveis: contêm hashes de senha e tokens cifrados. O bloco roda num subshell com `set -eu`: a primeira falha interrompe, e o `trap` limpa ao sair do subshell, não só quando o terminal fecha.
+     Rodou verde até a última migration antes da F4. **Depois da etapa A, ele roda de novo com a última migration aplicada no staging.**
+2. **PO-2. O ensaio de RESTAURABILIDADE em banco isolado.** Ele prova que um snapshot existente restaura inteiro, sem erro, num Postgres descartável e sem rede, e ensaia a troca pelo nome do §6, com o mesmo SQL. Não compara com a origem: o banco vivo continuou recebendo escrita depois desse snapshot, e as contagens não precisam bater. A comparação com a origem é a do snapshot da janela (C2), feita com a escrita congelada. O dump vai do `restic` direto para o `pg_restore` do ensaio, sem passar pelo disco do host, e a limpeza é garantida também em falha. No bash do host:
 
    ```bash
    docker exec <container-backup> sh -c 'restic snapshots --compact --tag banco'
    (
-     set -eu
-     E=/root/veyra-ensaio; umask 077; mkdir -p "$E"; chmod 700 "$E"
-     limpar() { docker rm -f -v veyra-ensaio-db >/dev/null 2>&1 || true; rm -f "$E/banco.dump"; rmdir "$E" 2>/dev/null || true; }
+     set -euo pipefail
+     limpar() { docker rm -f -v veyra-ensaio-db >/dev/null 2>&1 || true; }
      trap limpar EXIT
-     docker exec <container-backup> sh -c 'restic dump <snapshot-id> /banco.dump' > "$E/banco.dump"
-     test -s "$E/banco.dump"
      # a MESMA imagem do container db (sem baixar nada), SEM rede
      IMG=$(docker inspect <container-db> --format '{{.Config.Image}}')
      docker run -d --name veyra-ensaio-db --network none -e POSTGRES_PASSWORD=ensaio "$IMG" >/dev/null
      n=0; until docker exec veyra-ensaio-db pg_isready -h 127.0.0.1 -U postgres >/dev/null 2>&1; do n=$((n+1)); [ "$n" -lt 120 ]; sleep 1; done
-     docker cp "$E/banco.dump" veyra-ensaio-db:/tmp/banco.dump
-     docker exec veyra-ensaio-db sh -c 'createdb -U postgres ensaio && pg_restore --exit-on-error --no-owner --no-privileges -U postgres -d ensaio /tmp/banco.dump'
-     docker exec veyra-ensaio-db psql -U postgres -d ensaio -Atc 'SELECT count(*) FROM _prisma_migrations' -Atc 'SELECT max(migration_name) FROM _prisma_migrations' -Atc 'SELECT count(*) FROM pg_constraint' -Atc 'SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal' -Atc 'SELECT count(*) FROM "Workspace"' -Atc 'SELECT count(*) FROM "User"'
+     # o "vivo" do ensaio e o banco NOVO, como no §6
+     docker exec veyra-ensaio-db sh -c 'createdb -U postgres vivo && createdb -U postgres restaurado'
+     docker exec <container-backup> restic dump <snapshot-id> /banco.dump \
+       | docker exec -i veyra-ensaio-db pg_restore --single-transaction --exit-on-error --no-owner --no-privileges -U postgres -d restaurado
+     docker exec veyra-ensaio-db psql -U postgres -d restaurado -Atc 'SELECT count(*) FROM _prisma_migrations' -Atc 'SELECT max(migration_name) FROM _prisma_migrations' -Atc 'SELECT count(*) FROM pg_constraint' -Atc 'SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal' -Atc 'SELECT count(*) FROM "Workspace"' -Atc 'SELECT count(*) FROM "User"'
+     # a troca pelo nome do §6, passo 4, com o mesmo SQL
+     printf '%s\n' \
+       "SELECT count(pg_terminate_backend(pid)) AS encerradas FROM pg_stat_activity WHERE datname = :'vivo' AND pid <> pg_backend_pid();" \
+       'BEGIN;' 'ALTER DATABASE :"vivo" RENAME TO :"falho";' 'ALTER DATABASE :"novo" RENAME TO :"vivo";' 'COMMIT;' \
+       | docker exec -i veyra-ensaio-db psql -U postgres -d postgres -v ON_ERROR_STOP=1 -v vivo=vivo -v novo=restaurado -v falho=vivo_falho
+     test "$(docker exec veyra-ensaio-db psql -U postgres -d vivo -Atc 'SELECT count(*) FROM _prisma_migrations')" -gt 0
      echo ENSAIO_OK
    )
    ```
 
-   As mesmas contagens são lidas no banco de origem, pelo container `db`, e precisam bater. Sem `ENSAIO_OK` no fim, o ensaio falhou; a limpeza já rodou de qualquer forma.
+   Sem `ENSAIO_OK` no fim, o ensaio falhou, e a limpeza já rodou. As contagens impressas descrevem o que foi restaurado (a última migration, as restrições, os gatilhos e as linhas principais). São uma conferência a mais, não prova de equivalência nem de integridade. O mesmo caminho, com o pipe e a troca, roda nos testes de falha (`falhas.sh`) antes de chegar aqui.
 
-3. **B3, a registrar:** o `backup.sh` roda `pg_dump … | restic backup --stdin` sem `pipefail`. Um `pg_dump` que falha no meio pode gravar um dump truncado, e o script diz que concluiu. O `restore.sh` também restaura sobre o banco vivo sem `pipefail`, `--exit-on-error` nem `--single-transaction`. As duas correções são pequenas, com autorização própria. Até lá:
-   - a janela faz o próprio dump com `pipefail` e o confere lendo o fluxo inteiro (C2);
-   - depois de qualquer restauração, as contagens da B2 são repetidas no banco restaurado antes de tirar a barreira.
+3. **PO-3. O backup e a restauração que falham de verdade** (ADR-046 adendo 1; commit próprio). O `backup.sh` passa a ter:
+   - o dump pelo próprio `restic` (`--stdin-from-command`), que não grava snapshot se o `pg_dump` falhar;
+   - um processo por ciclo do agendador, para o `set -e` valer fora do `if`;
+   - cada passo conferido, sem a retenção depois de uma falha.
 
-**Parada B:** B1 entregue, revisado e publicado, e B2 com as contagens iguais.
+   O `restore.sh` restaura sempre num banco novo, que ele cria, numa transação só: tudo ou nada, e o banco vivo nunca é alvo. A retenção mantém o snapshot da janela (`--keep-tag janela`). Os testes de falha (`deploy/staging/backup/testes/falhas.sh`) rodam na imagem do próprio Dockerfile, com um Postgres e um repositório descartáveis. **O container `backup` que estiver no ar antes do deploy ainda roda o script antigo:** por isso a janela faz o próprio dump, conferido (C2).
+
+**Parada B:** PO-1 e PO-3 publicados, o ensaio do PO-1 repetido no ponto real do staging, e o PO-2 com `ENSAIO_OK`.
 
 ### Etapa C — A janela de manutenção (autorização própria)
 
 1. **A barreira, antes de tudo:**
    - no painel: o Auto Deploy desligado e o recurso fixado no commit final já aqui; `MAINTENANCE_MODE=true` e `DISABLE_JOBS=true`; e o domínio do `web` retirado (`SERVICE_FQDN_WEB_8080` vazio);
-   - **entre este passo e o deploy (passo 5), nada de Restart nem Start do recurso:** a imagem que está lá é anterior à B1 e ignora o `MAINTENANCE_MODE`;
+   - **o horário:** a janela não cruza o `BACKUP_AT` (03:15 UTC, por padrão). O ciclo diário faria um dump no meio dela, e o `pg_dump` segura `ACCESS SHARE` em todas as tabelas, o que derruba as migrations com `lock_timeout` do passo 6;
+   - **entre este passo e o deploy (passo 5), nada de Restart, Start nem Rollback do recurso:** a imagem que está lá é anterior ao PO-1 e ignora o `MAINTENANCE_MODE`. É por isso que os containers antigos são PARADOS aqui, antes do backup, e só voltam como a imagem protegida, que já sobe em manutenção: não há janela de acesso entre os dois;
    - no host, `docker stop <container-web> <container-api>`. Não use o Stop do recurso, que para o banco. O `backup` e o `db` seguem de pé;
    - de fora, nenhuma resposta 2xx:
 
@@ -1501,16 +1598,23 @@ No painel:
      curl -sS -o /dev/null -w '%{http_code}\n' https://veyra-staging.malachdigital.com.br/api/health
      ```
 
-2. **O backup da janela, conferido antes de seguir.** O dump é feito à mão, com `pipefail` e SEM a retenção do `backup.sh`: o `forget --prune` dele apagaria o snapshot noturno do mesmo dia, que é o reserva imediato. A tag `janela` o separa dos diários.
+2. **O backup da janela, conferido antes de seguir.** A escrita está congelada desde o passo 1: a API e o `web` estão parados, e nenhum job roda. O dump é feito à mão, porque o container `backup` no ar ainda roda o script antigo, e SEM a retenção, cujo `forget --prune` apagaria o reserva do dia. O `restic` do container precisa ser 0.17 ou mais novo (`restic version`), para o `--stdin-from-command`: ele não grava snapshot se o `pg_dump` falhar. O snapshot leva a tag `janela` e um host próprio, `veyra-staging-janela`. A retenção agrupa por host e caminho, não por tag, e o script antigo, que roda até o passo 5, não tem o `--keep-tag janela`: no mesmo host dos diários, o ciclo seguinte o apagaria. Com o host próprio, ele é o único do seu grupo, e nenhuma das duas retenções o remove.
 
    ```bash
-   docker exec <container-backup> sh -c 'set -eo pipefail; pg_dump --format=custom --no-owner --no-privileges | restic backup --stdin --stdin-filename banco.dump --tag banco --tag staging --tag janela --host veyra-staging'
+   docker exec <container-backup> restic version
+   docker exec <container-backup> sh -c 'restic backup --stdin-from-command --stdin-filename banco.dump --tag banco --tag staging --tag janela --host veyra-staging-janela -- pg_dump --format=custom --no-owner --no-privileges'
    docker exec <container-backup> sh -c 'restic snapshots --compact --tag janela | tail -3'
    # a conferência lê o fluxo INTEIRO: um dump truncado falha aqui (a lista sozinha passaria)
    docker exec <container-backup> sh -c 'set -o pipefail; restic dump <snapshot-id-da-janela> /banco.dump | pg_restore -f /dev/null && echo DUMP_INTEIRO'
    ```
 
-   O ponto de restauração é este snapshot: o estado exato antes de qualquer migration. Sem `DUMP_INTEIRO`, a janela não segue. O ideal é repetir a B2 sobre ele: com a escrita congelada, as contagens precisam bater exatamente com as da origem.
+   - **O ponto de restauração** é este snapshot: o estado exato antes de qualquer migration. Sem `DUMP_INTEIRO`, a janela não segue.
+   - **A comparação com a origem** vale aqui, e só aqui, porque a escrita está congelada:
+     - restaure o snapshot da janela como no PO-2;
+     - leia as mesmas contagens no banco de origem, pelo container `db`;
+     - elas precisam bater exatamente.
+
+     Contagens iguais são uma conferência a mais, não prova completa de equivalência.
 
 3. **A classificação do que estava em andamento** (§4, passo 3), pelo container `db`. Os números são anotados para a retomada: os despachos `reserved`, `failed_before_send` e `sending`, com e sem marcador, e os usos `authorized` (só se a G1 já estiver aplicada).
 4. **As chaves, só se ausentes:**
@@ -1525,16 +1629,23 @@ No painel:
    - depois do deploy:
      - `docker stop <container-web>`;
      - as labels conferidas (§4, passo 4.2);
-     - de fora, nenhum 2xx em `/api/*`;
+     - de fora, nenhum 2xx em `/api/`;
+     - o ambiente do container novo, só os valores não secretos (`MAINTENANCE_MODE=true` é obrigatório aqui):
+
+       ```bash
+       docker inspect <container-api> --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^(MAINTENANCE_MODE|DISABLE_JOBS|META_TRANSPORT_MODE|VEYRA_ENV)='
+       ```
+
      - **por dentro, fora do loopback, 503** — a barreira de fato ligada:
 
        ```bash
        docker exec <container-db> wget -S -O /dev/null http://api:3001/api/health 2>&1 | grep -E 'HTTP/'
        ```
 
-     - pelo loopback, a saúde: `docker exec <container-api> curl -fsS http://127.0.0.1:3001/api/health`.
+     - pelo loopback, a saúde: `docker exec <container-api> curl -fsS http://127.0.0.1:3001/api/health`;
+     - o `restic` do container `backup` novo, que o deploy também recriou (a imagem do staging é amd64, e o `restic` não tem versão fixa): `docker exec <container-backup> restic version`, 0.17 ou mais novo.
 
-   Com `DISABLE_JOBS=true`, a API nova não abre workers nem a reconciliação da subida, e a checagem de boot é só de código: nada toca o banco até as migrations. Por isso, atrás da barreira, a regra do ADR-049 ("migration antes do código", da `scheduling_clock`) não se aplica: não há tráfego nem worker para quebrar.
+   Com `MAINTENANCE_MODE=true`, a API nova não abre workers nem a reconciliação da subida, qualquer que seja o `DISABLE_JOBS`, e nenhum inicializador lê ou escreve tabela: nada toca o banco até as migrations, como o ensaio do PO-1 mede. Por isso, atrás da barreira, a regra do ADR-049 ("migration antes do código", da `scheduling_clock`) não se aplica: não há tráfego nem worker para quebrar.
 
 6. **As migrations pendentes, pelo estado real:**
 
@@ -1558,7 +1669,7 @@ No painel:
    - as consultas pós-migration do §4;
    - a varredura de FKs nos dados: `docker exec <container-api> node dist/cli/check-cross-tenant-fk.js`, que precisa terminar limpa.
 
-**Parada C:** o banco no schema do commit final, conferido, ainda atrás da barreira. **Em falha em qualquer passo,** a barreira fica, e a recuperação é a do primeiro princípio, a partir do snapshot conferido no passo 2. Depois de uma restauração, as contagens da B2 são repetidas no banco restaurado antes de qualquer outro passo.
+**Parada C:** o banco no schema do commit final, conferido, ainda atrás da barreira. **Em falha em qualquer passo,** a barreira fica, e a recuperação é a do primeiro princípio, a partir do snapshot conferido no passo 2. A restauração é a do §6: num banco NOVO, conferido (as contagens anotadas no passo 2) e trocado pelo nome, guardando o banco falho; depois, a volta pelo passo 5.
 
 ### Etapa D — O workspace da demonstração (autorização própria; ainda em manutenção)
 
@@ -1617,8 +1728,12 @@ Pelas CLIs, no container `api`. O que protege o workspace `staging` é o Clinics
    - **Redeploy** do MESMO commit.
 2. De fora: `curl -fsS https://veyra-staging.malachdigital.com.br/api/health`.
 3. O login do Owner. Os workspaces `staging` e `demo` no seletor, e o aviso de envio simulado no `demo`.
-4. **Se a retomada falhar,** volte à barreira: `docker stop <container-web> <container-api>`, `MAINTENANCE_MODE=true` e `DISABLE_JOBS=true` no painel, e a conferência de fora. Nada de Redeploy de commit anterior.
+4. **Se a retomada falhar,** volte à barreira:
+   - `docker stop <container-web> <container-api>` corta o acesso na hora;
+   - `MAINTENANCE_MODE=true` e `DISABLE_JOBS=true` no painel, o domínio do `web` retirado (como no C1), e um **Deploy** do MESMO commit; depois, `docker stop <container-web>` e a conferência de fora (nenhum 2xx em `/api/`);
+   - **nunca Start, Restart nem Rollback:** os containers da retomada foram criados com `MAINTENANCE_MODE=false` e sobem sem a barreira, e o Rollback volta a uma imagem anterior. Nada de Redeploy de commit anterior.
 5. O INC-2026-10-26-01 fechado no §12, com a causa e o que foi feito, e os `.log` da etapa A apagados.
+6. **O snapshot da janela sai à mão,** com autorização, depois da retomada confirmada e de um ciclo diário bom: `docker exec <container-backup> restic forget <snapshot-id-da-janela>`. O espaço volta no `prune` do ciclo seguinte. O banco falho de uma restauração, se houver, sai da mesma forma, com o `dropdb` dele.
 
 **Parada E:** a demonstração no ar, para o uso do usuário.
 

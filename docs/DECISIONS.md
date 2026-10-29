@@ -606,6 +606,39 @@ Implementado com duas decisões que só apareceram ao escrever: a seleção é p
 
 **Consequências:** a mensagem "ciclo concluído com sucesso" passa a significar o que diz. Um dump que falha não vira o snapshot mais recente. A retenção nunca roda depois de uma falha. A restauração é tudo ou nada. O roteiro da janela (DEPLOY_STAGING §14) continua fazendo o próprio dump conferido, porque o container que estiver no ar antes do deploy ainda roda o script antigo.
 
+**Implementação (2026-10-29), com os desvios do desenho.** As revisões de fechamento (`reviewer` e `security`) acharam três defeitos no desenho acima, e o usuário já tinha pedido os testes que os provam. O que mudou:
+
+1. **A restauração é sempre num banco NOVO, trocado pelo nome** (substitui o item 3). Restaurar sobre o banco já migrado, com `--clean`, falha sempre: as tabelas criadas pelas migrations têm FK para as do dump, e o `--clean` só derruba o que está no dump. E, sem FK, um objeto que o dump não conhece sobrevive. Agora:
+   - `restore.sh banco <snapshot-id> <banco-novo>` recusa o nome do banco vivo e o de qualquer banco que exista (código 64), cria o banco novo e restaura com `--single-transaction --exit-on-error`, sem `--clean`;
+   - em qualquer falha, o banco novo é descartado, e a mensagem não afirma o que o `pg_restore` fez: ela diz que o banco novo foi descartado e que o vivo não foi tocado. Isso cobre também o `restic` que sai com erro depois de entregar o fluxo inteiro, quando o `pg_restore` já confirmou. O descarte é conferido: se o `dropdb` falhar, a mensagem diz que o banco novo ficou e precisa ser removido antes de repetir;
+   - a troca é manual, com a API parada: `ALTER DATABASE … RENAME` do vivo para um nome de guarda e do novo para o nome do vivo, numa transação só, conectado ao `postgres` (DEPLOY_STAGING §6). Se a segunda renomeação falhar, a transação desfaz a primeira.
+2. **O agendador chama `/bin/sh "$0"`, sem argumento** (corrige o item 2, que dizia `backup.sh --ciclo`). O filho é o ciclo completo, com o próprio código de saída. `backup.sh --ciclo` roda UMA iteração do agendador e sai sempre com 0 (a falha fica no log); para conferir à mão, vale `backup.sh` sem argumento.
+3. **A retenção mantém a janela:** `forget --prune --keep-tag janela`. O `forget` agrupa por host e caminho, não por tag, e o snapshot da janela caía no grupo dos diários. O roteiro ainda grava a janela com um host próprio (`veyra-staging-janela`), porque o container que está no ar antes do deploy roda o script antigo.
+4. **O repositório só é inicializado quando não existe** (código 10 do `restic` 0.17). A senha errada (12), o destino fora do ar ou um lock são falha, nunca um `init` por cima, e o código aparece no log.
+5. **O storage com arquivo ilegível:** o `restic` sai com 3 e grava um snapshot incompleto. O ciclo o remove pelo id (o `forget` só com a tag, sem política, não remove nada; o teste pegou isso) e falha.
+6. **Os testes** (`falhas.sh`, `TESTES_DE_FALHA_OK`) provocam as falhas com comandos substitutos em `/usr/local/sbin`, que vem antes no `PATH` da imagem:
+   - o `pg_dump` que cai no meio do fluxo;
+   - o `restic` que falha só no `backup`, e o que sai com erro depois de entregar o fluxo do `dump`;
+   - o `sleep` do agendador, que não dorme e encerra o laço na terceira volta: o `--loop` registra as duas falhas e segue agendando.
+
+   Cobrem ainda:
+   - a senha errada sem `init`;
+   - o storage parcial descartado;
+   - a retenção só depois de um ciclo bom;
+   - a janela que sobrevive à retenção de um por dia;
+   - a recusa do banco vivo e de um banco existente, e o descarte que falha, com a mensagem honesta;
+   - o dump truncado, o `restic` com erro e o snapshot inexistente, cada um com o banco novo descartado e uma linha-sentinela intacta no vivo, que tem a mesma tabela do dump;
+   - o caminho do PO-2: o pipe direto para um Postgres sem rede e a troca pelo nome, com o mesmo SQL do roteiro;
+   - a restauração do storage, que volta à raiz do volume.
+
+   Os testes recusam rodar com `DOCKER_HOST` ou com um contexto Docker que não seja local.
+
+7. **O que os testes mostraram e ficou no roteiro:**
+   - **O lock do `restic dump` interrompido.** Um `restic dump` cortado por quem lê o fluxo morre por SIGPIPE e deixa um lock, e a retenção seguinte falha. O `restic unlock` sem `--remove-all`, no mesmo container, o remove (ensaiado na imagem).
+   - **O caminho do storage.** A restauração do storage do §6 punha os arquivos em `<destino>/data/storage`; agora ela restaura num diretório temporário e copia para a raiz do volume.
+   - **Restaurar um snapshot antigo desfaz revogações** (revisão do delta pelo `security`): as sessões revogadas, as memberships removidas, as senhas trocadas e as exclusões feitas depois do snapshot voltam. A restauração prevista no staging é a do snapshot da janela, com diferença zero; a de um snapshot mais antigo, com acesso de pessoas reais, espera um procedimento ensaiado de revogação geral (DEPLOY_STAGING §6; SECURITY §9; dívida com gatilho).
+   - **O relógio do agendador** (achado pelas mutações). O cálculo da espera somava `+ 0` aos campos do `date` para fugir do octal, mas `$(( 08 + 0 ))` é erro no shell: `08` e `09` são octais inválidos. Quando a hora, o minuto ou o segundo UTC era `08` ou `09`, o laço caía, e o container reiniciava. Com `BACKUP_AT` em `08:xx` ou `09:xx`, nunca agendava. Agora o zero à esquerda sai antes da conta. O teste fixa o relógio em 08:09:08 por um `date` substituto, com `BACKUP_AT=08:09`, e confere a espera exata (86392 s).
+
 ## ADR-047 — Contrato de extensão do Core: seis pontos de composição, nenhum registro de plugins
 
 **Status:** aceito · **Data:** 2026-10-19 · Aprovação da F0 (documental): aprova o desenho, não código nem migrations; nada implementado até a F1
