@@ -1383,6 +1383,28 @@ decisão deve ficar registrada aqui quando você tomá-la.
   recuperação, que depende de nova autorização. Se a causa for código novo com
   schema antigo, vale a regra da manutenção: a imagem anterior não é rollback,
   e o acesso continua bloqueado até a recuperação definida.
+- **O diagnóstico (2026-10-29, etapa A do §14, blocos A1 a A3):**
+  - **a causa da queda:** a API recusa subir na validação do ambiente, antes
+    de tocar o banco. Faltam `ADDRESS_LOCK_KEY` e `OUTBOUND_APPROVAL_KEY`, que
+    o código passou a exigir. Ela reinicia em laço (243 vezes na leitura), e o
+    `web`, que depende dela saudável, ficou só criado. Nada do Veyra responde
+    de fora;
+  - **o deploy das 16:10:57 UTC de 2026-10-29** recriou os quatro containers,
+    51 s depois do push de `c378367` (16:10:06 UTC). É compatível com o Auto
+    Deploy do Coolify a cada push na `main`, **ainda não confirmado** pela aba
+    Deployments. Ele apagou os logs dos containers anteriores; os desta
+    imagem estão em `/root/veyra-inc-2026-10-26`;
+  - **o banco** está em `20260824110000_ai_reply_single_pending` (33
+    migrations, aplicadas em 2026-10-19), sem migration travada, 67 MB, um
+    workspace (`staging`). **23 migrations pendentes** até o commit atual;
+  - **o backup nunca teve destino:** `RESTIC_REPOSITORY` vazio, sem
+    credenciais e sem snapshot. O ciclo das 03:15 falha sem gravar nada;
+  - **o ambiente:** `META_TRANSPORT_MODE=fake`, `VEYRA_ENV=staging`,
+    `DISABLE_JOBS=false`, sem `MAINTENANCE_MODE`; o `restic` do backup é
+    0.17.3 amd64; 60 GB livres em disco.
+- **A recuperação autorizada (2026-10-29):** a janela do §14 (etapa C), a
+  demonstração (D) e a retomada (E), com dois ajustes ao estado real, descritos
+  no §14, "A execução de 2026-10-29".
 
 ## 13. Pendências da demonstração da F4 (preparadas em 2026-10-27; nada executado)
 
@@ -1498,6 +1520,34 @@ Consolida o §13 com as correções do usuário e das revisões de 2026-10-29. C
 - **Container `db`:** `psql` e `wget` (busybox), com as credenciais do próprio container (`sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'`).
 - **Container `backup`:** `backup.sh`, `restore.sh`, `restic` e `pg_restore` 17.
 - **Host** (o terminal do **servidor** no Coolify, não o do container): `docker` e `openssl`.
+
+### A execução de 2026-10-29: o estado real
+
+O diagnóstico (§12, INC-2026-10-26-01) mudou duas premissas deste plano.
+
+- **Não há backup nenhum para restaurar:** o destino do `restic` nunca foi
+  configurado. O ponto de restauração da janela passa a ser um **dump feito na
+  hora, no host** (`/root/veyra-inc-2026-10-26/janela-<instante>.dump`, só
+  root), com a escrita congelada e lido por inteiro (`pg_restore -f
+/dev/null`) antes de qualquer migration. Ele fica no mesmo disco do banco:
+  serve à janela, não substitui o backup externo, que continua pendente e
+  depende das credenciais de um destino do usuário. O PO-2 (restaurabilidade
+  de um snapshot existente) não se aplica.
+- **O banco está 23 migrations atrás** (em `20260824110000`), e as 13
+  primeiras não são transacionais (§4, "Falha de migration"). Por isso,
+  **antes das migrations no banco real, elas rodam numa cópia isolada do dump
+  da janela**, na própria VPS, numa rede sem saída, com a imagem nova: o
+  diagnóstico de identidade antes, as 23 migrations, o schema comparado com
+  o do código (`migrate diff`), a normalização dos telefones duas vezes, as
+  FKs e as conferências do §4. Só com a cópia limpa o banco real é migrado,
+  pelos mesmos comandos.
+- **O ensaio da manutenção** foi repetido no ponto real (`20260824110000`,
+  33 migrations de base): `ENSAIO_OK`.
+- **Os blocos da janela** (o dump, as conferências depois do deploy, a cópia
+  isolada e as migrations) foram ensaiados localmente de ponta a ponta, com a
+  imagem da API construída pelo mesmo Dockerfile e um Postgres no mesmo ponto,
+  com dados fictícios: as 23 migrations aplicaram, sem diferença de schema,
+  com a normalização idempotente, as FKs limpas e as conferências em zero.
 
 ### Etapa A — Diagnóstico e preservação (só leitura, já autorizada)
 
