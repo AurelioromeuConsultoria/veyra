@@ -5191,6 +5191,88 @@ Nada muda no staging.
 - integração 1.141 (180, 243, 162, 297 e 259 nos cinco blocos);
 - E2E 53, com as duas pilhas: os 52 da pilha principal e o cenário completo da demonstração.
 
+### Adendo 13 (2026-10-29) — F4.4c: o cadastro do canal compilado e a carga da demonstração (APROVADO pelo usuário; desenho antes do código)
+
+**As decisões do usuário (2026-10-29), na autorização do push da F4.4b:**
+
+1. **O cadastro do canal vira CLI compilada, disponível na imagem,** com as validações de hoje. Os segredos entram pela entrada padrão, sem aparecer em argumento nem em log. A demonstração usa só credencial e WABA fictícias.
+2. **`demo:carregar`, pelos serviços do domínio,** com dados fictícios. Os consentimentos ficam para o usuário registrar pela tela.
+   - Exige o workspace explícito e o ambiente simulado.
+   - Reexecutar depois de uma interrupção não duplica os dados nem sobrescreve o que o usuário mudar pela tela.
+   - Não ativa o Clinics, não cria consentimento e não revisa template.
+3. **A demonstração fica num workspace dedicado, `demo`,** preservando o `staging`. A criação e a ativação no servidor são da execução do plano operacional, com autorização própria.
+4. **Validação proporcional;** a entrega para no commit local. Nada muda no staging, e envio real, dados reais e a F4.5 continuam separados.
+
+**1. O cadastro do canal (`channel:whatsapp`), compilado.**
+
+- **Hoje** é um script `tsx` em `apps/api/scripts/`, fora da imagem de runtime, que também não tem o `tsx`. Sem ele não há canal no staging, e sem canal não há template nem envio.
+- **Passa a ser** `src/cli/channel-whatsapp.ts`, com o corpo testável em `channel-whatsapp.core.ts`. Roda compilado (`node dist/cli/channel-whatsapp.js`), como as outras CLIs, e o script `tsx` sai: um só caminho.
+- **As validações de hoje, iguais:**
+  - o `--slug`, o `--phone-number-id` e a `--waba` obrigatórios; o nome do canal opcional (`WhatsApp`);
+  - o `--token` na linha de comando é recusado, com o aviso de que o token deve ser tratado como comprometido;
+  - o token vem da entrada padrão (`--token-stdin`) ou de uma pergunta sem eco;
+  - o `phone-number-id` de outro workspace é recusado (é ele que roteia o webhook);
+  - trocar a WABA exige `--trocar-waba`, porque diverge as versões de template do canal;
+  - o mesmo `phone-number-id` no mesmo workspace é rotação do token.
+- **O segredo:**
+  - o token é cifrado pelo `CryptoService` (AES-256-GCM, `TOKEN_ENCRYPTION_KEY`), no mesmo formato do script;
+  - ele nunca é impresso, nem no erro: a falha mostra só a mensagem da regra, ou o tipo do erro do Prisma, nunca o payload.
+- **`prisma.raw`, justificado:** o cadastro de credencial é ato administrativo (ADR-037), e o `phoneNumberId` é único global. A conferência de outro workspace precisa ver além do workspace.
+- **Os testes:**
+  - criar;
+  - rotacionar;
+  - recusar o número de outro workspace e a troca de WABA sem a confirmação;
+  - aceitar a troca com ela;
+  - recusar o `--token`;
+  - o token que nunca aparece na saída;
+  - a cifra que o `CryptoService` decifra.
+
+**2. A carga da demonstração (`demo:carregar`).**
+
+- **Onde:** é do vertical, porque cria dados clínicos: `src/verticals/clinics/cli/demo-carregar.ts`, com o corpo em `demo-carregar.core.ts` e os dados fictícios fixos em `carga-da-demonstracao.ts`.
+- **As recusas, antes de gravar qualquer coisa:**
+  - sem `--slug` ou sem `--actor`;
+  - sem o transporte simulado (`transporteSimulado`);
+  - o workspace inexistente ou suspenso;
+  - o Clinics não ativo no workspace (a carga não ativa);
+  - o ator sem as condições abaixo.
+- **O ator (`--actor <e-mail>`)** é em nome de quem os dados nascem, como numa requisição:
+  - o usuário ativo, com a membership ativa no workspace;
+  - no papel, as permissões das rotas que a tela usaria: `contacts:write`, `contacts:read`, `clinics:catalog:manage`, `clinics:schedule:write`, `clinics:care:write`, `clinics:care:read` e `clinics:schedule:read`.
+  - Cada registro nasce pelo serviço de sempre, com as validações e a trilha dele, em nome do ator.
+- **O que a carga cria, tudo fictício:**
+  - três serviços e duas profissionais, com os serviços habilitados e o expediente de segunda a sábado, das 8h às 18h, na unidade que a ativação criou;
+  - seis contatos, com números de prefixo fictício (`+55119000002xx`) e a origem "demonstração", e um paciente para cada um;
+  - cinco agendamentos nos próximos dias úteis, em horários livres do expediente, relativos à data da carga;
+  - um retorno pendente, já vencido e sem agendamento, para a reativação.
+- **O que a carga não faz:** não ativa o Clinics, não cria consentimento, finalidade, canal ou template, e não revisa template.
+- **A reexecução (decisão 2):**
+  - **Depois de uma carga completa,** a trilha ganha um marcador (`clinics.demo_loaded`, com as contagens). Rodar de novo não faz nada e diz quando a carga terminou. Desse ponto em diante, nenhuma mudança feita pela tela é tocada.
+  - **Depois de uma interrupção** (sem o marcador), a carga completa só o que falta e nunca altera o que existe:
+    - o contato, pelo número fictício exato: se existe, não é tocado, nem renomeado;
+    - o paciente, pelo contato;
+    - o agendamento, só para o paciente que não tem agendamento nenhum. Remarcado ou cancelado pela tela, ele não volta;
+    - o retorno, só para o paciente que não tem retorno nenhum;
+    - o catálogo, pelo nome exato, e só enquanto não houver nele serviço nem profissional fora do plano. Se houver, criado ou renomeado pela tela, a etapa do catálogo é pulada e relatada, e o que dependeria dela também.
+  - **O limite:** o marcador é da trilha, que tem retenção (`AUDIT_RETENTION_DAYS`, 365 dias por padrão). Depois dela, uma reexecução trataria o workspace como carga interrompida. Duas cargas ao mesmo tempo no mesmo workspace não são coordenadas, e o procedimento é de um operador só.
+- **A saída** traz só as contagens e o que foi pulado, com o motivo; nenhum número de telefone.
+- **Os testes:**
+  - cada recusa, sem gravar nada, e o outro workspace intocado;
+  - a carga completa, com as contagens e nenhum consentimento, revisão ou ativação;
+  - a reexecução depois da completa, que não faz nada;
+  - a reexecução depois de uma interrupção simulada, que completa sem duplicar;
+  - a mudança pela tela antes da reexecução (o serviço renomeado, o agendamento remarcado, o contato renomeado), que fica como está.
+
+**3. O E2E da demonstração** passa a preparar a pilha com a CLI compilada do canal, no lugar do script, e com o `demo:carregar`, no lugar dos dados clínicos por SQL. Sobra por SQL só a base: o catálogo de permissões, o workspace, os papéis e o Owner, como o setup do E2E.
+
+**4. A verificação:**
+
+- testes focados durante o trabalho;
+- no fechamento:
+  - a revisão (`reviewer` e `security`, uma vez);
+  - as mutações das garantias novas;
+  - a bateria em blocos, com log e com a tampa aberta.
+
 ## ADR-049 — Relógio de agendamento: quem compara define o relógio, e filas e leases usam o do banco
 
 **Status:** aceito (plano aprovado pela revisão de 2026-10-19; a entrega segue para revisão) · **Data:** 2026-10-19
