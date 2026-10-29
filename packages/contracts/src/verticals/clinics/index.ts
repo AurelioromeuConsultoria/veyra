@@ -1102,3 +1102,21 @@ export interface ClinicsReactivationDto {
   rate: number | null;
   status: 'open' | 'window_closed';
 }
+
+/** As opções do envio de um tipo: o canal e a versão ativa revisada para a finalidade dele (F4.4). */
+export const clinicsOutreachOptionsQuerySchema = z
+  .object({ kind: clinicsOutreachKindSchema })
+  .strict();
+export type ClinicsOutreachOptionsQuery = z.infer<typeof clinicsOutreachOptionsQuerySchema>;
+
+export interface ClinicsOutreachOptionDto {
+  channelId: string;
+  channelName: string;
+  templateVersionId: string;
+  name: string;
+  language: string;
+  version: number;
+  purposeId: string;
+  purposeVersion: number;
+  purposeDescription: string;
+}

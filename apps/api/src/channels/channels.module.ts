@@ -4,7 +4,7 @@ import { ContactsModule } from '../contacts/contacts.module';
 import { CryptoService } from '../common/crypto.service';
 import { FilesModule } from '../files/files.module';
 import { UsageModule } from '../usage/usage.module';
-import { FakeMetaTransport } from './fake.transport';
+import { FakeMetaTransport, transporteSimulado } from './fake.transport';
 import { GraphApiTransport, META_TRANSPORT } from './meta.transport';
 import {
   FakeTemplateCatalog,
@@ -42,13 +42,7 @@ import { WhatsappService } from './whatsapp.service';
       provide: META_TRANSPORT,
       inject: [ConfigService],
       useFactory: (config: ConfigService) =>
-        // o par é garantido por `validateEnv`; repeti-lo aqui é defesa em
-        // profundidade barata — se um dia a validação afrouxar, o falso
-        // continua inalcançável fora de staging
-        config.get<string>('META_TRANSPORT_MODE') === 'fake' &&
-        config.get<string>('VEYRA_ENV') === 'staging'
-          ? new FakeMetaTransport()
-          : new GraphApiTransport(config),
+        transporteSimulado(config) ? new FakeMetaTransport() : new GraphApiTransport(config),
     },
     /**
      * O catálogo de templates (F4.1c-2), pela mesma escolha: o falso, VAZIO, só
@@ -59,10 +53,7 @@ import { WhatsappService } from './whatsapp.service';
       provide: META_TEMPLATE_CATALOG,
       inject: [ConfigService],
       useFactory: (config: ConfigService) =>
-        config.get<string>('META_TRANSPORT_MODE') === 'fake' &&
-        config.get<string>('VEYRA_ENV') === 'staging'
-          ? new FakeTemplateCatalog()
-          : new GraphTemplateCatalog(config),
+        transporteSimulado(config) ? new FakeTemplateCatalog() : new GraphTemplateCatalog(config),
     },
   ],
   exports: [

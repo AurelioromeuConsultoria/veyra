@@ -1,42 +1,29 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import type {
   BusinessOutboundPreviewDto,
-  BusinessOutboundReason,
   BusinessOutboundResultDto,
   TemplateOptionDto,
 } from '@veyra/contracts';
 import { useState } from 'react';
+import { AvisoDeEnvioSimulado, useEnvioSimulado } from '../components/envio-simulado';
 import { Button } from '../components/ui/button';
 import { Select } from '../components/ui/input';
 import { api, ApiError } from '../lib/api';
+import { MOTIVO_DO_ENVIO_DO_NEGOCIO } from '../lib/motivos-do-envio';
 
 /**
- * Por que o template não foi aprovado — ou por que o despacho não saiu. A
- * lista é a do contrato: o web traduz, e nenhum motivo traz dado do contato.
+ * O que a aprovação aceita diz, pelo transporte: o simulado não sai, e o
+ * desconhecido não afirma que sai (F4.4).
  */
-export const MOTIVO_DO_ENVIO_DO_NEGOCIO: Record<BusinessOutboundReason, string> = {
-  address_changed: 'o número não é mais, de forma exata, um telefone do contato',
-  address_ambiguous: 'o número coincide com mais de um contato: confira o cadastro',
-  consent_revoked: 'sem consentimento vigente desta finalidade para este número',
-  opted_out: 'a pessoa pediu para parar: nada é enviado a este número',
-  conversation_relinked: 'a conversa mudou de contato ou de número desde a escolha',
-  template_changed: 'o template mudou na Meta: a versão revisada não vale mais',
-  template_unavailable: 'o template está indisponível na Meta agora',
-  template_unverified: 'não foi possível reler o template na Meta — tente de novo',
-  template_not_reviewed: 'esta versão não foi revisada para esta finalidade',
-  approval_stale: 'algo mudou desde a prévia (o nome, o consentimento ou a versão): veja de novo',
-  approval_expired: 'o prazo da aprovação venceu: veja a prévia de novo',
-  field_value_invalid:
-    'um campo do contato não serve como parâmetro (vazio, longo ou com quebra de linha)',
-  precondition_failed: 'o pedido de origem não vale mais',
-  precondition_unavailable: 'a conferência do pedido de origem não respondeu — tente de novo',
-  precondition_unknown: 'a origem do pedido não é reconhecida',
-  no_credential: 'canal sem credencial configurada',
-  quota_exceeded: 'limite do plano atingido',
-  busy: 'uma mudança deste contato estava em andamento — tente de novo em instantes',
-  not_processed: 'falha inesperada neste envio: nada foi gravado — tente de novo',
-  origin_already_approved: 'este pedido de origem já foi aprovado: nada sai de novo por ele',
-};
+export function textoDaAprovacao(simulado: boolean | null): string {
+  if (simulado === true) {
+    return 'Aprovado: o envio simulado é registrado em instantes, com a conferência de novo antes.';
+  }
+  if (simulado === false) {
+    return 'Aprovado: o envio sai em instantes, com a conferência de novo antes de sair.';
+  }
+  return 'Aprovado: o envio segue para a conferência de novo antes de sair.';
+}
 
 const chaveDaOpcao = (o: TemplateOptionDto) => `${o.templateVersionId}:${o.purposeId}`;
 
@@ -75,6 +62,7 @@ export function TemplatePanel({
    * a MESMA aprovação, que o servidor deduplica.
    */
   const [incerto, setIncerto] = useState(false);
+  const simulado = useEnvioSimulado();
 
   const opcoes = useQuery({
     queryKey: ['template-options', conversationId],
@@ -121,7 +109,7 @@ export function TemplatePanel({
       if (r.state === 'approved') {
         setPrevia(null);
         setEscolhida('');
-        setAviso('Aprovado: o envio sai em instantes, com a conferência de novo antes de sair.');
+        setAviso(textoDaAprovacao(simulado));
         onSent();
         return;
       }
@@ -163,6 +151,7 @@ export function TemplatePanel({
   }
   return (
     <div className="mb-2.5 space-y-1.5" data-testid="template-composer">
+      <AvisoDeEnvioSimulado simulado={simulado} />
       {opcoes.isError ? (
         <p className="text-data text-negative">Não foi possível carregar os templates.</p>
       ) : opcoes.data && opcoes.data.length === 0 ? (

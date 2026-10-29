@@ -5,6 +5,8 @@ import {
   CLINICS_AI_RELEASES_PATH,
   CLINICS_CATALOG_PATH,
   CLINICS_NO_SHOW_PATH,
+  CLINICS_OUTREACH_METRICS_PATH,
+  CLINICS_OUTREACH_PATH,
   CLINICS_PATIENT_PATH,
   CLINICS_PATIENTS_PATH,
   CLINICS_RETURNS_PATH,
@@ -30,6 +32,14 @@ const ClinicsReturnsPage = lazy(() =>
 const ClinicsNoShowPage = lazy(() =>
   import('./NoShowPage').then((m) => ({ default: m.ClinicsNoShowPage })),
 );
+const ClinicsOutreachPage = lazy(() =>
+  import('./envios/EnviosPage').then((m) => ({ default: m.ClinicsOutreachPage })),
+);
+const ClinicsOutreachMetricsPage = lazy(() =>
+  import('./metricas/MetricasDoEnvioPage').then((m) => ({
+    default: m.ClinicsOutreachMetricsPage,
+  })),
+);
 const ClinicsAiReleasesPage = lazy(() =>
   import('./AiReleasesPage').then((m) => ({ default: m.ClinicsAiReleasesPage })),
 );
@@ -41,6 +51,8 @@ export const clinicsRoutes: readonly VerticalRoute[] = [
   { path: CLINICS_PATIENT_PATH, element: <ClinicsPatientPage /> },
   { path: CLINICS_RETURNS_PATH, element: <ClinicsReturnsPage /> },
   { path: CLINICS_NO_SHOW_PATH, element: <ClinicsNoShowPage /> },
+  { path: CLINICS_OUTREACH_PATH, element: <ClinicsOutreachPage /> },
+  { path: CLINICS_OUTREACH_METRICS_PATH, element: <ClinicsOutreachMetricsPage /> },
   { path: CLINICS_CATALOG_PATH, element: <ClinicsCatalogPage /> },
   { path: CLINICS_AI_RELEASES_PATH, element: <ClinicsAiReleasesPage /> },
 ];

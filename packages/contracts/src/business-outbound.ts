@@ -140,3 +140,11 @@ export interface TemplateOptionDto {
   purposeVersion: number;
   purposeDescription: string;
 }
+
+/**
+ * O transporte do envio é o SIMULADO (o falso de staging, ADR-046)? A tela o
+ * mostra sempre que for: na demonstração, nada sai para o WhatsApp (F4.4).
+ */
+export interface BusinessOutboundTransportDto {
+  simulated: boolean;
+}

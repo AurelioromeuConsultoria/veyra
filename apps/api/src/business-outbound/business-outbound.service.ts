@@ -1,4 +1,5 @@
 import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import type {
   ApproveBusinessOutboundInput,
   ApproveBusinessOutboundItem,
@@ -12,6 +13,7 @@ import type {
 import { AuditService } from '../audit/audit.service';
 import { PermissionsService } from '../auth/permissions.service';
 import { PRAZO_DA_RELEITURA_MS } from '../channels/business-dispatch.port';
+import { transporteSimulado } from '../channels/fake.transport';
 import {
   CancelamentoDeDespachos,
   type ResultadoDoCancelamento,
@@ -139,7 +141,16 @@ export class EnvioDoNegocioService {
     private readonly audit: AuditService,
     private readonly permissoes: PermissionsService,
     private readonly cancelamento: CancelamentoDeDespachos,
+    private readonly config: ConfigService,
   ) {}
+
+  /**
+   * O transporte é o SIMULADO (o falso de staging, ADR-046)? A MESMA função da
+   * fábrica do canal: a tela o mostra, e na demonstração nada sai (F4.4).
+   */
+  envioSimulado(): boolean {
+    return transporteSimulado(this.config);
+  }
 
   /**
    * A origem pode entrar por esta rota, com o acesso de quem pede? A do Core,
@@ -569,7 +580,9 @@ export class EnvioDoNegocioService {
    * contagem é omitida. E só conta a conversa IDENTIFICADA e ainda do contato
    * do envio: a de "remetente a identificar" (RAI) ou a de outro contato não é
    * resposta do paciente, porque não se sabe de quem é (adendo 8, item 7) — é
-   * `false` para QUALQUER leitor, e o conteúdo dela nunca é lido. Assim a
+   * `false` ("sem resposta atribuível ao paciente segundo os critérios da
+   * métrica", não prova de que ele não respondeu) para QUALQUER leitor, e o
+   * conteúdo dela nunca é lido. Só a contagem agregada usa isto. Assim a
    * existência de uma RAI não aparece na métrica de quem não a pode ver (C13).
    * A origem que não saiu não aparece.
    */

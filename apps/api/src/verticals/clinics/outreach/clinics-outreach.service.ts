@@ -8,6 +8,7 @@ import {
   type ApproveClinicsOutreachInput,
   type ClinicsOutreachCandidateDto,
   type ClinicsOutreachKind,
+  type ClinicsOutreachOptionDto,
   type ClinicsOutreachPrepareDto,
   type ClinicsOutreachPrepareItemDto,
   type ClinicsOutreachPreviewDto,
@@ -370,6 +371,90 @@ export class ClinicsOutreachService {
     );
   }
 
+  // ── As opções do envio (F4.4) ───────────────────────────────────────────
+
+  /** O envio é o simulado de staging: o mesmo do Core, sem decidir de novo. */
+  envioSimulado(): boolean {
+    return this.envio.envioSimulado();
+  }
+
+  /**
+   * O que a tela oferece para a prévia de um tipo: as versões ATIVAS, com
+   * revisão do mesmo conteúdo, para uma finalidade com a chave do tipo e só o
+   * conteúdo mínimo. É o cardápio: a prévia e a aprovação conferem tudo de
+   * novo. A versão de template exige `templates:review` na rota do Core; aqui
+   * sai só o que o envio precisa, a quem já pode enviar.
+   */
+  async opcoes(kind: ClinicsOutreachKind): Promise<ClinicsOutreachOptionDto[]> {
+    const finalidades = (
+      (await this.prisma.db.consentPurpose.findMany({
+        where: { key: CLINICS_OUTREACH_PURPOSES[kind].key },
+        select: { id: true, key: true, fields: true, version: true, description: true },
+      })) as { id: string; key: string; fields: string[]; version: number; description: string }[]
+    ).filter((f) => finalidadeDoTipo(kind, f));
+    if (finalidades.length === 0) return [];
+    const revisoes = (await this.prisma.db.templateReview.findMany({
+      where: { purposeId: { in: finalidades.map((f) => f.id) } },
+      select: { templateVersionId: true, purposeId: true, contentHash: true },
+    })) as { templateVersionId: string; purposeId: string; contentHash: string }[];
+    const versoes = new Map(
+      (
+        (await this.prisma.db.messageTemplateVersion.findMany({
+          where: { id: { in: revisoes.map((r) => r.templateVersionId) }, status: 'active' },
+          select: {
+            id: true,
+            channelId: true,
+            name: true,
+            language: true,
+            version: true,
+            contentHash: true,
+          },
+        })) as {
+          id: string;
+          channelId: string;
+          name: string;
+          language: string;
+          version: number;
+          contentHash: string;
+        }[]
+      ).map((v) => [v.id, v]),
+    );
+    const canais = new Map(
+      (
+        (await this.prisma.db.channel.findMany({
+          where: { id: { in: [...new Set([...versoes.values()].map((v) => v.channelId))] } },
+          select: { id: true, name: true },
+        })) as { id: string; name: string }[]
+      ).map((c) => [c.id, c.name]),
+    );
+    const finalidade = new Map(finalidades.map((f) => [f.id, f]));
+    const opcoes: ClinicsOutreachOptionDto[] = [];
+    for (const r of revisoes) {
+      const v = versoes.get(r.templateVersionId);
+      const f = finalidade.get(r.purposeId);
+      // a revisão vale só para o conteúdo que a pessoa viu
+      if (!v || !f || v.contentHash !== r.contentHash) continue;
+      opcoes.push({
+        channelId: v.channelId,
+        channelName: canais.get(v.channelId) ?? '',
+        templateVersionId: v.id,
+        name: v.name,
+        language: v.language,
+        version: v.version,
+        purposeId: f.id,
+        purposeVersion: f.version,
+        purposeDescription: f.description,
+      });
+    }
+    return opcoes.sort(
+      (a, b) =>
+        a.channelName.localeCompare(b.channelName) ||
+        a.name.localeCompare(b.name) ||
+        b.version - a.version ||
+        b.purposeVersion - a.purposeVersion,
+    );
+  }
+
   // ── A prévia e a aprovação ──────────────────────────────────────────────
 
   /**
@@ -585,17 +670,7 @@ export class ClinicsOutreachService {
       where: { id: purposeId },
       select: { key: true, fields: true },
     })) as { key: string; fields: string[] } | null;
-    const regra = CLINICS_OUTREACH_PURPOSES[kind];
-    // nenhum campo além do conteúdo mínimo, e TODOS os do vertical que a porta
-    // devolve: a finalidade sem eles seria recusada adiante, com outro motivo
-    return (
-      !!finalidade &&
-      finalidade.key === regra.key &&
-      finalidade.fields.every((campo) => regra.fields.includes(campo)) &&
-      regra.fields
-        .filter((campo) => campo.startsWith('clinics.'))
-        .every((campo) => finalidade.fields.includes(campo))
-    );
+    return !!finalidade && finalidadeDoTipo(kind, finalidade);
   }
 
   /**
@@ -680,6 +755,25 @@ export class ClinicsOutreachService {
       return new RegExp(`(^|[^a-z0-9])${escapado}([^a-z0-9]|$)`).test(alvo);
     });
   }
+}
+
+/**
+ * A finalidade é a do tipo: a chave dele, nenhum campo além do conteúdo mínimo
+ * e TODOS os do vertical que a porta devolve (sem eles, a finalidade seria
+ * recusada adiante, com outro motivo).
+ */
+function finalidadeDoTipo(
+  kind: ClinicsOutreachKind,
+  finalidade: { key: string; fields: string[] },
+): boolean {
+  const regra = CLINICS_OUTREACH_PURPOSES[kind];
+  return (
+    finalidade.key === regra.key &&
+    finalidade.fields.every((campo) => regra.fields.includes(campo)) &&
+    regra.fields
+      .filter((campo) => campo.startsWith('clinics.'))
+      .every((campo) => finalidade.fields.includes(campo))
+  );
 }
 
 /** A unidade pedida, ou a ÚNICA ativa (MVP: uma por workspace). */

@@ -1,4 +1,5 @@
-import { FakeMetaTransport } from './fake.transport';
+import type { ConfigService } from '@nestjs/config';
+import { FakeMetaTransport, transporteSimulado } from './fake.transport';
 
 const credencial = { phoneNumberId: '1', token: 't' };
 
@@ -7,6 +8,28 @@ const credencial = { phoneNumberId: '1', token: 't' };
  * este spec protege não é o caminho feliz — é que ele continue inconfundível:
  * id sintético marcado, e mídia recusada em vez de inventada.
  */
+/**
+ * A escolha do falso decide o transporte, o catálogo e o aviso da tela (F4.4):
+ * só o par `fake` + `staging`. O falso fora de staging — a validação de
+ * ambiente contornada — continua real.
+ */
+describe('transporteSimulado', () => {
+  const config = (mode: string | undefined, env: string | undefined) =>
+    ({
+      get: (chave: string) => ({ META_TRANSPORT_MODE: mode, VEYRA_ENV: env })[chave],
+    }) as unknown as ConfigService;
+
+  it.each([
+    ['fake', 'staging', true],
+    ['fake', 'production', false],
+    ['fake', undefined, false],
+    ['graph', 'staging', false],
+    [undefined, 'staging', false],
+  ])('META_TRANSPORT_MODE=%s, VEYRA_ENV=%s → %s', (mode, env, esperado) => {
+    expect(transporteSimulado(config(mode, env))).toBe(esperado);
+  });
+});
+
 describe('FakeMetaTransport', () => {
   it('devolve id SINTÉTICO e marcado, impossível de confundir com um wamid real', async () => {
     const transporte = new FakeMetaTransport();

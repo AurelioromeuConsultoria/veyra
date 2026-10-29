@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import type { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import type {
   FetchOutcome,
@@ -7,6 +8,20 @@ import type {
   SendCredential,
   SendOutcome,
 } from './meta.transport';
+
+/**
+ * A escolha do transporte (e do catálogo) falso: `META_TRANSPORT_MODE=fake` E
+ * `VEYRA_ENV=staging`. O par é garantido por `validateEnv`; repeti-lo aqui é
+ * defesa em profundidade barata — se um dia a validação afrouxar, o falso
+ * continua inalcançável fora de staging. Uma função só: as fábricas do canal e
+ * o aviso de envio simulado da tela (F4.4) nunca divergem.
+ */
+export function transporteSimulado(config: ConfigService): boolean {
+  return (
+    config.get<string>('META_TRANSPORT_MODE') === 'fake' &&
+    config.get<string>('VEYRA_ENV') === 'staging'
+  );
+}
 
 /**
  * Transporte FALSO do WhatsApp — existe para que STAGING exercite o caminho de

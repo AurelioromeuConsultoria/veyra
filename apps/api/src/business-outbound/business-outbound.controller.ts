@@ -3,6 +3,7 @@ import {
   ApproveBusinessOutboundInput,
   BusinessOutboundPreviewDto,
   BusinessOutboundResultDto,
+  BusinessOutboundTransportDto,
   PreviewBusinessOutboundInput,
   TemplateOptionDto,
   TemplateOptionsQuery,
@@ -36,6 +37,13 @@ export class EnvioDoNegocioController {
     @Query(new ZodPipe(templateOptionsQuerySchema)) query: TemplateOptionsQuery,
   ): Promise<TemplateOptionDto[]> {
     return this.envio.opcoes(query.conversationId);
+  }
+
+  /** O envio é simulado? Quem envia vê sempre (F4.4): nada a esconder de quem já escreve. */
+  @RequirePermissions('conversations:write')
+  @Get('transport')
+  transporte(): BusinessOutboundTransportDto {
+    return { simulated: this.envio.envioSimulado() };
   }
 
   @RequirePermissions('conversations:write', 'contacts:read', 'consents:read')

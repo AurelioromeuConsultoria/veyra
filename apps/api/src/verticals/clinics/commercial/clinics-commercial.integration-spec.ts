@@ -769,7 +769,7 @@ describe('F4.3 — o vínculo com o deal e as métricas do envio (integração)'
       reason: 'no_conversation_access',
     });
     // a conversa que vira RAI (ou passa a outro contato) não é resposta do
-    // paciente: "não respondeu" para QUALQUER leitor — o Owner e quem não lê a
+    // paciente: "sem resposta atribuível" para QUALQUER leitor — o Owner e quem não lê a
     // RAI veem o mesmo, e a existência dela não aparece (C13)
     const semRai = await comChaves('conversas@veyra.test', [
       'clinics:schedule:read',

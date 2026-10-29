@@ -934,6 +934,66 @@ describe('F4.2 — o envio iniciado pela clínica (integração)', () => {
     expect(await prisma.raw.message.count()).toBe(0);
   });
 
+  // ── As opções do envio e o transporte (F4.4) ────────────────────────────
+
+  it('as opções do envio: só as versões revisadas para a finalidade do tipo, com o conteúdo mínimo; e o transporte não é o simulado fora de staging', async () => {
+    const opcoes = (await get('/api/clinics/outreach/options?kind=confirmation', owner).expect(200))
+      .body as { channelId: string; templateVersionId: string; purposeId: string }[];
+    expect(opcoes).toEqual([
+      expect.objectContaining({
+        channelId: canal,
+        channelName: 'WhatsApp',
+        templateVersionId: versao,
+        purposeId: finalidade,
+      }),
+    ]);
+    // a finalidade com o nome inteiro não é opção (o conteúdo mínimo)
+    const comNome = await finalidadeNova(
+      'clinics_confirmacao',
+      ['contato.nome', 'clinics.data', 'clinics.hora'],
+      { 'body.1': 'contato.nome', 'body.2': 'clinics.data', 'body.3': 'clinics.hora' },
+    );
+    const depois = (await get('/api/clinics/outreach/options?kind=confirmation', owner).expect(200))
+      .body as { purposeId: string }[];
+    expect(depois.some((o) => o.purposeId === comNome.purposeId)).toBe(false);
+    // sem finalidade de reativação, nenhuma opção
+    expect(
+      (await get('/api/clinics/outreach/options?kind=reactivation', owner).expect(200)).body,
+    ).toEqual([]);
+    // só quem pode enviar vê o cardápio: sem escrever nas conversas, nem com as outras quatro
+    const soAgenda = await comChaves('agenda2@veyra.test', ['clinics:schedule:read']);
+    await get('/api/clinics/outreach/options?kind=confirmation', soAgenda).expect(403);
+    const semEscrita = await comChaves('quatro@veyra.test', [
+      'clinics:schedule:read',
+      'clinics:schedule:write',
+      'contacts:read',
+      'consents:read',
+    ]);
+    await get('/api/clinics/outreach/options?kind=confirmation', semEscrita).expect(403);
+    // o cardápio é do workspace: o outro não vê o canal nem a versão daqui (P0),
+    // nem com uma finalidade da mesma chave no dele (as consultas seguintes rodam)
+    await app.get(ConsentPurposesService).criarVersao('beta', {
+      key: 'clinics_confirmacao',
+      description: 'Confirmação do outro workspace',
+      category: 'utility',
+      fields: ['contato.primeiro_nome', 'clinics.data', 'clinics.hora'],
+    });
+    expect(
+      (await get('/api/clinics/outreach/options?kind=confirmation', ownerB).expect(200)).body,
+    ).toEqual([]);
+    // o transporte destes testes não é o simulado de staging; quem lê a agenda
+    // pergunta pela rota do vertical, quem escreve nas conversas, pela do Core
+    expect((await get('/api/business-outbound/transport', owner).expect(200)).body).toEqual({
+      simulated: false,
+    });
+    expect((await get('/api/clinics/outreach/transport', soAgenda).expect(200)).body).toEqual({
+      simulated: false,
+    });
+    await get('/api/business-outbound/transport', soAgenda).expect(403);
+    const semAgenda = await comChaves('contatos@veyra.test', ['contacts:read']);
+    await get('/api/clinics/outreach/transport', semAgenda).expect(403);
+  });
+
   // ── A reativação ────────────────────────────────────────────────────────
 
   it('a reativação: o retorno vencido é candidato, a mensagem leva só o primeiro nome, e vincular o retorno invalida', async () => {

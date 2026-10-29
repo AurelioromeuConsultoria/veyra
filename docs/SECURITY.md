@@ -209,6 +209,10 @@ O webhook do WhatsApp é o **único caminho de escrita público e não autentica
 - **Só agregados.** As contagens de resposta exigem `conversations:read`; sem ela, a etapa é omitida, nunca zero. A resposta só conta na conversa identificada e ainda do contato do envio. A RAI e a conversa de outro contato entram como "sem resposta atribuível ao paciente segundo os critérios da métrica" para QUALQUER leitor, o que não prova que ele não respondeu. O conteúdo delas nunca é lido, e a métrica não revela a existência de uma RAI a quem não a pode ver (C13). A regra vale só para a contagem agregada, confirmada pelo usuário: não autoriza devolver conteúdo, identificadores ou links de conversas inacessíveis, e não substitui o B1.
 - **O vínculo** (classe S) só liga ids. Ler exige `pipelines:read` e `clinics:schedule:read`; mudar, `pipelines:read` e `clinics:schedule:write`. Só antes do atendimento, serializado com ele pela trava da linha e conferido de novo por gatilho.
 - **A FK para o deal é `NO ACTION`:** a exclusão do deal vinculado dá o 409 genérico, e a exclusão do workspace passa.
+- **As telas (F4.4, ADR-048 adendo 11)** só mostram o que as rotas já filtram, e não consultam sem a permissão da rota. As três rotas novas são só de leitura:
+  - `GET /api/business-outbound/transport` (`conversations:write`) e `GET /api/clinics/outreach/transport` (`clinics:schedule:read`) revelam apenas se o envio é simulado, um booleano do ambiente igual para todo workspace;
+  - `GET /api/clinics/outreach/options` lista canais e versões revisadas do workspace, sob as cinco permissões do lote, sem dado de contato.
+  - Com o transporte desconhecido, a tela não afirma envio real. Com a aprovação em voo ou incerta, nada na tela troca a prévia: a repetição é a MESMA, com a mesma chave; o servidor continua sendo a garantia (o único da origem aprovada e o hash único da prévia).
 
 11. **O que não se promete** (ADR-052 item 7): a mensagem pode sair depois de uma revogação se a guarda se perder — o caso fica `in_doubt`, nunca reenviado; e o Veyra só prova que pediu uma versão cujo conteúdo, segundo a Meta, tinha aquele hash momentos antes.
 

@@ -29,6 +29,7 @@ import {
   horariosLivres,
 } from './agenda/slots';
 import { RegistroDeAtendimento } from './agenda/RegistroDeAtendimento';
+import { VinculoComOportunidade } from './agenda/VinculoComOportunidade';
 
 const AGENDA_KEY = ['clinics', 'appointments'] as const;
 const ROTULO_DA_ACAO = {
@@ -106,6 +107,8 @@ function AgendaReady() {
   const { data: user } = useSession();
   const podeMarcar = hasPermission(user, 'clinics:schedule:write');
   const podeAtender = hasPermission(user, 'clinics:care:write');
+  // o vínculo com a oportunidade (F4.4): ler exige os pipelines
+  const podeVerOportunidade = hasPermission(user, 'pipelines:read');
   const minhaConta = user?.activeMembership?.membershipId ?? null;
   const [params, setParams] = useSearchParams();
   const [soMinha, setSoMinha] = useState(false);
@@ -284,6 +287,7 @@ function AgendaReady() {
                       agendamento={agendamento}
                       podeMarcar={podeMarcar}
                       podeAtender={podeAtender}
+                      podeVerOportunidade={podeVerOportunidade}
                       fuso={unidade?.timezone ?? null}
                       // profissional arquivado: o drawer não teria serviços nem horários
                       podeRemarcar={podeMarcar && coluna.profissional !== null}
@@ -328,6 +332,7 @@ function CartaoDeAgendamento({
   agendamento,
   podeMarcar,
   podeAtender,
+  podeVerOportunidade,
   fuso,
   podeRemarcar,
   onRemarcar,
@@ -335,6 +340,7 @@ function CartaoDeAgendamento({
   agendamento: ClinicsAppointmentDto;
   podeMarcar: boolean;
   podeAtender: boolean;
+  podeVerOportunidade: boolean;
   fuso: string | null;
   podeRemarcar: boolean;
   onRemarcar: () => void;
@@ -342,6 +348,7 @@ function CartaoDeAgendamento({
   const queryClient = useQueryClient();
   const [cancelando, setCancelando] = useState(false);
   const [registrando, setRegistrando] = useState(false);
+  const [oportunidade, setOportunidade] = useState(false);
   const [motivo, setMotivo] = useState<ClinicsCancelReason | ''>('');
   const recarregar = () => void queryClient.invalidateQueries({ queryKey: AGENDA_KEY });
   const mudar = useMutation({
@@ -427,6 +434,16 @@ function CartaoDeAgendamento({
                 Registrar atendimento
               </Button>
             ) : null}
+            {podeVerOportunidade ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                aria-label={`Oportunidade: ${quem}`}
+                onClick={() => setOportunidade(true)}
+              >
+                Oportunidade
+              </Button>
+            ) : null}
           </div>
         )}
         {cancelando ? (
@@ -478,6 +495,11 @@ function CartaoDeAgendamento({
             onAgendaMudou={recarregar}
             onDone={() => setRegistrando(false)}
           />
+        ) : null}
+      </Drawer>
+      <Drawer open={oportunidade} onOpenChange={setOportunidade} title="Oportunidade">
+        {oportunidade ? (
+          <VinculoComOportunidade agendamento={agendamento} podeMudar={podeMarcar} />
         ) : null}
       </Drawer>
     </Panel>

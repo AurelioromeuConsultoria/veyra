@@ -24,8 +24,9 @@ import { EmptyState } from '../components/ui/page';
 import { WindowChip, WindowMeter } from '../components/ui/window-meter';
 import { api, ApiError, toQuery } from '../lib/api';
 import { SenderPanel } from './InboxSender';
-import { MOTIVO_DO_ENVIO_DO_NEGOCIO, TemplatePanel } from './InboxTemplate';
+import { TemplatePanel } from './InboxTemplate';
 import { dayLabel, fullStamp, relativeStamp, timeOfDay } from '../lib/format';
+import { DISPATCH_ERROR_LABEL } from '../lib/motivos-do-envio';
 import { hasPermission, useSession } from '../lib/session';
 
 const statusLabels: Record<ConversationStatus, string> = {
@@ -96,37 +97,6 @@ function ConsentBadge({ status }: { status: ConsentStatus | null }) {
     </span>
   );
 }
-
-/** Código do provedor não é mensagem: quem atende lê a frase, não o número. */
-const DISPATCH_ERROR_LABEL: Record<string, string> = {
-  // o envio do negócio (F4.1c-3): os mesmos motivos da prévia e da aprovação
-  ...MOTIVO_DO_ENVIO_DO_NEGOCIO,
-  window_closed_needs_template: 'janela de 24h fechada',
-  // os três seguintes só aparecem em despacho anterior à F4.1b
-  template_requires_consent: 'falta consentimento registrado',
-  template_unknown: 'template não aprovado',
-  template_params_mismatch: 'parâmetros não correspondem ao template',
-  template_flow_unavailable: 'o template não sai pelo envio comum',
-  stop_requested: 'a pessoa pediu para parar: nada é enviado a este número',
-  // o vertical cancela quando o pedido de origem deixa de valer (F4.2)
-  origin_invalidated: 'o pedido de origem deixou de valer antes do envio',
-  cancel_requested: 'cancelado antes de sair',
-  quota_exceeded: 'limite do plano atingido',
-  no_credential: 'canal sem credencial configurada',
-  conversation_missing: 'conversa não encontrada',
-  message_missing: 'mensagem não encontrada',
-  network: 'falha de rede',
-  retries_exhausted: 'tentativas esgotadas',
-  retries_exhausted_in_flight: 'tentativas esgotadas durante o envio',
-  abandoned_before_send: 'envio interrompido antes de sair',
-  abandoned_in_flight: 'envio interrompido em andamento',
-  no_retrier: 'envio interrompido sem nova tentativa',
-  lease_expired_in_flight: 'resultado não confirmado pelo provedor',
-  content_restricted: 'mensagem de origem da IA bloqueada: o conteúdo deste contato é restrito',
-  restriction_unavailable: 'conferência de restrição indisponível — nova tentativa agendada',
-  not_sent_guard_aborted: 'a guarda interrompeu antes do envio, sem cobrança',
-  business_outbound_unavailable: 'envio por template indisponível agora',
-};
 
 /**
  * O incerto que a guarda PROVOU não ter saído (ADR-047 adendo 7 §9, G3.2): o

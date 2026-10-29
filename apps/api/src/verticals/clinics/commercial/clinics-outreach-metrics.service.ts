@@ -140,7 +140,8 @@ export class ClinicsOutreachMetricsService {
 
     // a resposta: sem a leitura das conversas, a contagem é omitida (nunca
     // zero); a conversa RAI ou de outro contato não é resposta do paciente, e o
-    // Core já a dá como "não respondeu" para qualquer leitor
+    // Core já a dá como "sem resposta atribuível ao paciente" para qualquer
+    // leitor (pelos critérios da métrica; não é prova de que ele não respondeu)
     const leConversas = await this.permissions.has(auth, 'conversations:read');
     const semAcesso = enviados.some((a) => desfechoDe(a)?.respondeu === null);
     const responded: ClinicsMetricStageDto =

@@ -11,11 +11,14 @@ import {
 } from '@nestjs/common';
 import {
   approveClinicsOutreachSchema,
+  clinicsOutreachOptionsQuerySchema,
   listClinicsOutreachCandidatesSchema,
   prepareClinicsOutreachSchema,
   previewClinicsOutreachSchema,
   type ApproveClinicsOutreachInput,
   type ClinicsOutreachCandidateDto,
+  type ClinicsOutreachOptionDto,
+  type ClinicsOutreachOptionsQuery,
   type ClinicsOutreachPrepareDto,
   type ClinicsOutreachPreviewDto,
   type ClinicsOutreachRequestDto,
@@ -24,6 +27,7 @@ import {
   type PrepareClinicsOutreachInput,
   type PreviewClinicsOutreachInput,
 } from '@veyra/contracts/verticals/clinics';
+import type { BusinessOutboundTransportDto } from '@veyra/contracts';
 import { AuthContext, CurrentAuth } from '../../../common/decorators';
 import { Idempotent } from '../../../common/idempotency.decorator';
 import { ZodPipe } from '../../../common/zod.pipe';
@@ -55,6 +59,32 @@ export class ClinicsOutreachController {
     query: ListClinicsOutreachCandidatesInput,
   ): Promise<ClinicsOutreachCandidateDto[]> {
     return this.outreach.candidatos(query);
+  }
+
+  /** O cardápio da prévia: quem pode enviar vê os canais e as versões revisadas do tipo. */
+  @RequireClinicsPermissions(
+    'clinics:schedule:read',
+    'clinics:schedule:write',
+    'conversations:write',
+    'contacts:read',
+    'consents:read',
+  )
+  @Get('options')
+  opcoes(
+    @Query(new ZodPipe(clinicsOutreachOptionsQuerySchema)) query: ClinicsOutreachOptionsQuery,
+  ): Promise<ClinicsOutreachOptionDto[]> {
+    return this.outreach.opcoes(query.kind);
+  }
+
+  /**
+   * O envio é o SIMULADO de staging? Quem lê a agenda vê os estados e as
+   * métricas do envio, e precisa saber que nada saiu (revisão da F4.4): só o
+   * booleano do ambiente, igual para todo workspace.
+   */
+  @RequireClinicsPermissions('clinics:schedule:read')
+  @Get('transport')
+  transporte(): BusinessOutboundTransportDto {
+    return { simulated: this.outreach.envioSimulado() };
   }
 
   @RequireClinicsPermissions(

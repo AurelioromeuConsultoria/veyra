@@ -4915,6 +4915,99 @@ As telas ficam na F4.4.
   - **L7**, o gatilho do vínculo sem o ramo "o workspace já saiu". Na ordem atual da cascata, o agendamento já foi apagado quando o vínculo é apagado, e o ramo é redundante. Ele fica como garantia contra outra ordem.
 - **A revisão do delta (`security`)** achou que o `FOR SHARE` com o estado no `WHERE` não travava a linha ainda não atendida. Foi corrigido com a trava sem condição, com teste. A reativação ganhou também um limite inferior na consulta dos pedidos: os criados mais de 25 horas antes do período não podem ter saído nele.
 
+### Adendo 11 (2026-10-28) — F4.4: as telas e o E2E do envio da clínica (implementada e revisada; commit local, sem push)
+
+**Escopo, pela instrução do usuário de 2026-10-28:** as telas de candidatos, prévia, aprovação e acompanhamento dos pedidos; o vínculo com o deal; as métricas, com "sem dados", cobertura parcial, estados incertos e permissões corretamente apresentados. A demonstração usa envio simulado, e isso fica visível. Nenhum evento é criado para fazer a entrega ou a resposta parecerem confirmadas pelo provedor. Dados fictícios; envio real e dados reais continuam bloqueados.
+
+**Fora desta entrega, aguardando decisão do usuário:** as telas de registro de consentimento e de pedido de parar e a de revisão de versão de template. Documentos anteriores as punham na F4.4 (adendo 8; `docs/DEPLOY_STAGING.md` §13, item 2), mas a instrução da F4.4 não as listou, e nada entrou além dela.
+
+**Três rotas novas, só de leitura e sem tabela nova.** A tela nunca decide o que o servidor decide:
+
+- **O transporte é o simulado?** Devolve `{ simulated }`, verdadeiro só com `META_TRANSPORT_MODE=fake` e `VEYRA_ENV=staging`. A condição é a mesma função (`transporteSimulado`, em `channels/fake.transport.ts`) que escolhe o transporte e o catálogo falsos: o aviso da tela e o transporte de verdade não divergem. Duas rotas, pela permissão de quem vê a tela:
+  - `GET /api/business-outbound/transport` (Core), sob `conversations:write`, para o Inbox;
+  - `GET /api/clinics/outreach/transport` (Clinics), sob `clinics:schedule:read`. Quem só lê a agenda (o `Profissional`, por exemplo) vê os estados e as métricas do envio e precisa saber que nada saiu (revisão da F4.4). A rota revela só o booleano do ambiente, igual para todo workspace.
+- **`GET /api/clinics/outreach/options?kind=` (Clinics)** devolve, por tipo de envio:
+  - os canais e as versões ATIVAS com revisão do mesmo `contentHash`;
+  - só das finalidades da chave do tipo que passam no mesmo filtro da prévia (`finalidadeDoTipo`: os campos dentro do conteúdo mínimo, e os do vertical todos presentes);
+  - sob as cinco permissões do lote.
+  - A tela não monta a opção; a prévia e a aprovação conferem tudo de novo.
+
+**O transporte em três valores na tela:** simulado, real e desconhecido (sem a permissão da rota, carregando ou com erro). No desconhecido, a tela usa texto neutro ("Registrado como enviado"; "Registrados como enviados para o horário final"; "o envio segue para a conferência de novo antes de sair"), nunca o do envio real. No simulado, a contagem do funil diz "Enviados (simulado)".
+
+**As telas:**
+
+- **Envios (`/clinics/outreach`):**
+  - Os candidatos exigem `contacts:read` e `consents:read`, como a API. Preparar e aprovar exigem também `clinics:schedule:write` e `conversations:write`. Sem elas, a tela explica e não consulta.
+  - O candidato bloqueado (pedido que conta, ou duas horas ou menos) não é escolhido. Quem prepara escolhe o número exato entre os do contato. Trocar o tipo, a unidade, a data ou os dias limpa a escolha.
+  - "Preparar e ver a prévia" cria (ou reaproveita) o rascunho e mostra o texto exato de cada destinatário. O item recusado aparece com o motivo e não vai para a aprovação.
+  - A aprovação leva o hash e o prazo da prévia. A `Idempotency-Key` nasce com a prévia.
+  - **Uma trava única:** com a aprovação em voo, com a prévia sendo gerada e com o resultado incerto, nada troca a prévia nem gera outra. Ficam desligados o tipo, a unidade, a data, os dias, a escolha, o número, o template, "Preparar" e "Descartar".
+  - Sem resposta definitiva (rede, 5xx ou o 409 de "em processamento"), a tela volta para a prévia da tentativa, e só a MESMA aprovação pode ser repetida, com a mesma chave e os mesmos itens. O 4xx definitivo libera.
+  - O resultado sai por item. O acompanhamento lê o pedido: o número e o motivo aparecem como o servidor os manda (ele mascara e omite conforme as permissões). O motivo é o código do despacho, traduzido pelos mesmos rótulos do Inbox (`lib/motivos-do-envio.ts`); o desconhecido vira "motivo não detalhado". Sem texto, a tela diz que ele só existe entre a prévia e o desfecho.
+  - Os estados: "Enviado (simulado)" no transporte falso, e "Incerto: pode ter saído, e nunca é reenviado".
+- **O vínculo com a oportunidade:** um botão no cartão da agenda, com `pipelines:read`.
+  - Escolher e trocar exigem `clinics:schedule:write`, e só antes do atendimento. O servidor recusa de novo.
+  - O vínculo sem efeito volta sem o título. A tela o mostra como "Vínculo sem efeito: a oportunidade não é mais do contato do paciente", fora da conversão até ser trocado.
+- **Métricas do envio (`/clinics/outreach-metrics`):**
+  - Cada etapa aparece pelo `status`:
+    - `complete`: o número e a taxa;
+    - `partial`: "N de K apurados", com a cobertura parcial dita;
+    - `no_data`: "Sem dados", com o motivo;
+    - `omitted`: "Omitida", com o motivo ("exige ler as conversas da contagem", que cobre também a conversa inacessível a quem lê conversas).
+  - A taxa nula é "Sem dados", nunca 0 %.
+  - A resposta se chama "Com resposta atribuível ao paciente", e a tela diz que o resto fica "sem resposta atribuível ao paciente segundo os critérios da métrica", o que não prova que ele não respondeu.
+  - No transporte falso, a entrega sem recibo explica que o provedor não confirma entrega nem resposta.
+  - **A conversão, pela definição do adendo 8 (7.2):** as oportunidades do pipeline criadas no período que tiveram um agendamento vinculado, por vínculo válido, criado depois delas e atendido na janela. O estado da oportunidade (ganha, perdida ou aberta) não muda a conta. A taxa nula diz "Nenhuma oportunidade criada no período neste pipeline". Só aparece com `pipelines:read` (sem ela, a tela diz e não consulta). Ela usa o pipeline padrão até a pessoa escolher outro e diz que a base é a do pipeline e que a unidade só define o fuso.
+  - A janela encerrada diz que o resultado é recalculado pelo estado atual e ainda pode mudar.
+  - Os incertos e os enviados só para um horário anterior ficam à parte. Tudo é associação, não causa.
+- **O aviso "Envio simulado"** aparece nos Envios, nas Métricas e no compositor de template do Inbox.
+
+**Os testes:**
+
+- **Vitest:**
+  - 19 testes das telas do Clinics, entre eles:
+    - a prévia antes da aprovação e a mesma chave na repetição incerta;
+    - a trava com a aprovação em voo, com outra prévia sendo gerada e no incerto (o número inclusive);
+    - a escolha limpa ao trocar o filtro e a recusa com motivo;
+    - o bloqueado, o acompanhamento e o motivo do despacho;
+    - o transporte desconhecido sem afirmar envio real, e o simulado para quem só lê;
+    - as permissões que escondem e não consultam;
+    - as quatro formas da etapa;
+    - a conversão sem pipelines, sem oportunidades e com a janela encerrada;
+    - o vínculo: sem efeito, troca, depois do atendimento e sem pipelines.
+  - 2 testes no Inbox: o aviso no composer e nenhuma consulta do transporte sem `conversations:write`. Um teste antigo do Inbox contava as chamadas e passou a ignorar a leitura da sessão.
+- **Integração e unidade:**
+  - as opções de outro workspace não aparecem, nem com uma finalidade da mesma chave no workspace que pergunta (P0);
+  - as opções são recusadas sem `conversations:write`, mesmo com as outras quatro chaves;
+  - as duas rotas do transporte são recusadas sem a permissão de cada uma;
+  - `transporteSimulado` tem as cinco combinações de `META_TRANSPORT_MODE` e `VEYRA_ENV`.
+- **E2E (`e2e/tests/clinics-envios.spec.ts`), três testes:**
+  - O primeiro chega até a prévia com o conteúdo mínimo, a partir da semeadura direta no banco: a finalidade, o consentimento, o canal, a versão e a revisão. O registro da versão lê a Meta, que o E2E não tem. Os números têm prefixo fictício fixo. A ausência do aviso só é afirmada depois da resposta do transporte.
+  - A aprovação no E2E é RECUSADA ("não foi possível reler o template na Meta"): a credencial fictícia não decifra, e a releitura falha. Nenhuma aprovação nasce, e o pedido segue preparado com o texto. O fluxo aprovado e o despacho continuam provados nos testes de integração da F4.2.
+  - O segundo vincula a oportunidade pela agenda e mostra a entrega "Sem dados" e a conversão "Em apuração".
+  - O terceiro mostra que o `Profissional` vê a resposta omitida, não zerada, e não vê os envios nem a conversão.
+
+**A revisão do fechamento (`reviewer` e `security`, uma rodada):** sem bloqueante, P0 nem P1. Os achados, todos corrigidos nesta entrega:
+
+- a trava do incerto tinha duas brechas: o número não era desligado, e nada era desligado com a aprovação em voo. O servidor já impedia a segunda mensagem (o único da origem aprovada e o hash único da prévia), mas a tela contradizia este adendo;
+- o aviso do simulado dependia de `conversations:write` e, na dúvida, virava "real";
+- o texto da conversão contradizia o 7.2 ("ganha na janela");
+- o motivo do acompanhamento caía em "recusado" para os códigos do despacho;
+- a escolha sobrevivia à troca de filtro;
+- o texto ausente afirmava o que podia não ter acontecido;
+- faltavam os testes de isolamento e de permissão das opções, o de `transporteSimulado` e a espera do transporte no E2E.
+
+**As mutações (37), uma vez, no fim:** todas morrem por teste que falha, nunca por compilação. São 32 nas telas e no Inbox (vitest), 4 nas rotas (integração) e 1 em `transporteSimulado` (unidade). Na primeira passada, 35 morreram e duas sobreviveram, e os testes foram reforçados:
+
+- **W10, a consulta do transporte sem a permissão:** nenhum teste provava que o Inbox não pergunta a quem não escreve nas conversas;
+- **W17, a falta sem dados como "Sem dados (0 em 0)":** o teste aceitava o trecho, e passou a exigir o texto exato.
+
+A revisão do delta (`security`) aprovou as correções, sem P0, P1 nem P2. Os quatro pontos informativos também foram ajustados: "Descartar" sob a mesma trava, o funil sem "Enviados" no desconhecido, a finalidade no outro workspace no teste de isolamento e um comentário fora do lugar.
+
+**Residual registrado (anterior, da F4.2), sem segunda mensagem:** na repetição de uma aprovação sem resultado guardado, o Clinics faz as próprias conferências (a indisponibilidade da conferência e o nome do catálogo no texto) antes da busca do Core pelo hash. Num caso raro, um item já gravado pode voltar como "Recusado: …", enquanto a lista mostra "Aprovado: aguardando o envio". Fica para uma decisão futura do backend.
+
+**Consequência registrada:** esconder é usabilidade; quem garante é o servidor. Toda rota usada pelas telas já confere as permissões, a origem e o conteúdo.
+
 ## ADR-049 — Relógio de agendamento: quem compara define o relógio, e filas e leases usam o do banco
 
 **Status:** aceito (plano aprovado pela revisão de 2026-10-19; a entrega segue para revisão) · **Data:** 2026-10-19

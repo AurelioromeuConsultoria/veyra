@@ -1,8 +1,10 @@
 import {
+  BarChart3,
   CalendarClock,
   CalendarDays,
   ClipboardList,
   Percent,
+  Send,
   ShieldCheck,
   UsersRound,
 } from 'lucide-react';
@@ -25,6 +27,8 @@ export const CLINICS_RETURNS_PATH = '/clinics/returns';
 export const CLINICS_NO_SHOW_PATH = '/clinics/no-show';
 export const CLINICS_CATALOG_PATH = '/clinics/catalog';
 export const CLINICS_AI_RELEASES_PATH = '/clinics/ai-releases';
+export const CLINICS_OUTREACH_PATH = '/clinics/outreach';
+export const CLINICS_OUTREACH_METRICS_PATH = '/clinics/outreach-metrics';
 
 const NONE: readonly NavGroup[] = [];
 
@@ -74,6 +78,20 @@ export function useClinicsNavGroups(): readonly NavGroup[] {
                   icon: Percent,
                   permission: 'clinics:schedule:read',
                   aliases: ['falta', 'taxa de faltas', 'no-show'],
+                },
+                {
+                  to: CLINICS_OUTREACH_PATH,
+                  label: 'Envios',
+                  icon: Send,
+                  permission: 'clinics:schedule:read',
+                  aliases: ['confirmação', 'reativação', 'whatsapp', 'mensagem', 'lembrete'],
+                },
+                {
+                  to: CLINICS_OUTREACH_METRICS_PATH,
+                  label: 'Métricas do envio',
+                  icon: BarChart3,
+                  permission: 'clinics:schedule:read',
+                  aliases: ['funil', 'conversão', 'entrega', 'resposta', 'reativação'],
                 },
                 {
                   to: CLINICS_CATALOG_PATH,

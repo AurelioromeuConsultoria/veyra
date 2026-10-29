@@ -2,6 +2,7 @@ import { QueryClientProvider } from '@tanstack/react-query';
 import type { TemplateOptionDto } from '@veyra/contracts';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { vi } from 'vitest';
+import { ME_KEY } from '../lib/session';
 import { criarQueryClient } from '../lib/session-query';
 import { TemplatePanel } from './InboxTemplate';
 
@@ -188,8 +189,58 @@ describe('o template com a janela fechada', () => {
     const outras = mockApi({});
     renderizar(false);
     expect(screen.getAllByText(/a prévia exige ver o contato/).length).toBeGreaterThan(0);
-    expect(outras).toEqual([]);
-    expect(chamadas).toHaveLength(1);
+    // nenhuma consulta de dados: só a sessão, que na aplicação já está no cache
+    expect(outras.filter((c) => c.chave !== 'GET /api/auth/me')).toEqual([]);
+    // as opções uma vez (a sessão é do aviso do envio simulado, F4.4)
+    expect(chamadas.filter((c) => c.chave === OPCOES)).toHaveLength(1);
+    expect(chamadas.every((c) => c.chave.startsWith('GET '))).toBe(true);
+  });
+
+  it('sem escrever nas conversas, o transporte nem é consultado (F4.4)', async () => {
+    const chamadas = mockApi({ [OPCOES]: { body: [] } });
+    const client = criarQueryClient();
+    client.setDefaultOptions({ queries: { retry: false, refetchOnWindowFocus: false } });
+    client.setQueryData(ME_KEY, {
+      id: 'u1',
+      name: 'Pessoa Fictícia',
+      email: 'pessoa@clinica.test',
+      activeMembership: { membershipId: 'm1' },
+      permissions: ['contacts:read', 'consents:read'],
+      memberships: [],
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <TemplatePanel conversationId={CONVERSA} podeVer onSent={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    await screen.findByText(/Nenhum template revisado para uma finalidade/);
+    expect(chamadas.some((c) => c.chave.includes('/transport'))).toBe(false);
+    expect(screen.queryByTestId('envio-simulado')).toBeNull();
+  });
+
+  it('o transporte falso aparece como envio simulado no composer (F4.4)', async () => {
+    mockApi({
+      [OPCOES]: { body: [] },
+      'GET /api/business-outbound/transport': { body: { simulated: true } },
+    });
+    const client = criarQueryClient();
+    client.setDefaultOptions({ queries: { retry: false, refetchOnWindowFocus: false } });
+    client.setQueryData(ME_KEY, {
+      id: 'u1',
+      name: 'Pessoa Fictícia',
+      email: 'pessoa@clinica.test',
+      activeMembership: { membershipId: 'm1' },
+      permissions: ['conversations:write', 'contacts:read', 'consents:read'],
+      memberships: [],
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <TemplatePanel conversationId={CONVERSA} podeVer onSent={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByTestId('envio-simulado')).toHaveTextContent(
+      'entrega e resposta não são confirmadas pelo provedor',
+    );
   });
 
   it('a recusa TRANSITÓRIA mantém a mesma prévia, com chave nova; a definitiva pede outra prévia', async () => {
