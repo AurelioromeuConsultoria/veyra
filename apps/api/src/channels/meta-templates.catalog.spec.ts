@@ -1,5 +1,10 @@
 import { ConfigService } from '@nestjs/config';
-import { GraphTemplateCatalog } from './meta-templates.catalog';
+import { WABA_DA_DEMONSTRACAO } from '../demo/catalogo-da-demonstracao';
+import {
+  FakeTemplateCatalog,
+  GraphTemplateCatalog,
+  catalogoDoAmbiente,
+} from './meta-templates.catalog';
 import { MENSAGEM_DO_TETO, type call } from './meta.transport';
 
 /**
@@ -178,5 +183,35 @@ describe('o catálogo de templates pela Graph API (F4.1c-2)', () => {
       await catalogo.buscarPorNome({ ...CRED, businessAccountId: '../me' }, 'x', 'pt_BR'),
     ).toEqual({ tipo: 'falha', failure: {}, motivo: 'id_invalido' });
     expect(chamadas).toEqual([]);
+  });
+});
+
+describe('o catálogo do ambiente (F4.4b, ADR-048 adendo 12)', () => {
+  const ambiente = (modo: string, env: string) =>
+    ({
+      get: (chave: string) =>
+        ({ META_TRANSPORT_MODE: modo, VEYRA_ENV: env, META_GRAPH_VERSION: 'v21.0' })[chave],
+    }) as unknown as ConfigService;
+
+  it('com o transporte simulado, o falso da demonstração, que só responde à WABA fictícia', async () => {
+    const catalogo = catalogoDoAmbiente(ambiente('fake', 'staging'));
+    expect(catalogo).toBeInstanceOf(FakeTemplateCatalog);
+    const ler = (waba: string) =>
+      catalogo.buscarPorNome(
+        { businessAccountId: waba, token: 'x' },
+        'demo_confirmacao_horario',
+        'pt_BR',
+      );
+    expect((await ler(WABA_DA_DEMONSTRACAO)).tipo).toBe('achado');
+    expect((await ler('1001')).tipo).toBe('ausente');
+  });
+
+  it.each([
+    ['graph', 'staging'],
+    ['fake', 'development'],
+    ['fake', 'production'],
+    ['graph', 'production'],
+  ])('fora do transporte simulado (%s, %s), a Graph API', (modo, env) => {
+    expect(catalogoDoAmbiente(ambiente(modo, env))).toBeInstanceOf(GraphTemplateCatalog);
   });
 });

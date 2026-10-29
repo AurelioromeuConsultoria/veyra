@@ -87,7 +87,12 @@ export class TemplateVersionsService {
    * canal, nome e idioma vão juntas. Nada muda só quando a última versão está
    * ATIVA, com o mesmo hash, o mesmo id na Meta e a mesma WABA.
    */
-  async registrar(slug: string, entrada: EntradaDoCadastro): Promise<ResultadoDoCadastro> {
+  async registrar(
+    slug: string,
+    entrada: EntradaDoCadastro,
+    /** quem cadastra, na trilha: a CLI `templates:register`, ou o procedimento da demonstração */
+    ator: { type: 'system'; id: string } = ATOR_DO_CADASTRO,
+  ): Promise<ResultadoDoCadastro> {
     // `raw` justificado: rotina administrativa (CLAUDE.md §3.3) que resolve o
     // workspace pelo slug, antes de existir contexto; o resto vai pelo client
     // protegido, no contexto dele
@@ -178,7 +183,7 @@ export class TemplateVersionsService {
           await this.audit.record(tx, workspace.id, 'template_version.diverged', {
             entityType: 'templateVersion',
             entityId: anterior.id,
-            actor: ATOR_DO_CADASTRO,
+            actor: ator,
             after: { status: 'divergent', motivo: 'nova_versao' },
           });
         }
@@ -200,7 +205,7 @@ export class TemplateVersionsService {
         await this.audit.record(tx, workspace.id, 'template_version.registered', {
           entityType: 'templateVersion',
           entityId: criada.id,
-          actor: ATOR_DO_CADASTRO,
+          actor: ator,
           after: {
             ...chave,
             businessAccountId: credencial.businessAccountId,

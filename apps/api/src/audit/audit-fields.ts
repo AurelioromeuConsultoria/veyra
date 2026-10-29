@@ -106,7 +106,9 @@ export const AUDIT_FIELDS: Record<string, readonly string[]> = {
     'status',
     'motivo',
   ],
-  templateReview: ['templateVersionId', 'purposeId', 'contentHash'],
+  // `via`: a revisão do procedimento `templates:demo` (ADR-048 adendo 12), que a
+  // rota não marca — a trilha distingue uma da outra sem trocar o ator
+  templateReview: ['templateVersionId', 'purposeId', 'contentHash', 'via'],
   // a aprovação do envio do negócio: os ids, a origem e o prazo — nunca o
   // número nem os valores dos parâmetros (F4.1c-3)
   outboundApproval: [

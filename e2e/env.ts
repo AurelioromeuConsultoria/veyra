@@ -20,6 +20,53 @@ export const MEMBER_C = 'recepcao-c@e2e.veyra';
 /** papel `Profissional` do Clinics (criado pela ativação) — lê a agenda e registra atendimento */
 export const PROF_C = 'profissional-c@e2e.veyra';
 
+/**
+ * A PILHA DA DEMONSTRAÇÃO (ADR-048 adendo 12, item 3): o transporte e o
+ * catálogo falsos, os jobs ligados e um banco próprio (`veyra_e2e_demo`, no
+ * mesmo servidor do E2E), recriado e preparado pelos procedimentos
+ * administrativos antes de a API subir. Dados fictícios.
+ */
+export const E2E_DEMO_DATABASE_URL = (() => {
+  const url = new URL(E2E_DATABASE_URL);
+  url.pathname = '/veyra_e2e_demo';
+  return url.toString();
+})();
+export const E2E_DEMO_API_PORT = 3012;
+export const E2E_DEMO_WEB_PORT = 5186;
+export const E2E_DEMO_WEB_ORIGIN = `http://localhost:${E2E_DEMO_WEB_PORT}`;
+/** o Owner do workspace `demo`, que também revisa os templates fictícios */
+export const OWNER_DEMO = 'owner-demo@e2e.veyra';
+/** o paciente fictício da demonstração e o número dele, de prefixo fictício */
+export const PACIENTE_DEMO = 'Paciente Demonstração';
+export const NUMERO_DEMO = '+5511900000101';
+export const CANAL_DEMO = 'WhatsApp da demonstração';
+/** as finalidades dos templates fictícios, criadas pela CLI `consents:purpose` */
+export const FINALIDADES_DEMO = [
+  {
+    key: 'clinics_confirmacao',
+    description: 'Lembretes e confirmação dos seus horários na clínica (demonstração)',
+    fields: 'contato.primeiro_nome,clinics.data,clinics.hora',
+  },
+  {
+    key: 'clinics_reativacao',
+    description: 'Aviso de retorno pendente na clínica (demonstração)',
+    fields: 'contato.primeiro_nome',
+  },
+  {
+    key: 'atendimento_retomada',
+    description: 'Retomar o seu atendimento por mensagem (demonstração)',
+    fields: 'contato.nome',
+  },
+] as const;
+
+/** As chaves do E2E, as mesmas nas duas pilhas: nunca as de outro ambiente. */
+export const E2E_CHAVES = {
+  JWT_SECRET: 'jwt-secret-de-e2e-nunca-em-producao-32ch',
+  TOKEN_ENCRYPTION_KEY: 'chave-de-cifra-de-e2e-nunca-em-producao-32',
+  ADDRESS_LOCK_KEY: 'chave-das-travas-de-endereco-de-e2e-32ch',
+  OUTBOUND_APPROVAL_KEY: 'chave-da-aprovacao-do-envio-de-e2e-32ch',
+} as const;
+
 export function assertIsE2eDb(url = E2E_DATABASE_URL): string {
   const dbName = new URL(url).pathname.replace(/^\//, '');
   if (!dbName.includes('e2e')) {

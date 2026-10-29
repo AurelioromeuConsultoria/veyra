@@ -30,6 +30,25 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 const PROCESSING_LEASE_MS = 60_000;
 
 /**
+ * O 409 com código de máquina (F4.4b, ADR-048 adendo 12). A mensagem é a de
+ * sempre; a chave usada noutra requisição fica sem código (definitivo).
+ * - `idempotency_retry`: pede a MESMA requisição de novo — em processamento, a
+ *   corrida da reserva ou a tentativa abandonada. A tela trata como indefinido
+ *   e mantém a chave e o corpo.
+ * - `idempotency_expired`: a chave passou das 24 h, e a resposta guardada foi
+ *   apagada. A repetição executaria de novo uma intenção antiga (um
+ *   consentimento depois de uma revogação, por exemplo): a tela trata como
+ *   definitivo e relê o estado, em vez de repetir.
+ */
+function conflito(
+  message: string,
+  code: 'idempotency_retry' | 'idempotency_expired',
+): ConflictException {
+  return new ConflictException({ statusCode: 409, error: 'Conflict', message, code });
+}
+const repita = (message: string) => conflito(message, 'idempotency_retry');
+
+/**
  * Idempotência HTTP com RESERVA ATÔMICA (ajuste #3 da revisão do plano):
  *
  *  1. hash = sha256(método + rota CANÔNICA + params + query ordenada + body
@@ -192,10 +211,13 @@ export class IdempotencyInterceptor implements NestInterceptor {
       const existing = await this.prisma.raw.idempotencyKey.findFirst({
         where: { workspaceId, key, endpoint },
       });
-      if (!existing) throw new ConflictException('Conflito de idempotência, tente novamente');
+      if (!existing) throw repita('Conflito de idempotência, tente novamente');
       if (existing.expiresAt < new Date()) {
         await this.prisma.raw.idempotencyKey.deleteMany({ where: { id: existing.id } });
-        throw new ConflictException('Chave de idempotência expirada, refaça a requisição');
+        throw conflito(
+          'Chave de idempotência expirada: confira o estado antes de enviar de novo',
+          'idempotency_expired',
+        );
       }
       if (existing.requestHash !== requestHash) {
         throw new ConflictException('Idempotency-Key já usada para uma requisição diferente');
@@ -205,9 +227,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
         // sem isso a chave ficaria bloqueada pelas 24h do TTL
         if (Date.now() - existing.createdAt.getTime() > PROCESSING_LEASE_MS) {
           await this.prisma.raw.idempotencyKey.deleteMany({ where: { id: existing.id } });
-          throw new ConflictException('Tentativa anterior expirou, refaça a requisição');
+          throw repita('Tentativa anterior expirou, refaça a requisição');
         }
-        throw new ConflictException('Requisição idêntica em processamento, tente novamente');
+        throw repita('Requisição idêntica em processamento, tente novamente');
       }
       const guardado = { status: existing.responseStatus ?? 200, body: existing.responseBody };
       const verdict = canReplay ? await canReplay(guardado) : 'replay';
@@ -232,7 +254,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
         await this.prisma.raw.idempotencyKey.deleteMany({
           where: { id: existing.id, state: 'completed' },
         });
-        if (retried) throw new ConflictException('Conflito de idempotência, tente novamente');
+        if (retried) throw repita('Conflito de idempotência, tente novamente');
         return this.reserve(workspaceId, key, endpoint, requestHash, canReplay, true);
       }
       return { replay: true, ...guardado };

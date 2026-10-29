@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { CATALOGO_DA_DEMONSTRACAO, WABA_DA_DEMONSTRACAO } from '../demo/catalogo-da-demonstracao';
+import { transporteSimulado } from './fake.transport';
 import type { TransportFailure } from './meta-errors';
 import { call, MENSAGEM_DO_TETO, type RawResponse } from './meta.transport';
 
@@ -201,13 +203,39 @@ export class GraphTemplateCatalog implements CatalogoDeTemplates {
 }
 
 /**
+ * O catálogo do ambiente, pela mesma escolha do transporte: o falso da
+ * demonstração só com `transporteSimulado` (ADR-048 adendo 12); a Graph API em
+ * todo o resto. É a fábrica do provider do canal, testada à parte: as
+ * integrações substituem o provider.
+ */
+export function catalogoDoAmbiente(config: ConfigService): CatalogoDeTemplates {
+  return transporteSimulado(config)
+    ? FakeTemplateCatalog.daDemonstracao()
+    : new GraphTemplateCatalog(config);
+}
+
+/**
  * O catálogo FALSO: faz o papel da Meta nos testes (mudar conteúdo, categoria,
- * status e id, remover, mudar de WABA) e no staging com o transporte falso,
- * onde nasce VAZIO — o cadastro de template lá não acha nada, em vez de
+ * status e id, remover, mudar de WABA), onde nasce vazio, e no staging com o
+ * transporte falso, onde traz só os templates FICTÍCIOS da demonstração, na
+ * WABA fictícia (`daDemonstracao`; ADR-048 adendo 12). Nenhuma outra WABA acha
+ * template nenhum: o cadastro de um canal real não acha nada, em vez de
  * inventar conteúdo.
  */
 @Injectable()
 export class FakeTemplateCatalog implements CatalogoDeTemplates {
+  /**
+   * O do staging: os templates do arquivo da demonstração. Só a fábrica do
+   * canal o cria, e só com `transporteSimulado`.
+   */
+  static daDemonstracao(): FakeTemplateCatalog {
+    const catalogo = new FakeTemplateCatalog();
+    for (const template of CATALOGO_DA_DEMONSTRACAO) {
+      catalogo.publicar(WABA_DA_DEMONSTRACAO, template);
+    }
+    return catalogo;
+  }
+
   private readonly templates = new Map<string, TemplateDaMeta & { businessAccountId: string }>();
   /** a próxima leitura falha assim (uma vez) */
   falha: TransportFailure | null = null;

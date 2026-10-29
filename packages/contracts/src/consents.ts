@@ -113,10 +113,25 @@ export interface StopBlockDto {
 }
 
 export interface ContactConsentsDto {
+  /**
+   * Os números EXATOS do contato ("+dígitos"), pela mesma regra que a concessão
+   * e o pedido de parar conferem: a tela escolhe entre eles, nunca normaliza
+   * nem aceita número digitado (F4.4b, ADR-048 adendo 12).
+   */
+  numbers: string[];
   /** todos, inclusive os revogados: o histórico não se apaga */
   consents: ConsentDto[];
   /** os pedidos de parar ATIVOS para os números exatos do contato */
   stopBlocks: StopBlockDto[];
+}
+
+/**
+ * Um canal de WhatsApp do workspace, para a concessão escolher (F4.4b). Só o
+ * id e o nome: nem a credencial, nem o número do negócio.
+ */
+export interface ConsentChannelDto {
+  id: string;
+  name: string;
 }
 
 export interface ConversationConsentsDto {

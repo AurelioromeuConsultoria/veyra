@@ -27,11 +27,11 @@ export async function login(page: Page, email: string, secao?: string): Promise<
  * global-setup só protege quem passa por lá, e um spec que abre a conexão
  * direto ficaria sem defesa se a URL apontasse para outro banco.
  */
-export async function openE2eDb(): Promise<Client> {
+export async function openE2eDb(url = E2E_DATABASE_URL): Promise<Client> {
   // `assertIsE2eDb` devolve o NOME do banco (e lança se não contiver "e2e"):
   // chamar por causa da trava, conectar com a URL
-  assertIsE2eDb();
-  const db = new Client({ connectionString: E2E_DATABASE_URL });
+  assertIsE2eDb(url);
+  const db = new Client({ connectionString: url });
   await db.connect();
   return db;
 }

@@ -56,6 +56,11 @@ export class TemplateReviewsService {
     auth: AuthContext,
     versionId: string,
     entrada: CreateTemplateReviewInput,
+    /**
+     * A origem da revisão quando não é a rota: o procedimento `templates:demo`
+     * (ADR-048 adendo 12) marca a trilha, e o ator continua sendo o revisor.
+     */
+    via?: 'cli:templates-demo',
   ): Promise<TemplateReviewDto> {
     const db = this.prisma.db as unknown as TxRunner;
     try {
@@ -128,6 +133,7 @@ export class TemplateReviewsService {
             templateVersionId: versionId,
             purposeId: entrada.purposeId,
             contentHash: entrada.contentHash,
+            ...(via ? { via } : {}),
           },
         });
         return revisaoDto(criada);

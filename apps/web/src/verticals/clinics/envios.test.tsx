@@ -441,6 +441,93 @@ describe('envios: candidatos, prévia e aprovação', () => {
   });
 });
 
+describe('envios: a recusa conciliada com o acompanhamento (adendo 12)', () => {
+  const recusado = {
+    body: {
+      items: [
+        {
+          index: 0,
+          requestId: RQ,
+          state: 'refused',
+          messageId: null,
+          reason: 'catalog_name_in_text',
+        },
+      ],
+    },
+  };
+
+  it('o item já aprovado nunca aparece como recusado: vale o acompanhamento do pedido', async () => {
+    const chamadas = mockApi({
+      ...ateAPrevia(false),
+      'POST /api/clinics/outreach/approve': recusado,
+      [`GET /api/clinics/outreach/requests/${RQ}`]: { body: pedido({ state: 'pending' }) },
+    });
+    renderizar(<ClinicsOutreachPage />, '/clinics/outreach');
+    const previa = await prepararAPrevia();
+    fireEvent.click(within(previa).getByRole('button', { name: 'Aprovar e enviar (1)' }));
+    expect(
+      await screen.findByText(
+        'Paciente Fictícia: Aprovado: aguardando o envio (conforme o acompanhamento do pedido)',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Recusado/)).toBeNull();
+    expect(chamadas.some((c) => c.chave === `GET /api/clinics/outreach/requests/${RQ}`)).toBe(true);
+    // conciliado: a tentativa terminou, e a tela volta ao normal
+    expect(screen.queryByTestId('previa-da-clinica')).toBeNull();
+  });
+
+  it('o pedido ainda em rascunho: a recusa vale, com o motivo', async () => {
+    mockApi({
+      ...ateAPrevia(false),
+      'POST /api/clinics/outreach/approve': recusado,
+      [`GET /api/clinics/outreach/requests/${RQ}`]: { body: pedido({ state: 'draft' }) },
+    });
+    renderizar(<ClinicsOutreachPage />, '/clinics/outreach');
+    const previa = await prepararAPrevia();
+    fireEvent.click(within(previa).getByRole('button', { name: 'Aprovar e enviar (1)' }));
+    expect(
+      await screen.findByText(
+        'Paciente Fictícia: Recusado: o texto contém o nome de um serviço ou profissional do catálogo: revise o template',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('sem confirmar no acompanhamento: a incerteza aparece, e a tentativa original fica, travada', async () => {
+    const chamadas = mockApi({
+      ...ateAPrevia(false),
+      'POST /api/clinics/outreach/approve': recusado,
+      [`GET /api/clinics/outreach/requests/${RQ}`]: { status: 503, body: { message: 'fora' } },
+    });
+    renderizar(<ClinicsOutreachPage />, '/clinics/outreach');
+    const previa = await prepararAPrevia();
+    fireEvent.click(within(previa).getByRole('button', { name: 'Aprovar e enviar (1)' }));
+    expect(
+      await screen.findByText(
+        'Paciente Fictícia: Não foi possível confirmar no acompanhamento do pedido',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Recusado/)).toBeNull();
+    expect(
+      screen.getByText(/A tentativa original fica preservada, sem nova prévia nem novo envio/),
+    ).toBeInTheDocument();
+    // a prévia da tentativa continua, e nada gera outra
+    const mesma = screen.getByTestId('previa-da-clinica');
+    expect(within(mesma).getByRole('button', { name: 'Descartar a prévia' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /^Preparar e ver a prévia/ })).toBeDisabled();
+    expect(screen.getByRole('combobox', { name: 'Template revisado' })).toBeDisabled();
+    // só a MESMA aprovação, com a mesma chave
+    fireEvent.click(within(mesma).getByRole('button', { name: 'Aprovar e enviar (1)' }));
+    await waitFor(() =>
+      expect(chamadas.filter((c) => c.chave === 'POST /api/clinics/outreach/approve')).toHaveLength(
+        2,
+      ),
+    );
+    const aprovacoes = chamadas.filter((c) => c.chave === 'POST /api/clinics/outreach/approve');
+    expect(aprovacoes[1].idempotencia).toBe(aprovacoes[0].idempotencia);
+    expect(aprovacoes[1].corpo).toEqual(aprovacoes[0].corpo);
+  });
+});
+
 describe('envios: permissões escondem e não consultam', () => {
   it('sem contatos e consentimentos: nenhum candidato é consultado', async () => {
     const chamadas = mockApi({ ...base, 'GET /api/auth/me': { body: usuario(LEITURA) } });

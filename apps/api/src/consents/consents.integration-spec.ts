@@ -672,6 +672,91 @@ describe('F4.1b — consentimento, pedido de parar e templates na transição (i
     });
   });
 
+  // ── O que as telas da F4.4b usam (ADR-048 adendo 12) ────────────────────
+
+  describe('o que as telas usam (F4.4b)', () => {
+    it('os canais: só os de WhatsApp do workspace, só id e nome, sob consents:read', async () => {
+      const deA = await get('/api/consent-channels', owner).expect(200);
+      expect(new Set(deA.body.map((c: { id: string }) => c.id))).toEqual(
+        new Set([canalA1, canalA2]),
+      );
+      for (const canal of deA.body) expect(Object.keys(canal).sort()).toEqual(['id', 'name']);
+      // o de outro workspace nunca aparece (P0), e o interno de nenhum
+      const deB = await get('/api/consent-channels', ownerB).expect(200);
+      expect(deB.body).toEqual([{ id: canalB, name: `WhatsApp ${NUMERO_B}` }]);
+      // a leitura basta; sem ela, 403
+      await get('/api/consent-channels', leitor).expect(200);
+      await get('/api/consent-channels', atendente).expect(403);
+      await get('/api/consent-channels', guest).expect(403);
+    });
+
+    it('a consulta pelo contato traz os números exatos, os mesmos que a concessão aceita', async () => {
+      const ana = await contato('Ana Fictícia', ['98765-4321', '+1 202 555 0100']);
+      const lida = await get(`/api/contacts/${ana}/consents`, owner).expect(200);
+      // sem DDD, o número não é exato: não é oferecido, e a concessão o recusa
+      expect(lida.body.numbers).toEqual(['+12025550100']);
+      await conceder(ana, { number: '+12025550100' }).expect(201);
+      await conceder(ana, { number: N_E164 }).expect(400);
+      const bia = await contato('Bia Fictícia', [N_E164]);
+      expect((await get(`/api/contacts/${bia}/consents`, owner).expect(200)).body.numbers).toEqual([
+        N_E164,
+      ]);
+    });
+
+    it('o 409 que pede a mesma requisição leva o código; o da chave de outra requisição, não', async () => {
+      const ana = await contato('Ana Fictícia', [N_E164]);
+      const chave = randomUUID();
+      // a trava exclusiva do endereço segura a concessão DEPOIS da reserva da chave
+      const t = await travar(endereco(N_E164));
+      let primeira: Promise<request.Response> | undefined;
+      try {
+        primeira = conceder(ana, {}, owner, chave).then((r) => r);
+        await esperarBloqueadosPor(t, 1, { descricao: 'a concessão no endereço' });
+        const repetida = await conceder(ana, {}, owner, chave).expect(409);
+        expect(repetida.body).toMatchObject({
+          code: 'idempotency_retry',
+          message: expect.stringMatching(/em processamento/),
+        });
+      } finally {
+        await soltar(t);
+        // a primeira termina antes do teste seguir, mesmo se a espera falhar
+        await primeira?.catch(() => undefined);
+      }
+      expect((await primeira)?.status).toBe(201);
+      const outra = await conceder(ana, { origin: 'phone' }, owner, chave).expect(409);
+      expect(outra.body.message).toMatch(/Idempotency-Key já usada/);
+      expect(outra.body.code).toBeUndefined();
+      // a chave expirada tem código próprio: a tela não a repete (revisão da F4.4b)
+      await prisma.raw.idempotencyKey.updateMany({
+        where: { key: chave },
+        data: { expiresAt: new Date(Date.now() - 1_000) },
+      });
+      const expirada = await conceder(ana, {}, owner, chave).expect(409);
+      expect(expirada.body).toMatchObject({
+        code: 'idempotency_expired',
+        message: expect.stringMatching(/expirada/),
+      });
+      // a tentativa abandonada (a reserva presa além do prazo) pede a repetição:
+      // o código é o de repetir, e a repetição seguinte executa de novo
+      const abandonada = randomUUID();
+      await conceder(ana, {}, owner, abandonada).expect(201);
+      await prisma.raw.idempotencyKey.updateMany({
+        where: { key: abandonada },
+        data: { state: 'processing', createdAt: new Date(Date.now() - 120_000) },
+      });
+      const presa = await conceder(ana, {}, owner, abandonada).expect(409);
+      expect(presa.body).toMatchObject({
+        code: 'idempotency_retry',
+        message: expect.stringMatching(/Tentativa anterior expirou/),
+      });
+      await conceder(ana, {}, owner, abandonada).expect(201);
+      // o 409 de domínio também fica sem código: é definitivo
+      const outraOrigem = await conceder(ana, { origin: 'paper_form' }).expect(409);
+      expect(outraOrigem.body.code).toBeUndefined();
+      expect(await prisma.raw.consent.count()).toBe(1);
+    });
+  });
+
   // ── Conceder e revogar ──────────────────────────────────────────────────
 
   describe('conceder e revogar', () => {

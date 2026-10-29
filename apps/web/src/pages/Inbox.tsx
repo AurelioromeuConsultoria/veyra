@@ -14,16 +14,27 @@ import type {
   SendPolicyDto,
 } from '@veyra/contracts';
 import { clsx } from 'clsx';
-import { Check, MessageSquarePlus, Paperclip, Send, Sparkles, WandSparkles, X } from 'lucide-react';
+import {
+  Check,
+  MessageSquarePlus,
+  Paperclip,
+  Send,
+  ShieldCheck,
+  Sparkles,
+  WandSparkles,
+  X,
+} from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { AiPanel, AiSeal } from '../components/ui/ai';
 import { Button } from '../components/ui/button';
+import { Drawer } from '../components/ui/drawer';
 import { Input, Select, Textarea } from '../components/ui/input';
 import { EmptyState } from '../components/ui/page';
 import { WindowChip, WindowMeter } from '../components/ui/window-meter';
 import { api, ApiError, toQuery } from '../lib/api';
 import { SenderPanel } from './InboxSender';
+import { ConsentimentoDaConversa, podeVerConsentimentoDaConversa } from './Consentimentos';
 import { TemplatePanel } from './InboxTemplate';
 import { dayLabel, fullStamp, relativeStamp, timeOfDay } from '../lib/format';
 import { DISPATCH_ERROR_LABEL } from '../lib/motivos-do-envio';
@@ -169,6 +180,7 @@ export function InboxPage() {
   const [draft, setDraft] = useState('');
   const [attachments, setAttachments] = useState<FileObjectDto[]>([]);
   const [summary, setSummary] = useState<ConversationSummaryDto | null>(null);
+  const [consentimentoAberto, setConsentimentoAberto] = useState(false);
   /** rascunho da IA em revisão: editável ANTES de aprovar (ADR-044) */
   const [reply, setReply] = useState<{
     proposalId: string;
@@ -680,6 +692,11 @@ export function InboxPage() {
                 {selected.assigneeName ? <span>{selected.assigneeName}</span> : null}
               </p>
             </div>
+            {podeVerConsentimentoDaConversa(user, selected) ? (
+              <Button size="sm" onClick={() => setConsentimentoAberto(true)}>
+                <ShieldCheck size={13} /> Consentimento
+              </Button>
+            ) : null}
             {canUseAi && canReadConversations && !selectedRai ? (
               <Button
                 size="sm"
@@ -705,6 +722,16 @@ export function InboxPage() {
               </Select>
             ) : null}
           </header>
+
+          <Drawer
+            open={consentimentoAberto}
+            onOpenChange={setConsentimentoAberto}
+            title="Consentimento e pedido de parar"
+          >
+            {consentimentoAberto ? (
+              <ConsentimentoDaConversa key={selected.id} conversa={selected} />
+            ) : null}
+          </Drawer>
 
           {canIdentify && selected.channelType !== 'internal' && selected.senderAddress ? (
             <SenderPanel conversation={selected} onChanged={() => invalidate()} />

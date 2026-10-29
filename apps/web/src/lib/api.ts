@@ -37,6 +37,12 @@ export class ApiError extends Error {
     public readonly status: number,
     message: string,
     public readonly issues?: { path: string; message: string }[],
+    /**
+     * O código de máquina, quando o servidor manda. `idempotency_retry`: o 409
+     * que pede a MESMA requisição de novo (em processamento) — resultado
+     * indefinido, e a tela mantém a chave (ADR-048 adendo 12).
+     */
+    public readonly code?: string,
   ) {
     super(message);
   }
@@ -225,6 +231,7 @@ async function enviar<T>(
       const payload = (await res.json().catch(() => null)) as {
         message?: string | string[];
         issues?: { path: string; message: string }[];
+        code?: unknown;
       } | null;
       conferir();
       const message = Array.isArray(payload?.message)
@@ -232,7 +239,12 @@ async function enviar<T>(
         : (payload?.message ?? `Erro ${res.status}`);
       // quota estourada (402) traz metric/limit: a mensagem do servidor já é a
       // explicação, e a UI só precisa não engolir o motivo
-      throw new ApiError(res.status, message, payload?.issues);
+      throw new ApiError(
+        res.status,
+        message,
+        payload?.issues,
+        typeof payload?.code === 'string' ? payload.code : undefined,
+      );
     }
     const dados = (await res.json()) as T;
     conferir();

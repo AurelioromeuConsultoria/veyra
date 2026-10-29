@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Param, ParseUUIDPipe, Post } from '@nestjs/common';
 import {
+  ConsentChannelDto,
   ConsentDto,
   ConsentPurposeDto,
   ContactConsentsDto,
@@ -39,6 +40,13 @@ export class ConsentsController {
   @Get('consent-purposes')
   purposes(): Promise<ConsentPurposeDto[]> {
     return this.consents.purposes();
+  }
+
+  /** Os canais de WhatsApp, para a tela da concessão (F4.4b): só id e nome. */
+  @RequirePermissions('consents:read')
+  @Get('consent-channels')
+  channels(): Promise<ConsentChannelDto[]> {
+    return this.consents.channels();
   }
 
   @RequirePermissions('consents:read', 'contacts:read')

@@ -486,9 +486,10 @@ muda o registro da migration e não desfaz nenhum objeto.
    muda. Ela **não abre envio**: o envio por template continua recusado
    (`template_flow_unavailable`). O cadastro das versões é pela CLI
    `templates:register`, que lê o catálogo da Meta com a credencial do canal;
-   com o transporte falso, o catálogo também é falso e nasce vazio, e o
-   cadastro não acha nada. Contra uma WABA real, o cadastro só depois da
-   liberação de dados reais.
+   com o transporte falso, o catálogo também é falso: ele só traz os
+   templates fictícios `demo_*` da WABA fictícia (F4.4b, ADR-048 adendo 12),
+   e para qualquer outra WABA o cadastro não acha nada. Contra uma WABA real,
+   o cadastro só depois da liberação de dados reais.
 
    A WABA do canal não muda na rotação do token sem `--trocar-waba` (§7).
 
@@ -521,8 +522,9 @@ muda o registro da migration e não desfaz nenhum objeto.
    vazia, e nada que já existe muda. **A variável `OUTBOUND_APPROVAL_KEY`
    precisa estar no ambiente ANTES do deploy:** sem ela, a API não sobe. Com o
    transporte falso, o envio do negócio exercita o caminho inteiro sem que
-   nada saia; o template só aparece no compositor depois de cadastrado
-   (`templates:register`, com o catálogo falso vazio em staging) e revisado.
+   nada saia; o template só aparece no compositor depois de cadastrado e
+   revisado. Em staging, o catálogo falso só tem os templates fictícios da
+   WABA fictícia, cadastrados e revisados pelo `templates:demo` (F4.4b).
 
    ```sql
    -- inventário da 20261027120000_business_outbound: 0 linhas = nada ficou;
@@ -1317,20 +1319,21 @@ O marco do usuário: concluir a F4 e pôr uma demonstração funcionando, com da
 
 **2. O que a demonstração ainda não tem, e precisa de decisão ou código:**
 
-- **O catálogo falso de staging nasce vazio, e por processo.** O cadastro pela CLI (`templates:register`) não acha nada, e a releitura no worker veria o template como ausente.
-  - Para demonstrar o envio por template, o catálogo falso precisa de templates fictícios fixos, os mesmos na API e na CLI.
-  - Recomendação: um arquivo de templates fictícios na imagem, lido pelo catálogo falso só em staging. É decisão nova, com ADR antes do código.
-- **As telas da F4.4:** as do Clinics (os envios, o vínculo com a oportunidade e as métricas, com o aviso de envio simulado) estão implementadas, em commit local (ADR-048 adendo 11).
-  - O compositor do Inbox com o template voltou na F4.1c-3 e mostra o aviso de envio simulado.
-  - **Aguardam decisão do usuário:** as telas de registro de consentimento e de pedido de parar e a de revisão de versão de template, que a instrução da F4.4 não listou. Sem elas, o consentimento e a revisão da demonstração só pela API ou pela CLI (o roteiro de carga).
+- **Os templates fictícios (F4.4b, ADR-048 adendo 12, item 2):** o catálogo falso do staging traz os templates `demo_*` de `src/demo/catalogo-da-demonstracao.ts`, na WABA fictícia `000000000000100`, e só responde a ela. O procedimento `templates:demo --slug <ws> --channel <id> --reviewer <e-mail>` cadastra e revisa as versões pelos serviços de sempre, depois das finalidades (`consents:purpose`). Na imagem, ele roda como as outras CLIs compiladas (`node dist/cli/templates-demo.js`).
+  - **Atenção para o plano do staging:** o cadastro do canal (`channel:whatsapp`) é um script `tsx` em `apps/api/scripts/`, que NÃO está na imagem de runtime (nem o `tsx`). O canal da demonstração precisa de outro caminho, a decidir no plano: rodar o script de fora do container contra o banco, ou levá-lo a uma CLI compilada.
+  - **Antes de o staging voltar ao transporte da Graph,** as versões `demo_*` precisam sair de uso (hoje nada sairia: a releitura contra a WABA fictícia falha fechada).
+- **As telas:** as do Clinics (os envios, o vínculo com a oportunidade e as métricas, com o aviso de envio simulado) estão publicadas (F4.4, `be288bf`). As do consentimento e do pedido de parar (a ficha do contato e a conversa do Inbox) são da F4.4b, e a conciliação da aprovação repetida também. O compositor do Inbox com o template voltou na F4.1c-3 e mostra o aviso de envio simulado.
+  - **A tela de revisão de template fica fora da demonstração (decisão do usuário, 2026-10-29):** a revisão dos templates fictícios é do procedimento `templates:demo`.
 - **O fluxo do Clinics (F4.2 e F4.3):** a confirmação e a reativação são do vertical. A demonstração delas exige a ativação do Clinics no workspace da demo, que hoje está bloqueada e precisa de autorização própria, mesmo com dados fictícios.
 - **Os dados fictícios da demo:**
   - o workspace;
   - os contatos com números inventados;
   - as finalidades (CLI);
-  - os consentimentos;
-  - os templates do catálogo fictício e as revisões;
+  - os consentimentos, registrados pela tela;
+  - os templates do catálogo fictício e as revisões (`templates:demo`);
   - o Owner (`aurelioromeu@outlook.com`, workspace `staging`).
+
+  O E2E prova esse caminho numa pilha própria, com o transporte e o catálogo falsos e o worker ligado: o consentimento pela tela, a prévia, a aprovação e o acompanhamento até "Enviado (simulado)" (`e2e/tests/demonstracao.spec.ts`, preparado por `e2e/demo/preparar.ts`).
 
   Nenhum número real: o transporte falso não envia, mas o número ainda é dado pessoal.
 
@@ -1347,21 +1350,21 @@ O marco do usuário: concluir a F4 e pôr uma demonstração funcionando, com da
 
    A imagem anterior não é rollback.
 
-3. **Os templates fictícios,** pela decisão do ADR-052 (fim):
-   - um arquivo versionado na imagem, com templates `demo_*` de ids inventados e uma WABA fictícia;
+3. **Os templates fictícios,** pela decisão do ADR-052 (fim), implementados na F4.4b (ADR-048 adendo 12):
+   - o arquivo versionado na imagem, com templates `demo_*` de ids inventados e a WABA fictícia;
    - o arquivo é lido pelo catálogo falso só com o transporte falso e `VEYRA_ENV=staging`;
-   - um procedimento cadastra e revisa as versões no workspace da demonstração, explícito pelo slug;
+   - o procedimento `templates:demo` cadastra e revisa as versões no workspace da demonstração, explícito pelo slug, em nome de um revisor com `templates:review`;
    - nada aparece em outro workspace, nada cria consentimento, e nada toca a Meta.
 4. **A ativação do Clinics no workspace da demonstração,** com dados fictícios: os pacientes, a agenda, as finalidades (CLI) e os consentimentos registrados na tela, com números inventados.
 5. **As telas da F4.4** que a demonstração usa, e o acesso do Owner.
 
 **5. O que falta para o usuário acessar o sistema (acompanhamento; atualizar a cada entrega).** Nenhum item abaixo autoriza execução: cada passo no staging tem autorização própria. Nada novo entra no caminho da demonstração.
 
-| Frente                                    | Situação                                                        | O que falta                                                                                                                                                                                                                                                                                                                                                                         |
-| ----------------------------------------- | --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Funcionalidades**                       | F4.1 publicada; F4.2 publicada e validada (`ec2d224`, CI verde) | F4.3 publicada e validada (`df3df82`, CI verde); F4.4 implementada em commit local (os envios, o vínculo e as métricas do Clinics, com o aviso de envio simulado), aguardando o push; a decisão sobre as telas de consentimento, pedido de parar e revisão de template                                                                                                              |
-| **Templates falsos**                      | decisão aprovada (ADR-052, fim)                                 | o código: o arquivo `demo_*` na imagem, lido pelo catálogo falso só com o transporte falso e `VEYRA_ENV=staging`, e o procedimento que cadastra e revisa as versões no workspace da demonstração. Para o Clinics, os templates vinculam `contato.primeiro_nome`, `clinics.data` e `clinics.hora`, e as finalidades `clinics_confirmacao` e `clinics_reativacao` têm só esses campos |
-| **Dados fictícios**                       | o desenho, no item 2                                            | o roteiro de carga no workspace da demonstração: contatos com números inventados, pacientes, a agenda (unidade, serviços, profissionais e expediente), as finalidades (CLI), os consentimentos (pela tela, se o usuário a aprovar; senão, pelo roteiro) e as revisões; o Owner `aurelioromeu@outlook.com`                                                                           |
-| **Manutenção do deploy**                  | preparada no item 4                                             | executar com autorização: a imagem da árvore final da F4, a `ADDRESS_LOCK_KEY` e a `OUTBOUND_APPROVAL_KEY` no ambiente antes, as migrations da F4 na ordem do item 1 com os jobs desligados e o inventário de cada uma                                                                                                                                                              |
-| **Diagnóstico do staging**                | INC-2026-10-26-01 aberto; staging fora do ar                    | o diagnóstico de leitura do §12 por quem tem acesso ao host, e a proposta de recuperação com a causa                                                                                                                                                                                                                                                                                |
-| **Ativação do workspace de demonstração** | bloqueada                                                       | a autorização própria para ativar o Clinics só no workspace da demonstração, com dados fictícios                                                                                                                                                                                                                                                                                    |
+| Frente                                    | Situação                                                           | O que falta                                                                                                                                                                                                                                                                   |
+| ----------------------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Funcionalidades**                       | F4.1 a F4.4 publicadas e validadas (a F4.4 em `be288bf`, CI verde) | a F4.4b, em commit local: as telas do consentimento e do pedido de parar, a conciliação da aprovação repetida e o fluxo completo no E2E; a tela de revisão de template fica fora da demonstração                                                                              |
+| **Templates falsos**                      | implementados na F4.4b (ADR-048 adendo 12), em commit local        | o canal da demonstração na WABA fictícia (o script do canal não está na imagem: decidir o caminho no plano), as finalidades pela CLI e o `templates:demo` no workspace da demonstração, cada passo com autorização                                                            |
+| **Dados fictícios**                       | o desenho, no item 2; o caminho provado no E2E da demonstração     | o roteiro de carga no workspace da demonstração: contatos com números inventados, pacientes, a agenda (unidade, serviços, profissionais e expediente), as finalidades (CLI) e as revisões (`templates:demo`); os consentimentos pela tela; o Owner `aurelioromeu@outlook.com` |
+| **Manutenção do deploy**                  | preparada no item 4                                                | executar com autorização: a imagem da árvore final da F4, a `ADDRESS_LOCK_KEY` e a `OUTBOUND_APPROVAL_KEY` no ambiente antes, as migrations da F4 na ordem do item 1 com os jobs desligados e o inventário de cada uma                                                        |
+| **Diagnóstico do staging**                | INC-2026-10-26-01 aberto; staging fora do ar                       | o diagnóstico de leitura do §12 por quem tem acesso ao host, e a proposta de recuperação com a causa                                                                                                                                                                          |
+| **Ativação do workspace de demonstração** | bloqueada                                                          | a autorização própria para ativar o Clinics só no workspace da demonstração, com dados fictícios                                                                                                                                                                              |

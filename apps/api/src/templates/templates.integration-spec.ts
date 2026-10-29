@@ -421,6 +421,8 @@ describe('F4.1c-2 — templates versionados, revisados e relidos (integração)'
       });
       const [registro] = await trilha('template_review.created');
       expect(registro).toMatchObject({ actorType: 'user', actorMembershipId: quem.id });
+      // a rota não marca origem: só o procedimento da demonstração marca (F4.4b)
+      expect(registro.after).not.toHaveProperty('via');
       const r2 = await revisar(v.versionId, owner, {
         purposeId: finalidade,
         contentHash: v.contentHash,

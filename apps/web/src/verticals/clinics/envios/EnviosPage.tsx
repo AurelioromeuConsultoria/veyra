@@ -226,8 +226,8 @@ function Envios({ unidades, podeEnviar }: { unidades: ClinicsUnitDto[]; podeEnvi
 
   const aprovaveis = previa?.itens.filter((i) => i.resultado.ok) ?? [];
   const aprovar = useMutation({
-    mutationFn: (p: NonNullable<typeof previa>) =>
-      api.postIdempotente<ClinicsOutreachResultDto>(
+    mutationFn: async (p: NonNullable<typeof previa>) => {
+      const res = await api.postIdempotente<ClinicsOutreachResultDto>(
         '/api/clinics/outreach/approve',
         {
           items: p.itens
@@ -246,22 +246,60 @@ function Envios({ unidades, podeEnviar }: { unidades: ClinicsUnitDto[]; podeEnvi
             }),
         },
         p.chave,
-      ),
-    onSuccess: (res, p) => {
-      setIncerto(false);
-      const aprovados = p.itens.filter((i) => i.resultado.ok);
-      setResultado(
-        res.items.map((r) => ({
-          paciente: aprovados[r.index]?.paciente ?? '',
-          texto:
-            r.state === 'approved'
-              ? textoDaAprovacao(simulado)
-              : `Recusado: ${r.reason ? motivoLegivel(r.reason) : 'sem motivo'}`,
-        })),
       );
+      /**
+       * A conciliação (adendo 12, item 4): na repetição, um item já aprovado
+       * pode voltar recusado (o residual do adendo 11). Cada recusa é conferida
+       * no acompanhamento do pedido; a leitura que falha fica sem confirmação.
+       */
+      const conferidos = new Map<string, ClinicsOutreachRequestDto | null>();
+      await Promise.all(
+        res.items
+          .filter((r) => r.state !== 'approved')
+          .map(async (r) => {
+            const lido = await api
+              .get<ClinicsOutreachRequestDto>(`/api/clinics/outreach/requests/${r.requestId}`)
+              .catch(() => null);
+            conferidos.set(r.requestId, lido);
+          }),
+      );
+      return { res, conferidos };
+    },
+    onSuccess: ({ res, conferidos }, p) => {
+      const aprovados = p.itens.filter((i) => i.resultado.ok);
+      let semConfirmacao = 0;
+      setResultado(
+        res.items.map((r) => {
+          const paciente = aprovados[r.index]?.paciente ?? '';
+          if (r.state === 'approved') return { paciente, texto: textoDaAprovacao(simulado) };
+          const lido = conferidos.get(r.requestId) ?? null;
+          if (lido === null) {
+            semConfirmacao += 1;
+            return { paciente, texto: 'Não foi possível confirmar no acompanhamento do pedido' };
+          }
+          // ainda em rascunho: a recusa vale; aprovado antes, o acompanhamento manda
+          return lido.state === 'draft'
+            ? { paciente, texto: `Recusado: ${r.reason ? motivoLegivel(r.reason) : 'sem motivo'}` }
+            : {
+                paciente,
+                texto: `${rotuloDoEstado(lido.state, simulado)} (conforme o acompanhamento do pedido)`,
+              };
+        }),
+      );
+      void queryClient.invalidateQueries({ queryKey: [...OUTREACH_KEY, 'candidates'] });
+      if (semConfirmacao > 0) {
+        // a tentativa original fica, travada: nenhuma prévia nova, nenhum envio novo
+        setIncerto(true);
+        setPrevia(p);
+        setAviso(
+          'Não foi possível confirmar o resultado no acompanhamento. A tentativa original fica preservada, sem nova prévia nem novo envio: confira o acompanhamento de cada pedido.',
+        );
+        return;
+      }
+      setIncerto(false);
+      setAviso(null);
       setPrevia(null);
       setEscolhidos(new Map());
-      void queryClient.invalidateQueries({ queryKey: [...OUTREACH_KEY, 'candidates'] });
     },
     onError: (e, p) => {
       // 4xx definitivo (a não ser o 409 de "em processamento"): nada foi gravado

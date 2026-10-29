@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type {
+  ConsentChannelDto,
   ConsentDto,
   ConsentOrigin,
   ConsentPurposeDto,
@@ -116,8 +117,21 @@ export class ConsentsService {
     }));
   }
 
+  /**
+   * Os canais de WhatsApp do workspace, para a concessão escolher (F4.4b): só
+   * o id e o nome. O client filtrado põe o workspace.
+   */
+  async channels(): Promise<ConsentChannelDto[]> {
+    return this.prisma.db.channel.findMany({
+      where: { type: 'whatsapp' },
+      select: { id: true, name: true },
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
+    });
+  }
+
   async forContact(contactId: string): Promise<ContactConsentsDto> {
     const contato = await this.lerContato(this.prisma.db, contactId);
+    const numeros = numerosExatos(contato);
     const [consents, blocks] = await Promise.all([
       this.prisma.db.consent.findMany({
         where: { contactId },
@@ -125,11 +139,12 @@ export class ConsentsService {
         orderBy: [{ grantedAt: 'desc' }, { id: 'asc' }],
       }),
       this.prisma.db.stopBlock.findMany({
-        where: { number: { in: numerosExatos(contato) }, activeMark: true },
+        where: { number: { in: numeros }, activeMark: true },
         orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
       }),
     ]);
     return {
+      numbers: numeros,
       consents: (consents as unknown as ConsentRow[]).map((c) => this.toConsentDto(c)),
       stopBlocks: (blocks as unknown as StopBlockRow[]).map((b) => this.toBlockDto(b)),
     };

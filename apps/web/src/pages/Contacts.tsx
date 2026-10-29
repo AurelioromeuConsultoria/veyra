@@ -27,6 +27,7 @@ import { EmptyState, PageBody, PageHeader, Panel } from '../components/ui/page';
 import { TagBadge } from '../components/ui/tag-badge';
 import { api, ApiError, toQuery } from '../lib/api';
 import { hasPermission, useSession } from '../lib/session';
+import { ConsentimentosDoContato } from './Consentimentos';
 
 // ── form (UI simplifica: 1 e-mail / 1 telefone; o contrato aceita listas) ────
 const contactFormSchema = z.object({
@@ -359,6 +360,12 @@ export function ContactsPage() {
               void invalidate();
             }}
           />
+        ) : null}
+        {/* fora do formulário: cada registro tem a própria chave e o próprio desfecho */}
+        {drawer !== 'closed' && drawer !== 'create' ? (
+          <div className="mt-4">
+            <ConsentimentosDoContato key={drawer.id} contactId={drawer.id} />
+          </div>
         ) : null}
       </Drawer>
     </div>

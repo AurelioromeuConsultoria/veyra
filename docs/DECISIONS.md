@@ -5010,7 +5010,7 @@ A revisão do delta (`security`) aprovou as correções, sem P0, P1 nem P2. Os q
 
 **Consequência registrada:** esconder é usabilidade; quem garante é o servidor. Toda rota usada pelas telas já confere as permissões, a origem e o conteúdo.
 
-### Adendo 12 (2026-10-29) — F4.4b: o consentimento e o pedido de parar na tela, os templates fictícios, o fluxo completo da demonstração e a conciliação da aprovação repetida (APROVADO pelo usuário; desenho antes do código)
+### Adendo 12 (2026-10-29) — F4.4b: o consentimento e o pedido de parar na tela, os templates fictícios, o fluxo completo da demonstração e a conciliação da aprovação repetida (APROVADO pelo usuário; implementada, revisada e validada; commit local, sem push)
 
 **As decisões do usuário (2026-10-29), na autorização do push da F4.4:**
 
@@ -5057,13 +5057,13 @@ A revisão do delta (`security`) aprovou as correções, sem P0, P1 nem P2. Os q
   - a requisição em processamento;
   - a corrida da reserva;
   - a tentativa anterior abandonada;
-  - a chave expirada.
+  - a chave expirada (**corrigido na revisão de segurança, 2026-10-29:** ela saiu desta lista e leva `code: "idempotency_expired"`, tratado como definitivo; ver "Implementação e revisão", abaixo).
 
   O 409 da chave usada noutra requisição fica sem código: é definitivo. O web passa a ler o `code` no `ApiError`. Sem o código, o 409 de domínio do consentimento e o de "em processamento" eram indistinguíveis. As telas da F4.4 (Envios e Inbox) continuam tratando todo 409 como incerto: lá, as recusas de domínio da aprovação vêm no corpo, por item.
 
 **2. Os templates fictícios e o procedimento (ADR-052, fim).**
 
-- **O arquivo:** `apps/api/src/demo/templates-da-demonstracao.ts`, compilado na imagem. É dado da demonstração, fora dos módulos do Core, e traz:
+- **O arquivo:** `apps/api/src/demo/templates-da-demonstracao.ts`, compilado na imagem. É dado da demonstração, fora dos módulos do Core, e traz (**corrigido na implementação:** o conteúdo e o cadastro ficaram em dois arquivos, e os templates têm um rodapé fictício; ver "Implementação e revisão"):
   - a WABA fictícia e os templates `demo_*`, com ids inventados que começam com zero (a Meta não emite id assim), em `pt_BR`, categoria `UTILITY`, só o corpo, com parâmetros posicionais;
   - para o procedimento, o vínculo de cada parâmetro e a chave da finalidade que o revisa:
 
@@ -5079,8 +5079,8 @@ A revisão do delta (`security`) aprovou as correções, sem P0, P1 nem P2. Os q
   - **as recusas:** sem o transporte simulado, ou com o canal cuja credencial não está na WABA fictícia;
   - **o cadastro** de cada template do arquivo, pelo `TemplateVersionsService.registrar`, o mesmo da CLI existente: a leitura do catálogo, a forma canônica, o hash e as versões;
   - **a revisão,** pelo `TemplateReviewsService.revisar`, a mesma da rota: a versão ativa, a WABA, o hash, a categoria e os campos da finalidade, e a trilha `template_review.created`;
-  - **a permissão da revisão:** o revisor é a membership ativa do e-mail no workspace, e o papel dela precisa ter `templates:review`, pela mesma fonte do guard (`PermissionsService.membershipHas`). A revisão fica em nome dele, na trilha, e o procedimento roda com a autorização dessa pessoa;
-  - **a finalidade** é a versão mais recente da chave no workspace. Sem ela, o procedimento recusa e manda criá-la pela CLI `consents:purpose`: ele não cria finalidade nem consentimento;
+  - **a permissão da revisão:** o revisor é a membership ativa do e-mail no workspace, e o papel dela precisa ter `templates:review`, pela mesma fonte do guard (`PermissionsService.membershipHas`). A revisão fica em nome dele, na trilha, e o procedimento roda com a autorização dessa pessoa (**reforçado na revisão de segurança:** também o usuário e o workspace ativos, e a trilha marca a origem);
+  - **a finalidade** é a versão mais recente da chave no workspace. Sem ela, o procedimento recusa e manda criá-la pela CLI `consents:purpose`: ele não cria finalidade nem consentimento (**corrigido na revisão:** a conferência de todas vem antes de qualquer cadastro);
   - **rodar de novo não muda nada:** a versão sem mudança e a revisão existente voltam como estão;
   - **a saída** traz só nomes, versões e resultados, nunca o token nem a resposta do catálogo.
 - **Nada aparece sozinho:** o workspace e o canal são explícitos. Outro workspace só veria os templates se alguém rodasse o procedimento nele, num canal da WABA fictícia, com o transporte simulado.
@@ -5104,7 +5104,7 @@ A revisão do delta (`security`) aprovou as correções, sem P0, P1 nem P2. Os q
   - nos Envios, o paciente escolhido, a prévia com o texto exato e a aprovação;
   - o acompanhamento até "Enviado (simulado)", pelo worker e pelo transporte falso;
   - o aviso "Envio simulado" visível;
-  - **a repetição:** a mesma aprovação de novo, com a mesma chave, devolve a resposta guardada; com outra chave, o item é recusado. Nos dois casos, o banco tem uma só aprovação, uma só mensagem e um só despacho;
+  - **a repetição** (**corrigido na implementação, 2026-10-29:** o texto aprovado dizia "com outra chave, o item é recusado"): a mesma aprovação de novo, com a mesma chave, devolve a resposta guardada; com outra chave, a mesma prévia devolve a mesma mensagem (o mesmo `messageId`), porque o Core acha a aprovação pelo hash. O residual do adendo 11 é o caso raro em que ela volta recusada. Nos dois casos, o banco tem uma só aprovação, uma só mensagem e um só despacho;
   - **nada inventado:** o despacho fica `sent`, sem recibo de entrega nem de leitura, e a métrica da entrega fica "Sem dados".
 - **Sem a Meta:** com `transporteSimulado`, só o transporte e o catálogo falsos são instanciados. O token fictício só prova que a credencial decifra.
 
@@ -5134,6 +5134,62 @@ Nada muda no staging.
   - a revisão (`reviewer` e `security`, uma vez);
   - as mutações das garantias novas;
   - a bateria em blocos, com log, com as duas pilhas do E2E.
+
+**Implementação e revisão (2026-10-29).** Segue o desenho acima, com os desvios e as correções abaixo.
+
+**Os desvios da implementação:**
+
+- **Dois arquivos da demonstração.** `src/demo/catalogo-da-demonstracao.ts` traz o conteúdo (a WABA fictícia e os templates como a Meta os mostraria), e é o único que o catálogo falso do Core importa. `src/demo/templates-da-demonstracao.ts` traz o vínculo de cada parâmetro e a finalidade, e só o procedimento o lê. Assim, "o Core lê só o conteúdo" vale literalmente: nenhum módulo do Core importa os vínculos `clinics.*`.
+- **O rodapé fictício.** Os templates têm, além do corpo, o rodapé "Demonstração: mensagem fictícia". Ele entra no texto da prévia, e o E2E o confere.
+- **A escolha do catálogo** virou uma função (`catalogoDoAmbiente`), testada à parte: as integrações substituem o provider, e a fábrica ficava sem teste.
+- **A pilha da demonstração do E2E** sobe a API com `NODE_ENV=development`. Com `test`, o worker não sobe (`jobs.service`), e o despacho precisa dele. O outbox roda a cada minuto, como em staging, e o cenário espera até cerca de dois minutos. O ambiente dela zera a chave de IA, o segredo e o token da Meta e o scanner, que o Playwright herdaria do shell, e tem um `STORAGE_ROOT` próprio. O spec roda sem retentativa: ele muda o banco da pilha, e uma segunda passada acharia o candidato já com pedido.
+
+**A revisão do fechamento (`reviewer` e `security`, uma rodada):** os dois aprovaram com ressalvas, sem P0 nem P1. Os achados, todos tratados nesta entrega:
+
+- **A chave expirada (security, P2).** Depois das 24 h, a resposta guardada é apagada, e repetir executaria de novo uma intenção antiga, por exemplo um consentimento depois de uma revogação. Ela ganhou `code: "idempotency_expired"`, e a tela a trata como definitiva: descarta a chave, relê a seção e pede que se confira antes de registrar de novo. A tentativa abandonada (a reserva presa além de 60 s) continua pedindo a repetição: é a mesma intenção, minutos depois.
+- **O revisor do procedimento (security, P2).** A conferência agora segue as do guard: o usuário ativo, a membership ativa e o workspace ativo, além de `templates:review`. Cada caso tem teste.
+- **A trilha do procedimento (security, P2).** O ator continua sendo o revisor, mas a `template_review.created` leva `via: "cli:templates-demo"` (campo novo na lista da trilha), e o cadastro leva o ator `system:cli:templates-demo` no lugar de `cli:templates-register`. A rota não marca origem, e um teste fixa isso. Quem roda o procedimento é quem opera o servidor, com a autorização do revisor obtida fora do sistema; a trilha registra o nome dele e a origem.
+- **A finalidade antes do cadastro (reviewer, P2).** Antes, sem a finalidade, a versão nascia e a saída dizia "nada mudou". Agora o procedimento confere todas as finalidades antes de qualquer cadastro e recusa sem gravar nada.
+- **O número que deixa de ser oferecido (reviewer, P2).** Se um pedido de parar entrava depois da escolha, o número saía da lista, mas continuava escolhido. Agora a escolha só vale enquanto o número é oferecido.
+- **Os testes que faltavam (reviewer, P2):**
+  - a fábrica do catálogo;
+  - a tentativa abandonada com o código de repetir;
+  - o 5xx como indefinido;
+  - a chave expirada, na integração e na tela.
+- **A documentação (reviewer, P2):**
+  - o runbook dizia que o catálogo falso nasce vazio;
+  - o §6 do SECURITY e este adendo punham a chave expirada entre as repetições;
+  - o texto da repetição foi reescrito, e agora está marcado como correção, acima.
+
+**Os limites registrados, sem mudança de código:**
+
+- **A trava das telas de consentimento vale enquanto a seção está aberta** (reviewer, P2). Fechar a ficha ou o drawer da conversa perde a tentativa incerta, e a pessoa pode registrar outra coisa com outra chave. Não há efeito duplicado, porque o servidor deduplica:
+  - a concessão, pela chave natural (o mesmo consentimento, com a mesma origem);
+  - o pedido de parar, por um ativo por número;
+  - a revogação, que vale uma vez;
+  - a concessão sob bloqueio, que é recusada.
+
+  É o mesmo limite registrado para a prévia dos envios (adendo 11; ADR-052, F4.1c-3).
+
+- **As telas da F4.4 (Envios e Inbox) continuam tratando todo 409 como incerto.** A repetição lá nunca cria outra mensagem: o Core acha a aprovação pelo hash, ou recusa a prévia vencida (`approval_expired`). Isso depende de o prazo da aprovação (no máximo 1 h) ser menor que a vida da chave (24 h); se o prazo um dia passar disso, o raciocínio precisa ser refeito.
+- **A checagem do transporte no procedimento lê o ambiente da própria CLI** (security, informativo). A barreira que protege uma conta real é a WABA fictícia: o canal de outra WABA é recusado, e a Meta não emite id que começa com zero.
+- **O nome do canal é texto do operador** (os dois revisores, informativo). A lista dos canais não traz o número do negócio, a menos que o operador o tenha posto no nome.
+- **Antes de o staging voltar ao transporte da Graph,** as versões `demo_*` precisam sair de uso. Hoje, nada sairia: a releitura contra a WABA fictícia falha fechada.
+- **A chave expirada depende de a linha vencida ainda existir** (security, informativo da revisão do delta). Hoje nenhum job apaga chaves vencidas; uma limpeza futura por `expiresAt` precisa manter um marcador da chave, ou rodar bem além do tempo de vida de uma tela aberta. A mensagem do 409 diz agora "confira o estado antes de enviar de novo", e não mais "refaça a requisição".
+
+**A revisão do delta (`security`, 2026-10-29):** aprovado, sem P0, P1 nem P2. Os três P2 da rodada anterior estão resolvidos, com testes que falham se a regra sair. Os quatro informativos foram tratados no texto: a limpeza futura das chaves, a dependência do prazo da aprovação, a autorização do revisor obtida fora do sistema e a mensagem da chave expirada.
+
+**As mutações (37), uma vez, no fim:** 36 morrem por teste que falha, nunca por compilação. São 15 nas telas do consentimento, 3 na conciliação dos Envios, 7 na API das telas e no interceptor, 10 no procedimento, 1 na trilha da rota e 1 na fábrica do catálogo. Na primeira passada, três sobreviveram:
+
+- **C11 e C12, as permissões das telas (sem `consents:read`; a RAI sem `contacts:write`):** a asserção rodava antes de a sessão chegar, quando a tela ainda não consulta nada e mostra a recusa de qualquer forma. Os testes passaram a esperar a sessão carregada, e as duas morrem.
+- **P4, a membership não ativa no procedimento:** é equivalente. `membershipHas` já exige a membership ativa, e tirar o filtro antes dele não muda o resultado; o teste da membership suspensa continua provando a regra.
+
+**A bateria, em blocos com log.** A b76 foi **inválida**: a tampa estava fechada, com eventos de sono em todos os blocos (até 30 no E2E). As falhas de integração e de E2E dela foram todas de tempo esgotado, em suítes sem relação com a entrega, e não contam. O único resultado que não dependia de sono foi o lint, que acusou uma atribuição sem uso no teste reforçado para as mutações; foi corrigido. A **b77**, com a tampa aberta e sem sono, ficou toda verde:
+
+- lint, formatação, build, `drift`, `fromzero` e `check:fk`;
+- unidade 374 e web 181;
+- integração 1.141 (180, 243, 162, 297 e 259 nos cinco blocos);
+- E2E 53, com as duas pilhas: os 52 da pilha principal e o cenário completo da demonstração.
 
 ## ADR-049 — Relógio de agendamento: quem compara define o relógio, e filas e leases usam o do banco
 
