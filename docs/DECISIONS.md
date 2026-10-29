@@ -573,7 +573,7 @@ Implementado com duas decisões que só apareceram ao escrever: a seleção é p
 
 **Residual aceito:** com transporte falso, nenhum recibo de status volta da Meta — o `MessageDispatch` fica em `sent` para sempre e a quota é cobrada. Na tela, "enviada" fica indistinguível do envio real para quem não olha o banco; o `externalId` marcado (`wamid.FAKE-…`) é o que distingue.
 
-### Adendo 1 (2026-10-29) — o backup e a restauração que falham de verdade (APROVADO pelo usuário; desenho antes do código)
+### Adendo 1 (2026-10-29) — o backup e a restauração que falham de verdade (APROVADO pelo usuário; publicado e validado em `3b69160`)
 
 **Contexto.** A revisão do roteiro da demonstração (ADR-048 adendo 13; DEPLOY_STAGING §14) achou dois defeitos nos scripts do item 7. O usuário aprovou corrigi-los, num commit próprio, com testes de falha.
 
@@ -608,11 +608,11 @@ Implementado com duas decisões que só apareceram ao escrever: a seleção é p
 
 **Implementação (2026-10-29), com os desvios do desenho.** As revisões de fechamento (`reviewer` e `security`) acharam três defeitos no desenho acima, e o usuário já tinha pedido os testes que os provam. O que mudou:
 
-1. **A restauração é sempre num banco NOVO, trocado pelo nome** (substitui o item 3). Restaurar sobre o banco já migrado, com `--clean`, falha sempre: as tabelas criadas pelas migrations têm FK para as do dump, e o `--clean` só derruba o que está no dump. E, sem FK, um objeto que o dump não conhece sobrevive. Agora:
+1. **A restauração é sempre num banco NOVO, trocado pelo nome** (substitui o item 3). O motivo suficiente é evitar conflitos, objetos que o dump não conhece e a alteração parcial do banco existente. O que foi ensaiado: na revisão, com uma tabela criada depois do dump e com FK para uma tabela dele, a restauração por cima, com `--clean`, falhou, porque o `--clean` só derruba o que está no dump; e, sem FK, um objeto que o dump não conhece sobreviveria. Agora:
    - `restore.sh banco <snapshot-id> <banco-novo>` recusa o nome do banco vivo e o de qualquer banco que exista (código 64), cria o banco novo e restaura com `--single-transaction --exit-on-error`, sem `--clean`;
    - em qualquer falha, o banco novo é descartado, e a mensagem não afirma o que o `pg_restore` fez: ela diz que o banco novo foi descartado e que o vivo não foi tocado. Isso cobre também o `restic` que sai com erro depois de entregar o fluxo inteiro, quando o `pg_restore` já confirmou. O descarte é conferido: se o `dropdb` falhar, a mensagem diz que o banco novo ficou e precisa ser removido antes de repetir;
    - a troca é manual, com a API parada: `ALTER DATABASE … RENAME` do vivo para um nome de guarda e do novo para o nome do vivo, numa transação só, conectado ao `postgres` (DEPLOY_STAGING §6). Se a segunda renomeação falhar, a transação desfaz a primeira.
-2. **O agendador chama `/bin/sh "$0"`, sem argumento** (corrige o item 2, que dizia `backup.sh --ciclo`). O filho é o ciclo completo, com o próprio código de saída. `backup.sh --ciclo` roda UMA iteração do agendador e sai sempre com 0 (a falha fica no log); para conferir à mão, vale `backup.sh` sem argumento.
+2. **O agendador chama `/bin/sh "$0"`, sem argumento** (corrige o item 2, que dizia `backup.sh --ciclo`). O filho é o ciclo completo, com o próprio código de saída. `backup.sh --ciclo` roda UMA iteração do agendador e sai sempre com 0 (a falha fica no log): **o código de saída dele não serve para verificar o sucesso do backup.** Toda verificação, manual ou automática, usa `backup.sh` sem argumento e confere o código de saída dele (decisão do usuário, 2026-10-29).
 3. **A retenção mantém a janela:** `forget --prune --keep-tag janela`. O `forget` agrupa por host e caminho, não por tag, e o snapshot da janela caía no grupo dos diários. O roteiro ainda grava a janela com um host próprio (`veyra-staging-janela`), porque o container que está no ar antes do deploy roda o script antigo.
 4. **O repositório só é inicializado quando não existe** (código 10 do `restic` 0.17). A senha errada (12), o destino fora do ar ou um lock são falha, nunca um `init` por cima, e o código aparece no log.
 5. **O storage com arquivo ilegível:** o `restic` sai com 3 e grava um snapshot incompleto. O ciclo o remove pelo id (o `forget` só com a tag, sem política, não remove nada; o teste pegou isso) e falha.
@@ -634,7 +634,7 @@ Implementado com duas decisões que só apareceram ao escrever: a seleção é p
    Os testes recusam rodar com `DOCKER_HOST` ou com um contexto Docker que não seja local.
 
 7. **O que os testes mostraram e ficou no roteiro:**
-   - **O lock do `restic dump` interrompido.** Um `restic dump` cortado por quem lê o fluxo morre por SIGPIPE e deixa um lock, e a retenção seguinte falha. O `restic unlock` sem `--remove-all`, no mesmo container, o remove (ensaiado na imagem).
+   - **O lock do `restic dump` interrompido.** Um `restic dump` cortado por quem lê o fluxo morre por SIGPIPE e deixa um lock, e a retenção seguinte falha. O `restic unlock`, no mesmo container, o remove (ensaiado na imagem). O desbloqueio é sempre manual, depois de conferir que não há operação legítima em andamento, e nunca com `--remove-all` (decisão do usuário, 2026-10-29).
    - **O caminho do storage.** A restauração do storage do §6 punha os arquivos em `<destino>/data/storage`; agora ela restaura num diretório temporário e copia para a raiz do volume.
    - **Restaurar um snapshot antigo desfaz revogações** (revisão do delta pelo `security`): as sessões revogadas, as memberships removidas, as senhas trocadas e as exclusões feitas depois do snapshot voltam. A restauração prevista no staging é a do snapshot da janela, com diferença zero; a de um snapshot mais antigo, com acesso de pessoas reais, espera um procedimento ensaiado de revogação geral (DEPLOY_STAGING §6; SECURITY §9; dívida com gatilho).
    - **O relógio do agendador** (achado pelas mutações). O cálculo da espera somava `+ 0` aos campos do `date` para fugir do octal, mas `$(( 08 + 0 ))` é erro no shell: `08` e `09` são octais inválidos. Quando a hora, o minuto ou o segundo UTC era `08` ou `09`, o laço caía, e o container reiniciava. Com `BACKUP_AT` em `08:xx` ou `09:xx`, nunca agendava. Agora o zero à esquerda sai antes da conta. O teste fixa o relógio em 08:09:08 por um `date` substituto, com `BACKUP_AT=08:09`, e confere a espera exata (86392 s).
@@ -7834,7 +7834,7 @@ A forma (um arquivo versionado lido pelo catálogo falso do staging, e o cadastr
 
 ## ADR-053 — Modo de manutenção da API: a barreira contínua da janela de deploy
 
-**Status:** APROVADO pelo usuário (2026-10-29); desenho antes do código · **Data:** 2026-10-29
+**Status:** APROVADO pelo usuário (2026-10-29); implementado, publicado e validado em `1bdff7e` (CI da árvore final `3b69160` verde no run 40936814420) · **Data:** 2026-10-29
 
 **Contexto.** O deploy está bloqueado desde 2026-10-21 (DEPLOY_STAGING §4), porque a barreira da janela de manutenção não é contínua. Hoje ela é parar os containers e tirar o domínio do `web`. O deploy recria os containers, e o Coolify pode gerar uma rota padrão por alguns segundos. `DISABLE_JOBS` desliga os workers, mas não bloqueia requisições. Uma falha de schema também não é barreira. O plano da demonstração (ADR-048 adendo 13; DEPLOY_STAGING §14) depende de uma barreira que não dependa do proxy.
 
@@ -7902,3 +7902,17 @@ A forma (um arquivo versionado lido pelo catálogo falso do staging, e o cadastr
 - **A documentação da janela** (DEPLOY_STAGING §5, §6 e §14) passou a exigir `MAINTENANCE_MODE=true`:
   - a volta à barreira é sempre um **Deploy** do mesmo commit, nunca Start, Restart ou Rollback, porque o container guarda o ambiente de quando foi criado;
   - a conferência do container novo inclui o `docker inspect` do ambiente não secreto.
+
+**A validação das duas entregas (2026-10-29), F4.4d e ADR-046 adendo 1.**
+
+- **As provas:**
+  - 32 mutações mortas por teste que falha (18 da barreira e 14 do backup), nenhuma por compilação;
+  - o ensaio do schema antigo (`ENSAIO_OK`) e os testes de falha na imagem (`TESTES_DE_FALHA_OK`);
+  - a bateria b79 completa e a repetição b80, do afetado pelas correções do delta e do bloco que falhou na b79;
+  - **a publicação:** o push de `4121aa6`, `1bdff7e` e `3b69160`, nessa ordem, sem force (autorizado pelo usuário em 2026-10-29), e os quatro jobs do CI verdes na árvore final (`3b69160`, run 40936814420): lint e formatação, tipos e build, testes, e e2e.
+- **A falha da b79, mantida no registro:**
+  - **o que aconteceu:** no bloco `int1-5` (14:51:10–14:52:14), três testes de prazo do `business-outbound.integration-spec.ts` falharam: "o que mudou desde a prévia não é aprovado" (esperava `approval_expired`, veio `null`), "o prazo que vence entre a releitura e as travas" (o template saiu, em vez de nenhum) e "CRASH entre o marcador e a chamada: a posse vence" (o despacho ficou em `sending`, em vez de `unknown_after_dispatch`). Os outros 183 testes do bloco passaram;
+  - **o contexto observado:** o Mac, na bateria, entrou em sono por inatividade no intervalo entre blocos (de 14:49:30 a 14:51:10), e o bloco começou no despertar;
+  - **a hipótese, não comprovada:** um atraso do relógio da VM do Docker depois do sono, mecanismo já comprovado em outra ocorrência (2026-10-22). **O desvio não foi medido naquela execução:** a medida de cerca de 8 min depois deu 0 s, o que não prova nem descarta o desvio no momento da falha;
+  - **a repetição, à parte:** na b80, com toda a rodada sob uma única trava de sono e sem evento de sono, o mesmo bloco passou (186 testes), e o grupo 3, com a barreira, também (227).
+- **As mensagens dos commits `1bdff7e` e `3b69160`** dizem "baterias b79 e b80 verdes". O registro correto é este: a b79 teve as três falhas acima, e a b80 passou.

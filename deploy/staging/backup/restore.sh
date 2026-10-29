@@ -8,9 +8,11 @@
 #   restore.sh storage <snapshot-id> [destino]
 #
 # O BANCO é sempre restaurado num banco NOVO, que o script cria e que não pode
-# existir: nunca sobre o banco vivo (ADR-046 adendo 1). Restaurar por cima de um
-# banco já migrado falharia sempre (as tabelas novas têm FK para as do dump) ou
-# deixaria objetos que o dump não conhece. Depois, com a API parada e a
+# existir: nunca sobre o banco vivo (ADR-046 adendo 1). Restaurar por cima de
+# um banco existente arrisca conflitos, objetos que o dump não conhece e a
+# alteração parcial desse banco; no cenário ensaiado (uma tabela criada depois
+# do dump, com FK para uma tabela dele), a restauração por cima, com `--clean`,
+# falhou. Depois, com a API parada e a
 # barreira de manutenção, o roteiro confere o banco novo e o troca pelo nome
 # (ALTER DATABASE … RENAME), guardando o antigo para diagnóstico.
 set -eu

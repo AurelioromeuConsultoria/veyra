@@ -1049,9 +1049,10 @@ Pelo terminal do Coolify, no container `backup`:
 **A restauração do banco é sempre num banco NOVO, trocado pelo nome**
 (ADR-046 adendo 1). O `restore.sh` nunca restaura sobre o banco vivo: recusa o
 nome dele e o de qualquer banco que já exista, cria o banco novo e restaura
-numa transação só. Restaurar por cima de um banco já migrado falharia sempre,
-porque as tabelas novas têm FK para as do dump, ou deixaria objetos que o dump
-não conhece. Restaurar é manutenção, do começo ao fim.
+numa transação só. O motivo é evitar conflitos, objetos que o dump não
+conhece e a alteração parcial do banco existente. No cenário ensaiado na
+revisão (uma tabela criada depois do dump, com FK para uma tabela dele), a
+restauração por cima, com `--clean`, falhou. Restaurar é manutenção, do começo ao fim.
 
 **Um snapshot anterior ao congelamento desfaz o que veio depois dele,**
 inclusive o que protege o acesso: sessões revogadas (`RefreshToken` e
@@ -1153,9 +1154,14 @@ rede. Um ensaio trimestral é o que distingue backup de esperança.
   - cada ciclo do agendador é um processo próprio (`/bin/sh backup.sh`): a falha fica no log como "ciclo falhou (código N)", e o próximo horário tenta de novo;
   - a retenção mantém os snapshots com a tag `janela` (`--keep-tag janela`), que saem à mão;
   - o cálculo da espera lê os campos do relógio sem o zero à esquerda: antes, `08` e `09` (octais inválidos no shell) derrubavam o laço nesses horários.
-- **`backup.sh --ciclo`** roda um ciclo como o agendador e sai sempre com 0: a falha fica só no log. Para conferir à mão, use `backup.sh` sem argumento, que devolve o código.
+- **`backup.sh --ciclo`** roda um ciclo como o agendador e sai sempre com 0. **O código de saída dele não diz se o backup deu certo:** a falha fica só no log. Toda verificação de sucesso, manual ou automática, usa `backup.sh` sem argumento e confere o código de saída (0, com "ciclo concluído com sucesso" no fim; qualquer outro é falha).
 - **A restauração** é num banco novo e numa transação só: um dump truncado, um erro do `restic` (mesmo depois de entregar o fluxo inteiro) ou do `pg_restore` descartam o banco novo, e o vivo não é tocado.
-- **Um `restic dump` interrompido deixa um lock no repositório.** Quando quem lê o fluxo para antes do fim (um `pg_restore` que sai no começo, um `head`), o `restic` morre sem soltar o lock, e a retenção do ciclo seguinte falha com "repository is already locked". O ciclo falha de forma visível, mas os seguintes também falham, até o lock sair. A recuperação, ensaiada na imagem: `docker exec <container-backup> restic unlock`, sem `--remove-all`. Ele remove só os locks velhos, inclusive o de um processo que já terminou no mesmo container. Nunca use `--remove-all` com um ciclo em curso.
+- **Um `restic dump` interrompido deixa um lock no repositório.** Quando quem lê o fluxo para antes do fim (um `pg_restore` que sai no começo, um `head`), o `restic` morre sem soltar o lock, e a retenção do ciclo seguinte falha com "repository is already locked". O ciclo falha de forma visível, mas os seguintes também falham, até o lock sair. A recuperação é manual e ensaiada na imagem:
+  1. confira que não há operação legítima em andamento (ciclo, dump ou restauração): `docker exec <container-backup> ps` não mostra `restic` nem `pg_dump`, e `docker exec <container-backup> restic list locks --no-lock` lista o lock;
+  2. só então `docker exec <container-backup> restic unlock`. Ele remove apenas os locks velhos, inclusive o de um processo que já terminou no mesmo container.
+
+  **Nunca `--remove-all`**, em nenhum caso.
+
 - **Os testes de falha** rodam na imagem do próprio Dockerfile, com um Postgres e um repositório descartáveis, no Docker local. As falhas são provocadas por comandos substitutos no `PATH` da imagem (o `pg_dump` que cai no meio, o `restic` que falha só no `backup` ou que sai com erro depois do fluxo, o `sleep` do agendador que não dorme):
 
   ```bash
@@ -1445,14 +1451,14 @@ Na ordem, cada passo com a própria autorização:
 
 **5. O que falta para o usuário acessar o sistema (acompanhamento; atualizar a cada entrega).** Nenhum item abaixo autoriza execução: cada passo no staging tem autorização própria. Nada novo entra no caminho da demonstração.
 
-| Frente                                    | Situação                                                                  | O que falta                                                                                                                         |
-| ----------------------------------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| **Funcionalidades**                       | F4.1 a F4.4c publicadas e validadas (a F4.4c em `c378367`, CI verde)      | em commit local: a barreira de manutenção (PO-1, ADR-053) e o backup e a restauração que falham de verdade (PO-3, ADR-046 adendo 1) |
-| **Templates falsos**                      | publicados na F4.4b (ADR-048 adendo 12)                                   | o canal fictício (CLI compilada), as finalidades e o `templates:demo` no workspace `demo`: §14, etapa D                             |
-| **Dados fictícios**                       | o `demo:carregar` (F4.4c, em commit local)                                | rodar no workspace `demo`: §14, etapa D; os consentimentos, pela tela                                                               |
-| **Manutenção do deploy**                  | o roteiro consolidado no §14 (os pré-requisitos PO-1 a PO-3 e a janela C) | a barreira contínua (PO-1), o ensaio de restauração isolado (PO-2) e a janela (C), cada um com autorização                          |
-| **Diagnóstico do staging**                | INC-2026-10-26-01 aberto; o bloco curto enviado ao usuário                | a saída do diagnóstico (§14, etapa A) e a proposta de recuperação                                                                   |
-| **Ativação do workspace de demonstração** | decidida: workspace dedicado `demo` (decisão de 2026-10-29)               | executar na etapa D do §14, com autorização                                                                                         |
+| Frente                                    | Situação                                                                                                     | O que falta                                                                                                |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| **Funcionalidades**                       | F4.1 a F4.4d publicadas e validadas, com o PO-1 (ADR-053) e o PO-3 (ADR-046 adendo 1) em `3b69160`, CI verde | nenhuma nova: o que falta é operacional                                                                    |
+| **Templates falsos**                      | publicados na F4.4b (ADR-048 adendo 12)                                                                      | o canal fictício (CLI compilada), as finalidades e o `templates:demo` no workspace `demo`: §14, etapa D    |
+| **Dados fictícios**                       | o `demo:carregar` (F4.4c, publicado em `c378367`)                                                            | rodar no workspace `demo`: §14, etapa D; os consentimentos, pela tela                                      |
+| **Manutenção do deploy**                  | o roteiro consolidado no §14 (os pré-requisitos PO-1 a PO-3 e a janela C)                                    | a barreira contínua (PO-1), o ensaio de restauração isolado (PO-2) e a janela (C), cada um com autorização |
+| **Diagnóstico do staging**                | INC-2026-10-26-01 aberto; o bloco curto enviado ao usuário                                                   | a saída do diagnóstico (§14, etapa A) e a proposta de recuperação                                          |
+| **Ativação do workspace de demonstração** | decidida: workspace dedicado `demo` (decisão de 2026-10-29)                                                  | executar na etapa D do §14, com autorização                                                                |
 
 ## 14. Plano operacional da demonstração (2026-10-29; nada executado)
 

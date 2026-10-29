@@ -6,9 +6,10 @@
 #                        código ≠ 0 em qualquer falha, sem mensagem de sucesso
 #   backup.sh --loop   → agenda diariamente em BACKUP_AT (HH:MM) — é o CMD
 #   backup.sh --ciclo  → UM ciclo do agendador, já, como o laço o faria: o
-#                        código é sempre 0 (o agendador segue); a falha fica
-#                        no log. Para conferir à mão, use `backup.sh` sem
-#                        argumento, que devolve o código do ciclo
+#                        código é sempre 0 (o agendador segue) e NÃO diz se o
+#                        backup deu certo; a falha fica só no log. Toda
+#                        verificação de sucesso, manual ou automática, usa
+#                        `backup.sh` sem argumento e confere o código dele
 #
 # Sem daemon de cron: o laço dorme até o horário e loga cada ciclo em stdout,
 # então `docker compose logs backup` conta a história inteira. Cron em
