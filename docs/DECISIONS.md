@@ -7834,7 +7834,7 @@ A forma (um arquivo versionado lido pelo catálogo falso do staging, e o cadastr
 
 ## ADR-053 — Modo de manutenção da API: a barreira contínua da janela de deploy
 
-**Status:** APROVADO pelo usuário (2026-10-29); implementado, publicado e validado em `1bdff7e` (CI da árvore final `3b69160` verde no run 40936814420) · **Data:** 2026-10-29
+**Status:** APROVADO pelo usuário (2026-10-29); implementado, publicado e validado em `1bdff7e` (CI da árvore final `3b69160` verde no run 40936814420); no staging desde a janela de 2026-10-29, em que a barreira foi vista no ar (DEPLOY_STAGING §14) · **Data:** 2026-10-29
 
 **Contexto.** O deploy está bloqueado desde 2026-10-21 (DEPLOY_STAGING §4), porque a barreira da janela de manutenção não é contínua. Hoje ela é parar os containers e tirar o domínio do `web`. O deploy recria os containers, e o Coolify pode gerar uma rota padrão por alguns segundos. `DISABLE_JOBS` desliga os workers, mas não bloqueia requisições. Uma falha de schema também não é barreira. O plano da demonstração (ADR-048 adendo 13; DEPLOY_STAGING §14) depende de uma barreira que não dependa do proxy.
 

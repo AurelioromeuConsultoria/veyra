@@ -1324,7 +1324,7 @@ decisão deve ficar registrada aqui quando você tomá-la.
 
 ## 12. Registro de incidentes
 
-### INC-2026-10-26-01 — staging fora do ar (aberto)
+### INC-2026-10-26-01 — staging fora do ar (fechado em 2026-10-29)
 
 - **Detecção:** pelo usuário, no navegador, por volta das 18:30 (-03) de
   2026-10-26: `https://veyra-staging.malachdigital.com.br` responde
@@ -1405,6 +1405,18 @@ decisão deve ficar registrada aqui quando você tomá-la.
 - **A recuperação autorizada (2026-10-29):** a janela do §14 (etapa C), a
   demonstração (D) e a retomada (E), com dois ajustes ao estado real, descritos
   no §14, "A execução de 2026-10-29".
+- **Confirmado na janela:** o Auto Deploy estava ligado. Os 67 deploys do
+  histórico vieram do webhook, um a cada push na `main`, e todos falharam: os
+  da F4 recriavam os containers e caíam na validação do ambiente, e os de
+  `3b69160` e `2b6deb1` falharam em cerca de 15 s, antes de mexer nos
+  containers. Desde a janela, o recurso está em "Manual deployments only",
+  fixado num commit: um push não reimplanta mais o staging.
+- **Fechamento (2026-10-29, 21:35 UTC):** o staging voltou ao ar no `2b6deb1`,
+  com o schema em dia, as chaves que faltavam criadas, o workspace `demo` da
+  demonstração e o transporte simulado. O Owner entrou pelo navegador. O
+  registro da execução está no §14, "A execução de 2026-10-29". Os logs e o
+  dump da janela continuam em `/root/veyra-inc-2026-10-26`, só root, até o
+  usuário validar a demonstração; depois saem, com autorização.
 
 ## 13. Pendências da demonstração da F4 (preparadas em 2026-10-27; nada executado)
 
@@ -1473,14 +1485,14 @@ Na ordem, cada passo com a própria autorização:
 
 **5. O que falta para o usuário acessar o sistema (acompanhamento; atualizar a cada entrega).** Nenhum item abaixo autoriza execução: cada passo no staging tem autorização própria. Nada novo entra no caminho da demonstração.
 
-| Frente                                    | Situação                                                                                                     | O que falta                                                                                                |
-| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
-| **Funcionalidades**                       | F4.1 a F4.4d publicadas e validadas, com o PO-1 (ADR-053) e o PO-3 (ADR-046 adendo 1) em `3b69160`, CI verde | nenhuma nova: o que falta é operacional                                                                    |
-| **Templates falsos**                      | publicados na F4.4b (ADR-048 adendo 12)                                                                      | o canal fictício (CLI compilada), as finalidades e o `templates:demo` no workspace `demo`: §14, etapa D    |
-| **Dados fictícios**                       | o `demo:carregar` (F4.4c, publicado em `c378367`)                                                            | rodar no workspace `demo`: §14, etapa D; os consentimentos, pela tela                                      |
-| **Manutenção do deploy**                  | o roteiro consolidado no §14 (os pré-requisitos PO-1 a PO-3 e a janela C)                                    | a barreira contínua (PO-1), o ensaio de restauração isolado (PO-2) e a janela (C), cada um com autorização |
-| **Diagnóstico do staging**                | INC-2026-10-26-01 aberto; o bloco curto enviado ao usuário                                                   | a saída do diagnóstico (§14, etapa A) e a proposta de recuperação                                          |
-| **Ativação do workspace de demonstração** | decidida: workspace dedicado `demo` (decisão de 2026-10-29)                                                  | executar na etapa D do §14, com autorização                                                                |
+| Frente                                    | Situação                                                                                             | O que falta                                                      |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| **Funcionalidades**                       | F4.1 a F4.4d publicadas e validadas, no ar no staging em `2b6deb1`                                   | nenhuma nova                                                     |
+| **Templates falsos**                      | os três `demo_*` cadastrados e revisados no `demo` (2026-10-29)                                      | nada                                                             |
+| **Dados fictícios**                       | a carga no `demo` (2026-10-29): 3 serviços, 2 profissionais, 6 pacientes, 5 agendamentos e 1 retorno | os consentimentos, pela tela, no uso                             |
+| **Manutenção do deploy**                  | a janela executada em 2026-10-29 (§14, "A execução de 2026-10-29"); o Auto Deploy desligado          | o backup externo (o destino do `restic` nunca foi configurado)   |
+| **Diagnóstico do staging**                | INC-2026-10-26-01 fechado (§12)                                                                      | apagar os logs e o dump da janela depois da validação do usuário |
+| **Ativação do workspace de demonstração** | o `demo`, com o Clinics ativo só nele e o canal fictício                                             | o uso pelo usuário (§14, etapa F)                                |
 
 ## 14. Plano operacional da demonstração (2026-10-29; nada executado)
 
@@ -1548,6 +1560,53 @@ O diagnóstico (§12, INC-2026-10-26-01) mudou duas premissas deste plano.
   imagem da API construída pelo mesmo Dockerfile e um Postgres no mesmo ponto,
   com dados fictícios: as 23 migrations aplicaram, sem diferença de schema,
   com a normalização idempotente, as FKs limpas e as conferências em zero.
+
+**O que foi executado (2026-10-29, 20:53–21:35 UTC), bloco a bloco:**
+
+1. **A barreira.** No painel: o Auto Deploy em "Manual deployments only", o
+   commit fixado em `2b6deb1`, os dois domínios do `web` retirados,
+   `MAINTENANCE_MODE=true` e as duas chaves que faltavam criadas, só no
+   runtime. No host, a API antiga parada. De fora, só 503.
+2. **O dump da janela**, com a escrita congelada:
+   `janela-20261029T205425Z.dump`, 5,2 MB, lido por inteiro, e as contagens
+   de todas as tabelas guardadas. Nenhum despacho pendente ou em voo. O
+   staging tinha um workspace, dois usuários e nenhum contato ou mensagem.
+3. **O deploy da imagem protegida.** A API subiu saudável em manutenção (os
+   jobs desligados pela manutenção), o `web` foi parado, sem rota no Traefik;
+   loopback 200 e rede interna 503; o `restic` do backup novo é 0.17.3 amd64.
+4. **O ensaio na cópia isolada:** `ENSAIO_DA_JANELA_OK`, com as 23 migrations.
+5. **As migrations no banco real:** `MIGRATIONS_OK`, com a mesma saída da
+   cópia (schema igual ao do código, identidade, FKs e conferências limpas).
+6. **A demonstração:** `DEMONSTRACAO_OK`. O workspace `demo`, com o Owner; o
+   Clinics ativo só nele; o canal fictício; as três finalidades; os três
+   templates `demo_*` revisados em nome do usuário, com a autorização dele; a
+   carga dos dados fictícios, que na segunda execução não fez nada.
+7. **A retomada:** `MAINTENANCE_MODE=false`, o domínio devolvido e o
+   Redeploy. A API respondeu 200 de fora, com os jobs ligados, e o Owner
+   entrou pelo navegador.
+
+**Os desvios, registrados:**
+
+- **O valor do painel nem sempre chegou ao container.** O `DISABLE_JOBS=true`
+  da janela foi parar na seção "Preview deployments", e o container recebeu
+  `false`. A manutenção desligou os jobs mesmo assim (ADR-053). Na retomada, o
+  primeiro Redeploy ainda saiu com `MAINTENANCE_MODE=true`, e só o seguinte,
+  com o `.env` gerado já em `false`, abriu a API. **A conferência é sempre o
+  ambiente do container** (`docker inspect`), nunca a tela do painel.
+- **A barreira foi vista no ar,** entre os dois Redeploys da retomada: com o
+  domínio de volta e a manutenção ainda ligada, a página abriu (200) e toda
+  chamada à API recebeu `503 {"code":"maintenance"}`. É o limite declarado no
+  ADR-053.
+- **O PO-2 não se aplicou:** não havia snapshot. O ponto de restauração foi o
+  dump da janela.
+
+**O que ficou pendente** (dívida registrada, com gatilho):
+
+- o backup externo: o destino do `restic` nunca foi configurado;
+- os segredos marcados como "Buildtime" no painel: o Coolify os injeta como
+  `ARG` no build (63 na API);
+- os logs e o dump da janela em `/root/veyra-inc-2026-10-26`, que saem depois
+  da validação do usuário.
 
 ### Etapa A — Diagnóstico e preservação (só leitura, já autorizada)
 
