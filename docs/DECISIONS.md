@@ -9009,3 +9009,82 @@ Como o código não vai ao staging antes da E-4, isso não muda nada lá.
 - a experiência combinada;
 - a personalização de menu;
 - a E-4.
+
+### Adendo 4 (2026-10-30): a E-3 aprovada, com os ajustes do usuário antes do código
+
+**Aprovado pelo usuário (2026-10-30):** a direção do adendo 3, os oito destinos principais com grupos recolhíveis, as Configurações numa página própria e as seis decisões, todas na recomendação:
+
+- **D-E3.1:** Interessados pela rota do Clinics, paginada no servidor, com as duas chaves;
+- **D-E3.2:** permissões cumulativas em menus, cartões, ações, configurações e busca;
+- **D-E3.3:** a rota única da pessoa, respeitando o acesso de quem abre;
+- **D-E3.4:** interessados fictícios criados pela interface durante a avaliação;
+- **D-E3.5:** a identidade visual atual, com o Clinics diferenciado pela estrutura e pela linguagem;
+- **D-E3.6:** "Confirmar amanhã" pelos agendamentos ainda não confirmados, para quem pode fazer a ação.
+
+O mockup separado foi dispensado: os esboços bastam.
+
+**Os ajustes, que mudam o adendo 3 onde ele diz outra coisa:**
+
+1. **Os cartões dizem exatamente o que sabem.**
+   - **"Agenda de hoje"** (antes "Agora e a seguir"):
+     - **o que mostra:** o dia inteiro da unidade, separado em **pendentes** (horário já passou, marcado ou confirmado, sem desfecho), **chegaram** (o estado `arrived`), **a seguir**, **atendidos** e **faltas**;
+     - **o que não diz:** "chegou" não prova atendimento começado, e o cartão não diz "em atendimento";
+     - **as contagens:** exatas, porque a rota devolve o dia inteiro. No teto de 500 da rota, o cartão diz que a lista passou do limite e leva à Agenda.
+   - **"Confirmar amanhã":**
+     - **a contagem:** exata, sobre o dia inteiro de amanhã;
+     - **o que lista:** os cinco primeiros, com "e mais N";
+     - **a ação:** "**Marcar como confirmado**" (`clinics:schedule:write`), que muda o agendamento à mão;
+     - **o envio por WhatsApp é outra coisa:**
+       - a linha dos pedidos de confirmação esperando aprovação, com o link "Revisar envios";
+       - só aparece com **todas** as chaves da rota dos candidatos (`clinics:schedule:read` + `contacts:read` + `consents:read`);
+       - conta os pedidos em rascunho sobre os candidatos de amanhã.
+   - **"Retornos vencidos":**
+     - **a consulta:** pede 101 à rota;
+     - **a contagem:** exata até 100; acima disso, diz "mais de 100";
+     - **o que mostra:** os cinco primeiros.
+   - **"Conversas com janela aberta"** (antes "Conversas aguardando"):
+     - **por que o nome:** nada prova a pendência de resposta;
+     - **a seleção é parcial e declarada:** "entre as 50 conversas abertas mais recentes";
+     - **o que não faz:** não mostra total nem reordena por vencimento da janela;
+     - **a ordem:** a do servidor (a última mensagem), com o "a janela fecha em" de cada uma.
+   - **"Faltas da semana":** os agregados do servidor, que são exatos. "Pendentes" quer dizer horário passado sem desfecho, e fica separado do que ainda vem.
+   - **Regra geral:** cinco registros exibidos nunca viram "cinco no total".
+2. **"Confirmar" não é "enviar".** "Marcar como confirmado" é a mudança manual do agendamento. Revisar ou enviar a confirmação por WhatsApp fica na tela dos Envios, pelo link próprio.
+3. **O Profissional:**
+   - **"Minha agenda"**, em cima, só quando a conta está ligada a um profissional do catálogo;
+   - **"Agenda da equipe"**, separada;
+   - **sem vínculo:** só a da equipe. A associação nunca é inventada;
+   - **o limite:** é organização, sem promessa de privacidade por profissional (D8).
+4. **A ficha e a rota da pessoa.**
+   - **As chaves:** cada seção exige todas as que a API dela exige:
+     - os dados de contato: `contacts:read`;
+     - o consentimento: `consents:read` + `contacts:read`;
+     - as conversas: `conversations:read` + `contacts:read`;
+     - as oportunidades: `pipelines:read` + `contacts:read`.
+   - **A rota da pessoa:**
+     - **sem `contacts:read`:** não abre nada e não consulta nada;
+     - **sem `clinics:schedule:read`:** não consulta o vínculo de paciente e não o revela por redirecionamento, erro, título ou estado intermediário. O título e o carregamento são os mesmos para paciente e não paciente, e só quem pode consultar é levado à ficha.
+5. **O fuso.** As datas e os períodos dos cartões ("hoje", "amanhã", "a semana") são os da **unidade** (o fuso dela no catálogo), nunca os do navegador. Com mais de uma unidade, o Hoje tem o seletor de unidade.
+
+**Uma decisão de implementação, registrada antes do código: as oportunidades do contato.** O Core não tem rota HTTP que liste as oportunidades de um contato. O serviço tem `listByContact`, mas só a IA o usa. A seção de oportunidades da ficha (adendo 3, item 4) pede uma rota do Core:
+
+- **a rota:** `GET /api/contacts/:id/deals`, sobre o serviço que já existe;
+- **as chaves:** `pipelines:read` + `contacts:read`;
+- **o alcance:** só o workspace, como toda leitura do Core, e 404 para contato de outro;
+- **por que no Core:** é universal e serve também ao CRM. O Core continua sem saber de paciente.
+
+O Funil não tem link direto para uma oportunidade, então a seção leva ao Funil.
+
+**Ajustes menores de implementação:**
+
+- **o provedor de pacientes da busca:** exige também `clinics:catalog:read`, porque o destino é a ficha, que já exige as duas;
+- **a `linguagem`:** se limita ao que as telas compartilhadas mostram hoje. São o título do Inbox ("Conversas") e o título reserva do Pipeline ("Funil de captação"). O rótulo da entrada no menu já vem do manifesto.
+
+**A execução:**
+
+- implementar com testes focados durante o trabalho;
+- no fechamento, revisão e validação proporcional;
+- evidência visual das telas finais;
+- commit local, parando antes do push.
+
+Tornar `clinics` selecionável no código **não** autoriza mudar workspace nenhum no staging. A troca da demonstração continua na E-4, com autorização própria.
