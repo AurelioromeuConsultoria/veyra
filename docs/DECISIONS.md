@@ -7921,6 +7921,94 @@ A forma (um arquivo versionado lido pelo catálogo falso do staging, e o cadastr
   - **a repetição, à parte:** na b80, com toda a rodada sob uma única trava de sono e sem evento de sono, o mesmo bloco passou (186 testes), e o grupo 3, com a barreira, também (227).
 - **As mensagens dos commits `1bdff7e` e `3b69160`** dizem "baterias b79 e b80 verdes". O registro correto é este: a b79 teve as três falhas acima, e a b80 passou.
 
+### ADR-053, adendo 1 — A trava de manutenção no banco: a imagem nova sobe protegida antes de executar
+
+**Status:** PROPOSTO em 2026-10-30, em resposta ao pedido do usuário antes da janela da E-4. Foi implementado, ensaiado e revisado (`reviewer` e `security`) num commit local, para a decisão do usuário. A aprovação está pendente; o push e a janela só vêm com ela, e nada foi executado no staging.
+
+**Contexto.** Na revisão do roteiro da E-4 (DEPLOY_STAGING §14, etapa G), o usuário apontou que o vigia do deploy é uma proteção complementar, e não a barreira contínua.
+
+- **O que o vigia faz:** ele consulta containers que já foram iniciados. Ter parado uma API antes de o Nest subir, no ensaio, comprova aquela execução, e não garante essa ordem em toda execução.
+- **O que ele não cobre:** se o terminal fecha com o build ainda em andamento, o vigia encerra e para o que existe, mas o Coolify continua o deploy e cria containers depois.
+- **A origem do risco:** a manutenção do ADR-053 vem só do `MAINTENANCE_MODE` do ambiente do container, que o painel monta a cada deploy. Na janela de 2026-10-29, o valor do painel nem sempre chegou ao container.
+
+**A garantia pedida pelo usuário:**
+
+- durante a manutenção, uma imagem nova não atende requisições nem inicia jobs antes de estar protegida;
+- isso continua verdadeiro sem o terminal e sem o vigia;
+- um valor antigo de configuração não abre a aplicação durante a troca.
+
+**Os limites do pedido:** pode reaproveitar os mecanismos existentes, sem depender só de detectar e parar depois, e sem alterar o proxy compartilhado nem a VPS sem proposta e autorização próprias.
+
+**A decisão proposta:**
+
+1. **A trava é uma configuração do PRÓPRIO banco,** e não do container: `ALTER DATABASE <banco> SET veyra.manutencao = 'ligada'`.
+   - **Por que no banco:** ela fica com o banco, e não com o painel nem com a imagem. Nenhum deploy, valor antigo do painel ou terminal fechado a desliga.
+   - **Sem schema:** ela não é tabela, não tem migration e não carrega dado de tenant.
+   - **Quem liga e desliga:** só o operador, pelo `psql` do container `db`, com o superusuário.
+2. **A API a lê no `main.ts`, ANTES de importar o `AppModule`.**
+   - **Por que nesse ponto:** a configuração validada é lida na importação dele, como já faz `cli/sem-jobs.ts`. Nenhum módulo, rota, worker nem inicializador existe ainda.
+   - **A leitura:** uma conexão `pg` própria, de vida curta, com prazo de 10 s e texto FIXO. Ela lê só o catálogo do sistema, sem tabela de domínio, sem parâmetro nem dado de tenant, o mesmo critério do relógio do banco (SECURITY.md §2).
+   - **São DUAS leituras, e basta uma dizer ligada** (revisão de security):
+     - o valor efetivo da sessão (`current_setting('veyra.manutencao', true)`);
+     - o valor gravado pelo próprio `ALTER DATABASE`, lido no catálogo (`pg_db_role_setting`, sem papel, do banco atual).
+
+     O valor da sessão sozinho seria vencido por uma opção da conexão (`PGOPTIONS`, `?options=-c …` na URL) ou por um `ALTER ROLE … SET`, e nenhuma delas muda o valor gravado no banco.
+3. **Ligada, ela força `MAINTENANCE_MODE=true` no processo,** qualquer que seja o ambiente.
+   - **O efeito:** a barreira HTTP (o primeiro `app.use`) e o desligamento dos jobs, que já leem a variável, fazem o resto. Os mecanismos do ADR-053 são reaproveitados sem outra mudança.
+   - **Desligada:** o ambiente decide, como antes. É o caso de todo ambiente sem a trava: desenvolvimento, teste, E2E e o staging fora da janela.
+4. **Fail-closed:**
+   - um valor desconhecido conta como ligada (`ligado`, `sim`). Só a ausência, o vazio e `desligada` contam como desligada;
+   - uma falha na leitura impede a subida: o banco não responde, a conexão é recusada ou o prazo vence. O processo sai com erro e não escuta porta nenhuma; o `restart: unless-stopped` do compose tenta de novo.
+5. **Na janela,** a trava é ligada e desligada pelos blocos de `deploy/staging/janela-e4/`:
+   - **a barreira (bloco 1):** liga a trava, confere a leitura numa sessão nova e só então para a API e o `web`. A partir daí, toda API que subir com o código deste adendo sobe em manutenção;
+   - **a retomada:** desligada só no bloco 7, antes do Redeploy com `MAINTENANCE_MODE=false`;
+   - **a volta à barreira:** é o bloco 1 de novo;
+   - **a volta do banco (bloco 9):** liga a trava no banco restaurado antes da troca pelo nome, porque o dump não carrega configuração de banco;
+   - **os blocos 2 a 6:** exigem a trava ligada, e o vigia não deixa clicar Deploy sem ela.
+6. **O vigia continua, como conferência adicional,** com os limites declarados:
+   - ele só vê containers já iniciados, e não impede um evento futuro do deploy depois de terminar;
+   - parar depois não é barreira;
+   - uma falha ao parar um container é registrada como **FALHA DE CONTENÇÃO**, sem afirmar que a manutenção ficou garantida.
+
+**O que a trava NÃO cobre, declarado:**
+
+- **A decisão é tomada na subida.**
+  - Ligar a trava não fecha uma API que já está aberta: por isso o bloco 1 liga e PARA.
+  - Desligar não abre uma API em manutenção: só o Redeploy abre.
+- **Imagens anteriores a este adendo ignoram a trava,** como o `2b6deb1` em uso no staging e o código da volta do banco.
+  - Para elas, a proteção é o container parado.
+  - Na volta do banco, o `2b6deb1` só sobe na retomada, que é justamente a abertura, e não há etapa em manutenção com ele.
+- **O HTML estático do `web`:** é o limite já declarado no ADR-053, item 6.
+- **Um `DATABASE_URL` que aponte para outro banco:** esse banco não tem a trava. É configuração do próprio banco, fora do que a trava resolve.
+- **As CLIs não passam pelo `main.ts`,** de propósito: a janela precisa delas em manutenção. Elas não servem HTTP e não sobem jobs (`sem-jobs`).
+- **O papel da aplicação no staging é o mesmo superusuário do `db`** e, tecnicamente, poderia desligar a trava. O código não o faz, e o teste estático impede outro arquivo com o texto.
+
+**Alternativas consideradas:**
+
+- **Só o `MAINTENANCE_MODE` do painel:** o valor antigo já chegou ao container.
+- **Só o vigia, que detecta e para:** ele age depois, e não antes; sem o terminal, nada acontece.
+- **Uma imagem de manutenção forçada,** um commit que sobe sempre em manutenção: são dois builds por janela, e a abertura passa a depender de outro deploy.
+- **Recusar conexões no banco** (`ALLOW_CONNECTIONS false`, `NOLOGIN`):
+  - impede também as migrations e as CLIs da janela;
+  - deixa a API num estado indefinido: ela pode subir sem banco e atender a saúde.
+- **Um arquivo de trava num volume:** depende do mapeamento do volume, que é configuração. Sem o volume montado, a trava some sem aviso.
+- **O proxy ou a VPS:** não autorizado.
+
+**Consequências:**
+
+- **Sem banco na subida, a API não sobe.** Antes, ela subia e falhava depois. A mensagem diz que é a trava, e o `restart` tenta de novo.
+- **O `main.ts` carrega o `.env` (`dotenv/config`) antes da trava,** como as CLIs. Sem isso, o `pnpm dev` não teria o `DATABASE_URL` na hora da leitura (achado do `reviewer`). O `dotenv` não sobrescreve o ambiente, e a imagem não tem `.env`.
+- **O E2E cria o banco da API principal antes de subi-la** (`e2e/garantir-banco.ts`, no comando do servidor do Playwright). O Playwright sobe os servidores antes do setup global, e no CI o banco ainda não existe (achado do `reviewer`). A pilha da demonstração já fazia assim.
+- **O bloco 7 só destrava com a janela concluída** (`DEMO_CLINICS_OK`) **e as duas migrations da janela no banco.** A decisão é pelo estado do banco, e não por marca (achado do `reviewer`).
+  - Numa janela interrompida antes das migrations, ou depois da volta do banco, a trava FICA ligada, e a reabertura é com o `2b6deb1`, que a ignora.
+  - O bloco 8 aceita a trava ligada sempre que o banco não tem migration da janela. Se a imagem nova subir por engano, ela sobe em manutenção, e o bloco a contém.
+- **A ordem da janela muda:** a trava é ligada ANTES de parar a API antiga e antes de qualquer Deploy, e desligada só na retomada.
+- **A conferência no ensaio do schema antigo** (`deploy/staging/ensaios/manutencao-com-schema-antigo.sh`):
+  - com a trava ligada e `MAINTENANCE_MODE=false`, a API sobe em manutenção (503 pela rede, nenhum job, nenhuma tabela tocada);
+  - com um valor desconhecido, também;
+  - com o banco inalcançável, ela não sobe;
+  - com a trava desligada, a mesma API abre.
+
 ## ADR-054 — Gestão de equipe pela interface: a tela do Core sobre as APIs que já existem (F5.1a)
 
 **Status:** desenho registrado antes do código; as decisões dos itens 5, 6, 8, 12 e 13 foram aprovadas pelo usuário em 2026-10-29. Implementado, revisado e validado; publicado em 2026-10-29 (`0c4aba4`, CI verde no run 40994699372), **sem deploy**. Atende só parte do B4 · **Data:** 2026-10-29

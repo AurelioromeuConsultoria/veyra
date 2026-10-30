@@ -31,7 +31,9 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: 'node apps/api/dist/main.js',
+      // o banco precisa existir ANTES da API: ela lê a trava de manutenção na
+      // subida (ADR-053, adendo 1), e o setup global só roda depois dos servidores
+      command: 'apps/api/node_modules/.bin/tsx e2e/garantir-banco.ts && node apps/api/dist/main.js',
       url: `http://localhost:${E2E_API_PORT}/api/health`,
       reuseExistingServer: false,
       env: {

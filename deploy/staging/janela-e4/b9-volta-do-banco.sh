@@ -29,18 +29,30 @@
   env_de() { docker inspect "$1" --format '{{range .Config.Env}}{{println .}}{{end}}'; }
   # só o ambiente NÃO secreto vai para variável (o resto nunca passa por here-string)
   nao_secreto() { env_de "$1" | grep -E '^(MAINTENANCE_MODE|DISABLE_JOBS|META_TRANSPORT_MODE|VEYRA_ENV|NODE_ENV|SOURCE_COMMIT)=' || true; }
-  parar() { if docker stop "$1" >/dev/null; then echo "parado agora: $1"; else echo "FALHOU ao parar $1: confira com docker ps"; fi; }
-  parar_tudo() {
+  parar() { if docker stop "$1" >/dev/null; then echo "parado agora: $1"; else echo "FALHA DE CONTENÇÃO: não foi possível parar $1"; fi; }
+  # a CONTENÇÃO: para a API e o web e diz o que sobrou. Parar depois não é a
+  # barreira (a trava é); o que continuar rodando é FALHA DE CONTENÇÃO
+  conter() {
     for s in api web; do for id in $(rodando "$s"); do parar "$id"; done; done
-    r=$(rodando api; rodando web); [ -z "$r" ] || echo "AINDA RODANDO: $r (pare com docker stop)"
+    r=$(rodando api; rodando web || true)
+    if [ -n "$r" ]; then
+      echo "FALHA DE CONTENÇÃO: ainda rodando: $(printf '%s ' $r)— a manutenção NÃO está garantida; pare à mão (docker stop ou docker kill) e confira com docker ps"
+    else
+      echo "contido: nenhuma API nem web rodando"
+    fi
   }
-  # toda API rodando no projeto precisa estar em manutenção; senão, a API e o web param na hora
+  # a TRAVA de manutenção no banco (ADR-053, adendo 1): '' se não houver
+  trava() { docker exec "$DB" sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -c "SELECT coalesce(current_setting('"'"'veyra.manutencao'"'"', true), '"'"''"'"')"'; }
+  # a GARANTIA é a trava ligada; a conferência ADICIONAL, o ambiente de cada API rodando
   barreira() {
+    t=$(trava) || t='(não lida)'
+    [ "$t" = ligada ] || { conter; pare "a trava de manutenção no banco não está ligada ($t): rode o bloco 1"; }
     for id in $(rodando api); do
-      env_de "$id" | grep -x 'MAINTENANCE_MODE=true' >/dev/null || { parar_tudo; pare "uma API rodando SEM MAINTENANCE_MODE=true ($(cut -c1-12 <<<"$id")): a API e o web foram parados na hora"; }
+      env_de "$id" | grep -x 'MAINTENANCE_MODE=true' >/dev/null || { conter; pare "uma API rodando com MAINTENANCE_MODE diferente de true ($(cut -c1-12 <<<"$id")): o painel divergiu. A trava a mantinha em manutenção; o bloco a parou mesmo assim, e a janela para até o painel ser corrigido"; }
     done
   }
   web_parado() { for id in $(rodando web); do echo "o web voltou a rodar:"; parar "$id"; done; }
+  DB=$(nome db); [ -n "$DB" ] || pare "o container db não foi achado"
   a=$(rodando api); w=$(rodando web); [ -z "$a$w" ] || pare "a API ou o web estão rodando; a volta do banco é com os dois parados"
   F=$(cat "$D/janela-arquivo.txt"); [ -s "$F" ] || pare "o dump da janela não está em $F"
   DB=$(nome db)
@@ -60,12 +72,17 @@
   ja=$(echo "SELECT count(*) FROM _prisma_migrations WHERE migration_name IN ('20261029220000_invite_authority', '20261030090000_workspace_experience');" | qn "$NOVO")
   [ "$ja" = 0 ] && [ "$(echo "$SQL_COLUNA_EXPERIENCIA" | qn "$NOVO")" = 0 ] || { descartar; pare "o dump já está MIGRADO (não é o ponto de antes da janela); o banco novo foi descartado"; }
   echo "contagens iguais às do dump; migrations: $(echo "$SQL_APLICADAS" | qn "$NOVO" | wc -l | tr -d ' '); coluna experience: $(echo "$SQL_COLUNA_EXPERIENCIA" | qn "$NOVO"); convites pendentes: $(echo "$SQL_PENDENTES" | qn "$NOVO")"
+  echo "── a trava ligada no banco restaurado, antes da troca (o dump não leva configuração de banco) ──"
+  printf '%s\n' 'ALTER DATABASE :"novo" SET veyra.manutencao = '"'"'ligada'"'"';' \
+    | docker exec -i "$DB" sh -c 'psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -q -v novo="$1"' sh "$NOVO"
   echo "── a troca pelo nome, numa transação só, conectado ao postgres ──"
   printf '%s\n' \
     "SELECT count(pg_terminate_backend(pid)) AS encerradas FROM pg_stat_activity WHERE datname = :'vivo' AND pid <> pg_backend_pid();" \
     'BEGIN;' 'ALTER DATABASE :"vivo" RENAME TO :"falho";' 'ALTER DATABASE :"novo" RENAME TO :"vivo";' 'COMMIT;' \
     | docker exec -i "$DB" sh -c 'psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -v vivo="$POSTGRES_DB" -v novo="$1" -v falho="$2"' sh "$NOVO" "$FALHO"
   echo "$SQL_CONTAGENS" | qn "$VIVO" | diff "$D/janela-contagens.txt" - >/dev/null || pare "depois da troca, o banco vivo não tem as contagens do dump"
-  echo "o banco vivo é o restaurado; o anterior ficou como $FALHO (sai só com autorização)"
+  [ "$(trava)" = ligada ] || pare "depois da troca, a trava não está ligada no banco vivo"
+  echo "o banco vivo é o restaurado, com a trava ligada; o anterior ficou como $FALHO (sai só com autorização)"
+  echo "a reabertura é com o 2b6deb1, SEM o bloco 7: a trava fica ligada (o banco não tem migration da janela)"
   echo VOLTA_DO_BANCO_OK
 )

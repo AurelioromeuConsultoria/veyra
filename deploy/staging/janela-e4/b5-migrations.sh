@@ -27,24 +27,36 @@
   env_de() { docker inspect "$1" --format '{{range .Config.Env}}{{println .}}{{end}}'; }
   # só o ambiente NÃO secreto vai para variável (o resto nunca passa por here-string)
   nao_secreto() { env_de "$1" | grep -E '^(MAINTENANCE_MODE|DISABLE_JOBS|META_TRANSPORT_MODE|VEYRA_ENV|NODE_ENV|SOURCE_COMMIT)=' || true; }
-  parar() { if docker stop "$1" >/dev/null; then echo "parado agora: $1"; else echo "FALHOU ao parar $1: confira com docker ps"; fi; }
-  parar_tudo() {
+  parar() { if docker stop "$1" >/dev/null; then echo "parado agora: $1"; else echo "FALHA DE CONTENÇÃO: não foi possível parar $1"; fi; }
+  # a CONTENÇÃO: para a API e o web e diz o que sobrou. Parar depois não é a
+  # barreira (a trava é); o que continuar rodando é FALHA DE CONTENÇÃO
+  conter() {
     for s in api web; do for id in $(rodando "$s"); do parar "$id"; done; done
-    r=$(rodando api; rodando web); [ -z "$r" ] || echo "AINDA RODANDO: $r (pare com docker stop)"
+    r=$(rodando api; rodando web || true)
+    if [ -n "$r" ]; then
+      echo "FALHA DE CONTENÇÃO: ainda rodando: $(printf '%s ' $r)— a manutenção NÃO está garantida; pare à mão (docker stop ou docker kill) e confira com docker ps"
+    else
+      echo "contido: nenhuma API nem web rodando"
+    fi
   }
-  # toda API rodando no projeto precisa estar em manutenção; senão, a API e o web param na hora
+  # a TRAVA de manutenção no banco (ADR-053, adendo 1): '' se não houver
+  trava() { docker exec "$DB" sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -c "SELECT coalesce(current_setting('"'"'veyra.manutencao'"'"', true), '"'"''"'"')"'; }
+  # a GARANTIA é a trava ligada; a conferência ADICIONAL, o ambiente de cada API rodando
   barreira() {
+    t=$(trava) || t='(não lida)'
+    [ "$t" = ligada ] || { conter; pare "a trava de manutenção no banco não está ligada ($t): rode o bloco 1"; }
     for id in $(rodando api); do
-      env_de "$id" | grep -x 'MAINTENANCE_MODE=true' >/dev/null || { parar_tudo; pare "uma API rodando SEM MAINTENANCE_MODE=true ($(cut -c1-12 <<<"$id")): a API e o web foram parados na hora"; }
+      env_de "$id" | grep -x 'MAINTENANCE_MODE=true' >/dev/null || { conter; pare "uma API rodando com MAINTENANCE_MODE diferente de true ($(cut -c1-12 <<<"$id")): o painel divergiu. A trava a mantinha em manutenção; o bloco a parou mesmo assim, e a janela para até o painel ser corrigido"; }
     done
   }
   web_parado() { for id in $(rodando web); do echo "o web voltou a rodar:"; parar "$id"; done; }
+  DB=$(nome db); [ -n "$DB" ] || pare "o container db não foi achado"
   barreira
   [ ! -e "$D/migrations-ok.txt" ] || pare "o MIGRATIONS_E4_OK já saiu nesta janela; o bloco 5 não se repete (siga para o bloco 6)"
   L=real
   API=$(rodando api)
   [ "$(docker inspect "$API" --format '{{.Id}}' 2>/dev/null || true)" = "$(sed -n 1p "$D/bloco3-ok.txt" 2>/dev/null || true)" ] || pare "a API rodando não é a que o vigia aprovou (bloco 3)"
-  AMB=$(nao_secreto "$API"); grep -qx 'MAINTENANCE_MODE=true' <<<"$AMB" || { parar_tudo; pare "a API não está em manutenção"; }
+  AMB=$(nao_secreto "$API"); grep -qx 'MAINTENANCE_MODE=true' <<<"$AMB" || { conter; pare "a API não está em manutenção"; }
   web_parado
   DB=$(nome db)
   q() { docker exec -i "$DB" sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -v ON_ERROR_STOP=1 -F " "'; }

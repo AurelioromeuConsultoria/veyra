@@ -1,7 +1,8 @@
 #!/bin/sh
 # Ensaio do ADR-053: a API NOVA, compilada, sobe em manutenção sobre um schema
 # ANTIGO sem ler nem escrever tabela nenhuma, e as migrations pendentes se
-# aplicam depois.
+# aplicam depois. Com a TRAVA no banco (adendo 1), ela sobe em manutenção mesmo
+# com MAINTENANCE_MODE=false no ambiente, e sem o banco ela não sobe.
 #
 #   sh deploy/staging/ensaios/manutencao-com-schema-antigo.sh [migration-alvo]
 #
@@ -98,8 +99,8 @@ api() {
 
 # 2. sem a variável, ou com valor inválido, nada sobe — e pelo motivo certo.
 # Com prazo: a API que subisse por engano ficaria escutando para sempre
-nao_sobe() {  # $1 o caso; o resto, variáveis
-  caso=$1; shift
+nao_sobe() {  # $1 o caso, $2 a mensagem esperada; o resto, variáveis
+  caso=$1; msg=$2; shift 2
   (api "$@") > "$E/nao-sobe.log" 2>&1 &
   p=$!; n=0
   while kill -0 "$p" 2>/dev/null; do
@@ -108,13 +109,14 @@ nao_sobe() {  # $1 o caso; o resto, variáveis
     sleep 1
   done
   if wait "$p"; then pare "$caso: saiu com código 0"; fi
-  grep -q 'MAINTENANCE_MODE é obrigatória: true ou false' "$E/nao-sobe.log" \
-    || { cat "$E/nao-sobe.log"; pare "$caso: saiu, mas não pela MAINTENANCE_MODE"; }
+  grep -q "$msg" "$E/nao-sobe.log" \
+    || { cat "$E/nao-sobe.log"; pare "$caso: saiu, mas não por: $msg"; }
   recusa "http://127.0.0.1:$PORTA/" || pare "$caso: algo escuta na porta"
 }
-nao_sobe "sem a variável"
-nao_sobe "MAINTENANCE_MODE=sim" MAINTENANCE_MODE=sim
-nao_sobe "MAINTENANCE_MODE vazia" MAINTENANCE_MODE=
+OBRIG='MAINTENANCE_MODE é obrigatória: true ou false'
+nao_sobe "sem a variável" "$OBRIG"
+nao_sobe "MAINTENANCE_MODE=sim" "$OBRIG" MAINTENANCE_MODE=sim
+nao_sobe "MAINTENANCE_MODE vazia" "$OBRIG" MAINTENANCE_MODE=
 echo "sem a variável, vazia ou com valor inválido: a API não sobe, pela MAINTENANCE_MODE"
 
 # 3. em manutenção, com DISABLE_JOBS=false, sobre o schema antigo
@@ -161,6 +163,66 @@ psql_ -c 'SELECT count(*) FROM "_prisma_migrations"' > /dev/null
 sleep 1
 [ "$(atividade)" != "$ANTES" ] || pare "a medida da atividade não registrou nem a leitura de contraste"
 echo "nenhuma leitura nem escrita de tabela na subida e nas requisições ($ANTES), e a medida registra uma leitura de verdade"
+
+# 5. A TRAVA NO BANCO (adendo 1): ligada pelo operador, ela vence o ambiente
+sobe() {  # o resto, variáveis; espera a saúde pelo loopback
+  (api "$@") > "$E/api.log" 2>&1 &
+  PID=$!
+  n=0
+  until [ "$(status "http://127.0.0.1:$PORTA/api/health")" = 200 ]; do
+    kill -0 "$PID" 2>/dev/null || pare "a API caiu na subida"
+    n=$((n + 1)); [ "$n" -lt 60 ] || pare "a API não respondeu em 60 s"
+    sleep 1
+  done
+}
+para() { kill "$PID"; wait "$PID" 2>/dev/null || true; PID=""; recusa "http://127.0.0.1:$PORTA/" || pare "a porta seguiu respondendo"; }
+barrada() {  # $1 o caso: o login pelo loopback e a saúde pela rede dão 503
+  c=$(status -X POST -H 'Content-Type: application/json' -d '{"email":"x@y.z","password":"qualquer"}' "http://127.0.0.1:$PORTA/api/auth/login")
+  [ "$c" = 503 ] || pare "$1: o login pelo loopback deu $c (esperado 503)"
+  if [ -n "$IP" ]; then
+    c=$(status "http://$IP:$PORTA/api/health")
+    [ "$c" = 503 ] || pare "$1: a saúde pela rede deu $c (esperado 503)"
+  fi
+}
+psql_ -c "ALTER DATABASE \"$BASE\" SET veyra.manutencao = 'ligada'"
+[ "$(psql_ -c "SELECT current_setting('veyra.manutencao', true)")" = ligada ] || pare "a trava não ficou ligada"
+sleep 1
+ANTES=$(atividade)
+# o valor ANTIGO do painel: MAINTENANCE_MODE=false, com os jobs ligados
+sobe MAINTENANCE_MODE=false
+barrada "a trava ligada com MAINTENANCE_MODE=false"
+grep -q 'Trava de manutenção LIGADA no banco' "$E/api.log" || pare "o log não diz que a trava estava ligada"
+grep -q 'Jobs desabilitados (manutenção)' "$E/api.log" || pare "com a trava, os jobs não ficaram desligados"
+[ "$(psql_ -c "SELECT count(*) FROM information_schema.schemata WHERE schema_name = 'pgboss'")" = 0 ] \
+  || pare "com a trava, o schema do pg-boss nasceu: os jobs subiram"
+para
+sleep 1
+DEPOIS=$(atividade)
+[ "$DEPOIS" = "$ANTES" ] || pare "com a trava, a API tocou tabelas: antes $ANTES, depois $DEPOIS"
+echo "a trava ligada vence MAINTENANCE_MODE=false: o login e a saúde pela rede dão 503, nenhum job, nenhuma tabela tocada"
+
+# um valor desconhecido conta como ligada (fail-closed)
+psql_ -c "ALTER DATABASE \"$BASE\" SET veyra.manutencao = 'ligado'"
+sobe MAINTENANCE_MODE=false
+barrada "a trava com o valor desconhecido 'ligado'"
+para
+echo "o valor desconhecido ('ligado') também deixa a API em manutenção"
+
+# sem o banco na subida, a trava não pode ser lida: a API não sobe
+nao_sobe "o banco inalcançável" 'A trava de manutenção não pôde ser lida' \
+  MAINTENANCE_MODE=false DATABASE_URL=postgresql://veyra:veyra_dev@127.0.0.1:1/inalcancavel
+echo "com o banco inalcançável, a API não sobe, pela trava, e nada escuta na porta"
+
+# o contraste: desligada a trava, a MESMA API abre (os jobs desligados por DISABLE_JOBS)
+psql_ -c "ALTER DATABASE \"$BASE\" RESET veyra.manutencao"
+sobe MAINTENANCE_MODE=false DISABLE_JOBS=true
+if [ -n "$IP" ]; then
+  c=$(status "http://$IP:$PORTA/api/health")
+  [ "$c" = 200 ] || pare "sem a trava e com MAINTENANCE_MODE=false, a saúde pela rede deu $c (esperado 200)"
+fi
+grep -q 'Trava de manutenção LIGADA' "$E/api.log" && pare "sem a trava, o log diz que ela estava ligada"
+para
+echo "sem a trava, a mesma API com MAINTENANCE_MODE=false abre: era a trava que a fechava"
 
 # 4. com a API parada, as migrations pendentes do commit atual se aplicam
 (cd "$API" && DATABASE_URL="$PG/$BASE" npx --no-install prisma migrate deploy) > "$E/deploy.log" 2>&1 \

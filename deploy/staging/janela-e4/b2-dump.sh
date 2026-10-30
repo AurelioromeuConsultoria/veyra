@@ -5,6 +5,9 @@
   c() { docker ps -a --filter "label=com.docker.compose.project=$P" --filter "label=com.docker.compose.service=$1" --format '{{.Names}}' | head -1; }
   DB=$(c db)
   # a escrita está congelada: a API parada e o web fora do ar
+  # a barreira começou: a trava de manutenção no banco ligada (bloco 1)
+  t=$(docker exec "$DB" sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -c "SELECT coalesce(current_setting('"'"'veyra.manutencao'"'"', true), '"'"''"'"')"') || t='(não lida)'
+  [ "$t" = ligada ] || { echo "PARE: a trava de manutenção no banco não está ligada ($t): rode o bloco 1"; exit 1; }
   a=$(docker ps -q --filter "label=com.docker.compose.project=$P" --filter "label=com.docker.compose.service=api"); [ -z "$a" ] || { echo "PARE: a API ainda está rodando"; exit 1; }
   w=$(docker ps -q --filter "label=com.docker.compose.project=$P" --filter "label=com.docker.compose.service=web"); [ -z "$w" ] || { echo "PARE: o web ainda está rodando"; exit 1; }
   # o ponto de restauração é o banco ANTES das migrations da janela: com alguma
