@@ -2,7 +2,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { AuthUserDto } from '@veyra/contracts';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ME_KEY } from './session';
-import { SessaoEncerradaError, ouvirTrocaDeSessao } from './session-scope';
+import {
+  SessaoEncerradaError,
+  SessaoIncompativelError,
+  ouvirReleitura,
+  ouvirTrocaDeSessao,
+} from './session-scope';
 
 type Criar = (semente?: AuthUserDto | null) => QueryClient;
 
@@ -12,7 +17,11 @@ export const criarQueryClient: Criar = (semente) => {
     defaultOptions: {
       queries: {
         // resposta de outra sessão não se retenta: ela não é desta
-        retry: (falhas, erro) => !(erro instanceof SessaoEncerradaError) && falhas < 1,
+        // nem a da aba incompatível: ela não vai à rede até a página ser atualizada
+        retry: (falhas, erro) =>
+          !(erro instanceof SessaoEncerradaError) &&
+          !(erro instanceof SessaoIncompativelError) &&
+          falhas < 1,
         refetchOnWindowFocus: false,
       },
     },
@@ -62,6 +71,17 @@ export function SessionQueryProvider({
     document.addEventListener('visibilitychange', aoVoltar);
     return () => document.removeEventListener('visibilitychange', aoVoltar);
   }, []);
+
+  // um 403/404 pode ser a experiência que ficou indisponível sem mudar de chave:
+  // a sessão é relida, com o limite do `pedirReleituraLimitada` (ADR-055,
+  // adendo 2, item 7); o estado novo, se mudou, é troca de sessão
+  useEffect(
+    () =>
+      ouvirReleitura(() => {
+        void atual.current.invalidateQueries({ queryKey: ME_KEY });
+      }),
+    [],
+  );
 
   // o anterior é limpo DEPOIS que a árvore nova montou: um observador do cache
   // velho, ainda montado, não recria nele consultas no meio da troca. `clear`

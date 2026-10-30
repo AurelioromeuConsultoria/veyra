@@ -19,7 +19,14 @@ import {
   FINALIDADES_DEMO,
   OWNER_DEMO,
 } from '../env';
-import { cli, criarWorkspace, migrar, recriarBanco, semearCatalogo } from '../semeadura';
+import {
+  cli,
+  criarWorkspace,
+  migrar,
+  porNaExperiencia,
+  recriarBanco,
+  semearCatalogo,
+} from '../semeadura';
 
 /** o par que liga o transporte e o catálogo falsos (`transporteSimulado`) */
 const TRANSPORTE_SIMULADO = { META_TRANSPORT_MODE: 'fake', VEYRA_ENV: 'staging' };
@@ -42,6 +49,9 @@ async function main(): Promise<void> {
         URL_DEMO,
       ),
     );
+    // a demonstração na experiência da clínica: fixture de teste (ADR-055,
+    // adendo 2), o staging não passa por aqui
+    await porNaExperiencia(db, 'demo', 'clinics');
 
     // o canal pela CLI compilada (ADR-037; F4.4c): o token fictício pela
     // entrada padrão, nunca na linha de comando, cifrado como na operação

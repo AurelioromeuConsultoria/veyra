@@ -6,11 +6,14 @@ import {
 } from '@veyra/contracts';
 import {
   SessaoEncerradaError,
+  SessaoIncompativelError,
   acompanhar,
   adotarSessao,
   epocaAtual,
   escopoAtual,
+  pedirReleituraLimitada,
   respostaDaSessao,
+  sessaoIncompativel,
   sessaoPerdida,
   trocarSessao,
 } from './session-scope';
@@ -196,6 +199,9 @@ async function enviar<T>(
 ): Promise<T> {
   // o login não pertence a sessão nenhuma: a resposta dele É a sessão nova
   const isLogin = method === 'POST' && path === '/api/auth/login';
+  // a aba parou por incompatibilidade de sessão: nada sai, nem leitura nem
+  // escrita, até a pessoa atualizar a página (ADR-055, adendo 2, item 8)
+  if (sessaoIncompativel()) throw new SessaoIncompativelError();
   // o logout não é abortado pela troca (a época ainda é conferida): abortado
   // depois de o servidor revogar, o cookie de limpeza se perderia e o próximo
   // refresh apresentaria um token revogado — reuso, que derruba tudo
@@ -228,6 +234,11 @@ async function enviar<T>(
       }
     }
     if (!res.ok) {
+      // pode ser a experiência que ficou indisponível: a sessão é relida, com
+      // limite — nunca a requisição repetida (ADR-055, adendo 2, item 7)
+      if ((res.status === 403 || res.status === 404) && path !== '/api/auth/me') {
+        pedirReleituraLimitada();
+      }
       const payload = (await res.json().catch(() => null)) as {
         message?: string | string[];
         issues?: { path: string; message: string }[];

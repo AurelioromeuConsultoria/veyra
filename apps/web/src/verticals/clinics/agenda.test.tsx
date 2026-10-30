@@ -4,10 +4,11 @@ import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
 import { AppShell } from '../../components/layout/AppShell';
-import { NavContributionsProvider } from '../../lib/nav';
+import { ExperienceProvider } from '../../lib/experience';
+import { clinicsExperience } from './experience';
+import { crmExperience } from '../../experiences/crm';
 import { ClinicsAgendaPage } from './AgendaPage';
 import { CONSEQUENCIAS_DO_PACIENTE, ClinicsPatientsPage, TETO_DA_LISTA } from './PatientsPage';
-import { useClinicsNavGroups } from './nav';
 
 vi.mock('../../components/layout/AppHeader', () => ({ AppHeader: () => null }));
 
@@ -150,7 +151,7 @@ function renderizar(ui: ReactNode, caminho = `/clinics/agenda?dia=${DIA}`) {
       client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
     >
       <MemoryRouter initialEntries={[caminho]}>
-        <NavContributionsProvider value={useClinicsNavGroups}>{ui}</NavContributionsProvider>
+        <ExperienceProvider value={clinicsExperience}>{ui}</ExperienceProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -213,7 +214,7 @@ describe('Agenda da clínica (F2.3)', () => {
 
   it('a lateral mostra Agenda da clínica e Pacientes a quem lê a agenda', async () => {
     mockApi({ 'GET /api/auth/me': { body: usuario(RECEPCAO) }, ...catalogo });
-    renderizar(<AppShell />, '/');
+    renderizar(<AppShell manifestos={[crmExperience, clinicsExperience]} />, '/');
     const lateral = within(screen.getByRole('navigation', { name: 'Principal' }));
     expect(await lateral.findByRole('link', { name: 'Agenda da clínica' })).toHaveAttribute(
       'href',
@@ -227,7 +228,7 @@ describe('Agenda da clínica (F2.3)', () => {
 
   it('só o catálogo: a lateral não tem Agenda da clínica nem Pacientes', async () => {
     mockApi({ 'GET /api/auth/me': { body: usuario(['clinics:catalog:read']) }, ...catalogo });
-    renderizar(<AppShell />, '/');
+    renderizar(<AppShell manifestos={[crmExperience, clinicsExperience]} />, '/');
     const lateral = within(screen.getByRole('navigation', { name: 'Principal' }));
     expect(await lateral.findByRole('link', { name: 'Catálogo' })).toBeInTheDocument();
     expect(lateral.queryByRole('link', { name: 'Agenda da clínica' })).toBeNull();

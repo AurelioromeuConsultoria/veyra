@@ -3,12 +3,12 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
-import { NavContributionsProvider } from '../../lib/nav';
+import { ExperienceProvider } from '../../lib/experience';
+import { clinicsExperience } from './experience';
 import { criarQueryClient } from '../../lib/session-query';
 import { ClinicsAgendaPage } from './AgendaPage';
 import { ClinicsOutreachPage } from './envios/EnviosPage';
 import { ClinicsOutreachMetricsPage, etapaLegivel } from './metricas/MetricasDoEnvioPage';
-import { useClinicsNavGroups } from './nav';
 
 /**
  * As telas do envio da clínica (F4.4; ADR-048 adendos 8 a 10). Dados
@@ -173,7 +173,7 @@ function renderizar(ui: ReactNode, caminho: string) {
   render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[caminho]}>
-        <NavContributionsProvider value={useClinicsNavGroups}>{ui}</NavContributionsProvider>
+        <ExperienceProvider value={clinicsExperience}>{ui}</ExperienceProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );

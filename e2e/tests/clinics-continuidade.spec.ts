@@ -424,12 +424,13 @@ test.describe('Clinics — continuidade (pacotes, retornos e faltas)', () => {
     }
   });
 
-  test('workspace SEM o Clinics: as telas novas só explicam e nada do vertical é consultado', async ({
+  test('workspace SEM o Clinics (o CRM): as URLs diretas levam ao início do CRM com o aviso, e nada do vertical é consultado', async ({
     page,
   }) => {
     const consultas: string[] = [];
     page.on('request', (r) => {
-      if (/\/api\/clinics\/(?!status)/.test(r.url())) consultas.push(r.url());
+      // no CRM, nem o status do vertical é consultado: as telas dele não existem aqui
+      if (/\/api\/clinics\//.test(r.url())) consultas.push(r.url());
     });
     await login(page, OWNER_A);
     for (const caminho of [
@@ -438,7 +439,10 @@ test.describe('Clinics — continuidade (pacotes, retornos e faltas)', () => {
       '/clinics/patient?id=0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e05',
     ]) {
       await page.goto(caminho);
-      await expect(page.getByText('O Clinics não está ativo neste workspace.')).toBeVisible();
+      // a rota é de outro produto (ADR-055): o início do CRM, com o aviso
+      await expect(page.getByTestId('fora-da-experiencia')).toContainText(
+        'Esta seção não faz parte do Veyra.',
+      );
     }
     const lateral = page.getByRole('navigation', { name: 'Principal' });
     await expect(lateral.getByRole('link', { name: 'Retornos' })).toHaveCount(0);

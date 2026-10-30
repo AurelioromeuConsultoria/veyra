@@ -30,7 +30,8 @@ const pessoa = (id: string, workspace: string, extras: string[] = []) =>
     },
     permissions: [...PERMISSOES, ...extras],
     memberships: [],
-    experience: { key: 'crm', status: 'ready' },
+    // workspaces de clínica: a experiência é a `clinics` (ADR-055)
+    experience: { key: 'clinics', status: 'ready' },
   }) as unknown as AuthUserDto;
 // A e C leem o atendimento (pacotes, F3.3b); B, não
 const A = pessoa('a', 'Clínica A', ['clinics:care:read']);
@@ -103,7 +104,7 @@ function subirServidor(): Servidor {
         return viva ? json(viva, 201, undefined, true) : json({ message: 'Sessão expirada' }, 401);
       }
       if (!viva) return json({ message: 'Sessão expirada' }, 401);
-      const escopo = `${viva.id}:${viva.activeMembership!.membershipId}:crm`;
+      const escopo = `${viva.id}:${viva.activeMembership!.membershipId}:clinics`;
       // como o guard: a aba que espera outra sessão é recusada antes de tudo
       const esperado = (init?.headers as Record<string, string> | undefined)?.[
         'x-veyra-expected-scope'
@@ -336,7 +337,7 @@ describe('duas sessões na mesma aba (ADR-050)', () => {
     servidor.cookie = B; // outra aba entrou como B enquanto esta estava em segundo plano
     vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
     document.dispatchEvent(new Event('visibilitychange'));
-    await waitFor(() => expect(escopoAtual()).toBe('u-b:m-b:crm'));
+    await waitFor(() => expect(escopoAtual()).toBe('u-b:m-b:clinics'));
     expect(screen.queryByText('Paciente de A')).toBeNull();
   });
 
@@ -354,7 +355,7 @@ describe('duas sessões na mesma aba (ADR-050)', () => {
       ),
     ).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Entrar' })).toBeNull();
-    expect(escopoAtual()).toBe('u-a:m-a:crm');
+    expect(escopoAtual()).toBe('u-a:m-a:clinics');
   });
 
   it('logout numa aba DESATUALIZADA: o servidor recusa, e a aba recomeça na sessão do cookie — sem fingir que o navegador saiu', async () => {
@@ -365,9 +366,12 @@ describe('duas sessões na mesma aba (ADR-050)', () => {
     expect(await screen.findByText('Paciente de A')).toBeInTheDocument();
     servidor.cookie = B; // outra aba entrou como B
     fireEvent.click(screen.getByRole('button', { name: 'Sair' }));
-    await waitFor(() => expect(escopoAtual()).toBe('u-b:m-b:crm'));
+    await waitFor(() => expect(escopoAtual()).toBe('u-b:m-b:clinics'));
     expect(servidor.cookie).toBe(B); // a sessão de B não foi encerrada pela aba de A
-    expect(await screen.findByRole('heading', { name: 'Hoje', level: 1 })).toBeInTheDocument();
+    // o início da experiência da clínica (ADR-055): a agenda, não o Hoje do CRM
+    expect(
+      await screen.findByRole('heading', { name: 'Agenda da clínica', level: 1 }),
+    ).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Entrar' })).toBeNull();
     expect(screen.queryByText('Paciente de A')).toBeNull();
   });
@@ -410,8 +414,11 @@ describe('duas sessões na mesma aba (ADR-050)', () => {
     buscar('Pac');
     // a aba recomeça e relê quem é a sessão: agora B (aqui, a partir do /login
     // do MemoryRouter; no navegador, o BrowserRouter mantém a URL)
-    await waitFor(() => expect(escopoAtual()).toBe('u-b:m-b:crm'));
-    expect(await screen.findByRole('heading', { name: 'Hoje', level: 1 })).toBeInTheDocument();
+    await waitFor(() => expect(escopoAtual()).toBe('u-b:m-b:clinics'));
+    // o início da experiência da clínica (ADR-055): a agenda, não o Hoje do CRM
+    expect(
+      await screen.findByRole('heading', { name: 'Agenda da clínica', level: 1 }),
+    ).toBeInTheDocument();
     expect(screen.queryByText('Paciente de A')).toBeNull();
     await abrirPacientes();
     expect(await screen.findByText('Paciente de B')).toBeInTheDocument();

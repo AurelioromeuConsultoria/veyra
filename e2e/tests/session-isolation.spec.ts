@@ -41,7 +41,8 @@ async function entrarNaMesmaAba(page: Page, email: string) {
   await page.getByLabel('E-mail').fill(email);
   await page.getByLabel('Senha').fill(E2E_PASSWORD);
   await page.getByRole('button', { name: 'Entrar' }).click();
-  await expect(page.getByRole('heading', { name: 'Hoje', level: 1 })).toBeVisible();
+  // o início do produto do workspace (ADR-055), sem supor qual
+  await expect(page.getByRole('navigation', { name: 'Principal' })).toBeVisible();
 }
 
 const linha = (page: Page, nome: string) => page.getByRole('row', { name: new RegExp(nome) });

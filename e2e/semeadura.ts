@@ -170,3 +170,24 @@ export function cli(
     encoding: 'utf8',
   });
 }
+
+/**
+ * Põe um workspace de TESTE numa experiência de produto (ADR-055, adendo 2,
+ * item 10). É fixture, como o resto da semeadura — não um caminho operacional:
+ * a CLI `workspace:experience` continua recusando a `clinics` até a E-3, e o
+ * staging não passa por aqui.
+ */
+export async function porNaExperiencia(
+  db: Client,
+  slug: string,
+  experiencia: string,
+): Promise<void> {
+  // a trava do E2E também aqui, não só no `recriarBanco` de quem chama: nunca
+  // um banco que não seja de teste, nem um servidor que não seja local
+  conferirBanco(`postgresql://${db.host}:${db.port}/${db.database ?? ''}`);
+  const { rowCount } = await db.query(
+    `UPDATE "Workspace" SET "experience" = $2 WHERE "slug" = $1`,
+    [slug, experiencia],
+  );
+  if (rowCount !== 1) throw new Error(`Workspace de teste inexistente: ${slug}`);
+}

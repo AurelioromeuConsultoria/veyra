@@ -8,6 +8,7 @@
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
 import {
+  DOIS_PRODUTOS,
   E2E_DATABASE_URL,
   E2E_PASSWORD_HASH,
   MEMBER_C,
@@ -16,7 +17,14 @@ import {
   OWNER_B,
   OWNER_C,
 } from './env';
-import { cli, criarWorkspace, migrar, recriarBanco, semearCatalogo } from './semeadura';
+import {
+  cli,
+  criarWorkspace,
+  migrar,
+  porNaExperiencia,
+  recriarBanco,
+  semearCatalogo,
+} from './semeadura';
 
 async function seed(): Promise<void> {
   const db = new Client({ connectionString: E2E_DATABASE_URL });
@@ -100,4 +108,35 @@ export default async function globalSetup(): Promise<void> {
   await seed();
   activateClinics();
   await seedProfessionalUser();
+  await seedExperiencias();
+}
+
+/**
+ * O workspace `clinica` na experiência da clínica (fixture, ADR-055 adendo 2),
+ * e a pessoa com os dois produtos: Member em `acme` (CRM) e em `clinica`.
+ */
+async function seedExperiencias(): Promise<void> {
+  const db = new Client({ connectionString: E2E_DATABASE_URL });
+  await db.connect();
+  try {
+    await porNaExperiencia(db, 'clinica', 'clinics');
+    const userId = randomUUID();
+    await db.query(
+      `INSERT INTO "User" ("id", "email", "name", "passwordHash", "updatedAt")
+       VALUES ($1, $2, 'Pessoa de Dois Produtos', $3, now())`,
+      [userId, DOIS_PRODUTOS, E2E_PASSWORD_HASH],
+    );
+    // a ordem importa: sem sessão anterior, o login entra no mais antigo (acme)
+    for (const slug of ['acme', 'clinica']) {
+      await db.query(
+        `INSERT INTO "Membership" ("id", "workspaceId", "userId", "roleId", "updatedAt", "createdAt")
+         SELECT $1, w."id", $2, r."id", now(), now() + ($4 || ' seconds')::interval
+           FROM "Workspace" w JOIN "Role" r ON r."workspaceId" = w."id" AND r."systemKey" = 'member'
+          WHERE w."slug" = $3`,
+        [randomUUID(), userId, slug, slug === 'acme' ? '0' : '1'],
+      );
+    }
+  } finally {
+    await db.end();
+  }
 }

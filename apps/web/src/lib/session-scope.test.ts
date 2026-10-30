@@ -3,9 +3,12 @@ import { vi } from 'vitest';
 import { api, ApiError, PRAZOS_DO_REFRESH } from './api';
 import {
   SessaoEncerradaError,
+  SessaoIncompativelError,
   adotarSessao,
   escopoAtual,
+  ouvirReleitura,
   ouvirTrocaDeSessao,
+  pedirReleituraLimitada,
   trocarSessao,
 } from './session-scope';
 
@@ -95,6 +98,68 @@ describe('escopo da sessão (ADR-050)', () => {
     adotarSessao(naClinica);
     expect(vistas).toEqual([naClinica]);
     expect(escopoAtual()).toBe('u-a:m-a:clinics');
+  });
+
+  it('o MESMO escopo com OUTRO estado da experiência é troca; o mesmo estado, não (ADR-055 adendo 2, item 7)', () => {
+    const vistas = trocas();
+    adotarSessao(A);
+    const indisponivel = {
+      ...A,
+      experience: { key: 'crm', status: 'unavailable' },
+    } as unknown as AuthUserDto;
+    adotarSessao(indisponivel);
+    expect(vistas).toEqual([indisponivel]);
+    expect(escopoAtual()).toBe(ESCOPO_A);
+    adotarSessao(indisponivel);
+    expect(vistas).toHaveLength(1);
+    // e de volta: outra troca, com cache novo de novo
+    adotarSessao(A);
+    expect(vistas).toEqual([indisponivel, A]);
+  });
+});
+
+describe('a releitura depois de 403/404 (ADR-055, adendo 2, item 7)', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('no máximo uma por janela de 30 s; o pedido de dentro dela vira UMA releitura no fim, e nada mais sozinho', () => {
+    vi.useFakeTimers();
+    let releituras = 0;
+    ouvirReleitura(() => (releituras += 1));
+    pedirReleituraLimitada(1_000);
+    expect(releituras).toBe(1);
+    // dentro da janela: nada agora, e os vários pedidos viram um só
+    pedirReleituraLimitada(2_000);
+    pedirReleituraLimitada(3_000);
+    expect(releituras).toBe(1);
+    vi.advanceTimersByTime(28_999);
+    expect(releituras).toBe(1);
+    vi.advanceTimersByTime(1);
+    expect(releituras).toBe(2);
+    // sem novo 403/404, nenhuma releitura sozinha: não há laço
+    vi.advanceTimersByTime(120_000);
+    expect(releituras).toBe(2);
+  });
+
+  it('a troca de sessão cancela a releitura adiada, e uma releitura imediata também: nunca duas na janela', () => {
+    vi.useFakeTimers();
+    let releituras = 0;
+    ouvirReleitura(() => (releituras += 1));
+    pedirReleituraLimitada(1_000);
+    pedirReleituraLimitada(2_000); // adiada para o fim da janela
+    // a sessão trocou (a tela neutra da indisponibilidade, por exemplo): ela já
+    // tem o estado atual, e o adiado não sai depois
+    trocarSessao(B);
+    vi.advanceTimersByTime(60_000);
+    expect(releituras).toBe(1);
+    pedirReleituraLimitada(40_000);
+    expect(releituras).toBe(2);
+    pedirReleituraLimitada(41_000); // adiada
+    // o timer atrasado (aba em segundo plano): um pedido depois da janela relê
+    // já, e o adiado não sai em seguida
+    pedirReleituraLimitada(75_000);
+    expect(releituras).toBe(3);
+    vi.advanceTimersByTime(60_000);
+    expect(releituras).toBe(3);
   });
 });
 
@@ -505,5 +570,49 @@ describe('api: resposta de outra sessão nunca chega a quem pediu (ADR-050)', ()
     trocarSessao(B);
     atraso.soltar(json({ id: 'f' }, 201, ESCOPO_A));
     await expect(pedido).rejects.toBeInstanceOf(SessaoEncerradaError);
+  });
+});
+
+describe('incompatibilidade de sessão (ADR-055, adendo 2, item 8)', () => {
+  // um escopo que este web não calcula (o servidor de outra versão)
+  const DIVERGENTE = 'u-a:m-a';
+
+  it('a MESMA divergência depois de readotar: a aba para, e nada mais sai para a rede, nem leitura nem escrita', async () => {
+    adotarSessao(A);
+    const chamadas = servidor({
+      'GET /api/contacts': () => json({ items: [] }, 200, DIVERGENTE),
+    });
+    // a primeira divergência: a aba recomeça e relê a identidade
+    await expect(api.get('/api/contacts')).rejects.toBeInstanceOf(SessaoEncerradaError);
+    expect(escopoAtual()).toBeUndefined();
+    adotarSessao(A);
+    // a mesma, de novo: incompatível
+    await expect(api.get('/api/contacts')).rejects.toBeInstanceOf(SessaoEncerradaError);
+    expect(chamadas).toHaveLength(2);
+    await expect(api.get('/api/contacts')).rejects.toBeInstanceOf(SessaoIncompativelError);
+    await expect(api.post('/api/contacts', { name: 'X' })).rejects.toBeInstanceOf(
+      SessaoIncompativelError,
+    );
+    expect(chamadas).toHaveLength(2);
+  });
+
+  it('OUTRA divergência, ou uma sessão conhecida no meio, não é incompatibilidade: a aba só recomeça', async () => {
+    adotarSessao(A);
+    let doServidor = DIVERGENTE;
+    const chamadas = servidor({
+      'GET /api/contacts': () => json({ items: [] }, 200, doServidor),
+    });
+    await expect(api.get('/api/contacts')).rejects.toBeInstanceOf(SessaoEncerradaError);
+    adotarSessao(A);
+    doServidor = 'u-a:m-a:outra';
+    await expect(api.get('/api/contacts')).rejects.toBeInstanceOf(SessaoEncerradaError);
+    // um login (sessão conhecida) zera a contagem: a divergência anterior não conta
+    trocarSessao(A);
+    doServidor = 'u-a:m-a:outra';
+    await expect(api.get('/api/contacts')).rejects.toBeInstanceOf(SessaoEncerradaError);
+    doServidor = ESCOPO_A;
+    adotarSessao(A);
+    await expect(api.get('/api/contacts')).resolves.toEqual({ items: [] });
+    expect(chamadas).toHaveLength(4);
   });
 });

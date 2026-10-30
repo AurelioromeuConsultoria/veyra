@@ -1,11 +1,14 @@
-import { LogOut, Moon, Search, Sun } from 'lucide-react';
+import { LogOut, Moon, Search, Settings as Engrenagem, Sun } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
+import { ROTAS_DO_CORE } from '../../experiences/core-routes';
+import { useExperience, type ExperienceManifest } from '../../lib/experience';
 import { currentSection, useNavGroups } from '../../lib/nav';
 import { hasPermission, logoutFalhou, useLogout, useSession } from '../../lib/session';
 import { useTheme } from '../../lib/theme';
 import { GlobalSearch } from './GlobalSearch';
 import { NotificationBell } from './NotificationBell';
+import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 
 /**
  * MOLDURA do produto: a faixa que não muda enquanto o conteúdo muda.
@@ -51,7 +54,7 @@ function useIsMac() {
   return isMac;
 }
 
-export function AppHeader() {
+export function AppHeader({ manifestos }: { manifestos: readonly ExperienceManifest[] }) {
   const { data: user } = useSession();
   const logout = useLogout();
   const { theme, toggle } = useTheme();
@@ -59,18 +62,28 @@ export function AppHeader() {
   const isMac = useIsMac();
   const [searchOpen, setSearchOpen] = useState(false);
 
+  const experiencia = useExperience();
   const groups = useNavGroups();
   const section = currentSection(location.pathname, groups);
   const workspace = user?.activeMembership?.workspaceName;
+  const busca = experiencia.busca;
+  const buscaRegistros = busca && hasPermission(user, busca.permission) ? busca : null;
+  // a página das configurações do produto (adendo 2, item 5): o atalho só com a
+  // página montada nele e alguma seção que o papel alcance
+  const configuracoes = ROTAS_DO_CORE.configuracoes;
+  const comConfiguracoes =
+    experiencia.rotas.includes(configuracoes) &&
+    experiencia.configuracoes.some((s) => !s.permission || hasPermission(user, s.permission));
 
   /**
-   * O título da aba diz onde a pessoa está E em qual workspace — quem opera
-   * dois clientes em duas abas não pode depender de adivinhar pelo favicon.
+   * O título da aba diz onde a pessoa está, em qual workspace E em qual produto
+   * (ADR-055) — quem opera dois clientes em duas abas não pode depender de
+   * adivinhar pelo favicon.
    */
   useEffect(() => {
-    const partes = [section?.item.label, workspace, 'Veyra'].filter(Boolean);
+    const partes = [section?.item.label, workspace, experiencia.produto].filter(Boolean);
     document.title = partes.join(' · ');
-  }, [section?.item.label, workspace]);
+  }, [section?.item.label, workspace, experiencia.produto]);
 
   /** ⌘K/Ctrl+K em qualquer tela, inclusive com foco dentro de um campo. */
   useEffect(() => {
@@ -95,9 +108,7 @@ export function AppHeader() {
         troca de nome (o board mostra o nome do pipeline, o inbox o assunto).
       */}
       <nav aria-label="Onde você está" className="flex min-w-0 items-center gap-2">
-        <span className="truncate text-body-sm font-medium text-foreground">
-          {workspace ?? '—'}
-        </span>
+        <WorkspaceSwitcher manifestos={manifestos} />
         {section ? (
           <>
             <Slash />
@@ -117,7 +128,7 @@ export function AppHeader() {
         >
           <Search size={14} aria-hidden className="shrink-0" />
           <span className="truncate text-body-sm">
-            {hasPermission(user, 'contacts:read') ? 'Buscar contato ou seção' : 'Buscar seção'}
+            {buscaRegistros ? `Buscar ${buscaRegistros.singular} ou seção` : 'Buscar seção'}
           </span>
           <kbd className="num ml-auto shrink-0 rounded-sm border border-border bg-surface px-1 text-data-xs">
             {isMac ? '⌘K' : 'Ctrl K'}
@@ -128,6 +139,16 @@ export function AppHeader() {
       {/* 3 — conta */}
       <div className="ml-auto flex shrink-0 items-center gap-1">
         <NotificationBell />
+        {comConfiguracoes ? (
+          <Link
+            to={configuracoes.path}
+            aria-label="Configurações"
+            title="Configurações"
+            className="rounded-control p-2 text-muted-fg transition-colors duration-150 hover:bg-surface-2 hover:text-foreground"
+          >
+            <Engrenagem size={15} aria-hidden />
+          </Link>
+        ) : null}
         <button
           type="button"
           onClick={toggle}

@@ -3,7 +3,8 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
-import { NavContributionsProvider } from '../../lib/nav';
+import { ExperienceProvider } from '../../lib/experience';
+import { clinicsExperience } from './experience';
 import { ME_KEY } from '../../lib/session';
 import { criarQueryClient } from '../../lib/session-query';
 import { ClinicsAgendaPage } from './AgendaPage';
@@ -11,7 +12,6 @@ import { ClinicsNoShowPage, taxaLegivel } from './NoShowPage';
 import { ClinicsPatientPage } from './PatientPage';
 import { ClinicsReturnsPage } from './ReturnsPage';
 import { motivosPermitidos } from './continuidade';
-import { useClinicsNavGroups } from './nav';
 
 /**
  * As telas da continuidade (F3.3b; ADR-048 adendo 7 e as condições da
@@ -198,7 +198,7 @@ function renderizar(ui: ReactNode, caminho: string) {
   render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[caminho]}>
-        <NavContributionsProvider value={useClinicsNavGroups}>{ui}</NavContributionsProvider>
+        <ExperienceProvider value={clinicsExperience}>{ui}</ExperienceProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );

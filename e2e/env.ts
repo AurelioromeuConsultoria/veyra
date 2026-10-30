@@ -19,6 +19,11 @@ export const OWNER_C = 'owner-c@e2e.veyra';
 export const MEMBER_C = 'recepcao-c@e2e.veyra';
 /** papel `Profissional` do Clinics (criado pela ativação) — lê a agenda e registra atendimento */
 export const PROF_C = 'profissional-c@e2e.veyra';
+/**
+ * Member em `acme` (o CRM) e em `clinica` (a experiência da clínica): a troca de
+ * workspace e de produto pela tela (ADR-055, adendo 2).
+ */
+export const DOIS_PRODUTOS = 'dois-produtos@e2e.veyra';
 
 /**
  * A PILHA DA DEMONSTRAÇÃO (ADR-048 adendo 12, item 3): o transporte e o

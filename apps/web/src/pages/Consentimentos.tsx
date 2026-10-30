@@ -16,6 +16,7 @@ import { Button } from '../components/ui/button';
 import { Select } from '../components/ui/input';
 import { api } from '../lib/api';
 import { useRegistroIdempotente } from '../lib/registro-idempotente';
+import { useLinks } from '../lib/experience';
 import { hasPermission, useSession } from '../lib/session';
 
 /**
@@ -494,6 +495,7 @@ export function podeVerConsentimentoDaConversa(
 
 export function ConsentimentoDaConversa({ conversa }: { conversa: ConversationDto }) {
   const { data: user } = useSession();
+  const links = useLinks();
   const podeLer = podeVerConsentimentoDaConversa(user, conversa);
   const podeGerir = podeLer && hasPermission(user, 'consents:manage');
   const podeDesbloquear = podeLer && hasPermission(user, 'consents:unblock');
@@ -518,9 +520,11 @@ export function ConsentimentoDaConversa({ conversa }: { conversa: ConversationDt
   }
   const d = dados.data;
   const rai = conversa.senderStatus === 'unidentified';
+  // o destino é o do produto ativo (ADR-055): sem resolvedor ou sem a
+  // permissão, nenhum link
   const fichaDoContato =
-    !rai && conversa.contactId !== null && hasPermission(user, 'contacts:read')
-      ? `/contacts?c=${conversa.contactId}`
+    !rai && conversa.contactId !== null
+      ? (links.contato?.(conversa.contactId, user) ?? null)
       : null;
   return (
     <section className="space-y-3" data-testid="consentimento-da-conversa">

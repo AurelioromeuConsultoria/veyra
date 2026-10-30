@@ -924,6 +924,8 @@ A F1.c, entrega 2, implementa o E5 com a forma abaixo.
 
 > **Mudado pelo ADR-055 (2026-10-29), adendo 1, item 2.** O E5 deixa de ser só "contribuir grupos ao mapa único". A extensão passa a declarar uma experiência de produto (`CoreExtension.experience`), com uma porta nova de disponibilidade (`ExperienceAvailabilityProvider`). O mapa contribuído continua valendo até a E-2 do ADR-055.
 
+> **Retirado pela E-2 do ADR-055 (2026-10-30), adendo 2, itens 1 a 3.** O mapa contribuído e o hook de grupos saíram: cada extensão entrega pela raiz o **manifesto da sua experiência**, e o web monta só o da experiência ativa. Os itens 3 e 4 acima ficam como segunda barreira dentro da experiência do vertical; fora dela, a rota do vertical não existe e leva ao início do produto com o aviso.
+
 ### Adendo 5 (2026-10-19) — E6: mudança de restrição e aprovação serializadas pela linha do contato
 
 Condição aprovada na revisão do plano da F2 (ADR-048, adendo 2, item 2). **Se uma mudança POR CONTATO que torna um contato restrito comitar, nenhuma aprovação concorrente pode converter uma proposta daquele contato em mensagem ou tarefa.** Reconferir a porta antes da transação não basta: entre a checagem e o claim, a mudança pode comitar. Mudanças que valem para o workspace inteiro (ativar e desativar o vertical) usam trava consultiva por workspace e **não** se serializam com aprovações; ver item 7.
@@ -8508,6 +8510,8 @@ O servidor continua sem decidir autorização pela experiência. Isso precisa se
 - **os comentários e os docs** que ainda diziam "identidade + workspace";
 - **o ponteiro no ADR-047, adendo 4.**
 
+**A E-1 foi publicada e validada em 2026-10-30:** `9643ff7`, os quatro jobs do CI verdes no run 40999980152.
+
 **Validação de fechamento da E-1 (2026-10-30), sobre a versão commitada:**
 
 - o ensaio da migration `20261030090000_workspace_experience` (ADR-051): a falha forçada deixa schema e dados intactos; aplicada, ela põe todo workspace em `crm`; o CHECK recusa a chave fora do formato;
@@ -8520,3 +8524,106 @@ O servidor continua sem decidir autorização pela experiência. Isso precisa se
   - E2E (54).
 
   Nenhum evento de sono.
+
+### Adendo 2 (2026-10-30): o desenho da E-2 (o web do Core por experiência)
+
+Decidido antes do código, com as condições do usuário de 2026-10-30.
+
+**As condições do usuário (2026-10-30):**
+
+- o manifesto, o roteador, a navegação, a busca, os links e as configurações por experiência; o menu deixa de ser a soma do CRM com as extensões;
+- o CRM preservado;
+- **nada da E-3 antecipado:** o Hoje da clínica, os Interessados e as telas novas do Clinics ficam para ela;
+- **os estados "carregando", "desconhecida" e "indisponível"** nunca mostram o CRM por um instante nem reaproveitam telas e resultados anteriores;
+- **a indisponibilidade sem mudança da chave** também é tratada: a navegação afetada é bloqueada e os dados anteriores saem da tela, sem depender só do escopo;
+- **a releitura depois de 403 ou 404 é limitada,** porque esses códigos também são falta de permissão ou recurso inexistente, e não pode haver ciclo de recarga;
+- **o seletor de workspace** usa as memberships da sessão e a rota do servidor; depois da troca, o início, o menu, a busca e os dados são os do workspace escolhido, sem resposta antiga chegando depois;
+- **sem workspace ativo,** a tela neutra, com a escolha de outro workspace quando houver;
+- **a mensagem "atualize a página"** quando a divergência de escopo persiste, sem reinício nem nova tentativa sem fim, e sem reenviar escrita;
+- **os testes:** a troca de workspace, a troca de experiência na mesma sessão, a indisponibilidade sem mudança da chave, as rotas diretas, a busca e as respostas atrasadas; os testes do CRM preservados;
+- **a `clinics` continua não selecionável** até a E-3, e o staging não muda.
+
+**As decisões:**
+
+1. **O manifesto da experiência** (`lib/experience.tsx`, do Core) é o que cada produto declara:
+   - a chave;
+   - o nome do produto e a marca da lateral;
+   - o caminho do início;
+   - os grupos do menu;
+   - as rotas que monta;
+   - as seções das configurações;
+   - o resolvedor de link de contato;
+   - o provedor da busca (no máximo um).
+
+   O Core declara o `crm`. Cada vertical declara o seu pela raiz de composição (`composition.tsx`), o único arquivo do web que importa `verticals/`. O "mapa único com grupos contribuídos" do E5 antigo sai.
+
+2. **O shell decide pela sessão, e nunca cai no CRM.** Com a sessão carregando, só a tela de "carregando". Depois:
+   - **sem workspace:** a tela neutra, com o seletor;
+   - **chave que o servidor ou o web não conhecem:** a tela de experiência desconhecida;
+   - **`unavailable`:** a tela de indisponível;
+   - **só com `ready` e um manifesto conhecido:** o shell do produto.
+
+   As três telas neutras não têm menu de produto, busca de registros nem dado de workspace: só o workspace, o seletor e a saída.
+
+3. **O roteador monta só as rotas do manifesto ativo,** mais as públicas (login e convite). Uma rota de fora leva ao início do produto com o aviso "Esta seção não faz parte do <produto>". O início do produto vale para o `/`.
+4. **A busca e os links.**
+   - A busca (⌘K) oferece só as seções do manifesto e procura registros pelos provedores dele.
+   - O destino de um contato vem do resolvedor da experiência. Sem resolvedor, ou sem a permissão, não há link.
+   - O link fixo do Core para um contato (o do consentimento da conversa) passa pelo resolvedor, e a busca leva aos destinos do provedor do manifesto. As notificações não têm link hoje; o resolvedor de conversa entra quando houver quem o use.
+5. **As configurações:** a página `/settings`, organizada nas seções do manifesto, cada uma com a permissão da sua rota. O CRM mantém o menu de hoje (o grupo "Configuração"), e a página também existe para ele. A entrada é um atalho "Configurações" no cabeçalho, nos dois produtos, só quando alguma seção está ao alcance do papel; o menu do CRM não muda. O menu aprovado da clínica (E-3) traz a entrada dele.
+6. **O seletor de workspace,** no rastro do cabeçalho.
+   - Ele lista as memberships ATIVAS da sessão, com o nome do produto de cada uma, e troca pela rota do servidor (`POST /api/auth/switch-workspace`).
+   - A troca é troca de sessão (ADR-050): cache novo e respostas antigas descartadas pela época.
+   - Depois dela, a tela vai ao início do produto escolhido.
+7. **A mudança de estado sem mudança da chave.**
+   - **O que o web guarda:** o estado da experiência, junto do escopo da sessão. Se o `/auth/me` relido traz outro estado com o mesmo escopo, é troca de sessão para a tela: cache novo, as telas e os resultados anteriores fora, e o estado novo exibido. O cabeçalho do servidor não muda, então nada entra em laço.
+   - **Quando o web relê:**
+     - na volta da aba, como já acontece;
+     - depois de uma resposta 403 ou 404, no máximo uma vez a cada 30 segundos por aba, pelo relógio monotônico. O pedido que chega dentro da janela não se perde: vira uma releitura só, no fim dela, para um 403 comum não esconder a desativação que vem logo depois. A troca de sessão e uma releitura imediata cancelam a adiada: nunca duas na janela, e nada sai depois de a tela neutra aparecer. Nunca recarrega a página nem repete a requisição que falhou;
+     - quando uma tela monta com a sessão em cache há mais de 60 segundos (a validade do cache), como já acontecia: é o "fim da validade do cache" do adendo 1.
+   - **A saída da tela de indisponível:** o botão "Verificar de novo" relê a sessão a pedido; a tela neutra não faz requisição sozinha. Um prazo estourado da porta no refresh também leva a ela (a falha fechada da E-1), e a pessoa volta pelo botão ou pela volta da aba.
+   - **Residual aceito:** nas telas do Core dentro de um produto, a desativação do vertical não gera 403 nem 404 e só aparece na volta da aba, na validade do cache ou no próximo refresh. O servidor continua negando o vertical, e as telas dele conferem o status por conta própria.
+8. **A incompatibilidade de sessão.**
+   - **Quando dispara:** a mesma divergência (o escopo da aba contra o do servidor) se repete logo depois de a aba readotar a sessão.
+   - **O que acontece:** a aba para de recomeçar e entra no estado "incompatível". Toda requisição seguinte falha sem ir à rede, e a tela mostra "Atualize a página", com um botão que recarrega a pedido de quem usa.
+   - **O que nunca acontece:** recarga automática, nova tentativa ou reenvio de escrita.
+   - **O limite:** isso não corrige o web antigo já carregado (adendo 1).
+   - **Falso positivo conhecido, raro:** o cookie alternando entre duas sessões por trocas rápidas em outra aba, justo entre a recusa e a releitura, pode parar uma aba sã. Ela volta ao atualizar a página, e nada foi enviado no meio.
+9. **O Clinics na E-2: provisório e não selecionável.** Para a E-2 ser coerente e testável, o manifesto `clinics` monta:
+   - as telas que **já existem** do Clinics: agenda, pacientes, ficha, retornos, faltas, envios, métricas, catálogo e liberação;
+   - as do Core de que os fluxos atuais dependem: Contatos, para o consentimento; Inbox; e Pipeline, para o vínculo da F4.3;
+   - as de configuração do Core que valem para a clínica: Equipe, Tags, Campos, Webhooks, Uso e plano, Auditoria e a página de Configurações.
+
+   O início é **provisoriamente** a Agenda da clínica, uma tela que já existe, e não um Hoje novo. Ficam de fora o Hoje do CRM, Empresas, a Agenda genérica, Tarefas, Sinais e Automações. Os nomes atuais ficam como estão. A E-3 traz o Hoje da clínica, os Interessados, o menu aprovado (adendo 1, item 2) e a linguagem.
+
+   Como a `clinics` não é selecionável, nenhum workspace real chega a essa experiência antes da E-3. **Consequência declarada:** um workspace com o Clinics ativo e a experiência `crm` passa a ver só o CRM, e as telas do Clinics ficam fora do alcance dele. É a separação pedida, porque ativar não é escolher. O staging não recebe a E-2 sozinha: a demonstração muda na E-4, com autorização.
+
+10. **Os testes de ponta a ponta.** O E2E põe os workspaces `clinica` e `demo` das pilhas de teste na experiência `clinics` direto na semeadura, como o resto da massa de teste. É fixture de teste, não caminho operacional, e a CLI continua recusando. O auxiliar de login deixa de supor o "Hoje" do CRM como destino.
+
+**Fora da E-2:** o Hoje da clínica, os Interessados, o menu aprovado e a linguagem do Clinics (E-3); tornar a `clinics` selecionável (E-3); a demonstração (E-4).
+
+**A implementação da E-2 (2026-10-30), com as revisões de fechamento.** O `reviewer` pediu mudanças, sem bloqueio; o `security` aprovou com ressalvas, sem P0/P1. Uma revisão delta dos dois, sobre as correções, aprovou com ressalvas, também aplicadas. Corrigido na entrega:
+
+- **os testes que passariam com a garantia quebrada:** a indisponibilidade sem mudança da chave agora prova o cache novo (o dado de antes da desativação não volta quando o produto volta), e a resposta atrasada é provada na mesma tela dos dois produtos;
+- **a releitura depois de 403/404:** o pedido de dentro da janela vira uma releitura no fim dela, em vez de se perder, pelo relógio monotônico; a troca de sessão e a releitura imediata cancelam a adiada;
+- **a saída da tela de indisponível:** "Verificar de novo", a pedido;
+- **a entrada das configurações:** o atalho no cabeçalho;
+- **o título da aba:** neutro fora de um produto (telas neutras, carregamento da sessão e incompatibilidade);
+- **o que nenhum produto usava:** o grupo recolhível do menu e o resolvedor de conversa saíram;
+- **a semeadura do E2E** confere o banco antes de pôr a experiência;
+- **os docs:** SECURITY §3, ARCHITECTURE (E5 e §10), a nota no ADR-047, a skill `create-vertical` e este adendo.
+
+**Não adotado:** mover o `BrowserRouter` para fora do provider da sessão, o que mexeria no arranjo do ADR-050. A navegação do seletor depende da ordem (o `onSuccess` numa microtarefa, antes do render da troca); o comentário registra isso, e o E2E confere que a volta ao CRM não cai no aviso. **Aceito:** o aviso de "fora da experiência" vive no estado da navegação, reaparece ao recarregar e vale também para rota inexistente.
+
+**Pendência para a E-3:** a seção "Liberação para IA" declara só `clinics:restriction:manage`, mas o servidor exige também `contacts:read`; um papel sem a segunda vê o link e recebe 403, sem exposição. Quando o menu da clínica mudar, a seção e o item do menu passam a aceitar uma lista de permissões.
+
+**Validação de fechamento da E-2 (2026-10-30):**
+
+- **as mutações:** 21 casos das garantias novas, todos mortos por teste que falha (vitest, 62 casos por rodada), nenhum por compilação;
+- **a bateria b84, proporcional.** A E-2 não muda `apps/api`, `packages` nem o schema desde o `9643ff7`, validado pela b83 e pelo CI; por isso a integração, a migration do zero e o `check:fk` não foram repetidos:
+  - lint, formatação e build;
+  - unidade da API (419) e web (230);
+  - drift;
+  - E2E (55).
+
+  Depois das correções da revisão delta, só no web, foram repetidos lint, formatação, build, web (231) e E2E (55). Nenhum evento de sono.

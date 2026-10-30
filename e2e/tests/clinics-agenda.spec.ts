@@ -137,8 +137,21 @@ async function agendamentoNoDia(db: Client, c: Cenario, hora: string, status = '
 
 async function abrirAgenda(page: Page, email: string, dia: string) {
   await login(page, email);
+  await irParaAgenda(page, dia);
+}
+
+async function irParaAgenda(page: Page, dia: string) {
   await page.goto(`/clinics/agenda?dia=${dia}`);
   await expect(page.getByRole('heading', { name: 'Agenda da clínica', level: 1 })).toBeVisible();
+}
+
+/**
+ * Entra e espera a rede assentar: o início da clínica JÁ É a agenda (ADR-055),
+ * e a consulta dela não pode ser confundida com a do dia pedido depois.
+ */
+async function entrarNaClinica(page: Page, email: string) {
+  await login(page, email);
+  await page.waitForLoadState('networkidle');
 }
 
 const daAgendaDoDia = (dia: string) => (r: { url(): string; request(): { method(): string } }) =>
@@ -200,8 +213,9 @@ test.describe('Clinics — agenda da clínica', () => {
       const c = await cenario(db);
       await agendamentoNoDia(db, c, '22:00', 'confirmed');
 
+      await entrarNaClinica(page, PROF_C);
       const antes = page.waitForResponse(daAgendaDoDia(c.dia));
-      await abrirAgenda(page, PROF_C, c.dia);
+      await irParaAgenda(page, c.dia);
       const lista = (await (await antes).json()) as Record<string, unknown>[];
       // quem lê atendimento recebe o campo — ainda vazio
       expect(lista.find((a) => a.patientName === c.paciente)).toHaveProperty('attendanceId', null);
@@ -228,8 +242,9 @@ test.describe('Clinics — agenda da clínica', () => {
 
       const recepcao = await browser.newPage();
       try {
+        await entrarNaClinica(recepcao, MEMBER_C);
         const resposta = recepcao.waitForResponse(daAgendaDoDia(c.dia));
-        await abrirAgenda(recepcao, MEMBER_C, c.dia);
+        await irParaAgenda(recepcao, c.dia);
         const daRecepcao = (await (await resposta).json()) as Record<string, unknown>[];
         expect(daRecepcao.some((a) => a.patientName === c.paciente)).toBe(true);
         // autorização de campo: o vínculo nem chega para quem não lê atendimento
@@ -283,18 +298,21 @@ test.describe('Clinics — agenda da clínica', () => {
     }
   });
 
-  test('workspace SEM o Clinics: as URLs diretas só explicam, nada do vertical é consultado, e a lateral não tem as seções', async ({
+  test('workspace SEM o Clinics (o CRM): as URLs diretas do Clinics levam ao início do CRM com o aviso, nada do vertical é consultado, e a lateral não tem as seções', async ({
     page,
   }) => {
     const consultas: string[] = [];
     page.on('request', (r) => {
-      // tudo do vertical, menos o status: é ele que diz que o Clinics não está ativo
-      if (/\/api\/clinics\/(?!status)/.test(r.url())) consultas.push(r.url());
+      // no CRM, nem o status do vertical é consultado: as telas dele não existem aqui
+      if (/\/api\/clinics\//.test(r.url())) consultas.push(r.url());
     });
     await login(page, OWNER_A);
     for (const caminho of ['/clinics/agenda', '/clinics/patients']) {
       await page.goto(caminho);
-      await expect(page.getByText('O Clinics não está ativo neste workspace.')).toBeVisible();
+      // a rota é de outro produto (ADR-055): o início do CRM, com o aviso
+      await expect(page.getByTestId('fora-da-experiencia')).toContainText(
+        'Esta seção não faz parte do Veyra.',
+      );
     }
     const lateral = page.getByRole('navigation', { name: 'Principal' });
     await expect(lateral.getByRole('link', { name: 'Agenda da clínica' })).toHaveCount(0);

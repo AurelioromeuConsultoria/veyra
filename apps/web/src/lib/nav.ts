@@ -15,14 +15,15 @@ import {
   Webhook,
   Workflow,
 } from 'lucide-react';
-import { createContext, useContext, useMemo, type ComponentType, type ReactNode } from 'react';
+import type { ComponentType, ReactNode } from 'react';
+import { useExperience } from './experience';
 
 /**
- * MAPA ÚNICO das seções do produto. Três consumidores leem daqui — a barra
- * lateral, o rastro do cabeçalho e a busca global — e é justamente por isso que
- * ele existe: três listas paralelas divergiriam na primeira seção nova, e a
- * busca passaria a oferecer um destino que a lateral não mostra (ou pior, um
- * que a permissão do usuário nega).
+ * As seções de um produto. Três consumidores leem do mapa da experiência ativa
+ * (`useNavGroups`) — a barra lateral, o rastro do cabeçalho e a busca global —,
+ * e é justamente por isso que ele existe: três listas paralelas divergiriam na
+ * primeira seção nova, e a busca passaria a oferecer um destino que a lateral
+ * não mostra (ou pior, um que a permissão do usuário nega).
  *
  * `permission` é a MESMA chave que o servidor exige na rota correspondente:
  * item sem permissão não aparece em lugar nenhum e sua tela não é oferecida.
@@ -37,11 +38,15 @@ export type NavItem = {
   aliases?: string[];
 };
 
-export type NavGroup = { label: string; items: NavItem[] };
+export type NavGroup = {
+  label: string;
+  items: NavItem[];
+};
 
-/** Rota contribuída por um vertical, montada dentro do shell protegido. */
+/** Uma rota de um produto, montada dentro do shell da experiência. */
 export type VerticalRoute = { path: string; element: ReactNode };
 
+/** O menu do CRM (a experiência `crm`, do Core), como sempre foi. */
 export const NAV_GROUPS: NavGroup[] = [
   {
     label: 'Trabalho',
@@ -154,29 +159,13 @@ export const NAV_GROUPS: NavGroup[] = [
 ];
 
 /**
- * PORTA DE NAVEGAÇÃO (ADR-047 E5, adendo 4). Verticais CONTRIBUEM grupos ao
- * mapa, sem que o Core os conheça: a raiz de composição (`composition.tsx`)
- * entrega um HOOK que devolve os grupos contribuídos, e este contexto o leva
- * aos três consumidores. Sem raiz, nada é contribuído — o Core puro.
- *
- * O hook é chamado sempre, uma vez por render, na mesma posição: a lista de
- * verticais é fixa por build. Cada vertical decide a própria visibilidade (só
- * contribui com o próprio status confirmado como ativo e a permissão).
+ * O MAPA da experiência ativa (ADR-055, adendo 2): os grupos que o manifesto do
+ * produto declara, e só eles. Três consumidores leem daqui — a lateral, o
+ * rastro do cabeçalho e a busca global. O mapa contribuído do E5 antigo (o CRM
+ * somado às extensões) saiu: cada produto tem o seu.
  */
-export type UseNavContributions = () => readonly NavGroup[];
-const NONE: readonly NavGroup[] = [];
-const noContributions: UseNavContributions = () => NONE;
-const NavContributionsContext = createContext<UseNavContributions>(noContributions);
-export const NavContributionsProvider = NavContributionsContext.Provider;
-
-/** O mapa COMPOSTO: o do Core seguido do que os verticais contribuírem agora. */
 export function useNavGroups(): readonly NavGroup[] {
-  const useContributions = useContext(NavContributionsContext);
-  const contributed = useContributions();
-  return useMemo(
-    () => (contributed.length === 0 ? NAV_GROUPS : [...NAV_GROUPS, ...contributed]),
-    [contributed],
-  );
+  return useExperience().grupos;
 }
 
 /**
@@ -185,7 +174,7 @@ export function useNavGroups(): readonly NavGroup[] {
  */
 export function currentSection(
   pathname: string,
-  groups: readonly NavGroup[] = NAV_GROUPS,
+  groups: readonly NavGroup[],
 ): { group: string; item: NavItem } | null {
   let best: { group: string; item: NavItem } | null = null;
   for (const group of groups) {

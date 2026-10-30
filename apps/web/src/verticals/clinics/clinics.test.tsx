@@ -5,11 +5,12 @@ import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
 import { AppShell } from '../../components/layout/AppShell';
 import { GlobalSearch } from '../../components/layout/GlobalSearch';
-import { NavContributionsProvider } from '../../lib/nav';
+import { ExperienceProvider } from '../../lib/experience';
+import { clinicsExperience } from './experience';
+import { crmExperience } from '../../experiences/crm';
 import { ClinicsAiReleasesPage, RELEASE_REASON_LABELS } from './AiReleasesPage';
 import { ACCOUNT_LINK_NOTICE, ProfessionalsTab } from './catalog/ProfessionalsTab';
 import { ClinicsCatalogPage } from './CatalogPage';
-import { useClinicsNavGroups } from './nav';
 
 // o cabeçalho tem seus próprios dados (notificações, busca); aqui só a lateral
 vi.mock('../../components/layout/AppHeader', () => ({ AppHeader: () => null }));
@@ -73,11 +74,16 @@ const GESTAO = ['clinics:catalog:read', 'clinics:catalog:manage', 'members:read'
 const doCatalogo = (chamadas: string[]) =>
   chamadas.filter((c) => /\/api\/(clinics\/(services|professionals|units)|members)/.test(c));
 
-function renderizar(ui: ReactNode, caminho = '/', queryClient = novoCliente()) {
+function renderizar(
+  ui: ReactNode,
+  caminho = '/',
+  queryClient = novoCliente(),
+  experiencia = clinicsExperience,
+) {
   render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[caminho]}>
-        <NavContributionsProvider value={useClinicsNavGroups}>{ui}</NavContributionsProvider>
+        <ExperienceProvider value={experiencia}>{ui}</ExperienceProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -89,7 +95,39 @@ const novoCliente = () => new QueryClient({ defaultOptions: { queries: { retry: 
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe('Clinics no web — só aparece e só consulta com status ATIVO confirmado e permissão', () => {
+describe('Clinics no web — o menu é da experiência; a página só consulta com status ATIVO confirmado e permissão', () => {
+  it('o menu do Clinics é da EXPERIÊNCIA (ADR-055): no CRM ele não aparece, nem com o vertical ativo', async () => {
+    mockApi({
+      'GET /api/auth/me': { body: usuario(GESTAO) },
+      'GET /api/clinics/status': { body: { active: true } },
+    });
+    renderizar(
+      <AppShell manifestos={[crmExperience, clinicsExperience]} />,
+      '/',
+      novoCliente(),
+      crmExperience,
+    );
+    await lateral().findByRole('link', { name: 'Hoje' });
+    expect(lateral().queryByRole('link', { name: 'Catálogo' })).toBeNull();
+    expect(lateral().queryByText('Clínica')).toBeNull();
+  });
+
+  it('na experiência da clínica, o menu mostra o Clinics com a permissão de cada item', async () => {
+    mockApi({
+      'GET /api/auth/me': { body: usuario(GESTAO) },
+      'GET /api/clinics/status': { body: { active: true } },
+    });
+    renderizar(<AppShell manifestos={[crmExperience, clinicsExperience]} />, '/clinics/catalog');
+    expect(await lateral().findByRole('link', { name: 'Catálogo' })).toHaveAttribute(
+      'href',
+      '/clinics/catalog',
+    );
+    expect(lateral().getByText('Clínica')).toBeInTheDocument();
+    // nada do CRM que não é da clínica
+    expect(lateral().queryByRole('link', { name: 'Hoje' })).toBeNull();
+    expect(lateral().queryByRole('link', { name: 'Empresas' })).toBeNull();
+  });
+
   const casos: [string, Resposta, string[], RegExp][] = [
     ['status CARREGANDO', { pendente: true }, GESTAO, /Carregando/],
     [
@@ -108,7 +146,7 @@ describe('Clinics no web — só aparece e só consulta com status ATIVO confirm
   ];
 
   it.each(casos)(
-    '%s: a lateral não mostra a Clínica, a página só explica, e nada do catálogo é consultado',
+    '%s: a página só explica, e nada do catálogo é consultado',
     async (_caso, status, permissoes, mensagem) => {
       const chamadas = mockApi({
         'GET /api/auth/me': { body: usuario(permissoes) },
@@ -118,21 +156,19 @@ describe('Clinics no web — só aparece e só consulta com status ATIVO confirm
       // status já tem resposta (ou segue pendente) quando a lateral é conferida
       renderizar(
         <>
-          <AppShell />
+          <AppShell manifestos={[crmExperience, clinicsExperience]} />
           <ClinicsCatalogPage />
         </>,
         '/clinics/catalog',
       );
       expect(await screen.findByText(mensagem)).toBeInTheDocument();
       await waitFor(() => expect(chamadas).toContain('GET /api/clinics/status'));
-      expect(lateral().queryByRole('link', { name: 'Catálogo' })).toBeNull();
-      expect(lateral().queryByText('Clínica')).toBeNull();
       expect(screen.queryByRole('tablist')).toBeNull();
       expect(doCatalogo(chamadas)).toEqual([]);
     },
   );
 
-  it('ATIVO e com permissão: NADA do catálogo sai antes da resposta do status; depois, a Clínica aparece na lateral, na busca, e o catálogo é consultado', async () => {
+  it('ATIVO e com permissão: NADA do catálogo sai antes da resposta do status; depois, o catálogo é consultado, e a busca o oferece', async () => {
     const status = adiada<Resposta>();
     const chamadas = mockApi({
       'GET /api/auth/me': { body: usuario(GESTAO) },
@@ -141,14 +177,13 @@ describe('Clinics no web — só aparece e só consulta com status ATIVO confirm
     });
     renderizar(
       <>
-        <AppShell />
+        <AppShell manifestos={[crmExperience, clinicsExperience]} />
         <ClinicsCatalogPage />
       </>,
       '/clinics/catalog',
     );
     await waitFor(() => expect(chamadas).toContain('GET /api/clinics/status'));
     expect(screen.getByText('Carregando…')).toBeInTheDocument();
-    expect(lateral().queryByRole('link', { name: 'Catálogo' })).toBeNull();
     expect(doCatalogo(chamadas)).toEqual([]);
 
     status.soltar({ body: { active: true } });
@@ -427,25 +462,26 @@ describe('liberação para IA — porta, lista, conceder e revogar', () => {
       'GET /api/auth/me': { body: usuario(['clinics:catalog:read']) },
       'GET /api/clinics/status': { body: { active: true } },
     });
-    renderizar(<AppShell />);
+    renderizar(<AppShell manifestos={[crmExperience, clinicsExperience]} />);
     expect(await lateral().findByRole('link', { name: 'Catálogo' })).toBeInTheDocument();
     expect(lateral().queryByRole('link', { name: 'Liberação para IA' })).toBeNull();
   });
 
-  it('RECARGA do status que falha depois de confirmar: a lateral esconde a Clínica de novo', async () => {
+  it('RECARGA do status que falha depois de confirmar: a página volta a só explicar e não consulta mais', async () => {
     let consultas = 0;
-    mockApi({
+    const chamadas = mockApi({
       'GET /api/auth/me': { body: usuario(RESTRICAO) },
       'GET /api/clinics/status': () =>
         ++consultas === 1 ? { body: { active: true } } : { status: 500, body: { message: 'x' } },
+      'GET /api/clinics/ai-releases': { body: { items: [], nextCursor: null } },
     });
-    const queryClient = renderizar(<AppShell />);
-    expect(await lateral().findByRole('link', { name: 'Liberação para IA' })).toBeInTheDocument();
+    const queryClient = renderizar(<ClinicsAiReleasesPage />, '/clinics/ai-releases');
+    const daLista = () => chamadas.filter((c) => c.startsWith('GET /api/clinics/ai-releases'));
+    await waitFor(() => expect(daLista().length).toBeGreaterThan(0));
+    const antes = daLista().length;
     await act(() => queryClient.invalidateQueries({ queryKey: ['clinics', 'status'] }));
-    await waitFor(() =>
-      expect(lateral().queryByRole('link', { name: 'Liberação para IA' })).toBeNull(),
-    );
-    expect(lateral().queryByText('Clínica')).toBeNull();
+    expect(await screen.findByText(/Não foi possível verificar/)).toBeInTheDocument();
+    expect(daLista().length).toBe(antes);
     expect(consultas).toBe(2);
   });
 
@@ -462,7 +498,7 @@ describe('liberação para IA — porta, lista, conceder e revogar', () => {
     });
     renderizar(
       <>
-        <AppShell />
+        <AppShell manifestos={[crmExperience, clinicsExperience]} />
         <ClinicsAiReleasesPage />
       </>,
       '/clinics/ai-releases',

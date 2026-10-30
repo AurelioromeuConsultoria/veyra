@@ -49,7 +49,8 @@ test.describe('Equipe pela interface (ADR-054)', () => {
     await convidada.getByLabel('Seu nome').fill('Convidada E2E');
     await convidada.getByLabel(/^Crie uma senha/).fill('senha-e2e-forte-1');
     await convidada.getByRole('button', { name: 'Aceitar e entrar' }).click();
-    await expect(convidada.getByRole('heading', { name: 'Hoje', level: 1 })).toBeVisible();
+    // o início do produto do workspace (a clínica, ADR-055): o menu dele
+    await expect(convidada.getByRole('navigation', { name: 'Principal' })).toBeVisible();
     // Member lê a equipe
     await expect(convidada.getByRole('link', { name: 'Equipe', exact: true })).toBeVisible();
 
@@ -70,7 +71,8 @@ test.describe('Equipe pela interface (ADR-054)', () => {
 
     // na sessão dela, a próxima ação já vale o papel novo: Guest não lê a equipe
     await convidada.reload();
-    await expect(convidada.getByRole('heading', { name: 'Hoje', level: 1 })).toBeVisible();
+    // o início do produto do workspace (a clínica, ADR-055): o menu dele
+    await expect(convidada.getByRole('navigation', { name: 'Principal' })).toBeVisible();
     await expect(convidada.getByRole('link', { name: 'Contatos', exact: true })).toBeVisible();
     await expect(convidada.getByRole('link', { name: 'Equipe', exact: true })).toHaveCount(0);
 

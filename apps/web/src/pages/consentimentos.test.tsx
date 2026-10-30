@@ -4,6 +4,8 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
+import { crmExperience } from '../experiences/crm';
+import { ExperienceProvider } from '../lib/experience';
 import { useSession } from '../lib/session';
 import { criarQueryClient } from '../lib/session-query';
 import { ConsentimentoDaConversa, ConsentimentosDoContato } from './Consentimentos';
@@ -177,8 +179,11 @@ function renderizar(ui: ReactNode) {
   render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        <SessaoCarregada />
-        {ui}
+        {/* os links da tela são os do produto ativo (ADR-055): aqui, o CRM */}
+        <ExperienceProvider value={crmExperience}>
+          <SessaoCarregada />
+          {ui}
+        </ExperienceProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );

@@ -96,13 +96,15 @@ test.describe('Clinics — catálogo da clínica', () => {
     await expect(page.getByRole('button', { name: 'Novo profissional' })).toHaveCount(0);
   });
 
-  test('workspace SEM o Clinics: a URL direta diz que não está ativo, e a lateral não tem a entrada', async ({
+  test('workspace SEM o Clinics (o CRM): a URL direta leva ao início do CRM com o aviso, e a lateral não tem a entrada', async ({
     page,
   }) => {
     await login(page, OWNER_A);
     await page.goto('/clinics/catalog');
-    // a mensagem prova que o status já respondeu — só então a lateral é conferida
-    await expect(page.getByText('O Clinics não está ativo neste workspace.')).toBeVisible();
+    // a rota é de outro produto (ADR-055): o início do CRM, com o aviso
+    await expect(page.getByTestId('fora-da-experiencia')).toContainText(
+      'Esta seção não faz parte do Veyra.',
+    );
     await expect(
       page.getByRole('navigation', { name: 'Principal' }).getByRole('link', { name: 'Catálogo' }),
     ).toHaveCount(0);

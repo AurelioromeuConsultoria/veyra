@@ -12,8 +12,6 @@ import {
   CLINICS_RETURNS_PATH,
 } from './nav';
 
-export { useClinicsNavGroups } from './nav';
-
 const ClinicsCatalogPage = lazy(() =>
   import('./CatalogPage').then((m) => ({ default: m.ClinicsCatalogPage })),
 );

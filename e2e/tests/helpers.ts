@@ -5,17 +5,17 @@ import { assertIsE2eDb, E2E_DATABASE_URL, E2E_PASSWORD } from '../env';
 /**
  * Login pela UI (o caminho do usuário, não atalho de API).
  *
- * O destino do login passou a ser a visão executiva "Hoje" — antes era
- * `/contacts`, e o helper assertava o heading "Contatos". Quem PRECISA cair
- * numa seção específica pede por ela: o helper navega pelo mesmo link da barra
- * lateral que a pessoa usaria, em vez de fingir que o produto abre ali.
+ * O destino do login é o início do PRODUTO do workspace (ADR-055): o "Hoje" no
+ * CRM, a agenda na clínica. O helper espera o menu do produto, sem supor qual.
+ * Quem PRECISA cair numa seção específica pede por ela: o helper navega pelo
+ * mesmo link da barra lateral que a pessoa usaria.
  */
 export async function login(page: Page, email: string, secao?: string): Promise<void> {
   await page.goto('/login');
   await page.getByLabel('E-mail').fill(email);
   await page.getByLabel('Senha').fill(E2E_PASSWORD);
   await page.getByRole('button', { name: 'Entrar' }).click();
-  await expect(page.getByRole('heading', { name: 'Hoje', level: 1 })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Principal' })).toBeVisible();
   if (secao) {
     await page.getByRole('link', { name: secao, exact: true }).click();
     await expect(page.getByRole('heading', { name: secao, level: 1 })).toBeVisible();

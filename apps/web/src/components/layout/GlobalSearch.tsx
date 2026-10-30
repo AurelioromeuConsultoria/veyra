@@ -1,23 +1,22 @@
 import * as Dialog from '@radix-ui/react-dialog';
-import { useQuery } from '@tanstack/react-query';
-import type { ContactDto, Paginated } from '@veyra/contracts';
 import { clsx } from 'clsx';
 import { CornerDownLeft, Search, User, ArrowRight } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api, toQuery } from '../../lib/api';
+import { useExperience, type SearchProvider } from '../../lib/experience';
 import { fold, useNavGroups, type NavItem } from '../../lib/nav';
 import { hasPermission, useSession } from '../../lib/session';
 
 /**
- * Busca global (⌘K / Ctrl+K).
+ * Busca global (⌘K / Ctrl+K), do PRODUTO ativo (ADR-055, adendo 2, item 4).
  *
  * Duas fontes, e SÓ duas, porque só duas existem de verdade: as seções do
- * produto (mapa local) e os contatos (`GET /api/contacts?search=`). Nenhuma
- * categoria decorativa — uma linha "Oportunidades" que nunca traz resultado é
- * pior que ausência, porque ensina a pessoa a não confiar na busca.
+ * produto (o mapa da experiência — nunca a de outro produto) e os registros do
+ * provedor que o manifesto declara (no CRM, os contatos). Nenhuma categoria
+ * decorativa — uma linha "Oportunidades" que nunca traz resultado é pior que
+ * ausência, porque ensina a pessoa a não confiar na busca.
  *
- * A consulta de contato só é DISPARADA para quem tem `contacts:read`: sem essa
+ * A consulta de registros só é DISPARADA com a permissão do provedor: sem essa
  * guarda, um papel restrito acionaria um 403 a cada tecla (a lição do inbox).
  */
 
@@ -26,7 +25,14 @@ type Result =
   | { kind: 'contact'; id: string; to: string; label: string; hint: string };
 
 const DEBOUNCE_MS = 200;
-const MAX_CONTACTS = 6;
+
+/** O produto sem busca de registros: o hook é chamado do mesmo jeito, sem consulta. */
+const SEM_REGISTROS: SearchProvider = {
+  label: '',
+  singular: '',
+  permission: '',
+  useResultados: () => ({ resultados: [], buscando: false }),
+};
 
 function matchesSection(item: NavItem, needle: string): boolean {
   if (!needle) return true;
@@ -42,7 +48,10 @@ export function GlobalSearch({
   onOpenChange: (open: boolean) => void;
 }) {
   const { data: user } = useSession();
-  const canReadContacts = hasPermission(user, 'contacts:read');
+  const experiencia = useExperience();
+  const provedor = experiencia.busca ?? SEM_REGISTROS;
+  const podeBuscarRegistros =
+    experiencia.busca !== null && hasPermission(user, provedor.permission);
   const navigate = useNavigate();
   const [term, setTerm] = useState('');
   const [debounced, setDebounced] = useState('');
@@ -64,13 +73,10 @@ export function GlobalSearch({
     }
   }, [open]);
 
-  const contactParams = { search: debounced, pageSize: MAX_CONTACTS, status: 'active' as const };
-  const contacts = useQuery({
-    queryKey: ['global-search', 'contacts', debounced],
-    queryFn: () => api.get<Paginated<ContactDto>>(`/api/contacts${toQuery(contactParams)}`),
-    enabled: open && canReadContacts && debounced.length >= 2,
-    staleTime: 30_000,
-  });
+  const registros = provedor.useResultados(
+    debounced,
+    open && podeBuscarRegistros && debounced.length >= 2,
+  );
 
   const needle = fold(debounced);
   const groups = useNavGroups();
@@ -95,16 +101,8 @@ export function GlobalSearch({
   );
 
   const contactResults = useMemo<Result[]>(
-    () =>
-      (contacts.data?.items ?? []).map((contact) => ({
-        kind: 'contact' as const,
-        id: `contact:${contact.id}`,
-        // abre a ficha direto, no lugar onde se age sobre ela
-        to: `/contacts?c=${contact.id}`,
-        label: contact.name,
-        hint: contact.emails[0] ?? contact.companyName ?? 'Contato',
-      })),
-    [contacts.data],
+    () => registros.resultados.map((hit) => ({ kind: 'contact' as const, ...hit })),
+    [registros.resultados],
   );
 
   const results = useMemo(() => [...contactResults, ...sections], [contactResults, sections]);
@@ -146,7 +144,7 @@ export function GlobalSearch({
     // gatilho e destrava o scroll do documento.
   }
 
-  const buscando = canReadContacts && debounced.length >= 2 && contacts.isFetching;
+  const buscando = registros.buscando;
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -172,7 +170,9 @@ export function GlobalSearch({
               onChange={(event) => setTerm(event.target.value)}
               onKeyDown={onKeyDown}
               placeholder={
-                canReadContacts ? 'Buscar contato ou seção…' : 'Buscar uma seção do produto…'
+                podeBuscarRegistros
+                  ? `Buscar ${provedor.singular} ou seção…`
+                  : 'Buscar uma seção do produto…'
               }
               aria-label="Buscar no workspace"
               role="combobox"
@@ -199,7 +199,7 @@ export function GlobalSearch({
               <li key={result.id} role="presentation">
                 {agrupado && (index === 0 || index === contactResults.length) ? (
                   <p className="eyebrow px-4 pb-1 pt-2.5 text-muted-fg/80" aria-hidden>
-                    {index === 0 ? 'Contatos' : 'Ir para'}
+                    {index === 0 ? provedor.label : 'Ir para'}
                   </p>
                 ) : null}
                 <button
@@ -238,9 +238,11 @@ export function GlobalSearch({
               <li role="presentation" className="px-4 py-8 text-center">
                 <p className="text-body-sm">Nada com esse nome.</p>
                 <p className="mt-1 text-data text-muted-fg">
-                  {canReadContacts
-                    ? 'A busca cobre contatos e as seções do produto.'
-                    : 'A busca cobre as seções do produto — contatos exigem permissão de leitura.'}
+                  {podeBuscarRegistros
+                    ? `A busca cobre ${provedor.label.toLowerCase()} e as seções do produto.`
+                    : experiencia.busca
+                      ? `A busca cobre as seções do produto — ${provedor.label.toLowerCase()} exigem permissão de leitura.`
+                      : 'A busca cobre as seções do produto.'}
                 </p>
               </li>
             ) : null}

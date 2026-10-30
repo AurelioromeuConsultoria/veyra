@@ -179,7 +179,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
 
     Revisada (`reviewer` e `security`, mais o delta) e validada (36 mutações e a bateria b82); publicada em 2026-10-29 (`0c4aba4`, os quatro jobs do CI verdes no run 40994699372), **sem deploy**. **Atende só parte do B4:** a gestão de equipe e a D7 **não** estão resolvidas por inteiro.
 
-  - **F5.E — Experiência por produto** 🚧 (ADR-055: direção aprovada pelo usuário em 2026-10-29 com as condições do adendo 1; E-1, a fundação de contratos e API, implementada em commit local). A base é compartilhada, e o CRM e o Clinics têm, cada um, página inicial, navegação, linguagem e fluxos próprios:
+  - **F5.E — Experiência por produto** 🚧 (ADR-055: direção aprovada pelo usuário em 2026-10-29 com as condições do adendo 1; E-1, a fundação de contratos e API, publicada e validada em 2026-10-30: `9643ff7`, CI verde no run 40999980152, sem deploy; E-2, o web do Core por experiência, implementada e validada em commit local em 2026-10-30, sem push nem deploy). A base é compartilhada, e o CRM e o Clinics têm, cada um, página inicial, navegação, linguagem e fluxos próprios:
     - rotas diretas, busca, atalhos, links e cabeçalhos por experiência;
     - o produto separado da permissão;
     - a experiência como atributo do workspace, escolhida pela operação;
