@@ -1,7 +1,15 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import type { MemberDto, RoleDto } from '@veyra/contracts';
 import { AuditService } from '../audit/audit.service';
 import { AuthContext } from '../common/decorators';
+import { CORE_REGISTRY, EXTENSION_REGISTRY, type ComposedRegistry } from '../extensions/registry';
+import { mesmoEmail, preFiltroDoEmail } from './mesmo-email';
 import type { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -13,20 +21,32 @@ export class MembersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    /** o catálogo composto (Core ∪ extensões): a descrição de cada chave, sem `raw` */
+    @Optional()
+    @Inject(EXTENSION_REGISTRY)
+    private readonly registry: ComposedRegistry = CORE_REGISTRY,
   ) {}
 
   async listRoles(): Promise<RoleDto[]> {
     const roles = await this.prisma.db.role.findMany({ orderBy: { createdAt: 'asc' } });
     const rolePermissions = await this.prisma.db.rolePermission.findMany();
-    return roles.map((role) => ({
-      id: role.id,
-      name: role.name,
-      description: role.description,
-      isSystem: role.isSystem,
-      permissions: rolePermissions
+    return roles.map((role) => {
+      const permissions = rolePermissions
         .filter((rp) => rp.roleId === role.id)
-        .map((rp) => rp.permissionKey),
-    }));
+        .map((rp) => rp.permissionKey);
+      return {
+        id: role.id,
+        name: role.name,
+        description: role.description,
+        isSystem: role.isSystem,
+        permissions,
+        // chave fora do catálogo composto (não deveria existir: a checagem de
+        // boot recusa) aparece pela própria chave, nunca some da lista
+        permissionDescriptions: Object.fromEntries(
+          permissions.map((key) => [key, this.registry.permissionCatalog[key] ?? key]),
+        ),
+      };
+    });
   }
 
   async listMembers(): Promise<MemberDto[]> {
@@ -63,7 +83,7 @@ export class MembersService {
     }
     const workspaceId = this.requireWorkspace(auth);
     await this.runWorkspaceLocked(workspaceId, async (tx) => {
-      const actorPerms = await this.actorPermissions(tx, workspaceId, auth.membershipId);
+      const actorPerms = await this.managerPermissions(tx, workspaceId, auth.membershipId);
       const target = await tx.membership.findFirst({
         where: { id: membershipId, workspaceId, status: { not: 'removed' } },
         include: { role: true },
@@ -92,6 +112,9 @@ export class MembersService {
         before: { roleId: target.roleId },
         after: { roleId },
       });
+      // os convites que o rebaixado emitiu e que o papel novo não autoriza caem
+      // AGORA, de vez: voltar a ter o papel não os ressuscita (ADR-054 item 12)
+      await this.revokeInvitesWithoutAuthority(tx, workspaceId, membershipId, auth);
     });
   }
 
@@ -101,7 +124,7 @@ export class MembersService {
     }
     const workspaceId = this.requireWorkspace(auth);
     await this.runWorkspaceLocked(workspaceId, async (tx) => {
-      const actorPerms = await this.actorPermissions(tx, workspaceId, auth.membershipId);
+      const actorPerms = await this.managerPermissions(tx, workspaceId, auth.membershipId);
       const target = await tx.membership.findFirst({
         where: { id: membershipId, workspaceId, status: { not: 'removed' } },
         include: { role: true },
@@ -124,18 +147,67 @@ export class MembersService {
         before: { roleId: target.roleId, status: 'active' },
         after: { status: 'removed' },
       });
+      // quem sai não volta por convite em aberto para o e-mail dele (item 10), e
+      // os convites que ele emitiu perdem a autoridade de quem os emitiu (item 12)
+      await this.revokePendingInvitesFor(tx, workspaceId, target.userId, auth);
+      await this.revokeInvitesWithoutAuthority(tx, workspaceId, membershipId, auth);
     });
   }
 
   /**
-   * Anti-autoelevação (ajuste #6, público — reusado por InvitesService): as
-   * permissões do papel `roleId` devem ser SUBCONJUNTO das do ator. Roda fora
-   * de transação (leitura), fail-closed se o ator não resolver.
+   * Seção crítica de acesso para os convites (ADR-054 item 6): a MESMA trava
+   * das trocas e remoções, com a regra de não-elevação conferida DENTRO dela.
+   * Conferida fora, um ator rebaixado em paralelo ainda concederia (ou
+   * revogaria) com as permissões de antes. `fn` recebe o cliente da transação
+   * SEM filtro de workspace — o escopo é manual, por `workspaceId`, como aqui.
    */
-  async assertNoPrivilegeEscalation(auth: AuthContext, roleId: string): Promise<void> {
+  async withinActorAuthority<T>(
+    auth: AuthContext,
+    roleId: string,
+    fn: (tx: Tx, workspaceId: string) => Promise<T>,
+  ): Promise<T> {
     const workspaceId = this.requireWorkspace(auth);
-    const actorPerms = await this.actorPermissions(this.prisma.raw, workspaceId, auth.membershipId);
-    await this.assertRoleWithinActor(this.prisma.raw, workspaceId, actorPerms, roleId);
+    return this.runWorkspaceLocked(workspaceId, async (tx) => {
+      const actorPerms = await this.managerPermissions(tx, workspaceId, auth.membershipId);
+      await this.assertRoleWithinActor(tx, workspaceId, actorPerms, roleId);
+      return fn(tx, workspaceId);
+    });
+  }
+
+  /**
+   * A trava dos membros, para quem já está numa transação `raw` própria — o
+   * aceite do convite (ADR-054 item 12). É a MESMA da troca de papel, da
+   * remoção, da criação e da revogação: o que se lê depois dela já vê o que
+   * essas operações confirmaram.
+   */
+  async lockMembers(tx: Tx, workspaceId: string): Promise<void> {
+    await tx.$executeRawUnsafe(
+      'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
+      'veyra_members',
+      workspaceId,
+    );
+  }
+
+  /**
+   * Quem emitiu o convite ainda pode concedê-lo? A membership ativa, a conta
+   * ativa, `members:manage` e as permissões do papel do convite contidas nas
+   * dela — a mesma regra da criação, lida AGORA. Chamada sob a trava.
+   */
+  async authorityToInvite(
+    tx: Tx,
+    workspaceId: string,
+    membershipId: string,
+    roleId: string,
+  ): Promise<boolean> {
+    const quem = await tx.membership.findFirst({
+      where: { id: membershipId, workspaceId, status: 'active', user: { status: 'active' } },
+      select: { roleId: true },
+    });
+    if (!quem) return false;
+    const dele = await this.permissionsOf(tx, workspaceId, quem.roleId);
+    if (!dele.has('members:manage')) return false;
+    const doPapel = await this.permissionsOf(tx, workspaceId, roleId);
+    return [...doPapel].every((p) => dele.has(p));
   }
 
   // ── internos ───────────────────────────────────────────────────────────────
@@ -154,13 +226,33 @@ export class MembersService {
    */
   private runWorkspaceLocked<T>(workspaceId: string, fn: (tx: Tx) => Promise<T>): Promise<T> {
     return this.prisma.raw.$transaction(async (tx) => {
-      await tx.$executeRawUnsafe(
-        'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
-        'veyra_members',
-        workspaceId,
-      );
+      await this.lockMembers(tx, workspaceId);
       return fn(tx);
     });
+  }
+
+  private async permissionsOf(tx: Tx, workspaceId: string, roleId: string): Promise<Set<string>> {
+    const rows = await tx.rolePermission.findMany({
+      where: { workspaceId, roleId },
+      select: { permissionKey: true },
+    });
+    return new Set(rows.map((r) => r.permissionKey));
+  }
+
+  /**
+   * As permissões de quem age, conferidas SOB a trava: sem `members:manage`
+   * agora (rebaixado em paralelo depois do guard), nada é gerido.
+   */
+  private async managerPermissions(
+    tx: Tx,
+    workspaceId: string,
+    actorMembershipId: string | null,
+  ): Promise<Set<string>> {
+    const perms = await this.actorPermissions(tx, workspaceId, actorMembershipId);
+    if (!perms.has('members:manage')) {
+      throw new ForbiddenException('Ação exige permissões que você não possui');
+    }
+    return perms;
   }
 
   private async actorPermissions(
@@ -197,6 +289,80 @@ export class MembersService {
     });
     if (rolePerms.some((p) => !actorPerms.has(p.permissionKey))) {
       throw new ForbiddenException('Ação exige permissões que você não possui');
+    }
+  }
+
+  /**
+   * Quem perde o acesso não volta por um convite que já estava em aberto para o
+   * e-mail dele (ADR-054 item 10): na MESMA transação da remoção, os convites
+   * pendentes desse e-mail são revogados, cada um com a sua trilha, pelo
+   * critério único de e-mail (`mesmoEmail`, item 13). raw justificado: o
+   * e-mail é identidade global (User), lido pelo `userId` da membership deste
+   * workspace.
+   */
+  private async revokePendingInvitesFor(
+    tx: Tx,
+    workspaceId: string,
+    userId: string,
+    auth: AuthContext,
+  ): Promise<void> {
+    const user = await tx.user.findFirst({ where: { id: userId }, select: { email: true } });
+    if (!user) return;
+    const candidatos = await tx.invite.findMany({
+      where: { workspaceId, acceptedAt: null, email: preFiltroDoEmail(user.email) },
+      select: { id: true, roleId: true, email: true },
+    });
+    await this.revokeInvites(
+      tx,
+      workspaceId,
+      candidatos.filter((c) => mesmoEmail(c.email, user.email)),
+      auth,
+    );
+  }
+
+  /**
+   * Os convites pendentes que `creatorMembershipId` emitiu e que ele, AGORA, já
+   * não pode conceder — removido, sem `members:manage` ou com o papel do
+   * convite acima das permissões dele — são revogados de vez (ADR-054 item 12).
+   * Chamada sob a trava, depois da mudança: lê o estado novo.
+   */
+  private async revokeInvitesWithoutAuthority(
+    tx: Tx,
+    workspaceId: string,
+    creatorMembershipId: string,
+    auth: AuthContext,
+  ): Promise<void> {
+    const emitidos = await tx.invite.findMany({
+      where: { workspaceId, acceptedAt: null, createdByMembershipId: creatorMembershipId },
+      select: { id: true, roleId: true },
+    });
+    const semAutoridade: { id: string; roleId: string }[] = [];
+    for (const convite of emitidos) {
+      if (!(await this.authorityToInvite(tx, workspaceId, creatorMembershipId, convite.roleId))) {
+        semAutoridade.push(convite);
+      }
+    }
+    await this.revokeInvites(tx, workspaceId, semAutoridade, auth);
+  }
+
+  private async revokeInvites(
+    tx: Tx,
+    workspaceId: string,
+    convites: { id: string; roleId: string }[],
+    auth: AuthContext,
+  ): Promise<void> {
+    for (const convite of convites) {
+      const { count } = await tx.invite.deleteMany({
+        where: { id: convite.id, workspaceId, acceptedAt: null },
+      });
+      if (count === 0) continue; // já saiu pelo outro critério nesta mesma remoção
+      await this.audit.record(tx, workspaceId, 'invite.revoked', {
+        entityType: 'invite',
+        entityId: convite.id,
+        actor: this.audit.actorFrom(auth),
+        before: { roleId: convite.roleId },
+        after: null,
+      });
     }
   }
 

@@ -200,12 +200,14 @@ export const RELATION_TARGETS: Record<string, Record<string, string>> = {
     stopBlocksLifted: 'StopBlock',
     templateReviews: 'TemplateReview',
     outboundApprovals: 'OutboundApproval',
+    createdInvites: 'Invite',
     // alvo fora do perímetro: travessia via db é bloqueada (sessões só via raw)
     activeSessions: 'RefreshToken',
   },
   Invite: {
     workspace: 'Workspace',
     role: 'Role',
+    createdBy: 'Membership',
   },
   Company: {
     workspace: 'Workspace',

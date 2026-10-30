@@ -10,6 +10,7 @@ import {
   Sparkles,
   Sun,
   Tags,
+  UserCog,
   Users,
   Webhook,
   Workflow,
@@ -99,6 +100,13 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: 'Configuração',
     items: [
+      {
+        to: '/settings/team',
+        label: 'Equipe',
+        icon: UserCog,
+        permission: 'members:read',
+        aliases: ['membros', 'usuários', 'convites', 'papéis', 'permissões', 'acesso'],
+      },
       {
         to: '/tags',
         label: 'Tags',

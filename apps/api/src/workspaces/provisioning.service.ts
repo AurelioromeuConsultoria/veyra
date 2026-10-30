@@ -133,6 +133,8 @@ export class ProvisioningService {
           roleId: ownerRoleId,
           tokenHash: sha256(token),
           expiresAt,
+          // a autoridade é a da operação, sem membership de origem (ADR-054 item 12)
+          issuedByProvisioning: true,
         },
       });
       return {

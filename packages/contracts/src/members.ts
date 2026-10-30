@@ -32,6 +32,8 @@ export interface RoleDto {
   description: string | null;
   isSystem: boolean;
   permissions: string[];
+  /** a descrição de cada chave de `permissions`, do catálogo composto (ADR-054 item 7) */
+  permissionDescriptions: Record<string, string>;
 }
 
 export interface InviteDto {
@@ -42,6 +44,10 @@ export interface InviteDto {
   expiresAt: string;
   acceptedAt: string | null;
   createdAt: string;
+  /** a membership de quem emitiu (ADR-054 item 12); nulo no convite da operação */
+  createdByMembershipId: string | null;
+  /** emitido pelo provisionamento (CLI de operação), sem membership de origem */
+  issuedByProvisioning: boolean;
 }
 
 /** Retornado UMA única vez, na criação — o token não é recuperável depois. */

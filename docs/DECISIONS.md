@@ -7916,3 +7916,232 @@ A forma (um arquivo versionado lido pelo catálogo falso do staging, e o cadastr
   - **a hipótese, não comprovada:** um atraso do relógio da VM do Docker depois do sono, mecanismo já comprovado em outra ocorrência (2026-10-22). **O desvio não foi medido naquela execução:** a medida de cerca de 8 min depois deu 0 s, o que não prova nem descarta o desvio no momento da falha;
   - **a repetição, à parte:** na b80, com toda a rodada sob uma única trava de sono e sem evento de sono, o mesmo bloco passou (186 testes), e o grupo 3, com a barreira, também (227).
 - **As mensagens dos commits `1bdff7e` e `3b69160`** dizem "baterias b79 e b80 verdes". O registro correto é este: a b79 teve as três falhas acima, e a b80 passou.
+
+## ADR-054 — Gestão de equipe pela interface: a tela do Core sobre as APIs que já existem (F5.1a)
+
+**Status:** desenho registrado antes do código; as decisões dos itens 5, 6, 8, 12 e 13 foram aprovadas pelo usuário em 2026-10-29. Implementado, revisado e validado; commit local, **sem push nem deploy**. Atende só parte do B4 · **Data:** 2026-10-29
+
+**Contexto.** O próximo ciclo do Clinics (ROADMAP, Entrega 10, "F5") começa pela equipe. Hoje a gestão de equipe é só por API. Esse é o bloqueio **B4** do ADR-048 §10: "Equipe não consegue ser montada pela interface (convite e troca de papel só por API)". O usuário pediu (2026-10-29) a gestão básica pela interface do Core, **reaproveitando as APIs existentes**, sem dois mecanismos para a mesma finalidade. Critérios:
+
+- autorização no servidor e isolamento por workspace;
+- o workspace nunca fica sem responsável com acesso administrativo;
+- ninguém concede permissões além das que pode administrar;
+- a revogação vale também para as sessões abertas;
+- as alterações são auditadas, sem expor segredos;
+- nenhuma permissão do Clinics num workspace sem o vertical ativo;
+- o papel `Profissional` mantém as permissões aprovadas, e vincular uma conta a um profissional não altera o papel dela.
+
+A D7 (quem acumula funções) é a **segunda** entrega desta frente (F5.1b) e não entra aqui.
+
+**O que já existe e é reaproveitado sem mudar a regra** (Entrega 2; SECURITY §4, "Invariantes de gestão de acesso"):
+
+| Operação                     | Rota                                   | Permissão         |
+| ---------------------------- | -------------------------------------- | ----------------- |
+| Listar membros               | `GET /api/members`                     | `members:read`    |
+| Listar papéis com permissões | `GET /api/roles`                       | `members:read`    |
+| Trocar o papel               | `PATCH /api/members/:id/role`          | `members:manage`  |
+| Remover o acesso             | `DELETE /api/members/:id`              | `members:manage`  |
+| Convidar                     | `POST /api/invites` (token UMA vez)    | `members:manage`  |
+| Listar convites pendentes    | `GET /api/invites`                     | `members:manage`  |
+| Revogar convite              | `DELETE /api/invites/:id`              | `members:manage`  |
+| Aceitar convite              | `POST /api/invites/accept` (`@Public`) | o token + a senha |
+
+As regras do servidor que atendem aos critérios:
+
+- **ninguém mexe na própria membership;**
+- **o papel atribuído (na troca ou no convite) é subconjunto das permissões do ator,** e o papel atual do alvo também precisa ser, para não se tocar em quem é mais poderoso;
+- **o último Owner ativo não é rebaixado nem removido,** sob trava consultiva por workspace, que fecha a corrida;
+- **troca e remoção incrementam o `tokenVersion`:** o `JwtAuthGuard` revalida a membership ativa e o `tokenVersion` a cada requisição, então o acesso emitido antes da mudança cai na próxima chamada. Depois de uma troca, o refresh emite uma sessão com o papel novo. Depois de uma remoção, a sessão renovada não tem mais este workspace;
+- **troca e remoção já geram auditoria** (`member.role_changed`, `member.removed`).
+
+**As decisões:**
+
+1. **A tela "Equipe" é do Core** (`/settings/team`, no grupo Configuração), visível com `members:read`. Ela tem três partes:
+   - **membros,** com papel, estado e data de entrada;
+   - **convites pendentes,** só com `members:manage`;
+   - **papéis e permissões,** com a descrição de cada permissão.
+
+   As ações aparecem só com `members:manage`. A tela oferece só os papéis que são subconjunto das permissões da pessoa (pela comparação das permissões, nunca pelo nome do papel). Isso é **só orientação**: quem decide é o servidor, e a recusa dele (último Owner, papel acima do ator) aparece como veio. A linha da própria pessoa não tem ações e diz por quê.
+
+2. **O efeito de cada ação aparece antes da confirmação:**
+   - **trocar o papel:** as permissões que a pessoa ganha e as que perde, e que, na próxima ação dela, o acesso emitido com o papel antigo deixa de valer, inclusive nas sessões abertas. A sessão não termina: o refresh a renova já com o papel novo, porque a membership continua ativa. Os convites em aberto que ela emitiu e que o papel novo não autoriza são revogados (item 12);
+   - **remover:** a pessoa perde o acesso a este workspace na próxima requisição, inclusive nas sessões abertas; a conta dela no Veyra não é excluída; o que ela registrou continua; os convites em aberto para o e-mail dela e os que ela emitiu são revogados (itens 10 e 12); a volta é só por novo convite, que reativa a mesma membership com o papel do convite;
+   - **revogar o convite:** o link deixa de funcionar.
+3. **O convite é entregue pela pessoa que convida.** O Veyra não envia e-mail: não há transporte de e-mail, e o canal de e-mail está fora do MVP. A resposta da criação traz o token uma única vez, e a tela o mostra como **link para copiar** (o mesmo padrão do segredo do webhook), sem guardar nem buscar de novo. O link é `/convite#<token>`: o token vai no **fragmento**, que o navegador não manda ao servidor nem no `Referer`. Assim ele não aparece em log de acesso do nginx nem do proxy. A página de aceite lê o fragmento e o apaga do endereço (`history.replaceState`) logo depois do primeiro render. As requisições que a página faz antes disso (o código da página, a sessão) não levam o fragmento, que o navegador nunca envia. **Resíduo, declarado (revisão de segurança):** o `replaceState` limpa o endereço e a entrada atual, mas o histórico global do navegador do convidado pode guardar a URL com o fragmento até o aceite, por no máximo 7 dias.
+4. **A página de aceite** (`/convite`, pública) usa a rota existente. Ela tem duas formas:
+   - **"Já tenho conta":** só a senha da conta;
+   - **"Criar conta":** nome e senha.
+
+   A página não sabe, nem tenta saber, se o e-mail tem conta. O aceite emite a sessão, e o web já trata isso como troca de sessão (ADR-050). Se já houver sessão aberta no navegador, a página avisa que aceitar troca a sessão.
+
+   **O servidor, depois das revisões de fechamento:**
+   - **mensagem única** para toda falha, inclusive o e-mail sem conta e sem nome, que antes respondia "Informe nome e senha para criar sua conta" e revelava a quem tinha o token se o e-mail tinha conta no Veyra;
+   - **o mesmo custo em todo caminho (revisões do delta):** a senha passa a ser obrigatória no contrato, e todo aceite com token válido gasta **exatamente um** `compare` de bcrypt — contra a conta, quando há uma só, e contra um hash fixo, sem conta ou com a identidade ambígua. Antes, o aceite só com o token respondia sem bcrypt quando havia conta, e o tempo a revelava. O hash da conta nova depende só de o cliente mandar o nome. A prova de identidade roda **antes** da trava e fora da transação, e é reconferida sob a trava: a conta precisa ser a mesma. Sob a trava, o bcrypt seguraria a gestão de equipe do workspace;
+   - **conta suspensa não aceita,** como no login, e o convite não é consumido;
+   - **workspace desativado não recebe ninguém;**
+   - **a conta do e-mail é procurada sem diferenciar maiúsculas.** Um convite para `Maria@` com a conta `maria@` exige a senha dela, em vez de criar uma segunda conta. Duas contas que só diferem na caixa: recusa.
+
+5. **Auditoria dos convites (lacuna encontrada; aprovada pelo usuário em 2026-10-29).** A criação, a revogação e o aceite não eram auditados. Passam a ser, na mesma transação da mudança:
+   - `invite.created`, depois com `email` e `roleId`;
+   - `invite.revoked`, antes **só com `roleId`**: o e-mail já está no `invite.created` do mesmo `entityId`, e repeti-lo seria conveniência;
+   - `member.joined` no aceite, com a entidade `membership`: depois com `roleId`, `status` e `inviteId`; antes com `roleId` e `status: removed` quando é um ex-membro reativado. **Sem e-mail:** a pessoa é identificada pela membership. O `inviteId` (entrou na allowlist de `membership`) liga a entrada ao `invite.created`, cujo ator é quem convidou.
+
+   O token, o link e o hash **nunca** entram na trilha. No aceite, o ator é a própria membership que entrou.
+
+   **Por que o e-mail completo, uma vez, no `invite.created`.** O convite é uma concessão de acesso a uma identidade que, até o aceite, só existe como e-mail. A revogação apaga a linha do convite, e o convite que expira sem aceite não gera membership. Sem o e-mail na trilha, a pergunta "a quem foi oferecido acesso, com que papel e por quem" fica sem resposta justamente nos casos que a supervisão precisa ver: o convite a um endereço de fora, revogado ou abandonado depois de o link circular. Um e-mail mascarado não responde à pergunta, e o id do convite não identifica ninguém depois de a linha sumir. A allowlist `invite: ['email', 'roleId']` já existia (SECURITY §5).
+
+   **Quem consulta.** A trilha é lida com `audit:read`, que nos papéis de sistema só o Owner e o Admin têm. Member, Guest e `Profissional` não têm, e não há edição de papéis. Os mesmos Owner e Admin têm `members:manage` e já veem o e-mail na lista de convites em aberto. A trilha **não aumenta quem vê o e-mail**: aumenta o tempo, até a retenção da auditoria (`AUDIT_RETENTION_DAYS`, 365 dias por padrão, SECURITY §5).
+
+   **O custo, declarado.** O e-mail de quem foi convidado e nunca entrou fica na trilha até o expurgo. A trilha é append-only, e não há hoje anonimização de uma entrada a pedido do titular. Isso entra na política de exclusão LGPD já pendente, e não é resolvido aqui.
+
+6. **Revogar um convite obedece à regra de não tocar em quem é mais poderoso (aprovada pelo usuário em 2026-10-29).** Antes, qualquer `members:manage` revogava qualquer convite. Passa a valer a mesma regra da remoção: o papel do convite precisa ser subconjunto das permissões do ator. Um Admin não revoga o convite de Owner que um Owner fez. É a regra existente da SECURITY §4 aplicada a uma operação que tinha ficado de fora, e **muda quem pode revogar**. A autorização é do servidor (`InvitesService.revoke`), com teste de integração: o Admin recebe 403, e o convite e a trilha ficam intactos. **A conferência é feita dentro da trava dos membros** (`MembersService.withinActorAuthority`), na criação e na revogação, como na troca e na remoção. Conferida fora, um ator rebaixado em paralelo ainda concederia ou revogaria com as permissões de antes. A criação tinha essa corrida desde a Entrega 2.
+7. **A descrição das permissões vem do catálogo composto, e não do banco.** O catálogo global (`Permission`) só é lido por `raw`, e uma exceção nova ao §3.3 não se justifica para mostrar texto. O registro composto (ADR-047, E2) já recebe as descrições do Core e de cada extensão, mas guardava só as chaves; passa a guardar também as descrições (`permissionCatalog`). O `GET /api/roles` ganha `permissionDescriptions`, só com as chaves do papel. O Core continua sem conhecer o Clinics: ele mostra o que a extensão declarou.
+8. **"Desativar" é a remoção do modelo atual (decisão do usuário em 2026-10-29: só a remoção).** O enum de `Membership` tem `suspended`, mas nenhuma operação o usa. Criar a suspensão (bloquear sem perder o lugar e reativar sem convite) seria **um segundo mecanismo** para tirar o acesso, e não é feita. A tela mostra o estado que vier e oferece só **"Remover acesso ao workspace"**. Ela não apresenta a ação como suspensão nem como exclusão da conta: a conta da pessoa no Veyra continua, e só o acesso a este workspace acaba.
+9. **Os critérios do Clinics se mantêm por construção, sem código novo:**
+   - não há edição de papéis nem de permissões no Core (`roles:manage` existe no catálogo, sem rota);
+   - convite e troca só atribuem papéis existentes;
+   - a desativação do Clinics retira toda `clinics:*` de todos os papéis (F1, ADR-047 §4). Por isso, num workspace sem o vertical ativo, nenhum caminho desta tela concede permissão do Clinics, nem com o papel `Profissional`, que fica só com `workspace:read`;
+   - o vínculo entre profissional e conta é do catálogo do Clinics e não toca no papel (ADR-048 adendo 1). Esta tela não o altera.
+
+10. **Quem perde o acesso não volta por um convite que já estava em aberto (achado bloqueante do `reviewer`).** Antes, remover alguém não tocava nos convites pendentes para o e-mail dessa pessoa: o segundo link de um convite repetido trazia a pessoa removida de volta, e a tela dizia "a volta é só por um novo convite". Agora:
+    - **remover revoga, na mesma transação e sob a mesma trava, os convites em aberto para o e-mail do removido,** pelo critério único de e-mail (item 13), cada um com o seu `invite.revoked`. **Exceção declarada ao item 6:** essa revogação não olha o papel do convite. Um Admin que remove um Member revoga, junto, um convite de Owner em aberto para o e-mail desse Member. O efeito é a favor da segurança, só nega acesso e fica na trilha com o Admin como ator;
+    - **o servidor recusa convite para quem já é membro deste workspace** (409). Antes só a tela recusava, e o convite criado pela API nunca podia ser aceito. A conferência olha só este workspace, e ser membro de outro não impede o convite nem é revelado.
+
+11. **Quem age precisa ter `members:manage` conferido sob a trava.** Na troca, na remoção, na criação e na revogação (`managerPermissions`). O guard confere antes; quem perde a permissão enquanto espera a trava recebe 403. Antes, só o guard conferia.
+
+12. **A autoridade de quem convidou (decisão do usuário em 2026-10-29, antes do push; migration `20261029220000_invite_authority`).** As revisões de fechamento mostraram que um convite em aberto continuava valendo depois que quem o criou era removido ou rebaixado. Cenário: antes de ser removido, um Admin convida um segundo e-mail dele com papel Admin, guarda o link e volta depois. Agora:
+    - **o convite guarda quem o emitiu:** `Invite.createdByMembershipId`, com FK composta para `Membership`, vem da membership **autenticada** da sessão. O contrato descarta o criador e a marca do provisionamento enviados pelo cliente. Só o fluxo interno do provisionamento grava `issuedByProvisioning`, sem membership de origem. Um CHECK no banco (`Invite_autoridade_conhecida`) exige, no convite pendente, exatamente uma das duas origens;
+    - **o aceite confere a autoridade AGORA, sob a mesma trava:** ele toma a trava consultiva por workspace (`veyra_members`) da troca, da remoção, da criação e da revogação, relê o convite depois dela e confere:
+      - o workspace ativo;
+      - para convite de membro: a membership de quem emitiu, ativa, com a conta ativa e `members:manage`, e o papel do convite contido nas permissões dela. A autoridade exige as duas condições.
+
+      O papel concedido é exatamente o `roleId` do convite. A recusa usa a mensagem única. A prova de identidade (item 4) vem antes, fora da trava;
+
+    - **a invalidação é definitiva:** o convite cuja origem perdeu a autoridade é apagado no próprio aceite, com `invite.invalidated` na trilha (ator `system`, só o papel), e a transação confirma antes da recusa. Devolver a autoridade a quem convidou não o ressuscita;
+    - **a perda de autoridade pela tela revoga na hora:**
+      - remover alguém revoga os convites em aberto que ele emitiu, além dos que são para o e-mail dele (item 10);
+      - trocar o papel revoga os que o papel novo não autoriza, inclusive quando ele perde `members:manage`.
+
+      As duas revogações ficam na mesma transação e sob a mesma trava, com `invite.revoked`. Quem é readmitido não recupera convite nenhum;
+
+    - **por fora da tela, a invalidação só vem na tentativa de aceite (revisão de segurança).** A perda de autoridade que não passa pela remoção nem pela troca: a conta suspensa (hoje, só por SQL manual), a membership `suspended` (nenhuma operação a usa) ou uma mudança direta no banco. Ela apaga o convite na primeira tentativa de aceite durante a perda. Se a autoridade voltar antes de qualquer tentativa, o convite continua valendo. **Regra para o que vier:** toda operação futura de suspensão, de conta ou de membership, chama `revokeInvitesWithoutAuthority` sob a trava, para cada membership da pessoa, como a remoção. Toda suspensão manual, até lá, revoga à mão os convites pendentes que a pessoa emitiu, com trilha;
+    - **os convites pendentes anteriores à migration são invalidados.** Não há evidência confiável de quem os criou, e a decisão do usuário é não inventar o criador nem atribuí-los ao Owner. A migration os apaga, com `invite.invalidated` (ator `system`, origem a migration) e a contagem num `NOTICE`. **Impacto:** todo link pendente emitido antes dela deixa de funcionar e precisa ser emitido de novo pela tela. **O convite de Owner do provisionamento não tem caminho de reemissão** num workspace que já existe: o provisionamento só cria workspace novo. Antes de aplicar a migration, a janela confere se há workspace com convite de Owner pendente e sem Owner ativo (consulta no `DEPLOY_STAGING` §4). Se houver, a janela para, e a reemissão vira decisão própria. Os convites aceitos ficam como histórico, sem criador;
+    - **resíduo declarado (revisão de segurança), a conta preparada:** o mecanismo cobre os convites **pendentes**. Um Admin que convida um segundo e-mail dele e aceita na hora tem uma segunda membership, que a remoção dele não remove. A trilha a rastreia: o `member.joined.inviteId` aponta para o `invite.created`, cujo ator é quem convidou. Mostrar a quem remove quem entrou pelos convites do removido é decisão de produto, não tomada aqui.
+
+    **Provas** (`invites.integration-spec.ts`, "a autoridade de quem convidou"), todas determinísticas:
+    - o convite guarda a membership autenticada, e o criador e a marca do provisionamento enviados pelo cliente são descartados;
+    - autor removido antes do aceite;
+    - autor rebaixado sem autoridade para o papel; rebaixado **sem `members:manage`** com permissões que ainda cobrem o papel (Admin → Member, convite Guest); e rebaixado que ainda tem a autoridade;
+    - autoridade perdida por fora da tela (conta suspensa): o banco conferido depois da resposta (convite apagado, uma `invite.invalidated`, nenhuma conta), e de novo depois de devolver a autoridade e tentar outra vez;
+    - autor removido e readmitido;
+    - três corridas com a trava segurada por uma conexão de fora:
+      - o aceite espera a trava e lê a autoridade depois dela;
+      - a remoção e o aceite, cada ordem com o desfecho dela, e sem invalidação espúria;
+      - a criação por quem perde `members:manage` enquanto espera;
+    - o convite do provisionamento;
+    - o CHECK e a FK composta, com membership de outro workspace recusada;
+    - todo aceite com token válido gasta exatamente um bcrypt (com conta, sem conta, ambígua).
+
+    O ensaio da migration (ADR-051), com dados fictícios: a falha forçada deixa o schema e os convites intactos; aplicada, ela invalida os pendentes com trilha sem e-mail e mantém o aceito; o CHECK recusa convite sem origem e com as duas.
+
+13. **Um critério só para "o mesmo e-mail" (decisão do usuário em 2026-10-29).** A criação, a detecção de membro, o aceite e a revogação pela remoção usam `mesmoEmail` (`workspaces/mesmo-email.ts`): igualdade sem diferenciar maiúsculas, e nada além — sem pontos, aliases ou regras de provedor. `%` e `_` são caracteres como os outros. A consulta usa `mode: 'insensitive'` só como **pré-filtro**: no Postgres ele vira `ILIKE`, que trata `_` e `%` como curinga, e a igualdade de fato é decidida sobre o que voltou. Assim, `Maria@` e `maria@` não deixam um convite escapar da revogação.
+
+    **Provas:**
+    - `mesmo-email.spec.ts`: a caixa, `_` e `%` literais, sem pontos nem aliases;
+    - no aceite, com a premissa afirmada (o pré-filtro traz a conta `axb@` para o padrão `a_b@`): o convite `a_b@` cria a própria conta e não usa a de `axb@`;
+    - na remoção, com a premissa afirmada: a remoção de `a%c@` revoga o convite `A%C@` e não o `abbbc@`. O `%` não passa pelo contrato do convite, mas pode estar numa conta já gravada.
+
+    **Identidade ambígua:** duas contas que só diferem na caixa. O aceite recusa com a mensagem única e o mesmo bcrypt, sem escolher uma conta, e registra no log a necessidade de resolução (só os ids do convite e do workspace, nunca o e-mail). O convite não é consumido.
+
+    **Exceções e resíduos declarados:**
+    - o provisionamento procura a conta do Owner pelo e-mail exato (`findUnique`), um caminho fora do critério. Com uma conta que difere só na caixa, ele cai no convite, que aplica o critério; com duas contas variantes, escolhe a de caixa exata em vez de recusar. Fica para a normalização;
+    - dois aceites simultâneos em workspaces diferentes, para `Maria@` e `maria@` sem conta prévia, podem criar duas contas: as travas são por workspace, e a unique de `User.email` diferencia a caixa. Isso não dá acesso, mas gera a identidade ambígua. A unique em `lower(email)` da normalização fecha.
+
+    **A normalização dos dados é entrega separada, antes do piloto** (aprovada pelo usuário). Ela começa pelo diagnóstico das colisões e pelo desenho da migração, e **não une contas nem escolhe uma vencedora automaticamente**.
+
+**Fora desta entrega:**
+
+- a D7, o papel para quem acumula funções (F5.1b, com o desenho apresentado antes do código);
+- a edição de papéis;
+- a suspensão (item 8);
+- o envio de convite por e-mail;
+- **a troca de workspace pela interface.** A API tem `POST /api/auth/switch-workspace`, mas o web não tem seletor: quem é membro de dois workspaces não troca pela tela. É uma lacuna registrada, fora do escopo pedido, para decisão do usuário.
+
+**Alternativas consideradas:**
+
+- **O token na query string (`?token=`):** vai para o log de acesso do nginx e do proxy, e para o `Referer`. Recusada.
+- **Mandar o convite por e-mail:** não há transporte, o canal de e-mail está fora do MVP, e nada desta entrega pode sair para pessoas reais.
+- **As descrições lidas do banco por `raw`:** abriria uma exceção nova ao §3.3. **Um mapa só no web:** o Core do web não pode conhecer as chaves do Clinics. Recusadas.
+- **Bloquear na tela o rebaixamento do último Owner:** exigiria a tela reconhecer o papel de Owner, e o ADR-017 proíbe decidir pelo nome. O servidor já recusa, e a tela mostra a recusa.
+
+**Consequências:**
+
+- O B4 do ADR-048 fica **parcialmente** atendido: a equipe passa a ser montada pela interface. O "um papel por membro" segue com a D7 (F5.1b).
+- Quem convida passa a ser responsável por entregar o link. A tela diz isso.
+- O `RoleDto` ganha um campo, sem quebrar quem o lê.
+- O convite de Owner criado pelo provisionamento (CLI) continua sem `invite.created`; o aceite dele gera `member.joined`. A auditoria dos convites vale para a API e a tela.
+- Registrados em `docs/MEMORY/technical-debt.md`, **sem serem riscos aceitos para uso real**:
+  - o e-mail de quem foi convidado na trilha (LGPD);
+  - a falta de `frame-ancestors` no `web`, que já existia e agora alcança também a página de aceite, com campo de senha;
+  - a normalização dos e-mails (entrega própria, antes do piloto).
+
+**Implementação e revisão (2026-10-29).** Revisão de fechamento por `reviewer` e `security`, uma rodada. O `security` aprovou com ressalvas (oito P2, nenhum P0 ou P1). O `reviewer` apontou um bloqueante, o item 10. Corrigido na entrega:
+
+- o item 10;
+- a conferência dentro da trava (item 6);
+- o aceite (item 4);
+- o `inviteId` (item 5);
+- na tela: sem os papéis carregados, nenhuma ação é oferecida e a falha aparece, em vez de "Papel acima das suas permissões" em todas as linhas; sem menção ao Clinics no código do Core;
+- nos docs: a SECURITY dizia que o aceite abria `cls.run` e usava advisory lock, o que o código não faz;
+- nos testes: o que só provava fumaça foi renomeado; o E2E confere `activeMembership: null` depois da remoção; o teste da recusa simula um caso possível.
+
+Na mesma revisão ficaram como pendentes o que exigia migration ou mexia no deploy. O usuário decidiu na sequência:
+
+- a autoridade de quem convidou entra na F5.1a, antes do push (item 12);
+- a normalização dos e-mails vira entrega própria, antes do piloto, e a F5.1a usa um critério só (item 13).
+
+**Revisão do delta (2026-10-29).** `reviewer` e `security` revisaram de novo os itens 4, 10, 11, 12 e 13 e a migration.
+
+- O `security` aprovou com ressalvas, sem P0 nem P1.
+- O `reviewer` apontou um bloqueante: o CHECK novo quebrava o teste que prova a FK composta Invite→Role, porque o convite pendente sem origem passava a ser recusado pelo CHECK e não pela FK. O insert do teste passou a satisfazer o CHECK, e quem recusa continua sendo a FK.
+
+Corrigido também:
+
+- o aceite gasta exatamente um bcrypt em todo caminho, antes da trava (item 4);
+- a reativação do ex-membro usa `updateMany` com o workspace, sem a operação por chave única;
+- a invalidação só grava trilha se apagou o convite;
+- o teste do curinga estava invertido e não provava nada; agora afirma a premissa do `ILIKE`;
+- os testes novos: `members:manage` perdido com o papel ainda coberto, `%` na remoção, a contagem de bcrypt e a marca do provisionamento vinda do cliente;
+- a trilha conferida na corrida;
+- as duas listas da tela relidas depois de remover e trocar, com os efeitos sobre os convites no texto;
+- a SECURITY (o registro do `raw` e a trava do aceite);
+- a numeração deste ADR.
+
+Ficaram declarados nos itens 10, 12 e 13:
+
+- a revogação pelo e-mail sem a regra do item 6;
+- a invalidação por fora da tela só na tentativa;
+- a conta preparada;
+- a reemissão do convite de Owner sem caminho;
+- o provisionamento fora do critério;
+- as contas duplicadas por caixa em aceites simultâneos.
+
+**Validação de fechamento (2026-10-29), sobre a versão commitada:**
+
+- **o ensaio da migration** (ADR-051), repetido sobre a versão final do arquivo: verde;
+- **as mutações:** 36 casos afetados pelo delta, todos mortos por teste que falha ("N failed" na suíte alvo), nenhum por compilação. O 37º, a descrição da extensão no registro, não foi afetado e morreu na rodada anterior;
+- **a bateria b82:**
+  - lint, formatação e build;
+  - unidade da API (409) e web (199);
+  - integração em 5 blocos (1.199);
+  - drift, migration do zero e `check:fk`;
+  - E2E (54).
+
+  Nenhum evento de sono.
+
+**Registradas à parte, sem valer como validação desta versão:**
+
+- **as 25 mutações da versão anterior à autoridade de quem convidou;**
+- **uma rodada de mutações que saiu 0 sem rodar caso nenhum:** a lista de nomes foi passada ao executor por variável sem aspas no zsh;
+- **a bateria b81, interrompida a pedido do usuário** porque ficaria desatualizada;
+- **a primeira execução do E2E da b82, que falhou.** A asserção nova pedia `/api/auth/me` logo depois do `reload` da pessoa removida, antes de a página renovar a sessão: 401 com o token antigo. O log do servidor mostra a renovação logo em seguida, com a consulta de notificações numa sessão sem workspace. O teste passou a esperar a resposta 200 da própria página. Repetidos lint, formatação e E2E: verdes. O mesmo log mostrou que as notificações respondem 500 numa sessão sem workspace, o que já acontecia antes; ficou registrado como dívida.

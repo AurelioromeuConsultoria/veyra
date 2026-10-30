@@ -41,8 +41,11 @@ export class InvitesController {
 
   @RequirePermissions('members:manage')
   @Delete(':inviteId')
-  async revoke(@Param('inviteId', new ParseUUIDPipe()) inviteId: string): Promise<{ ok: true }> {
-    await this.invites.revoke(inviteId);
+  async revoke(
+    @CurrentAuth() auth: AuthContext,
+    @Param('inviteId', new ParseUUIDPipe()) inviteId: string,
+  ): Promise<{ ok: true }> {
+    await this.invites.revoke(auth, inviteId);
     return { ok: true };
   }
 

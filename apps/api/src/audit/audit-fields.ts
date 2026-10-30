@@ -21,7 +21,8 @@ export const AUDIT_FIELDS: Record<string, readonly string[]> = {
   ],
   task: ['title', 'status', 'assigneeMembershipId', 'dueAt', 'priority'],
   note: [], // nada do corpo — só o fato de ter existido
-  membership: ['roleId', 'status'],
+  // `inviteId`: liga a entrada pelo convite ao `invite.created` (ADR-054 item 5)
+  membership: ['roleId', 'status', 'inviteId'],
   invite: ['email', 'roleId'],
   // `permissionKey`: a chave que o preenchimento da F4.1b concedeu (ADR-052 item 5)
   role: ['name', 'description', 'permissionKey'],

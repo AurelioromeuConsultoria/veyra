@@ -161,6 +161,62 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
 - **F4 — Fluxo comercial 📝 (plano PROPOSTO; divisão F4.0–F4.5 aprovada como organização do trabalho; F4.0, só documentação, em revisão: adendo 8 do ADR-048, revisão 3, e ADR-052, revisão 2, no Core, com a F4.1a, identidade sem atribuição silenciosa no Core, aprovada em 2026-10-23 e publicada e validada em 2026-10-26 (CI verde no `59535e9`), com o desvio 7 aceito no escopo atual e sem valer para a F4.1c. F4.1b: decisões C15 e C16, a do número, a da resposta depois do pedido de parar, a dos templates na transição e a do recibo registradas em 2026-10-26, e o plano parcialmente aprovado (a regra temporal da resposta depois do pedido de parar segue como proposta); implementação liberada para finalidades, consentimentos, bloqueio, permissões e a recusa transitória dos templates, implementada, publicada e validada em 2026-10-26, com a decisão 19 (`consents:read` nos registros) e a trilha de auditoria como supervisão, e fechada com a árvore `a06169f` verde no CI; a exceção da resposta depois do pedido de parar continua pendente, e até a decisão nada sai sob o pedido. F4.1c: plano aprovado em três subentregas (F4.1c-1 → F4.1c-2 → F4.1c-3), com as condições registradas; a F4.1c-1 (a trava dos escritores em massa, a normalização que revoga e o cancelamento neutro com `canceled`) implementada, revisada (`reviewer` e `security`, em três rodadas), publicada e validada em 2026-10-26 (`e070bc6`, os quatro jobs do CI verdes); a F4.1c-2 (templates versionados, revisão e releitura, sem abrir envio) implementada em 2026-10-26, revisada (`reviewer` e `security`, em três rodadas e na revisão do delta final), publicada e validada em 2026-10-27 (`60b7b16`, os quatro jobs do CI verdes); a F4.1c-3 (o `business_outbound`, o `approvalHash`, o lote, o E7 e, por último, o template no Inbox) implementada, revisada (`reviewer` e `security`) e validada em 2026-10-28 (ensaio, 63 mutações e a bateria b70), publicada e validada no mesmo dia (`89da993`, os quatro jobs do CI verdes); a F4.2 (o Clinics na porta do E7: o pedido de envio, a validade, o lote e a varredura do texto, com a parte do Core antes) aprovada com condições, implementada, revisada (`reviewer` e `security`, com a revisão do delta), publicada e validada em 2026-10-28 (`ec2d224`, os quatro jobs do CI verdes no run 40770037881), com o plano e a implementação no ADR-048 adendo 9; a F4.3 (o vínculo com o deal e as métricas do envio) aprovada com as decisões do usuário e implementada em 2026-10-28, revisada (`reviewer` e `security`, com a revisão do delta), publicada e validada em 2026-10-28 (`df3df82`, os quatro jobs do CI verdes no run 40784361361), com o plano e a implementação no ADR-048 adendo 10; a F4.4, as telas e o E2E do envio da clínica, do vínculo e das métricas, implementada em 2026-10-28, publicada e validada em 2026-10-29 (`be288bf`, os quatro jobs do CI verdes no run 40811895290), com o ADR-048 adendo 11; a F4.4b (o consentimento e o pedido de parar na tela, os templates fictícios com o procedimento `templates:demo`, o fluxo completo da demonstração pelo navegador e a conciliação da aprovação repetida) aprovada em 2026-10-29, implementada, revisada (`reviewer` e `security`, com a revisão do delta) e validada (37 mutações e a bateria b77), publicada e validada em 2026-10-29 (`fe87bc1`, os quatro jobs do CI verdes no run 40886775897), com o ADR-048 adendo 12; a F4.4c (o cadastro do canal compilado e o `demo:carregar`) publicada e validada em 2026-10-29 (`c378367`, os quatro jobs do CI verdes no run 40908871982), com o ADR-048 adendo 13; o plano operacional da demonstração no `docs/DEPLOY_STAGING.md` §14; a F4.4d (a barreira de manutenção, ADR-053) e a correção do backup e da restauração (ADR-046 adendo 1, com a restauração num banco novo trocado pelo nome) aprovadas, implementadas, revisadas (`reviewer` e `security`, com a revisão do delta) e validadas em 2026-10-29 (32 mutações, o ensaio do schema antigo, os testes de falha na imagem, a bateria b79, com três falhas de prazo registradas no ADR-053, e a repetição b80, verde), publicadas e validadas em 2026-10-29 (`3b69160`, os quatro jobs do CI verdes no run 40936814420); **a demonstração no ar no staging em 2026-10-29** (a janela do `docs/DEPLOY_STAGING.md` §14: as 23 migrations pendentes, o workspace `demo` com o Clinics, os dados fictícios e o transporte simulado; o INC-2026-10-26-01 fechado); a tela de revisão de template fica fora da demonstração, por decisão do usuário)** Confirmação e reativação pelo WhatsApp com aprovação humana, e conversão a partir do pipeline.
   **Pronto quando:** as três métricas são apuráveis com dados do piloto.
 
+- **Próximo ciclo: completar a operação da clínica, preservando o Core (definido pelo usuário em 2026-10-29).** São entregas pequenas, nesta ordem. Nenhuma frente é uma implementação única. **A ordem foi atualizada pelo usuário em 2026-10-29, depois de navegar na demonstração:**
+  1. fechar a F5.1a em commit local;
+  2. apresentar a proposta de experiência por produto (F5.E);
+  3. depois da revisão, implementar essa organização;
+  4. retomar a D7 (F5.1b), a correção de pacotes (F5.2) e as demais frentes.
+  - **F5.1a — gestão básica de equipe pela interface do Core** 🚧 (ADR-054; decisões do usuário de 2026-10-29). Pela tela:
+    - os membros, com papéis e estados;
+    - as permissões de cada papel;
+    - convidar e acompanhar convites, com o link entregue por quem convida e a página de aceite;
+    - trocar o papel e remover o acesso ao workspace, com o efeito de cada ação.
+
+    Também entram:
+    - a auditoria dos convites;
+    - a autoridade de quem convidou, conferida no aceite sob a trava dos membros, com migration (`20261029220000_invite_authority`), invalidação definitiva e os convites pendentes antigos invalidados;
+    - um critério só para "o mesmo e-mail".
+
+    Revisada (`reviewer` e `security`, mais o delta) e validada: 36 mutações e a bateria b82. Commit local, sem push nem deploy. **Atende só parte do B4:** a gestão de equipe e a D7 **não** estão resolvidas por inteiro.
+
+  - **F5.E — Experiência por produto** 📝 (proposta em preparação, depois do fechamento da F5.1a). A base é compartilhada, e o CRM e o Clinics têm, cada um, página inicial, navegação, linguagem e fluxos próprios:
+    - rotas diretas, busca, atalhos, links e cabeçalhos por experiência;
+    - o produto separado da permissão;
+    - a experiência como atributo do workspace, escolhida pela operação;
+    - a transição da demonstração.
+
+    Implementação só depois da revisão do usuário.
+
+  - **Normalização dos e-mails** (aprovada pelo usuário como entrega própria, **antes do piloto**): começa pelo diagnóstico das colisões e pelo desenho da migração, sem unir contas nem escolher vencedora automaticamente. Até lá vale o critério único da F5.1a (ADR-054 item 13).
+  1. **F5.1 — Equipe e permissões 🚧** (a F5.1a acima)
+     - **F5.1b — D7, quem acumula funções:** a menor evolução para combinar recepção, atendimento e, quando preciso, o Inbox. O desenho é apresentado antes do código. Owner ou Admin não servem de solução provisória, e nada de múltiplos papéis ou edição de permissões sem o desenho aprovado.
+  2. **F5.2 — Correção de um consumo de pacote registrado por engano.** Primeiro o plano, com as operações propostas e as permissões, antes do código:
+     - preserva o atendimento e o lançamento original;
+     - registra quem corrigiu e o motivo;
+     - impede a devolução duplicada da sessão;
+     - é consistente com concorrência, repetição e pacote cancelado ou concluído.
+
+     Ajuste de sessões não é estorno financeiro (ADR-048 adendo 7, item 9).
+
+  3. **F5.3 — Privacidade e acesso clínico (B1 e D8).** Uma proposta concreta, com as decisões de operação, as jurídicas e o trabalho técnico separados:
+     - quem vê conversas, notas, arquivos, metadados e atendimentos;
+     - o que a recepção precisa consultar;
+     - se o profissional vê todos os atendimentos ou só os próprios;
+     - como busca, exportação, auditoria e vínculos deixam de revelar conteúdo oculto.
+
+     Nenhum bloqueio é levantado e nenhuma visibilidade muda por inferência.
+
+  4. **F4.5 — WhatsApp real e preparação do piloto:**
+     - a revalidação do aprovador e das permissões antes do despacho;
+     - a validação com a WABA e os templates reais;
+     - o tratamento dos envios incertos e os alertas;
+     - a separação entre a quota interna e a cobrança monetária;
+     - o teste de carga e as condições de operação.
+
+     A exceção da resposta depois do pedido de parar continua pendente. Nada deste ciclo autoriza envio real.
+
+  5. **F6 — Financeiro e administração:** fase seguinte, sem implementação. O primeiro escopo é definido depois de avaliados os fluxos atuais. Preço registrado não é pagamento recebido.
+
 **Dependências externas:**
 
 - A **validação contra WABA real** é dependência **só da F4**, na parte que envia confirmações pelo WhatsApp. Ela **não bloqueia** a F0 nem as fases operacionais F1–F3.
@@ -168,17 +224,17 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
   - texto clínico digitado por pessoas nas superfícies do Core;
   - a regra "restrito por padrão" implementada e provada;
   - a decisão jurídica sobre exclusão e retenção;
-  - a gestão de equipe pela interface.
+  - a gestão de equipe pela interface: **atendida em parte pela F5.1a** (ADR-054). A autoridade de quem convidou entrou na F5.1a (ADR-054 item 12). Seguem abertos a D7 (um papel por membro, F5.1b) e a normalização dos e-mails, entrega própria antes do piloto (ADR-054 item 13).
 
   O vazamento do cache da tela entre sessões na mesma aba, achado do `security` na F2.3, foi corrigido antes de qualquer publicação da F2.3 (ADR-050).
 
   Até lá, staging e testes usam somente dados fictícios.
 
 - **Equipe (B4 e D7), dependências explícitas para um piloto com equipe.** A criação do papel `Profissional` não as resolve:
-  - não há convite nem troca de papel pela interface (só pela API), e não existe edição de papéis;
-  - cada membro tem um só papel.
+  - convite, aceite, troca de papel e remoção de acesso passam a ser feitos pela interface com a F5.1a (ADR-054, commit local, ainda não publicado). Não existe edição de papéis;
+  - cada membro tem um só papel (D7, F5.1b, em aberto).
 
-  Para F1–F3, a premissa é que Member cobre a recepção e `Profissional` cobre a consulta à agenda e o atendimento. **D7 é reaberta antes da F4** se alguma função precisar combinar o Clinics com o CRM ou o Inbox do Core. A gestão de equipe é lacuna do Core e precisa de entrega própria antes do piloto.
+  Para F1–F3, a premissa é que Member cobre a recepção e `Profissional` cobre a consulta à agenda e o atendimento. **D7 é reaberta antes da F4** se alguma função precisar combinar o Clinics com o CRM ou o Inbox do Core. A gestão de equipe é lacuna do Core e precisa de entrega própria antes do piloto. É a **F5.1** do próximo ciclo: a F5.1a é a tela (ADR-054), e a F5.1b, a D7.
 
 - **Integrações existentes:** ativar o Clinics num workspace faz os webhooks já configurados deixarem de receber qualquer evento ligado a contato (ADR-048 §6.5). Isso precisa ser comunicado a quem opera o workspace antes da ativação.
 

@@ -22,6 +22,8 @@ export interface ComposedRegistry {
   readonly outcomeOnlyModels: typeof OUTCOME_ONLY_MODELS;
   readonly relationTargets: Readonly<Record<string, Readonly<Record<string, string>>>>;
   readonly permissionKeys: ReadonlySet<string>;
+  /** a descrição de cada chave, como o Core e cada extensão a declararam (ADR-054 item 7) */
+  readonly permissionCatalog: Readonly<Record<string, string>>;
   readonly auditFields: Readonly<Record<string, readonly string[]>>;
 }
 
@@ -63,6 +65,7 @@ export function composeRegistry(
     relationTargets[model] = { ...fields };
   }
   const permissionKeys = new Set<string>(Object.keys(PERMISSION_CATALOG));
+  const permissionCatalog: Record<string, string> = { ...PERMISSION_CATALOG };
   const auditFields: Record<string, readonly string[]> = { ...AUDIT_FIELDS };
   const names: string[] = [];
 
@@ -128,7 +131,7 @@ export function composeRegistry(
       }
     }
 
-    for (const key of Object.keys(extension.permissionCatalog ?? {})) {
+    for (const [key, description] of Object.entries(extension.permissionCatalog ?? {})) {
       if (!key.startsWith(`${name}:`)) {
         throw new ExtensionCompositionError(name, `chave ${key} sem o prefixo "${name}:"`);
       }
@@ -136,6 +139,7 @@ export function composeRegistry(
         throw new ExtensionCompositionError(name, `chave ${key} repetida`);
       }
       permissionKeys.add(key);
+      permissionCatalog[key] = description;
     }
 
     for (const [entityType, fields] of Object.entries(extension.auditFields ?? {})) {
@@ -158,6 +162,7 @@ export function composeRegistry(
     outcomeOnlyModels: OUTCOME_ONLY_MODELS,
     relationTargets,
     permissionKeys,
+    permissionCatalog,
     auditFields,
   };
 }

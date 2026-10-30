@@ -634,6 +634,52 @@ muda o registro da migration e não desfaz nenhum objeto.
    ORDER BY 1, 2;
    ```
 
+   Para a `20261029220000_invite_authority` (F5.1a, ADR-054 item 12), com
+   **5 objetos**:
+   - as colunas `createdByMembershipId` e `issuedByProvisioning` do convite;
+   - a FK composta para `Membership`;
+   - o CHECK `Invite_autoridade_conhecida`;
+   - o índice de quem emitiu.
+
+   **A migration também apaga os convites PENDENTES anteriores a ela**, por
+   decisão do usuário: o criador deles é desconhecido. Cada um ganha uma
+   entrada `invite.invalidated` na trilha. Esses links deixam de funcionar e
+   precisam ser emitidos de novo pela tela de equipe. Se ela falhar, a
+   transação devolve todos (ensaiado com dados fictícios).
+
+   **Antes de aplicá-la, duas consultas, com a parada:**
+
+   ```sql
+   -- os pendentes que ela vai invalidar (o número esperado vai para o log da janela)
+   SELECT count(*) FROM "Invite" WHERE "acceptedAt" IS NULL;
+   -- PARADA: workspace com convite de Owner pendente e SEM Owner ativo. O convite
+   -- de Owner do provisionamento não tem caminho de reemissão num workspace que já
+   -- existe (ADR-054 item 12): qualquer linha aqui para a janela, e a reemissão
+   -- vira decisão própria
+   SELECT i."workspaceId", count(*) AS convites_de_owner
+     FROM "Invite" i JOIN "Role" r ON r."workspaceId" = i."workspaceId" AND r."id" = i."roleId"
+    WHERE i."acceptedAt" IS NULL AND r."systemKey" = 'owner'
+      AND NOT EXISTS (
+        SELECT 1 FROM "Membership" m JOIN "Role" o ON o."workspaceId" = m."workspaceId" AND o."id" = m."roleId"
+         WHERE m."workspaceId" = i."workspaceId" AND m."status" = 'active' AND o."systemKey" = 'owner')
+    GROUP BY i."workspaceId";
+   ```
+
+   ```sql
+   -- inventário da 20261029220000_invite_authority:
+   -- 0 linhas = nada ficou; 5 = inteira; outro número = estado parcial
+   SELECT 'coluna' AS k, column_name::text AS nome FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'Invite'
+       AND column_name IN ('createdByMembershipId', 'issuedByProvisioning')
+   UNION ALL SELECT 'restricao', conname::text FROM pg_constraint
+     WHERE conrelid = '"Invite"'::regclass AND contype <> 'n'
+       AND conname IN ('Invite_workspaceId_createdByMembershipId_fkey', 'Invite_autoridade_conhecida')
+   UNION ALL SELECT 'indice', indexname::text FROM pg_indexes
+     WHERE schemaname = 'public' AND tablename = 'Invite'
+       AND indexname = 'Invite_workspaceId_createdByMembershipId_idx'
+   ORDER BY 1, 2;
+   ```
+
    Para outra migration, monte o inventário do mesmo jeito, a partir das
    instruções do arquivo: cada `CREATE` e cada `ADD CONSTRAINT`.
 

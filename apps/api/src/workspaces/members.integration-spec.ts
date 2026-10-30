@@ -1,4 +1,5 @@
 import { INestApplication } from '@nestjs/common';
+import { PERMISSION_CATALOG } from '@veyra/contracts';
 import request from 'supertest';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProvisioningService } from './provisioning.service';
@@ -235,6 +236,74 @@ describe('Workspaces — membros, roles e provisionamento (integração)', () =>
       where: { workspaceId, status: 'active', role: { systemKey: 'owner' } },
     });
     expect(remaining).toBe(1);
+  });
+
+  // ── ADR-054: o que a tela de equipe usa ────────────────────────────────────
+
+  it('GET /roles traz a descrição de cada permissão do papel, do catálogo composto', async () => {
+    const session = await loginAs('member@veyra.test');
+    const res = await request(http)
+      .get('/api/roles')
+      .set('Cookie', session.cookieHeader)
+      .expect(200);
+    const membro = res.body.find((r: { id: string }) => r.id === roles.member);
+    expect(Object.keys(membro.permissionDescriptions).sort()).toEqual(
+      [...membro.permissions].sort(),
+    );
+    expect(membro.permissionDescriptions['contacts:read']).toBe(
+      PERMISSION_CATALOG['contacts:read'],
+    );
+  });
+
+  it('remover derruba a sessão aberta do alvo na requisição seguinte e fica na trilha', async () => {
+    const memberSession = await loginAs('member@veyra.test');
+    await request(http).get('/api/members').set('Cookie', memberSession.cookieHeader).expect(200);
+
+    const ownerSession = await loginAs('owner@veyra.test');
+    await request(http)
+      .delete(`/api/members/${memberMembershipId}`)
+      .set('Origin', ORIGIN)
+      .set('Cookie', ownerSession.cookieHeader)
+      .set('x-csrf-token', ownerSession.csrf)
+      .expect(200);
+
+    await request(http).get('/api/members').set('Cookie', memberSession.cookieHeader).expect(401);
+    const trilha = await prisma.raw.auditLog.findMany({
+      where: { workspaceId, action: 'member.removed', entityId: memberMembershipId },
+    });
+    expect(trilha).toHaveLength(1);
+    expect(trilha[0].after).toEqual({ status: 'removed' });
+  });
+
+  it('membership de outro workspace: trocar papel e remover dão 404, sem efeito', async () => {
+    const other = await createWorkspaceFixture(prisma, 'beta');
+    const alheioId = await createUserFixture(prisma, 'alheio@veyra.test');
+    const alheio = await createMembershipFixture(
+      prisma,
+      other.workspaceId,
+      alheioId,
+      other.roles.member,
+    );
+    const ownerSession = await loginAs('owner@veyra.test');
+    await request(http)
+      .patch(`/api/members/${alheio}/role`)
+      .set('Origin', ORIGIN)
+      .set('Cookie', ownerSession.cookieHeader)
+      .set('x-csrf-token', ownerSession.csrf)
+      .send({ roleId: roles.guest })
+      .expect(404);
+    await request(http)
+      .delete(`/api/members/${alheio}`)
+      .set('Origin', ORIGIN)
+      .set('Cookie', ownerSession.cookieHeader)
+      .set('x-csrf-token', ownerSession.csrf)
+      .expect(404);
+    const intacto = await prisma.raw.membership.findFirst({ where: { id: alheio } });
+    expect(intacto).toMatchObject({
+      status: 'active',
+      roleId: other.roles.member,
+      tokenVersion: 0,
+    });
   });
 
   describe('ProvisioningService (rotina administrativa)', () => {

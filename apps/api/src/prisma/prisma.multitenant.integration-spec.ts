@@ -237,8 +237,10 @@ describe('PrismaService — isolamento multi-workspace (integração)', () => {
     ).rejects.toThrow(/foreign key|RolePermission_workspaceId_roleId_fkey/i);
     await expect(
       prisma.raw.$executeRawUnsafe(
-        `INSERT INTO "Invite" ("id", "workspaceId", "email", "roleId", "tokenHash", "expiresAt")
-         VALUES (gen_random_uuid(), $1::uuid, 'x@x', $2::uuid, 'th-teste', now() + interval '1 day')`,
+        // `issuedByProvisioning`: satisfaz o CHECK da origem (ADR-054 item 12), e
+        // quem recusa continua sendo a FK composta Invite→Role
+        `INSERT INTO "Invite" ("id", "workspaceId", "email", "roleId", "tokenHash", "expiresAt", "issuedByProvisioning")
+         VALUES (gen_random_uuid(), $1::uuid, 'x@x', $2::uuid, 'th-teste', now() + interval '1 day', true)`,
         workspaceB,
         roleA.id,
       ),

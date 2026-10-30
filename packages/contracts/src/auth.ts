@@ -16,10 +16,13 @@ export type SwitchWorkspaceInput = z.infer<typeof switchWorkspaceSchema>;
 
 export const acceptInviteSchema = z.object({
   token: z.string().min(32).max(200),
-  // exigidos quando o e-mail do convite ainda não tem conta (única porta de
-  // entrada de usuário novo — ADR-014); ignorados quando a conta já existe
+  // o nome é exigido quando o e-mail do convite ainda não tem conta (única porta
+  // de entrada de usuário novo — ADR-014); ignorado quando a conta já existe
   name: z.string().min(1).max(120).optional(),
-  password: z.string().min(8).max(200).optional(),
+  // SEMPRE: a senha da conta existente ou a da conta nova. Opcional, o aceite só
+  // com o token respondia sem bcrypt quando havia conta, e o tempo revelava a
+  // conta (ADR-054 item 4)
+  password: z.string().min(8).max(200),
 });
 export type AcceptInviteInput = z.infer<typeof acceptInviteSchema>;
 

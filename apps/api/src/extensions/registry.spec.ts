@@ -34,6 +34,7 @@ describe('composeRegistry (ADR-047: E1, E2, E4)', () => {
       Object.keys(PERMISSION_CATALOG).sort(),
     );
     expect(CORE_REGISTRY.auditFields).toEqual(AUDIT_FIELDS);
+    expect(CORE_REGISTRY.permissionCatalog).toEqual(PERMISSION_CATALOG);
   });
 
   it('compõe uma extensão válida sem tocar no que é do Core', () => {
@@ -44,9 +45,13 @@ describe('composeRegistry (ADR-047: E1, E2, E4)', () => {
     // as relações originais do Contact continuam lá
     expect(registry.relationTargets.Contact.deals).toBe('Deal');
     expect(registry.permissionKeys.has('demo:read')).toBe(true);
+    // a descrição declarada pela extensão chega à tela de papéis (ADR-054 item 7)
+    expect(registry.permissionCatalog['demo:read']).toBe('Ver');
+    expect(registry.permissionCatalog['contacts:read']).toBe(PERMISSION_CATALOG['contacts:read']);
     expect(registry.auditFields.demoThing).toEqual(['status']);
     // compor não muta as constantes do Core
     expect(RELATION_TARGETS.Contact).not.toHaveProperty('demoThings');
+    expect(PERMISSION_CATALOG).not.toHaveProperty('demo:read');
   });
 
   const rejects: [string, (ext: CoreExtension) => CoreExtension][] = [

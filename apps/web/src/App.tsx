@@ -39,6 +39,10 @@ const AuditPage = lazy(() => import('./pages/Audit').then((m) => ({ default: m.A
 const WebhooksPage = lazy(() =>
   import('./pages/Webhooks').then((m) => ({ default: m.WebhooksPage })),
 );
+const TeamPage = lazy(() => import('./pages/Team').then((m) => ({ default: m.TeamPage })));
+const AcceptInvitePage = lazy(() =>
+  import('./pages/AcceptInvite').then((m) => ({ default: m.AcceptInvitePage })),
+);
 
 function Loading() {
   return (
@@ -62,6 +66,8 @@ export function App() {
       <Suspense fallback={<Loading />}>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          {/* pública: o aceite acontece antes de existir sessão (ADR-054 item 4) */}
+          <Route path="/convite" element={<AcceptInvitePage />} />
           <Route
             element={
               <Protected>
@@ -88,6 +94,7 @@ export function App() {
             <Route path="/tags" element={<TagsPage />} />
             <Route path="/settings/fields" element={<CustomFieldsPage />} />
             <Route path="/settings/webhooks" element={<WebhooksPage />} />
+            <Route path="/settings/team" element={<TeamPage />} />
             <Route path="/audit" element={<AuditPage />} />
             {VERTICAL_ROUTES.map((route) => (
               <Route key={route.path} path={route.path} element={route.element} />

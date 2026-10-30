@@ -238,6 +238,7 @@ model Membership {
   grantedConsents            ContactChannelConsent[]  @relation("ConsentGranter")
   purposeConsentsGranted     Consent[]                @relation("PurposeConsentGrantedBy")
   templateReviews            TemplateReview[]
+  createdInvites             Invite[]                 @relation("InviteCreatedBy")
   outboundApprovals          OutboundApproval[]
   purposeConsentsRevoked     Consent[]                @relation("PurposeConsentRevokedBy")
   stopBlocksCreated          StopBlock[]              @relation("StopBlockCreatedBy")
@@ -267,21 +268,35 @@ model Membership {
 
 /// Convite: a porta de entrada sem registro público (ADR-014).
 model Invite {
-  id          String    @id @default(uuid()) @db.Uuid
-  workspaceId String    @db.Uuid
-  email       String
-  roleId      String    @db.Uuid
-  tokenHash   String    @unique
-  expiresAt   DateTime
-  acceptedAt  DateTime?
-  createdAt   DateTime  @default(now())
+  id                    String    @id @default(uuid()) @db.Uuid
+  workspaceId           String    @db.Uuid
+  email                 String
+  roleId                String    @db.Uuid
+  tokenHash             String    @unique
+  expiresAt             DateTime
+  acceptedAt            DateTime?
+  createdAt             DateTime  @default(now())
+  /// Quem emitiu (ADR-054 item 12): a membership AUTENTICADA de quem criou,
+  /// nunca um id vindo do cliente. A autoridade dela é conferida de novo no
+  /// aceite. Nulo só no convite do provisionamento e no aceito antes da coluna.
+  createdByMembershipId String?   @db.Uuid
+  /// Convite emitido pelo provisionamento (CLI de operação), sem membership de
+  /// origem. Um CHECK no banco exige, no convite pendente, exatamente uma das
+  /// duas origens (`Invite_autoridade_conhecida`).
+  issuedByProvisioning  Boolean   @default(false)
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  role      Role      @relation(fields: [workspaceId, roleId], references: [workspaceId, id], onDelete: Cascade)
+  workspace Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  role      Role        @relation(fields: [workspaceId, roleId], references: [workspaceId, id], onDelete: Cascade)
+  // FK composta (ADR-010): quem convida é do MESMO workspace. `NO ACTION`: a
+  // exclusão do workspace passa (conferida no fim da instrução); a membership
+  // não é apagada pelo produto, e a remoção revoga os convites pendentes dela
+  createdBy Membership? @relation("InviteCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([workspaceId, email])
   // custo do ON DELETE CASCADE da FK composta (exclusão de Role varre Invite)
   @@index([workspaceId, roleId])
+  // a remoção e o rebaixamento revogam os convites pendentes de quem os criou
+  @@index([workspaceId, createdByMembershipId])
 }
 
 // ─── CRM: relacionamento (Entrega 3) ─────────────────────────────────────────
