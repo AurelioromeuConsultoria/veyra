@@ -1,5 +1,6 @@
 import type { ExtensionsOptions } from './extensions/extensions.module';
 import { ClinicsContentRestriction } from './verticals/clinics/clinics-content-restriction';
+import { ClinicsExperienceAvailability } from './verticals/clinics/clinics-experience';
 import { clinicsExtension } from './verticals/clinics/clinics.extension';
 import { ClinicsOutreachPrecondition } from './verticals/clinics/outreach/clinics-outreach.precondition';
 
@@ -16,4 +17,6 @@ export const COMPOSITION: ExtensionsOptions = {
   contentRestrictionProviders: [ClinicsContentRestriction],
   // a pré-condição do envio do negócio (E7): o pedido de envio da clínica (F4.2)
   outboundPreconditionProviders: [ClinicsOutreachPrecondition],
+  // a experiência da clínica (ADR-055): vale só com o vertical ativo
+  experienceAvailabilityProviders: [ClinicsExperienceAvailability],
 };

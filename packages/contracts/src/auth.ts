@@ -35,6 +35,20 @@ export interface MembershipSummaryDto {
   workspaceSlug: string;
   roleName: string;
   status: 'active' | 'suspended' | 'removed';
+  /** a experiência do workspace (ADR-055): a chave, para o seletor de workspace */
+  experience: string;
+}
+
+/**
+ * A experiência do workspace ativo, como o SERVIDOR a vê (ADR-055 adendo 1):
+ * `ready` (do Core, ou a extensão dona confirmou), `unavailable` (a extensão
+ * negou ou falhou) ou `unknown` (a chave não está declarada na composição). O
+ * servidor só informa; o web nunca cai em silêncio noutra experiência.
+ */
+export type ExperienceStatus = 'ready' | 'unavailable' | 'unknown';
+export interface ExperienceDto {
+  key: string;
+  status: ExperienceStatus;
 }
 
 export interface AuthUserDto {
@@ -46,12 +60,17 @@ export interface AuthUserDto {
   /** permissões da membership ativa */
   permissions: PermissionKey[];
   memberships: MembershipSummaryDto[];
+  /** a experiência do workspace ativo (null = usuário sem workspace) */
+  experience: ExperienceDto | null;
 }
 
 /**
- * Escopo da sessão para o cache da tela (ADR-050): identidade + workspace. O
- * servidor o devolve em toda resposta autenticada, com a identidade revalidada;
- * o web descarta a resposta cujo escopo não é o da aba.
+ * Escopo da sessão para o cache da tela (ADR-050): identidade + workspace +
+ * experiência (ADR-055 adendo 1). O servidor o devolve em toda resposta
+ * autenticada, com a identidade revalidada; o web descarta a resposta cujo
+ * escopo não é o da aba. A experiência entra porque ela pode mudar no MESMO
+ * workspace, sem troca de identidade, e o que era da experiência anterior não
+ * pode chegar à nova.
  */
 export const SESSION_SCOPE_HEADER = 'x-veyra-scope';
 /**
@@ -68,6 +87,10 @@ export const SESSION_EXPECTED_SCOPE_HEADER = 'x-veyra-expected-scope';
  */
 export const SESSION_ISSUED_HEADER = 'x-veyra-new-session';
 
-export function sessionScopeKey(userId: string, membershipId: string | null | undefined): string {
-  return `${userId}:${membershipId ?? '-'}`;
+export function sessionScopeKey(
+  userId: string,
+  membershipId: string | null | undefined,
+  experience: string | null | undefined,
+): string {
+  return `${userId}:${membershipId ?? '-'}:${experience ?? '-'}`;
 }

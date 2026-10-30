@@ -922,6 +922,8 @@ A F1.c, entrega 2, implementa o E5 com a forma abaixo.
 4. **Rota acessada direto com o vertical inativo** mostra uma mensagem de indisponível, sem consultar dados. Enquanto o status carrega, mostra só o carregamento; se ele falhar, mostra o erro. Uma falha de **recarga** do status também esconde o vertical (falha fechada), mesmo depois de uma confirmação anterior. É deliberado: é o critério aprovado, e o custo é perder um formulário não salvo numa rede instável.
 5. **Notas.** A estabilidade do hook vindo do contexto depende de convenção (a raiz entrega uma função de módulo) e dos testes de navegação; o projeto não usa `eslint-plugin-react-hooks`. O `vite.config.ts` cita o subpath de contratos do vertical em `optimizeDeps`: é configuração de build, não import de código, e a barreira de lint não o alcança. As rotas de vertical têm prefixo próprio e não podem coincidir com uma seção do Core (teste em `composition.test.ts`).
 
+> **Mudado pelo ADR-055 (2026-10-29), adendo 1, item 2.** O E5 deixa de ser só "contribuir grupos ao mapa único". A extensão passa a declarar uma experiência de produto (`CoreExtension.experience`), com uma porta nova de disponibilidade (`ExperienceAvailabilityProvider`). O mapa contribuído continua valendo até a E-2 do ADR-055.
+
 ### Adendo 5 (2026-10-19) — E6: mudança de restrição e aprovação serializadas pela linha do contato
 
 Condição aprovada na revisão do plano da F2 (ADR-048, adendo 2, item 2). **Se uma mudança POR CONTATO que torna um contato restrito comitar, nenhuma aprovação concorrente pode converter uma proposta daquele contato em mensagem ou tarefa.** Reconferir a porta antes da transação não basta: entre a checagem e o claim, a mudança pode comitar. Mudanças que valem para o workspace inteiro (ativar e desativar o vertical) usam trava consultiva por workspace e **não** se serializam com aprovações; ver item 7.
@@ -7919,7 +7921,7 @@ A forma (um arquivo versionado lido pelo catálogo falso do staging, e o cadastr
 
 ## ADR-054 — Gestão de equipe pela interface: a tela do Core sobre as APIs que já existem (F5.1a)
 
-**Status:** desenho registrado antes do código; as decisões dos itens 5, 6, 8, 12 e 13 foram aprovadas pelo usuário em 2026-10-29. Implementado, revisado e validado; commit local, **sem push nem deploy**. Atende só parte do B4 · **Data:** 2026-10-29
+**Status:** desenho registrado antes do código; as decisões dos itens 5, 6, 8, 12 e 13 foram aprovadas pelo usuário em 2026-10-29. Implementado, revisado e validado; publicado em 2026-10-29 (`0c4aba4`, CI verde no run 40994699372), **sem deploy**. Atende só parte do B4 · **Data:** 2026-10-29
 
 **Contexto.** O próximo ciclo do Clinics (ROADMAP, Entrega 10, "F5") começa pela equipe. Hoje a gestão de equipe é só por API. Esse é o bloqueio **B4** do ADR-048 §10: "Equipe não consegue ser montada pela interface (convite e troca de papel só por API)". O usuário pediu (2026-10-29) a gestão básica pela interface do Core, **reaproveitando as APIs existentes**, sem dois mecanismos para a mesma finalidade. Critérios:
 
@@ -8148,7 +8150,7 @@ Ficaram declarados nos itens 10, 12 e 13:
 
 ## ADR-055 — Experiência por produto: o CRM e o Clinics sobre a mesma base, cada um com início, navegação e linguagem próprios
 
-**Status:** PROPOSTO (2026-10-29), para revisão do usuário antes de qualquer código · **Data:** 2026-10-29
+**Status:** direção APROVADA pelo usuário em 2026-10-29, **com as condições do adendo 1**. A publicação deste texto como proposto não equivale à aprovação irrestrita dele: valem as condições. Implementação por entregas (E-1 a E-4), cada uma parando no commit local para revisão · **Data:** 2026-10-29
 
 **Contexto.** Navegando na demonstração (workspace `demo`), o usuário viu que o Clinics **soma** o seu grupo "Clínica" ao menu inteiro do CRM:
 
@@ -8395,3 +8397,126 @@ Depois disso, voltam a D7 (F5.1b), a correção de pacotes (F5.2) e as demais fr
 - Toda tela compartilhada passa a receber a linguagem da experiência em vez de texto fixo do CRM.
 - Links fixos do CRM no código do Core viram resolvedores.
 - O seletor de workspace sai do backlog.
+
+### Adendo 1 (2026-10-29): as condições da aprovação e o desenho da E-1
+
+**As condições do usuário, registradas como decisões dele (2026-10-29):**
+
+1. **Uma aplicação, experiências próprias.**
+   - Aprovados: a experiência definida por workspace, com padrão `crm`; a configuração auditada pela operação; e a ativação do Clinics separada dessa escolha.
+   - Cada experiência declara início, navegação, rotas, busca, links e linguagem. O Core continua compartilhado e sem regras clínicas.
+   - **Uma experiência por workspace é o limite desta entrega**, não uma regra para o futuro. "Usar dois workspaces" **não** é solução obrigatória para qualquer necessidade futura, porque separa dados e equipe. O uso combinado fica como decisão futura, sem implementação agora; o texto do item 7 que sugeria dois workspaces vale só como saída disponível hoje.
+2. **O menu do Clinics**, aprovado como direção:
+   - **as entradas:** Hoje, Agenda, Pacientes, Conversas, Captação, Acompanhamento, Indicadores e Configurações;
+   - **os grupos:** Captação, Acompanhamento e Indicadores **agrupam** os seus destinos, sem deixar todos os subitens expostos o tempo todo;
+   - **Configurações** abre uma página organizada em seções;
+   - **Tarefas e Sinais:** a retirada dos dois desta primeira experiência Clinics fica **aprovada pelo usuário agora**, em 2026-10-29. Antes eram só propostas (D-E1 e D-E2), não decisões dele. Isso **não resolve o B1** nem autoriza remover funcionalidade ou dado do Core;
+   - **o funil** fica em Captação (D-E4);
+   - **o nome do papel Member** continua com a D7. Nada o renomeia, nem implicitamente, para "Recepção" (D-E5).
+3. **Interessados e pacientes.**
+   - **A separação de listas não tira o paciente da captação.** Pacientes existentes conversam, têm oportunidades e contratam serviços novos.
+   - **"Interessados" é a lista dos contatos ainda sem ficha de paciente,** e só isso. Ela não restringe o funil nem as conversas, que continuam com todos os contatos. Criar a ficha continua sendo uma ação explícita.
+   - **O filtro e a paginação ficam no servidor.** A porta genérica "com ou sem extensão" (D-E6) **não** está aprovada. Primeiro se avalia uma rota do Clinics sobre os componentes existentes. Se a extensão genérica for necessária, o contrato e as permissões dela vêm justificados.
+   - **Nenhum filtro vira caminho alternativo** para revelar o vínculo de paciente a quem não pode consultá-lo.
+   - A consulta entra na entrega que a usa (E-3), e não na fundação.
+4. **Permissões e transições.**
+   - A composição por produto organiza a experiência. Ela **não** substitui a autorização nem resolve a privacidade clínica.
+   - **O Hoje** consulta só os dados permitidos ao papel. O `Profissional` não recebe consulta nem cartão de conversas ou de oportunidades sem as permissões respectivas.
+   - **Na troca de workspace ou de experiência:**
+     - os dados, as buscas e as respostas pendentes da experiência anterior são descartados;
+     - o menu do outro produto nunca aparece, nem por um instante;
+     - experiência desconhecida ou indisponível **não** cai em silêncio no CRM.
+
+     Tudo isso vale **também quando a experiência muda dentro do mesmo workspace**, sem troca de identidade.
+
+   - **Sem workspace ativo:** a tela neutra, com a escolha de outro workspace quando existir. O 500 das notificações nesse estado é corrigido.
+5. **Execução.**
+   - Começar pela E-1. Cada entrega é coerente e testável e para no commit local para revisão.
+   - A migration inicial mantém todo workspace em `crm`. **A experiência `clinics` não é selecionável pela operação antes de o frontend dela estar pronto (E-3).**
+   - Depois vêm a E-2 e a E-3, com testes das duas experiências e validação proporcional.
+   - **A E-4, a troca da demonstração, depende de autorização própria.** O staging não muda enquanto o usuário navega nele.
+
+**O desenho da E-1 (fundação: contratos e API), decidido antes do código:**
+
+1. **A coluna.** `Workspace.experience`, texto, `NOT NULL DEFAULT 'crm'`, com um CHECK de formato (`^[a-z][a-z0-9]{1,30}$`, o mesmo das chaves de extensão). O banco não conhece as chaves válidas: quem as conhece é a composição, como nas permissões. A migration põe todo workspace em `crm`. Segue o ADR-051, com transação, ensaio de falha e recuperação.
+2. **A declaração (adendo ao ADR-047, E5).**
+   - O Core declara a experiência `crm`.
+   - Uma extensão declara no máximo uma experiência, com a chave igual ao próprio nome: `experience: { selectable }`.
+   - O registro composto passa a guardar as experiências, com a chave, a extensão dona e se é selecionável pela operação.
+   - **Nenhuma extensão pode se chamar `crm`.**
+   - **O Clinics declara `clinics` com `selectable: false`** até a E-3.
+3. **A disponibilidade, uma porta nova** (`ExperienceAvailabilityProvider`, registrada pela composição como as portas do E6 e do E7).
+   - Toda experiência de extensão tem exatamente um provedor, e o boot recusa a composição sem ele. O provedor responde se a experiência está disponível no workspace; o do Clinics responde com o vertical **ativo**.
+   - O `ExperienceService` do Core devolve:
+     - `ready`: a experiência é do Core, ou o provedor confirmou;
+     - `unavailable`: o provedor negou, ou falhou, o que conta como negação;
+     - `unknown`: a chave não está declarada.
+4. **A sessão diz a experiência.**
+   - O `AuthUserDto` ganha `experience: { key, status } | null` para o workspace ativo, e cada `MembershipSummaryDto` ganha a chave, para o seletor da E-2.
+   - O servidor só informa. Quem decide o que mostrar é o web, e nunca cai em silêncio no CRM.
+5. **O escopo da sessão inclui a experiência (ADR-050).** O `sessionScopeKey` passa a ser `usuário:membership:experiência`. O `JwtAuthGuard` lê a experiência do workspace na mesma leitura da membership revalidada. Pode sair como uma segunda instrução SQL, pela chave primária do workspace (o `relationJoins` do Prisma não está ligado). Quando a experiência muda no mesmo workspace e sem troca de identidade, o mecanismo do ADR-050 já existente faz o resto:
+   - toda resposta seguinte traz o escopo novo, e a aba descarta a resposta, o cache inteiro e as buscas em voo, e recomeça;
+   - a requisição de uma aba ainda na experiência antiga recebe 409 **antes de executar**.
+
+   O web da E-1 só passa a calcular o escopo com a experiência, para continuar casando com o servidor. A tela por experiência é da E-2.
+
+6. **A CLI de operação** `workspace-experience --slug <s> --experience <chave>`. Ela recusa:
+   - a chave desconhecida;
+   - a experiência **não selecionável**, o que hoje inclui `clinics`;
+   - a experiência indisponível no workspace.
+
+   A troca grava `workspace.experience_changed` na trilha (ator `system`, só a chave antes e depois; `workspace` entra na allowlist com `experience`). Pedir a experiência que já está é recusado como sem efeito. A lógica fica num arquivo próprio, testável com uma experiência de teste.
+
+7. **As rotas pessoais sem workspace.** Quando a sessão não tem workspace, as notificações (`@AuthenticatedOnly`) respondem a lista vazia com contagem zero, "marcar uma" responde 404 e "marcar todas" responde zero marcadas, em vez do 500 da proteção multitenant. Com workspace, uma falha real da consulta continua sendo erro. É a correção pedida no item 4.
+
+**Fora da E-1:** a tela por experiência, o seletor de workspace e a tela "sem workspace" (E-2); o Hoje da clínica, os Interessados, o menu e a linguagem do Clinics (E-3); a troca da demonstração (E-4).
+
+**A transição das abas abertas (revisões da E-1; limite aceito pelo usuário em 2026-10-29).** O formato novo do escopo quebra o protocolo com o web já carregado:
+
+- **o laço:** uma aba aberta antes do deploy calcula `usuário:membership`, e o servidor responde `usuário:membership:experiência`. A aba entra num laço de reinício: 409, troca de sessão, `/auth/me`, a mesma adoção. Ele dura até alguém recarregar a página;
+- **a falha é fechada,** porque nada executa. Mas o laço consome o limite de requisições por IP de quem divide a rede;
+- **publicar API e web juntos não resolve as abas já abertas.** Uma tolerância só no servidor também não resolve, porque o web antigo descarta as respostas no formato novo.
+
+**Fica aceito apenas para a transição controlada da demonstração:**
+
+- aviso prévio;
+- fechamento ou recarga completa das abas;
+- conferência depois da retomada.
+
+O roteiro está no `DEPLOY_STAGING` §4. Nenhuma refatoração de compatibilidade entra na E-1.
+
+**A E-2 trata a incompatibilidade de forma limitada:** se a mesma divergência de escopo voltar logo depois de readotar a sessão, a tela diz que é preciso atualizar a página. Não há reinício nem nova tentativa automática sem fim. Isso não corrige, de forma retroativa, um cliente antigo já carregado.
+
+**Como o web fica sabendo da mudança de estado (para a E-2).** A passagem de `ready` para `unavailable`, por exemplo quando o Clinics é desativado, não muda o escopo. Pôr o estado no escopo exigiria consultar a porta a cada requisição, e um prazo estourado faria o escopo oscilar. O web relê o `/auth/me`:
+
+- quando uma rota do vertical responde 404 ou 403 de vertical inativo;
+- quando a aba volta a ficar visível;
+- no fim da validade do cache.
+
+O servidor continua sem decidir autorização pela experiência. Isso precisa seguir verdadeiro na E-2 e na E-3.
+
+**A implementação da E-1 (2026-10-29), com as revisões de fechamento.** `reviewer` e `security` aprovaram com ressalvas, sem bloqueio nem P0/P1. Corrigido na entrega:
+
+- **o contexto da porta:** a do Clinics roda num contexto **próprio** (`cls.run({ ifNested: 'override' })`). Antes ela herdava a identidade de quem chamava;
+- **a origem do `workspaceId`:** a porta e o `status()` documentam que ele vem só de uma membership da própria sessão ou da operação, para a porta não virar um oráculo de outro tenant;
+- **os testes novos:**
+  - a porta com dois workspaces e chamada de dentro do contexto do outro, com a falha e com o contexto de quem chamou conferido depois;
+  - o mesmo, em unidade, provando que a identidade de quem chama não entra;
+  - o escopo `usuário:-:-` da sessão sem workspace;
+  - a falha real das notificações com workspace, que continua erro;
+  - a troca condicional da CLI;
+- **os comentários e os docs** que ainda diziam "identidade + workspace";
+- **o ponteiro no ADR-047, adendo 4.**
+
+**Validação de fechamento da E-1 (2026-10-30), sobre a versão commitada:**
+
+- o ensaio da migration `20261030090000_workspace_experience` (ADR-051): a falha forçada deixa schema e dados intactos; aplicada, ela põe todo workspace em `crm`; o CHECK recusa a chave fora do formato;
+- **as mutações:** 18 casos das garantias novas, todos mortos por teste que falha ("N failed" na suíte alvo), nenhum por compilação. O log tem os 18 resultados;
+- **a bateria b83:**
+  - lint, formatação e build;
+  - unidade da API (419) e web (201);
+  - integração em 5 blocos (1.215);
+  - drift, migration do zero e `check:fk`;
+  - E2E (54).
+
+  Nenhum evento de sono.

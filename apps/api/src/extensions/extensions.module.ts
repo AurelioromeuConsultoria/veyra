@@ -5,6 +5,11 @@ import {
   ContentRestrictionService,
   type ContentRestrictionProvider,
 } from './content-restriction';
+import {
+  EXPERIENCE_AVAILABILITY_PROVIDERS,
+  ExperienceService,
+  type ExperienceAvailabilityProvider,
+} from './experience';
 import type { CoreExtension } from './extension';
 import {
   OUTBOUND_PRECONDITION_PROVIDERS,
@@ -23,6 +28,11 @@ export interface ExtensionsOptions {
    * uma por prefixo de origem
    */
   outboundPreconditionProviders?: readonly Type<OutboundPreconditionProvider>[];
+  /**
+   * a disponibilidade de cada experiência de extensão (ADR-055 adendo 1): uma
+   * por experiência declarada, conferida no boot
+   */
+  experienceAvailabilityProviders?: readonly Type<ExperienceAvailabilityProvider>[];
 }
 
 /**
@@ -38,6 +48,7 @@ export class ExtensionsModule {
     const registry = composeRegistry(options.extensions);
     const providerClasses = [...(options.contentRestrictionProviders ?? [])];
     const precondicoes = [...(options.outboundPreconditionProviders ?? [])];
+    const disponibilidades = [...(options.experienceAvailabilityProviders ?? [])];
     return {
       module: ExtensionsModule,
       imports: [DiscoveryModule],
@@ -57,9 +68,21 @@ export class ExtensionsModule {
           inject: precondicoes,
         },
         OutboundPreconditionService,
+        ...disponibilidades,
+        {
+          provide: EXPERIENCE_AVAILABILITY_PROVIDERS,
+          useFactory: (...instances: ExperienceAvailabilityProvider[]) => instances,
+          inject: disponibilidades,
+        },
+        ExperienceService,
         PermissionCatalogCheck,
       ],
-      exports: [EXTENSION_REGISTRY, ContentRestrictionService, OutboundPreconditionService],
+      exports: [
+        EXTENSION_REGISTRY,
+        ContentRestrictionService,
+        OutboundPreconditionService,
+        ExperienceService,
+      ],
     };
   }
 }

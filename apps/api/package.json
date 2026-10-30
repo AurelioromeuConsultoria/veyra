@@ -21,6 +21,7 @@
     "consents:purpose": "nest build && node dist/cli/consent-purpose.js",
     "templates:register": "nest build && node dist/cli/templates-register.js",
     "templates:demo": "nest build && node dist/cli/templates-demo.js",
+    "workspace:experience": "nest build && node dist/cli/workspace-experience.js",
     "demo:carregar": "nest build && node dist/verticals/clinics/cli/demo-carregar.js",
     "clinics:enable": "nest build && node dist/verticals/clinics/cli/clinics.js enable",
     "clinics:disable": "nest build && node dist/verticals/clinics/cli/clinics.js disable",

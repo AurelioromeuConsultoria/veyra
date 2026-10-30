@@ -23,6 +23,8 @@ export const AUDIT_FIELDS: Record<string, readonly string[]> = {
   note: [], // nada do corpo — só o fato de ter existido
   // `inviteId`: liga a entrada pelo convite ao `invite.created` (ADR-054 item 5)
   membership: ['roleId', 'status', 'inviteId'],
+  // a troca da experiência do produto pela CLI de operação (ADR-055 adendo 1)
+  workspace: ['experience'],
   invite: ['email', 'roleId'],
   // `permissionKey`: a chave que o preenchimento da F4.1b concedeu (ADR-052 item 5)
   role: ['name', 'description', 'permissionKey'],

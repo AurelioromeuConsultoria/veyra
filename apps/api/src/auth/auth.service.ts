@@ -4,6 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import type { AuthUserDto, MembershipSummaryDto, PermissionKey } from '@veyra/contracts';
 import { compare } from 'bcryptjs';
 import { AuthContext } from '../common/decorators';
+import { ExperienceService } from '../extensions/experience';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   JWT_AUDIENCE,
@@ -39,6 +40,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    private readonly experiences: ExperienceService,
   ) {}
 
   private accessTtlSeconds(): number {
@@ -255,6 +257,7 @@ export class AuthService {
       workspaceSlug: m.workspace.slug,
       roleName: m.role.name,
       status: m.status,
+      experience: m.workspace.experience,
     }));
     const active = summaries.find((m) => m.membershipId === activeMembershipId) ?? null;
     let permissions: PermissionKey[] = [];
@@ -274,6 +277,14 @@ export class AuthService {
       activeMembership: active,
       permissions,
       memberships: summaries,
+      // a do workspace ATIVO, com o estado como o servidor o vê (ADR-055 adendo
+      // 1): o web decide o que mostrar, e nunca cai em silêncio no CRM
+      experience: active
+        ? {
+            key: active.experience,
+            status: await this.experiences.status(active.workspaceId, active.experience),
+          }
+        : null,
     };
   }
 }

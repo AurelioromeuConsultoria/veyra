@@ -77,6 +77,10 @@ model Workspace {
   /// Não há caminho de mudança: mudar reinterpretaria números existentes, e
   /// isso exige diagnóstico e procedimento explícito (CHECK de duas letras)
   phoneRegion String          @default("BR")
+  /// A experiência do produto (ADR-055): `crm` por padrão. O banco confere só o
+  /// FORMATO (CHECK "Workspace_experience_formato"); as chaves válidas são as da
+  /// composição, que o Core não conhece. Muda só pela CLI de operação, auditada.
+  experience  String          @default("crm")
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
 

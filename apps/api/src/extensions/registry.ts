@@ -25,7 +25,23 @@ export interface ComposedRegistry {
   /** a descrição de cada chave, como o Core e cada extensão a declararam (ADR-054 item 7) */
   readonly permissionCatalog: Readonly<Record<string, string>>;
   readonly auditFields: Readonly<Record<string, readonly string[]>>;
+  /**
+   * As experiências de produto (ADR-055): a do Core (`crm`) e a de cada
+   * extensão que declara uma, com a dona (`null` = Core) e se a operação pode
+   * escolhê-la.
+   */
+  readonly experiences: ReadonlyMap<string, ExperienceDeclaration>;
 }
+
+export interface ExperienceDeclaration {
+  readonly key: string;
+  /** a extensão dona; `null` = a experiência do Core */
+  readonly extension: string | null;
+  readonly selectable: boolean;
+}
+
+/** A experiência do Core, o padrão de todo workspace (ADR-055). */
+export const CORE_EXPERIENCE = 'crm';
 
 export const EXTENSION_REGISTRY = Symbol('EXTENSION_REGISTRY');
 
@@ -67,6 +83,9 @@ export function composeRegistry(
   const permissionKeys = new Set<string>(Object.keys(PERMISSION_CATALOG));
   const permissionCatalog: Record<string, string> = { ...PERMISSION_CATALOG };
   const auditFields: Record<string, readonly string[]> = { ...AUDIT_FIELDS };
+  const experiences = new Map<string, ExperienceDeclaration>([
+    [CORE_EXPERIENCE, { key: CORE_EXPERIENCE, extension: null, selectable: true }],
+  ]);
   const names: string[] = [];
 
   for (const extension of extensions) {
@@ -74,8 +93,16 @@ export function composeRegistry(
     if (!NAME_RE.test(name)) {
       throw new ExtensionCompositionError(name, 'nome fora do padrão [a-z][a-z0-9]{1,30}');
     }
-    if (CORE_NAMESPACES.has(name)) {
+    if (CORE_NAMESPACES.has(name) || name === CORE_EXPERIENCE) {
       throw new ExtensionCompositionError(name, 'nome colide com um namespace do Core');
+    }
+    if (extension.experience) {
+      // a chave da experiência É o nome: uma por extensão, sem colisão possível
+      experiences.set(name, {
+        key: name,
+        extension: name,
+        selectable: extension.experience.selectable,
+      });
     }
     if (names.includes(name)) {
       throw new ExtensionCompositionError(name, 'nome repetido');
@@ -164,6 +191,7 @@ export function composeRegistry(
     permissionKeys,
     permissionCatalog,
     auditFields,
+    experiences,
   };
 }
 

@@ -30,4 +30,11 @@ export interface CoreExtension {
   readonly permissionCatalog?: Readonly<Record<string, string>>;
   /** allowlist de auditoria por tipo de entidade (E4) */
   readonly auditFields?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * A experiência de produto da extensão (ADR-055; adendo ao E5), no máximo
+   * uma, com a chave igual ao `name`. `selectable`: a operação pode pô-la num
+   * workspace — falso enquanto o frontend dela não existe. A disponibilidade
+   * por workspace vem de um `ExperienceAvailabilityProvider` da composição.
+   */
+  readonly experience?: { readonly selectable: boolean };
 }

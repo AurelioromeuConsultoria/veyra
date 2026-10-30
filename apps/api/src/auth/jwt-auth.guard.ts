@@ -105,7 +105,14 @@ export class JwtAuthGuard implements CanActivate {
               status: 'active',
               workspace: { status: 'active' },
             },
-            select: { id: true, workspaceId: true, roleId: true, tokenVersion: true },
+            select: {
+              id: true,
+              workspaceId: true,
+              roleId: true,
+              tokenVersion: true,
+              // entra no escopo da sessão (ADR-055 adendo 1, item 5)
+              workspace: { select: { experience: true } },
+            },
           })
         : Promise.resolve(null),
     ]);
@@ -136,7 +143,14 @@ export class JwtAuthGuard implements CanActivate {
     // de qual sessão é esta resposta (ADR-050): o web descarta a que não for da
     // aba — p. ex. depois de um login ou troca de workspace em OUTRA aba, que
     // muda o cookie de todas. Ids que a própria sessão já recebe em /auth/me.
-    const escopo = sessionScopeKey(payload.sub, payload.membershipId);
+    // a experiência do workspace entra no escopo: mudá-la no MESMO workspace, sem
+    // troca de identidade, descarta o que era da anterior e recusa (409) a aba
+    // que ainda a esperava (ADR-055 adendo 1, item 5)
+    const escopo = sessionScopeKey(
+      payload.sub,
+      payload.membershipId,
+      membership?.workspace.experience ?? null,
+    );
     context.switchToHttp().getResponse<Response>().setHeader(SESSION_SCOPE_HEADER, escopo);
     // a aba diz de qual sessão acha que é; se o cookie é de OUTRA (login ou troca
     // em outra aba), nada é executado: a mutação da aba desatualizada sairia com

@@ -23,7 +23,8 @@ export const criarQueryClient: Criar = (semente) => {
 
 /**
  * Um cache por sessão (ADR-050). A cada troca — login, logout, sessão perdida,
- * outra identidade ou outro workspace — nasce um `QueryClient` novo e a árvore
+ * outra identidade, outro workspace ou outra experiência (ADR-055) — nasce um
+ * `QueryClient` novo e a árvore
  * abaixo remonta: nada da sessão anterior (consulta, mutação ou estado local)
  * fica visível para a seguinte. A separação é física, sem depender de cada
  * chave de consulta levar identidade e workspace.

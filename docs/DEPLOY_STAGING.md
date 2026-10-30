@@ -680,6 +680,38 @@ muda o registro da migration e não desfaz nenhum objeto.
    ORDER BY 1, 2;
    ```
 
+   Para a `20261030090000_workspace_experience` (E-1 do ADR-055), com **2
+   objetos**: a coluna `experience` do workspace (padrão `crm`, que todo
+   workspace existente recebe) e o CHECK `Workspace_experience_formato`.
+
+   ```sql
+   -- inventário da 20261030090000_workspace_experience:
+   -- 0 linhas = nada ficou; 2 = inteira; outro número = estado parcial
+   SELECT 'coluna' AS k, column_name::text AS nome FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'Workspace' AND column_name = 'experience'
+   UNION ALL SELECT 'restricao', conname::text FROM pg_constraint
+     WHERE conrelid = '"Workspace"'::regclass AND contype <> 'n'
+       AND conname = 'Workspace_experience_formato'
+   ORDER BY 1, 2;
+   ```
+
+   **O deploy que levar a E-1 do ADR-055 muda o formato do escopo da
+   sessão** (`X-Veyra-Scope` ganha a experiência). Uma aba aberta antes dele,
+   com o web antigo carregado, entra num laço de reinício até ser recarregada.
+   A falha é fechada, mas o laço consome o limite de requisições por IP de
+   quem divide a rede. Publicar API e web juntos **não** resolve as abas já
+   abertas. Por isso:
+   - **antes da janela:** aviso prévio a quem usa o staging, para fechar todas
+     as abas do Veyra ou recarregá-las por completo depois da retomada;
+   - **na retomada:** abrir o Veyra numa aba NOVA, entrar e conferir que
+     `GET /api/auth/me` traz `experience: {"key":"crm","status":"ready"}` (ou
+     a do workspace) e que a navegação não mostra 409 em sequência (aba Rede
+     do navegador);
+   - **o limite:** aceito pelo usuário só para a transição controlada da
+     demonstração (ADR-055, adendo 1). A E-2 passa a mostrar "atualize a
+     página" numa divergência repetida, sem reinício sem fim; isso não corrige
+     um cliente antigo já carregado.
+
    Para outra migration, monte o inventário do mesmo jeito, a partir das
    instruções do arquivo: cada `CREATE` e cada `ADD CONSTRAINT`.
 

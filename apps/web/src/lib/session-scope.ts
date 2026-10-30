@@ -1,7 +1,8 @@
 import { sessionScopeKey, type AuthUserDto } from '@veyra/contracts';
 
 /**
- * De qual sessão é o cache da aba (ADR-050). Escopo = identidade + workspace:
+ * De qual sessão é o cache da aba (ADR-050). Escopo = identidade + workspace +
+ * experiência (ADR-055 adendo 1):
  * `undefined` = ainda não conhecido (a aba acabou de abrir), `null` = sem
  * sessão. A ÉPOCA sobe a cada troca de sessão: toda requisição anota a sua, e a
  * resposta de outra época nunca chega a quem pediu (ver `lib/api.ts`).
@@ -26,7 +27,9 @@ export class SessaoEncerradaError extends Error {
 }
 
 export function escopoDe(user: AuthUserDto): string {
-  return sessionScopeKey(user.id, user.activeMembership?.membershipId);
+  // a experiência entra no escopo (ADR-055 adendo 1): mudá-la no mesmo workspace
+  // é troca de sessão para a tela
+  return sessionScopeKey(user.id, user.activeMembership?.membershipId, user.experience?.key);
 }
 
 export function epocaAtual(): number {
@@ -52,7 +55,8 @@ export function trocarSessao(user: AuthUserDto | null | undefined): void {
 
 /**
  * O que `/auth/me` ou o refresh disseram sobre a sessão. Na primeira vez, só
- * adota; depois, outra identidade ou outro workspace é troca de sessão.
+ * adota; depois, outra identidade, outro workspace ou outra experiência é troca
+ * de sessão.
  */
 export function adotarSessao(user: AuthUserDto | null): void {
   const novo = user ? escopoDe(user) : null;

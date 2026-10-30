@@ -292,12 +292,15 @@ describe('Auth — fluxo completo (integração HTTP)', () => {
       .get('/api/auth/me')
       .set('Cookie', session.cookieHeader)
       .expect(200);
-    expect(me.headers[SESSION_SCOPE_HEADER]).toBe(`${owner!.id}:${ownerMembershipId}`);
+    expect(me.headers[SESSION_SCOPE_HEADER]).toBe(`${owner!.id}:${ownerMembershipId}:crm`);
     expect(me.headers[SESSION_ISSUED_HEADER]).toBeUndefined();
     // a MESMA chave que o web calcula a partir do corpo de /auth/me
     expect(me.headers[SESSION_SCOPE_HEADER]).toBe(
-      sessionScopeKey(me.body.id, me.body.activeMembership.membershipId),
+      sessionScopeKey(me.body.id, me.body.activeMembership.membershipId, me.body.experience.key),
     );
+    // a sessão informa a experiência (ADR-055 adendo 1): o padrão, pronta
+    expect(me.body.experience).toEqual({ key: 'crm', status: 'ready' });
+    expect(me.body.activeMembership.experience).toBe('crm');
 
     // a troca responde no escopo de quem pediu; as respostas seguintes, no novo
     const trocou = await request(http)
@@ -307,13 +310,13 @@ describe('Auth — fluxo completo (integração HTTP)', () => {
       .set('x-csrf-token', session.csrf)
       .send({ membershipId: membership2 })
       .expect(201);
-    expect(trocou.headers[SESSION_SCOPE_HEADER]).toBe(`${owner!.id}:${ownerMembershipId}`);
+    expect(trocou.headers[SESSION_SCOPE_HEADER]).toBe(`${owner!.id}:${ownerMembershipId}:crm`);
     expect(trocou.headers[SESSION_ISSUED_HEADER]).toBe('1');
     const depois = await request(http)
       .get('/api/auth/me')
       .set('Cookie', extractSession(trocou).cookieHeader)
       .expect(200);
-    expect(depois.headers[SESSION_SCOPE_HEADER]).toBe(`${owner!.id}:${membership2}`);
+    expect(depois.headers[SESSION_SCOPE_HEADER]).toBe(`${owner!.id}:${membership2}:crm`);
 
     const negado = await request(http).get('/api/auth/me').expect(401);
     expect(negado.headers[SESSION_SCOPE_HEADER]).toBeUndefined();
@@ -324,7 +327,7 @@ describe('Auth — fluxo completo (integração HTTP)', () => {
   it('aba desatualizada (ADR-050): escopo esperado de OUTRA sessão é recusado com 409 ANTES de executar, já com o escopo verdadeiro', async () => {
     const session = extractSession(await login().expect(201));
     const owner = await prisma.raw.user.findUnique({ where: { email: OWNER_EMAIL } });
-    const verdadeiro = `${owner!.id}:${ownerMembershipId}`;
+    const verdadeiro = `${owner!.id}:${ownerMembershipId}:crm`;
     const criar = (nome: string, esperado?: string) => {
       const req = request(http)
         .post('/api/contacts')
@@ -354,6 +357,38 @@ describe('Auth — fluxo completo (integração HTTP)', () => {
     await criar('Contato Sem Cabecalho').expect(201);
     expect(await contatos('Contato Escopo Certo')).toBe(1);
     expect(await contatos('Contato Sem Cabecalho')).toBe(1);
+  });
+
+  it('a experiência muda no MESMO workspace (ADR-055 adendo 1): a aba que esperava a anterior recebe 409 antes de executar', async () => {
+    const session = extractSession(await login().expect(201));
+    const owner = await prisma.raw.user.findUnique({ where: { email: OWNER_EMAIL } });
+    const naAnterior = `${owner!.id}:${ownerMembershipId}:crm`;
+    const membership = await prisma.raw.membership.findFirst({ where: { id: ownerMembershipId } });
+    // a troca acontece por fora da sessão (a CLI de operação); a identidade e a
+    // membership são as mesmas
+    await prisma.raw.workspace.update({
+      where: { id: membership!.workspaceId },
+      data: { experience: 'outra' },
+    });
+    const criar = (nome: string) =>
+      request(http)
+        .post('/api/contacts')
+        .set('Origin', ORIGIN)
+        .set('Cookie', session.cookieHeader)
+        .set('x-csrf-token', session.csrf)
+        .set(SESSION_EXPECTED_SCOPE_HEADER, naAnterior)
+        .send({ name: nome });
+    const recusada = await criar('Contato da Experiência Anterior').expect(409);
+    expect(recusada.headers[SESSION_SCOPE_HEADER]).toBe(`${owner!.id}:${ownerMembershipId}:outra`);
+    expect(
+      await prisma.raw.contact.count({ where: { name: 'Contato da Experiência Anterior' } }),
+    ).toBe(0);
+    // a sessão diz a experiência nova, e que o servidor não a conhece
+    const me = await request(http)
+      .get('/api/auth/me')
+      .set('Cookie', session.cookieHeader)
+      .expect(200);
+    expect(me.body.experience).toEqual({ key: 'outra', status: 'unknown' });
   });
 
   it('sem sessão: rotas privadas retornam 401', async () => {

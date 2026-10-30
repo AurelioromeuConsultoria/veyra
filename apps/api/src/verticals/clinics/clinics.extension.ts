@@ -26,6 +26,9 @@ export const CLINICS_MODELS = [
 
 export const clinicsExtension: CoreExtension = {
   name: 'clinics',
+  // a experiência da clínica (ADR-055). NÃO selecionável pela operação até o
+  // frontend dela existir (E-3; condição do usuário, adendo 1 do ADR-055)
+  experience: { selectable: false },
   tenantModels: {
     workspaceModels: CLINICS_MODELS,
     relationTargets: {

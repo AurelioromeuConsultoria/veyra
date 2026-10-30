@@ -17,12 +17,14 @@ const usuario = (id: string, membershipId: string): AuthUserDto =>
     activeMembership: { membershipId, workspaceId: `w-${id}` },
     permissions: [],
     memberships: [],
+    // a experiência entra no escopo (ADR-055 adendo 1)
+    experience: { key: 'crm', status: 'ready' },
   }) as unknown as AuthUserDto;
 const A = usuario('u-a', 'm-a');
 const B = usuario('u-b', 'm-b');
 const A2 = usuario('u-a', 'm-a2');
-const ESCOPO_A = 'u-a:m-a';
-const ESCOPO_B = 'u-b:m-b';
+const ESCOPO_A = 'u-a:m-a:crm';
+const ESCOPO_B = 'u-b:m-b:crm';
 
 const json = (body: unknown, status = 200, escopo?: string, emiteSessao = false) =>
   new Response(JSON.stringify(body), {
@@ -80,7 +82,19 @@ describe('escopo da sessão (ADR-050)', () => {
     expect(vistas).toEqual([]);
     adotarSessao(usuario('u-a', 'outro-workspace'));
     expect(vistas).toHaveLength(1);
-    expect(escopoAtual()).toBe('u-a:outro-workspace');
+    expect(escopoAtual()).toBe('u-a:outro-workspace:crm');
+  });
+
+  it('a MESMA pessoa no MESMO workspace com OUTRA experiência é troca (ADR-055 adendo 1)', () => {
+    const vistas = trocas();
+    adotarSessao(A);
+    const naClinica = {
+      ...A,
+      experience: { key: 'clinics', status: 'ready' },
+    } as unknown as AuthUserDto;
+    adotarSessao(naClinica);
+    expect(vistas).toEqual([naClinica]);
+    expect(escopoAtual()).toBe('u-a:m-a:clinics');
   });
 });
 
@@ -125,6 +139,15 @@ describe('api: resposta de outra sessão nunca chega a quem pediu (ADR-050)', ()
     adotarSessao(A);
     const vistas = trocas();
     servidor({ 'GET /api/contacts': () => json({ items: ['de B'] }, 200, ESCOPO_B) });
+    await expect(api.get('/api/contacts')).rejects.toBeInstanceOf(SessaoEncerradaError);
+    expect(vistas).toEqual([undefined]);
+    expect(escopoAtual()).toBeUndefined();
+  });
+
+  it('a experiência mudou no servidor (mesmo workspace, mesma pessoa): a resposta é descartada e a aba recomeça', async () => {
+    adotarSessao(A);
+    const vistas = trocas();
+    servidor({ 'GET /api/contacts': () => json({ items: ['do CRM'] }, 200, 'u-a:m-a:clinics') });
     await expect(api.get('/api/contacts')).rejects.toBeInstanceOf(SessaoEncerradaError);
     expect(vistas).toEqual([undefined]);
     expect(escopoAtual()).toBeUndefined();
@@ -241,14 +264,18 @@ describe('api: resposta de outra sessão nunca chega a quem pediu (ADR-050)', ()
   it('refresh SEM workspace (membership desativada): troca a sessão para "sem workspace"', async () => {
     adotarSessao(A);
     const vistas = trocas();
-    const semWorkspace = { ...A, activeMembership: null } as unknown as AuthUserDto;
+    const semWorkspace = {
+      ...A,
+      activeMembership: null,
+      experience: null,
+    } as unknown as AuthUserDto;
     servidor({
       'GET /api/contacts': () => json({ message: 'Sessão expirada' }, 401),
       'POST /api/auth/refresh': () => json(semWorkspace),
     });
     await expect(api.get('/api/contacts')).rejects.toBeInstanceOf(SessaoEncerradaError);
     expect(vistas).toEqual([semWorkspace]);
-    expect(escopoAtual()).toBe('u-a:-');
+    expect(escopoAtual()).toBe('u-a:-:-');
   });
 
   it('um refresh que voava quando a sessão trocou não tem efeito nenhum', async () => {
@@ -279,7 +306,7 @@ describe('api: resposta de outra sessão nunca chega a quem pediu (ADR-050)', ()
       outroWorkspace,
     );
     expect(vistas).toEqual([outroWorkspace]);
-    expect(escopoAtual()).toBe('u-a:m-a2');
+    expect(escopoAtual()).toBe('u-a:m-a2:crm');
   });
 
   it.each([

@@ -166,7 +166,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
   2. apresentar a proposta de experiência por produto (F5.E);
   3. depois da revisão, implementar essa organização;
   4. retomar a D7 (F5.1b), a correção de pacotes (F5.2) e as demais frentes.
-  - **F5.1a — gestão básica de equipe pela interface do Core** 🚧 (ADR-054; decisões do usuário de 2026-10-29). Pela tela:
+  - **F5.1a — gestão básica de equipe pela interface do Core** ✅ (ADR-054; decisões do usuário de 2026-10-29). Pela tela:
     - os membros, com papéis e estados;
     - as permissões de cada papel;
     - convidar e acompanhar convites, com o link entregue por quem convida e a página de aceite;
@@ -177,15 +177,15 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
     - a autoridade de quem convidou, conferida no aceite sob a trava dos membros, com migration (`20261029220000_invite_authority`), invalidação definitiva e os convites pendentes antigos invalidados;
     - um critério só para "o mesmo e-mail".
 
-    Revisada (`reviewer` e `security`, mais o delta) e validada: 36 mutações e a bateria b82. Commit local, sem push nem deploy. **Atende só parte do B4:** a gestão de equipe e a D7 **não** estão resolvidas por inteiro.
+    Revisada (`reviewer` e `security`, mais o delta) e validada (36 mutações e a bateria b82); publicada em 2026-10-29 (`0c4aba4`, os quatro jobs do CI verdes no run 40994699372), **sem deploy**. **Atende só parte do B4:** a gestão de equipe e a D7 **não** estão resolvidas por inteiro.
 
-  - **F5.E — Experiência por produto** 📝 (ADR-055, PROPOSTO em 2026-10-29, aguardando a revisão do usuário). A base é compartilhada, e o CRM e o Clinics têm, cada um, página inicial, navegação, linguagem e fluxos próprios:
+  - **F5.E — Experiência por produto** 🚧 (ADR-055: direção aprovada pelo usuário em 2026-10-29 com as condições do adendo 1; E-1, a fundação de contratos e API, implementada em commit local). A base é compartilhada, e o CRM e o Clinics têm, cada um, página inicial, navegação, linguagem e fluxos próprios:
     - rotas diretas, busca, atalhos, links e cabeçalhos por experiência;
     - o produto separado da permissão;
     - a experiência como atributo do workspace, escolhida pela operação;
     - a transição da demonstração.
 
-    Implementação só depois da revisão do usuário.
+    Entregas: E-1 (fundação), E-2 (o web do Core por experiência), E-3 (o web do Clinics; só então a `clinics` fica selecionável) e E-4 (a demonstração, com autorização própria). Cada uma para no commit local para revisão.
 
   - **Normalização dos e-mails** (aprovada pelo usuário como entrega própria, **antes do piloto**): começa pelo diagnóstico das colisões e pelo desenho da migração, sem unir contas nem escolher vencedora automaticamente. Até lá vale o critério único da F5.1a (ADR-054 item 13).
   1. **F5.1 — Equipe e permissões 🚧** (a F5.1a acima)

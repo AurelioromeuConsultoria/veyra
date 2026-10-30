@@ -35,6 +35,26 @@ describe('composeRegistry (ADR-047: E1, E2, E4)', () => {
     );
     expect(CORE_REGISTRY.auditFields).toEqual(AUDIT_FIELDS);
     expect(CORE_REGISTRY.permissionCatalog).toEqual(PERMISSION_CATALOG);
+    // a experiência do Core, e só ela (ADR-055)
+    expect([...CORE_REGISTRY.experiences.values()]).toEqual([
+      { key: 'crm', extension: null, selectable: true },
+    ]);
+  });
+
+  it('a experiência da extensão tem a chave do nome dela e diz se é selecionável (ADR-055)', () => {
+    const registry = composeRegistry([{ ...valid(), experience: { selectable: false } }]);
+    expect(registry.experiences.get('demo')).toEqual({
+      key: 'demo',
+      extension: 'demo',
+      selectable: false,
+    });
+    expect(registry.experiences.get('crm')?.extension).toBeNull();
+    // sem declarar, nenhuma experiência nova
+    expect([...composeRegistry([valid()]).experiences.keys()]).toEqual(['crm']);
+  });
+
+  it('nenhuma extensão pode se chamar `crm`, a experiência do Core', () => {
+    expect(() => composeRegistry([{ name: 'crm' }])).toThrow(/colide com um namespace do Core/);
   });
 
   it('compõe uma extensão válida sem tocar no que é do Core', () => {
