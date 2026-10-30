@@ -1097,11 +1097,14 @@ recuperação compatível estiver definida:
   seja compatível com ele.
 
 Religar o container antigo para "voltar ao ar" reabre a regra antiga e não é
-recuperação. **Voltar à barreira é sempre um Deploy** do mesmo commit com
-`MAINTENANCE_MODE=true`, seguido de parar o `web`. Nunca Start, Restart nem
-Rollback do Coolify: o container guarda o ambiente de quando foi criado (talvez
-com `false`), e o Rollback volta a uma imagem anterior, talvez de antes do
-ADR-053, que ignora a variável.
+recuperação. **Voltar à barreira é parar a API e o `web` na hora**
+(`docker stop`). Um Deploy em manutenção depois disso só vem com o vigia
+(`deploy/staging/janela-e4/b3-vigia.sh`, §14, G3) colado antes: com a mesma
+configuração, o compose pode só religar o container de antes, com o ambiente
+dele (talvez `false`), e o vigia o para assim que ele aparece. Nunca Start,
+Restart nem Rollback do Coolify: o container guarda o ambiente de quando foi
+criado (talvez com `false`), e o Rollback volta a uma imagem anterior, talvez de
+antes do ADR-053, que ignora a variável.
 
 **Migration não tem rollback automático, e isto é deliberado**: `migrate deploy`
 não desfaz. Se uma migration falhar ou deixar o banco num estado que o código
@@ -1190,7 +1193,8 @@ No host, com os nomes reais que você anotou na §3.6:
    de novo. Nenhum momento fica sem um banco com o nome do vivo.
 
 5. **Volte pela etapa C do §14, a partir do passo 5:** o **Deploy** do commit
-   com as proteções, com `MAINTENANCE_MODE=true`; as migrations pendentes,
+   com as proteções, com `MAINTENANCE_MODE=true` e o vigia (§14, G3) colado
+   antes; as migrations pendentes,
    pelo estado real; as conferências; e só então a retomada (etapa E).
 
 **Nunca `docker start` nos containers antigos.** O `web` antigo ainda carrega
@@ -1923,7 +1927,7 @@ Pelas CLIs, no container `api`. O que protege o workspace `staging` é o Clinics
 3. O login do Owner. Os workspaces `staging` e `demo` no seletor, e o aviso de envio simulado no `demo`.
 4. **Se a retomada falhar,** volte à barreira:
    - `docker stop <container-web> <container-api>` corta o acesso na hora;
-   - `MAINTENANCE_MODE=true` e `DISABLE_JOBS=true` no painel, o domínio do `web` retirado (como no C1), e um **Deploy** do MESMO commit; depois, `docker stop <container-web>` e a conferência de fora (nenhum 2xx em `/api/`);
+   - `MAINTENANCE_MODE=true` e `DISABLE_JOBS=true` no painel, o domínio do `web` retirado (como no C1), e um **Deploy** do MESMO commit, com o vigia (§14, G3) colado antes; depois, a conferência de fora (nenhum 2xx em `/api/`);
    - **nunca Start, Restart nem Rollback:** os containers da retomada foram criados com `MAINTENANCE_MODE=false` e sobem sem a barreira, e o Rollback volta a uma imagem anterior. Nada de Redeploy de commit anterior.
 5. O INC-2026-10-26-01 fechado no §12, com a causa e o que foi feito, e os `.log` da etapa A apagados.
 6. **O snapshot da janela sai à mão,** com autorização, depois da retomada confirmada e de um ciclo diário bom: `docker exec <container-backup> restic forget <snapshot-id-da-janela>`. O espaço volta no `prune` do ciclo seguinte. O banco falho de uma restauração, se houver, sai da mesma forma, com o `dropdb` dele.
@@ -1940,57 +1944,237 @@ O usuário entra e troca para o workspace Demonstração. Depois:
 
 **Antes de voltar o staging à Graph,** algum dia, as versões `demo_*` saem de uso.
 
-### Etapa G — A E-4: a experiência da clínica no `demo` (proposta, 2026-10-30; nada executado; autorização própria)
+### Etapa G — A E-4: a experiência da clínica no `demo` (roteiro revisto em 2026-10-30; nada executado; autorização própria)
 
-**O objetivo:** o workspace `demo` passa a abrir no Veyra Clinics (ADR-055, E-3 e adendo 5), e o workspace `staging` continua no CRM. **O que não muda:**
+**O objetivo:** o workspace `demo` passa a abrir no Veyra Clinics (ADR-055, E-3 e adendo 5), e o `staging` continua no CRM. **O que não muda:**
 
 - os dados continuam fictícios e o envio continua simulado;
 - o Clinics continua ativo só no `demo` (§7.1);
 - nenhum convite nem mensagem vai para pessoas reais.
 
+**Os blocos de comando** estão em `deploy/staging/janela-e4/` e são colados, inteiros, no terminal do **servidor** no Coolify. O Claude não tem acesso ao servidor.
+
+| Bloco | Arquivo                 | Etapa                                |
+| ----- | ----------------------- | ------------------------------------ |
+| A     | `a-diagnostico.sh`      | G0, só leitura                       |
+| 2     | `b2-dump.sh`            | G2, o snapshot da janela             |
+| 3     | `b3-vigia.sh`           | G3, o vigia do deploy                |
+| 4     | `b4-ensaio-da-copia.sh` | G4, o ensaio na cópia                |
+| 5     | `b5-migrations.sh`      | G5, as migrations no banco real      |
+| 6     | `b6-demo-clinics.sh`    | G6, a troca do `demo`                |
+| 7     | `b7-retomada.sh`        | G7, a retomada                       |
+| 9     | `b9-volta-do-banco.sh`  | a volta do banco, só com autorização |
+
+- **O `PARE`:** quando uma conferência falha, o bloco imprime `PARE: <motivo>` e sai. Um `PARE` encerra a janela ali, e o próximo bloco não roda.
+- **A barreira é a PRIMEIRA conferência** dos blocos 3 a 6: se houver uma API rodando sem `MAINTENANCE_MODE=true`, a API e o `web` são parados na hora, antes de qualquer outra coisa.
+- **As marcas:** os blocos 4, 5 e 6 exigem a marca do anterior em `/root/veyra-e4`: `bloco3-ok.txt`, `ensaio-ok.txt` e `migrations-ok.txt`. A marca só existe quando aquele bloco chega ao fim. O bloco 2 apaga as de uma tentativa anterior, e também o dump anterior, mas só antes das migrations: com o banco já migrado, ele recusa.
+- **O que vale dentro dos blocos:**
+  - o projeto e o diretório são fixos: um `P` ou `D` deixado no terminal por outra etapa não os muda;
+  - os blocos 5 e 6 não se repetem depois da marca deles;
+  - nenhum segredo vai para variável nem para a saída: dos ambientes, só os valores não secretos e o NOME das chaves.
+
+**Os princípios da janela anterior continuam valendo:**
+
+- em falha, a barreira fica;
+- a conferência do ambiente é o `docker inspect` do container, nunca a tela do painel;
+- nunca há Start, Restart nem Rollback de container, nem Redeploy de um commit anterior ao PO-1;
+- a janela não cruza o `BACKUP_AT`.
+
 **Pré-condições:**
 
-- a E-1, a E-2 e a E-3 (com o complemento) publicadas, com o CI verde;
-- um commit fixado, nunca `main` flutuante (§4);
-- o usuário não está usando o staging;
-- a autorização da janela.
+- o commit final publicado com o CI verde;
+- o bloco A executado e lido, sem parada;
+- o ensaio local dos blocos com `ENSAIO_LOCAL_DA_E4_OK`;
+- **todas as abas do Veyra fechadas.** Este deploy leva a E-1, que muda o escopo da sessão (§4): uma aba antiga entraria em reinício e gastaria o limite por IP das abas novas;
+- a pausa de uso combinada com o usuário. **A manutenção não começa com ele navegando.**
 
-1. **Diagnóstico, só leitura (como na etapa A):**
-   - o commit em uso (hoje, `2b6deb1`);
-   - `SELECT "slug", "name" FROM "Workspace" ORDER BY "slug";`;
-   - o `GET /api/health`;
-   - o backup recente conferido (§6). O desbloqueio do restic continua manual, depois de conferir que não há operação em andamento, nunca com `--remove-all`.
-2. **Aviso prévio, por causa das abas abertas.** O escopo da sessão muda com a E-1 (§4): é preciso fechar ou recarregar todas as abas do Veyra.
-3. **As duas migrations pendentes**, `20261029220000_invite_authority` e `20261030090000_workspace_experience`:
-   - **antes:** as consultas de PARADA da `invite_authority` (§4). O número de convites pendentes que ela vai invalidar vai para o log. Um workspace com convite de Owner pendente e sem Owner ativo **para a janela**: não há caminho seguro de reemissão, e nenhum criador é inventado;
-   - **como:** com um container avulso da imagem nova, antes de apontar o recurso (`run --rm --no-deps api npx prisma migrate deploy`, §4), já na janela de manutenção;
-   - **conferência:** os inventários do §4, 5 objetos para a primeira e 2 para a segunda.
-4. **O deploy do commit fixado.** Depois:
-   - o `GET /api/health`;
-   - numa aba NOVA, com uma conta do `staging`, o `GET /api/auth/me` deve trazer `experience: {"key":"crm","status":"ready"}`;
-   - a aba Rede do navegador não mostra 409 em sequência.
+**O ensaio local:**
 
-   **Daqui até o passo 5, o `demo` mostra o CRM** (o Clinics está ativo nele, mas a experiência ainda é `crm`). Ninguém usa o staging nesse meio.
+- **A base:** a imagem da API foi construída do commit final pelo mesmo Dockerfile, sobre um banco nas 56 migrations esperadas, com dados fictícios e as etiquetas de projeto do compose. Os blocos rodaram num container com bash 5.2 e GNU coreutils, grep e diffutils, como o host do servidor, falando com o Docker local pelo socket.
+- **Os caminhos percorridos:**
+  1. **o caminho feliz:**
+     - o bloco A com a API de antes no ar, depois do bloco 2 ao 6, com o vigia parando o `web` que sobe depois da API;
+     - colados de novo, os blocos 5 e 6 recusam, e o bloco 2 recusa o banco já migrado sem apagar o dump da janela;
+     - o vigia colado com uma API já de pé: fora da manutenção, ele para tudo; em manutenção, ele a confere;
+  2. **a retomada (bloco 7):**
+     - ainda em manutenção, ou com o `DISABLE_JOBS` diferente do de antes, ele recusa sem parar nada. O valor de antes é o do primeiro bloco A, e um bloco A colado no meio da janela não o muda;
+     - sem o transporte simulado, ele para a API e o `web`;
+     - por fim, a retomada certa;
+  3. **a volta do banco (bloco 9):**
+     - recusada com a API rodando;
+     - recusada com um dump já migrado, mesmo com as contagens dele;
+     - com um dump truncado, o banco novo é descartado e o atual fica intacto;
+     - por fim, a volta certa: o banco de volta às 56 migrations, com os convites pendentes, e o anterior guardado;
+  4. **a API subindo FORA da manutenção:** o vigia a para antes de o Nest subir, e o bloco 4 recusa;
+  5. **o terminal fechado de verdade (pty):**
+     - o vigia foi colado num bash interativo sob um pty, e o pty foi fechado à força na espera silenciosa pela saúde da API, sem nenhuma escrita;
+     - a saída dele parou a API 1 segundo depois, e não ficou vigia órfão;
+     - a API que subiu em seguida, sem ninguém olhando e fora da manutenção, foi parada pelo bloco 4, e de novo pelo bloco 6;
+  6. **um convite de Owner sem Owner ativo:** os blocos 4 e 5 param;
+  7. **o banco à frente da imagem:** os blocos 4, 5 e 6 param;
+  8. **três migrations pendentes em vez de duas:** os blocos 4 e 5 param;
+  9. **o bloco 5 contra o ensaio:** ele para em todos os casos — outra imagem, outro dump, o banco real mudado depois do dump, pendentes diferentes das da cópia e outro container `api`.
+- **Em cada parada,** o ensaio confere o motivo e que nenhuma migration da janela foi aplicada.
+- **A última rodada** rodou sobre os arquivos de `deploy/staging/janela-e4/`, os mesmos do commit.
+- **O bloco A** rodou sem erro de comando nem de SQL. Só a parte do backup não foi exercitada, porque não havia container `backup` local; ela só lê.
 
-5. **A troca, só do `demo`:**
+1. **G0 — O diagnóstico, só leitura (bloco A).** As migrations da janela saem do estado REAL do servidor, não desta lista. As duas esperadas, `20261029220000_invite_authority` e `20261030090000_workspace_experience`, são só a expectativa, sobre 56 aplicadas, a última `20261028200000_clinics_deal_link_and_confirmation`.
 
-   ```bash
-   docker exec <container-api> node dist/cli/workspace-experience.js --slug demo --experience clinics
-   ```
+   O bloco mostra:
+   - o commit e a imagem da API em uso;
+   - as migrations no banco: as últimas, o total, alguma em andamento ou falhada, e o status pela imagem em uso;
+   - os workspaces, e que a coluna `experience` ainda não existe;
+   - o Clinics por workspace (só o `demo`);
+   - os convites pendentes, que a `invite_authority` vai invalidar;
+   - a **PARADA**: convite de Owner pendente em workspace sem Owner ativo;
+   - os campos personalizados obrigatórios;
+   - os despachos em andamento;
+   - o `DISABLE_JOBS` de antes da janela, que o bloco 7 confere na retomada;
+   - a saúde;
+   - o backup: o `restic`, se há destino, e o `BACKUP_AT`.
 
-   A CLI exige o Clinics ativo no `demo` e audita a troca (`workspace.experience_changed`, ator `cli:workspace-experience`).
+   Ele não para, não reinicia e não altera nada. **Se ele mostrar outro ponto do banco, ou a parada dos convites,** a janela não começa: o roteiro e o ensaio são refeitos para o estado real.
 
-6. **A conferência:**
-   - `SELECT "slug", "experience" FROM "Workspace" ORDER BY "slug";` deve dar `demo` em `clinics` e `staging` em `crm`;
-   - na trilha, uma só entrada `workspace.experience_changed`, a do `demo`;
-   - o Owner da demonstração entra numa aba nova e cai no Hoje da clínica;
-   - a busca e os links ficam na clínica, e um contato abre na pessoa;
-   - os Envios continuam com o aviso "Envio simulado".
-7. **A retomada** (etapa E). **O uso:**
-   - quem avalia cria interessados fictícios pela tela ("Novo interessado"), com telefone e consentimento fictícios (D-E3.4);
-   - a etapa F passa a registrar o consentimento na seção "Contato" da ficha do paciente.
+2. **G1 — O início da barreira contínua e a interrupção das escritas, com o horário anotado em UTC.**
+   - **No painel**, na seção de produção, não na de "Preview deployments":
+     - o Auto Deploy em "Manual deployments only";
+     - o recurso fixado no commit final;
+     - `MAINTENANCE_MODE=true` e `DISABLE_JOBS=true`;
+     - **todos** os domínios do `web` retirados (`SERVICE_FQDN_WEB_8080` vazio).
 
-**A volta:**
+     Nada disso alcança os containers em execução até o deploy.
 
-- **da experiência:** a mesma CLI com `--experience crm`, também auditada;
-- **do código:** o §5. As duas migrations são aditivas, exceto os convites pendentes que a `invite_authority` invalida, que não voltam.
+   - **No host:** `docker stop <container-web> <container-api>`. **É aqui que a barreira começa e a escrita para:** sem a API, nada grava no banco e nenhum job roda. Não use o Stop do recurso, que para o banco. O `db` e o `backup` seguem.
+   - **De fora:** nenhum 2xx em `/api/`, com a barra.
+
+3. **G2 — O snapshot da janela (bloco 2), conferido ANTES de qualquer migration.**
+   - O bloco recusa se a API ou o `web` ainda estiverem rodando, ou se alguma migration da janela já estiver aplicada: o ponto de restauração nunca é sobrescrito por um banco migrado.
+   - O dump é feito com a escrita congelada, no host (`/root/veyra-e4/janela-<instante>.dump`, só root).
+   - Ele é lido por inteiro (`pg_restore -f /dev/null`), e as contagens de todas as tabelas ficam guardadas.
+   - **É o ponto de restauração da janela.** Nenhum backup anterior ao congelamento o substitui, por mais recente que seja, e o destino do `restic` ainda não está configurado (§12).
+   - Sem `BLOCO2_OK`, a janela não segue.
+
+4. **G3 — A imagem nova, atrás da barreira, com o VIGIA (bloco 3).**
+   - **De onde ela vem:** o **Deploy** no painel, do commit fixado. O Coolify constrói a imagem no próprio servidor, e ela fica no Docker do host. Os blocos seguintes usam essa imagem pelo id, nunca pela tag.
+   - **Como sobe:** o container `api` sobe em manutenção. Ele não lê nem escreve tabela e não tem worker (ADR-053, PO-1), por isso sobe sobre o schema antigo.
+   - **O vigia é colado ANTES de clicar Deploy,** com a API e o `web` parados, num terminal numa aba ou janela PRÓPRIA do navegador. O Deploy é clicado em outra aba, e a do terminal não é tocada. Na janela anterior, o primeiro deploy levou ao container um valor antigo do painel. O vigia:
+     - espera a API nova, por até 30 minutos, com um sinal de vida a cada 30 segundos;
+     - assim que ela aparece, confere no `docker inspect` `MAINTENANCE_MODE=true`, `META_TRANSPORT_MODE=fake` e `VEYRA_ENV=staging`. Faltando algum, ele **para a API e o `web` na hora**;
+     - para o `web` sempre que ele aparecer. O compose sobe o `web` depois da API saudável;
+     - confere o healthcheck, o loopback 200, a rede interna 503 e nenhuma rota do Traefik na API;
+     - mostra a imagem (o id, a data do build e o commit, se o Coolify o passa; senão, o log do deploy no painel), o ambiente não secreto e as chaves, só pelo nome.
+   - **Colado com uma API já de pé** (o Deploy correu sem ele): fora da manutenção, ele para a API e o `web`; em manutenção, ele a confere como se a tivesse visto subir.
+   - **Se o vigia terminar sem `BLOCO3_OK`,** por um `PARE` ou um erro, a API e o `web` são parados na saída dele. **Com o terminal fechado,** o SIGHUP o encerra na hora pela mesma saída, que passa a ignorar novos SIGHUPs enquanto para a API e o `web` (os `docker` que ela chama herdam isso).
+   - **Se o terminal cair sem que o vigia termine,** ou nada aparecer: `docker stop <container-web> <container-api>` na hora, e o Deploy cancelado no painel se ainda estiver rodando. Os blocos 4 a 6 também param uma API sem manutenção que encontrarem.
+   - **Um `PARE` do vigia encerra a janela,** com o usuário. O painel é corrigido. Antes do bloco 5, a janela recomeça pela G2, com um dump novo; o bloco 5 também confere que o banco continua igual ao dump.
+   - Sem `BLOCO3_OK`, a janela não segue.
+
+5. **G4 — O ensaio numa cópia isolada (bloco 4).** O banco do staging não é tocado.
+   - **O que ele exige:** a marca do vigia, a MESMA API que o vigia aprovou e ainda em manutenção, e o `web` parado.
+   - **A cópia:** o snapshot da janela, restaurado num Postgres da mesma imagem do `db`, numa rede `--internal`, sem saída. As contagens da cópia precisam ser iguais às da origem.
+   - **O container AVULSO:** `docker run --rm --pull never` da imagem nova, pelo id, só nessa rede. Ele recebe **somente** as variáveis escritas no bloco:
+     - o `DATABASE_URL` da cópia;
+     - `NODE_ENV=production`, `VEYRA_ENV=staging` e `META_TRANSPORT_MODE=fake`;
+     - `MAINTENANCE_MODE=true` e `DISABLE_JOBS=true`: nenhum job;
+     - uma `WEB_ORIGIN` fictícia e segredos fictícios, gerados na hora e descartados.
+
+     Nenhum segredo do staging entra, e ele não alcança o banco real.
+
+   - **As ferramentas:**
+     - na imagem de runtime: `node`, `npx --no-install prisma`, as CLIs de `dist/` e `ls`;
+     - na imagem do `db`: `psql`, `pg_dump` e `pg_restore`;
+     - no host: o `docker` e o `coreutils`.
+
+     Não há `pnpm`, `tsx` nem `psql` na imagem da API.
+
+   - **O que ele prova:**
+     - a PARADA dos convites, e o número de pendentes;
+     - **as migrations pendentes pelo estado real:** as pastas de migration da imagem nova menos as aplicadas na cópia. O bloco para se o banco tiver uma migration que a imagem não tem, ou se as pendentes não forem exatamente as duas esperadas;
+     - o `deploy`, o `status` em dia e o schema igual ao do código;
+     - os inventários, 5 e 2;
+     - os convites invalidados iguais aos pendentes (a diferença na trilha `invite.invalidated`), e nenhum pendente depois;
+     - todos os workspaces em `crm`;
+     - a troca do `demo` pela CLI: o `demo` em `clinics` e os outros em `crm`. Na trilha, exatamente uma troca, a do `demo` para `clinics`, pelo ator `cli:workspace-experience`;
+     - as FKs, e o Clinics ativo só no `demo`.
+
+     A marca `ensaio-ok.txt` guarda a imagem, o dump e as pendentes. Sem `ENSAIO_DA_JANELA_E4_OK`, a janela não segue.
+
+6. **G5 — As migrations no banco real (bloco 5), ainda atrás da barreira.**
+   - **O bloco recusa:**
+     - depois do próprio `MIGRATIONS_E4_OK`: ele não se repete;
+     - se a API não for a que o vigia aprovou, ou não estiver em manutenção;
+     - se houver a PARADA dos convites;
+     - sem a marca do bloco 4, ou se a imagem ou o dump não forem os do ensaio;
+     - se as contagens do banco real não forem iguais às do dump: alguma escrita depois do snapshot;
+     - se as pendentes do banco real não forem iguais às da cópia.
+   - **O número de convites invalidados fica registrado** em `/root/veyra-e4/convites-invalidados.txt`: os pendentes antes, e a diferença na trilha depois. Ele entra também no registro desta etapa.
+   - **Depois, as mesmas conferências da cópia,** pelo container `api` (`docker exec`) e pelo `psql` do `db`.
+   - **Se o `deploy` falhar:** §4, "Falha de migration", nunca `rolled-back` às cegas, e a barreira fica.
+   - **Se o terminal cair no meio:** nada de colar o bloco de novo. Leia `/root/veyra-e4/real-deploy.log` e o `migrate status`, pelo §4.
+   - Sem `MIGRATIONS_E4_OK`, a janela não segue.
+
+7. **G6 — A troca só do `demo` (bloco 6), ainda atrás da barreira.**
+   - O bloco exige a marca do bloco 5 e a mesma API, em manutenção. Ele não se repete.
+   - A CLI `node dist/cli/workspace-experience.js --slug demo --experience clinics` roda no container `api`. Ela carrega `sem-jobs`.
+   - **As conferências são pelo banco:**
+     - o `demo` em `clinics` e todos os outros em `crm`;
+     - na trilha, exatamente uma troca, a do `demo` para `clinics`, pelo ator `cli:workspace-experience`;
+     - o Clinics ativo só no `demo`.
+   - Sem `DEMO_CLINICS_OK`, a janela não segue.
+
+   **Nenhum acesso pela API enquanto `MAINTENANCE_MODE=true`:**
+   - a única passagem pela barreira é `GET /api/health` pelo socket de loopback do próprio container: o healthcheck e a conferência do vigia;
+   - qualquer outra rota recebe 503, de fora ou de dentro;
+   - a CLI e o `psql` não passam por HTTP;
+   - o navegador não confere nada nesse estado: a tela abre e toda chamada recebe 503.
+
+   **Parada G:** o banco migrado e conferido, o `demo` em `clinics`, o `staging` em `crm`, tudo atrás da barreira.
+
+8. **G7 — A retomada controlada, e só depois o navegador.**
+   1. **No painel:**
+      - `MAINTENANCE_MODE=false`;
+      - o `DISABLE_JOBS` de volta ao valor do bloco A;
+      - todos os domínios do `web` devolvidos;
+      - o **Redeploy** do MESMO commit.
+   2. **O bloco 7, no host,** depois do Redeploy. Ele lê o container pelo `docker inspect`:
+      - **ainda em manutenção:** outro Redeploy e o bloco de novo. Na janela anterior, foi preciso um segundo. O bloco não para nada;
+      - **o `DISABLE_JOBS` diferente do de antes** (o do primeiro bloco A, o de antes da janela): o painel é corrigido e vem outro Redeploy;
+      - **fora da manutenção sem `META_TRANSPORT_MODE=fake` ou sem `VEYRA_ENV=staging`:** ele **para a API e o `web` na hora**;
+      - **tudo certo:** ele espera os containers saudáveis e confere `/api/health` 200 de fora. Se os containers não ficarem saudáveis ou essa saúde falhar, ele para a API e o `web`.
+
+      Sem `RETOMADA_OK`, o navegador não entra.
+
+   3. **Só então, em abas NOVAS e com a ferramenta de rede aberta, os critérios de conclusão:**
+      - o Owner da demonstração entra, e o `demo` abre no Hoje da clínica, com o menu novo;
+      - trocando para o `staging` no seletor, ele continua no CRM, com o menu do CRM;
+      - a busca, a pessoa, o paciente e as Configurações funcionam dentro da experiência escolhida, sem o aviso de seção fora da experiência;
+      - os campos obrigatórios, se o bloco A mostrou algum, podem ser preenchidos pela interface, no "Novo interessado" e no "Editar dados";
+      - os Envios continuam com o aviso "Envio simulado";
+      - nenhuma repetição contínua de 409, nas abas novas.
+   4. **Se qualquer critério falhar, a volta à barreira é IMEDIATA:**
+      - `docker stop <container-web> <container-api>` corta o acesso na hora. **A barreira passa a ser os containers parados,** e a análise é feita assim;
+      - no painel, `MAINTENANCE_MODE=true`, `DISABLE_JOBS=true` e todos os domínios do `web` retirados;
+      - um novo Deploy só quando for preciso, e sempre com o vigia (bloco 3) colado antes. O Deploy do mesmo commit pode só religar o container de antes, com o ambiente da retomada, e o vigia o para na hora;
+      - nunca Start, Restart nem Rollback.
+   5. **O registro:**
+      - o início e o fim em UTC;
+      - o dump da janela;
+      - as migrations aplicadas;
+      - o número de convites invalidados;
+      - o resultado de cada critério.
+
+      O dump e os arquivos de `/root/veyra-e4` saem só com autorização, depois da validação do usuário.
+
+**A volta, com as duas coisas separadas:**
+
+- **A apresentação:** a mesma CLI, com `--experience crm`, devolve o `demo` ao CRM, e a troca fica na trilha. Ela só muda o que a tela mostra: **não** desfaz migration nenhuma e **não** recupera os convites invalidados.
+- **O banco:** só com autorização do usuário, pelo bloco 9, a partir do dump da janela no host (o `restore.sh` do §6 lê do `restic`, que não tem destino). Com a API e o `web` parados, o bloco 9:
+  - restaura o dump num banco NOVO, numa transação só;
+  - confere as contagens com as do dump, e recusa um dump já migrado (com a coluna `experience` ou com migration da janela);
+  - troca pelo nome, como no §6, passo 4, guardando o banco atual como `<banco>_falho_e4_<instante>`.
+
+  Num dump com falha, o banco novo é descartado e o atual não é tocado.
+
+  **Depois sobe o código compatível com ele:** o recurso fixado no commit anterior, `2b6deb1`, com `MAINTENANCE_MODE=true`, e o Deploy com o vigia colado antes. A retomada é a da G7, com o bloco 7. É a exceção declarada ao "nada de commit anterior": o `2b6deb1` é posterior ao PO-1 e é o código do schema restaurado.
+
+  É o único caminho que traz de volta os convites invalidados, e ele descarta tudo o que foi escrito depois do snapshot.
