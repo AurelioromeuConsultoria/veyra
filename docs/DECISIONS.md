@@ -9172,3 +9172,31 @@ Tornar `clinics` selecionável no código **não** autoriza mudar workspace nenh
 - **a evidência visual:**
   - 11 capturas das telas finais, com dados fictícios no banco descartável do E2E: o Hoje do Owner, da recepção e do Profissional, o menu com os grupos abertos, Interessados, a pessoa, a passagem para paciente, a ficha com o contato, as Configurações, a busca e o CRM para comparar;
   - o roteiro das capturas não entrou no repositório.
+
+### Adendo 5 (2026-10-30): o complemento da E-3 — etiquetas e campos personalizados na clínica
+
+**Decisão do usuário (2026-10-30), antes da E-4.**
+
+- **"Novo interessado"** permite preencher os campos personalizados do contato, inclusive os obrigatórios.
+- **A pessoa e a seção de contato da ficha** permitem consultar e editar os campos e as etiquetas, conforme as permissões.
+- **Reaproveitamento:** os mesmos contratos, validações e componentes do Core. Não há um segundo cadastro de campos do Clinics.
+- **Preservação:** mudar nome, telefone ou e-mail não apaga etiquetas nem valores de campos que não foram editados.
+- **Falha no carregamento:** se as definições não carregarem, isso não conta como "não há obrigatórios".
+- **O que isto não é:** é informação de contato, não prontuário. Não há campos clínicos padrão, e isto não resolve o B1.
+
+**O desenho:**
+
+1. **Os componentes do Core.** O campo personalizado (`CustomFieldInput`, por tipo) e o seletor de etiquetas saem de dentro da página de Contatos para `components/contacts/`, sem mudar o comportamento. A página de Contatos e a clínica usam os mesmos. As definições vêm de `GET /api/custom-fields?entityType=contact` e as etiquetas de `GET /api/tags`, as rotas do Core, ambas com `contacts:read`.
+2. **A validação é a do servidor.**
+   - Na criação, o Core exige os campos obrigatórios (400) e recusa chave desconhecida, tipo e opção inválidos. Na edição, recusa limpar um obrigatório.
+   - A tela marca os obrigatórios e não envia sem eles, mas quem decide é o servidor, e a mensagem dele é mostrada.
+3. **Só o que foi editado é enviado.** É a semântica das rotas do Core:
+   - **campos personalizados:** o `PATCH` substitui só as chaves enviadas, e a tela manda só as chaves cujo valor mudou;
+   - **etiquetas:** `tagIds` substitui o conjunto inteiro, e só é enviado quando o conjunto mudou;
+   - **telefones e e-mails:** a lista só vai quando mudou (adendo 4).
+4. **A falha de carregamento.**
+   - **Definições dos campos:** sem elas, o formulário não envia e diz por quê. Uma lista que não carregou nunca é tratada como "nenhum obrigatório".
+   - **Etiquetas:** sem a lista, a tela não oferece a edição delas e não envia `tagIds`.
+5. **As permissões.** Consultar etiquetas e valores pede `contacts:read`, a mesma chave da pessoa. Editar pede `contacts:write`, a chave do `PATCH`. Os valores aparecem com o rótulo da definição. Uma chave que não está mais nas definições não é mostrada como campo.
+
+**O limite da garantia, dito com precisão.** Enviar só o que mudou protege o que **não** foi editado. Um valor que outra pessoa gravou enquanto a tela estava aberta continua lá, se esta edição não mexeu nele. Mas o Core não tem controle otimista de versão. Duas pessoas que editam o **mesmo** item a partir de telas desatualizadas fazem a última gravação prevalecer. O mesmo vale para o conjunto de etiquetas, que é gravado inteiro: uma etiqueta acrescentada por outra pessoa enquanto esta tela estava aberta é perdida se esta edição também mexer nas etiquetas. Nos telefones, o servidor serializa a escrita sob trava e revoga o consentimento de um número que saiu, com trilha. Isso protege a janela da gravação, não a da tela aberta. A versão otimista do contato é decisão própria, fora deste complemento.
