@@ -179,7 +179,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
 
     Revisada (`reviewer` e `security`, mais o delta) e validada: 36 mutações e a bateria b82. Commit local, sem push nem deploy. **Atende só parte do B4:** a gestão de equipe e a D7 **não** estão resolvidas por inteiro.
 
-  - **F5.E — Experiência por produto** 📝 (proposta em preparação, depois do fechamento da F5.1a). A base é compartilhada, e o CRM e o Clinics têm, cada um, página inicial, navegação, linguagem e fluxos próprios:
+  - **F5.E — Experiência por produto** 📝 (ADR-055, PROPOSTO em 2026-10-29, aguardando a revisão do usuário). A base é compartilhada, e o CRM e o Clinics têm, cada um, página inicial, navegação, linguagem e fluxos próprios:
     - rotas diretas, busca, atalhos, links e cabeçalhos por experiência;
     - o produto separado da permissão;
     - a experiência como atributo do workspace, escolhida pela operação;

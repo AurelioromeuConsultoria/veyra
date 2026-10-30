@@ -8145,3 +8145,253 @@ Ficaram declarados nos itens 10, 12 e 13:
 - **uma rodada de mutações que saiu 0 sem rodar caso nenhum:** a lista de nomes foi passada ao executor por variável sem aspas no zsh;
 - **a bateria b81, interrompida a pedido do usuário** porque ficaria desatualizada;
 - **a primeira execução do E2E da b82, que falhou.** A asserção nova pedia `/api/auth/me` logo depois do `reload` da pessoa removida, antes de a página renovar a sessão: 401 com o token antigo. O log do servidor mostra a renovação logo em seguida, com a consulta de notificações numa sessão sem workspace. O teste passou a esperar a resposta 200 da própria página. Repetidos lint, formatação e E2E: verdes. O mesmo log mostrou que as notificações respondem 500 numa sessão sem workspace, o que já acontecia antes; ficou registrado como dívida.
+
+## ADR-055 — Experiência por produto: o CRM e o Clinics sobre a mesma base, cada um com início, navegação e linguagem próprios
+
+**Status:** PROPOSTO (2026-10-29), para revisão do usuário antes de qualquer código · **Data:** 2026-10-29
+
+**Contexto.** Navegando na demonstração (workspace `demo`), o usuário viu que o Clinics **soma** o seu grupo "Clínica" ao menu inteiro do CRM:
+
+- o "Hoje" é o do CRM, com janelas de 24h, propostas da IA e o funil de oportunidades;
+- aparecem lado a lado "Agenda" e "Agenda da clínica", e "Contatos" e "Pacientes";
+- Empresas, Sinais, Automações e Webhooks ficam no mesmo nível do trabalho da clínica.
+
+Isso não atende à proposta do Veyra como base de vários sistemas.
+
+**O pedido (2026-10-29):**
+
+- a base é compartilhada, mas cada produto tem página inicial, navegação, linguagem e fluxos próprios;
+- quem usa o Clinics percebe um sistema de clínica;
+- a gestão de equipe é compartilhada e aparece nas configurações de cada produto;
+- não duplicar infraestrutura nem criar um frontend separado por reflexo: comparar as alternativas e recomendar a mais simples que mantenha a separação de forma consistente.
+
+**Por que acontece hoje.** O ponto de extensão E5 (ADR-047 adendo 4) foi desenhado para os verticais **contribuírem** grupos ao mapa único do Core:
+
+- `useNavGroups()` devolve `NAV_GROUPS` do Core seguido do que o vertical contribui;
+- as rotas do vertical são **acrescentadas** às do Core;
+- a busca global e o rastro do cabeçalho leem o mesmo mapa;
+- a página inicial (`/`) é sempre o `TodayPage` do CRM;
+- links internos como a busca, o Hoje e o consentimento da conversa apontam para telas do CRM (`/contacts?c=`, `/pipeline`, `/signals`).
+
+A soma é consequência do desenho, não um defeito de uma tela.
+
+### 1. Base, CRM e Clinics
+
+A **base** é a camada do Core que os dois produtos usam: identidade e sessão, workspaces, equipe e papéis, contatos, conversas e canal, consentimento e templates, o envio iniciado pelo negócio, pipeline e oportunidades, tarefas, agenda genérica, etiquetas e campos, automações, webhooks, IA, uso e plano, auditoria, arquivos e busca. O **CRM** é a experiência padrão do Core, que mostra a base como está hoje. O **Clinics** é o vertical mais uma experiência própria. Ele usa as capacidades da base de que precisa, com a linguagem da clínica, e não mostra as que não pertencem ao trabalho dela.
+
+| Capacidade da base                | No CRM                | No Clinics                                                                   |
+| --------------------------------- | --------------------- | ---------------------------------------------------------------------------- |
+| Registro de pessoas (`Contact`)   | Contatos              | Pacientes (com ficha) e Interessados (sem ficha), ver o item 4               |
+| Conversas e canal                 | Inbox                 | Conversas                                                                    |
+| Pipeline e oportunidades          | Pipeline              | Funil de captação (o vínculo agendamento↔deal da F4.3 depende dele)          |
+| Envio iniciado pelo negócio (E7)  | Template no Inbox     | Confirmações e reativações (os Envios da F4.2)                               |
+| Consentimento e pedido de parar   | Na ficha do contato   | Na ficha do paciente ou do interessado                                       |
+| Agenda genérica (`CalendarEvent`) | Agenda                | Não aparece (ver o item 4)                                                   |
+| Empresas                          | Empresas              | Não aparece (relação B2B, fora do trabalho da clínica)                       |
+| Tarefas                           | Tarefas               | **Decisão D-E1** (recomendação: não aparece até a F5.3, por causa do B1)     |
+| IA: sinais e propostas            | Sinais                | **Decisão D-E2** (recomendação: sem a seção; a proposta aparece na conversa) |
+| Automações                        | Configuração          | Não aparece até existir um caso da clínica                                   |
+| Webhooks                          | Configuração          | Configurações → Integrações, com o aviso do ADR-048 §6.5                     |
+| Etiquetas e campos                | Configuração          | Configurações                                                                |
+| Equipe e papéis                   | Configuração → Equipe | Configurações → Equipe (a mesma tela, ADR-054)                               |
+| Uso e plano, Auditoria            | Configuração          | Configurações                                                                |
+
+### 2. O menu do Clinics, organizado pelo trabalho da clínica
+
+```
+veyra clinics · <nome da clínica>
+  Hoje                          início próprio: o dia da clínica
+  Agenda                        a agenda da clínica, por profissional
+  Pacientes                     a ficha: agenda, atendimentos, pacotes, retornos, consentimento
+  Conversas                     o Inbox, com a linguagem da clínica
+  Captação
+    Interessados                quem ainda não tem ficha de paciente
+    Funil                       o pipeline, como funil de captação
+  Acompanhamento
+    Confirmações e reativações  os Envios (prévia, aprovação, situação)
+    Retornos
+  Indicadores
+    Faltas
+    Envios                      as métricas do envio
+  Configurações                 uma entrada só, com seções
+    Clínica                     unidade, serviços, profissionais e horários (o Catálogo)
+    Equipe
+    Privacidade e IA            a liberação para IA
+    Integrações                 webhooks
+    Etiquetas e campos
+    Uso e plano
+    Auditoria
+```
+
+O **Hoje da clínica** responde às perguntas do dia com as rotas que já existem:
+
+- quem está na agenda agora e a seguir, por profissional;
+- os horários de amanhã ainda sem confirmação e os pedidos de envio esperando aprovação;
+- os retornos vencidos;
+- as conversas com a janela de 24h aberta;
+- as faltas da semana.
+
+Uma rota de resumo própria só entra se a medição mostrar que a tela fica lenta.
+
+### 3. O destino dos itens atuais na experiência Clinics
+
+| Item atual        | Destino no Clinics                                          | No CRM                |
+| ----------------- | ----------------------------------------------------------- | --------------------- |
+| Hoje (do CRM)     | substituído pelo **Hoje da clínica**                        | fica                  |
+| Pipeline          | seção **Captação → Funil**                                  | fica                  |
+| Contatos          | seção **Captação → Interessados**; os pacientes têm a ficha | fica                  |
+| Empresas          | **sai**                                                     | fica                  |
+| Inbox             | menu principal, como **Conversas**                          | fica                  |
+| Agenda (do Core)  | **sai** (item 4)                                            | fica                  |
+| Tarefas           | **sai** até a F5.3 (decisão D-E1)                           | fica                  |
+| Sinais            | **sai** (decisão D-E2)                                      | fica                  |
+| Equipe            | **Configurações → Equipe**                                  | Configuração → Equipe |
+| Tags              | **Configurações → Etiquetas e campos**                      | fica                  |
+| Campos            | **Configurações → Etiquetas e campos**                      | fica                  |
+| Automações        | **sai**                                                     | fica                  |
+| Webhooks          | **Configurações → Integrações**                             | fica                  |
+| Uso e plano       | **Configurações**                                           | fica                  |
+| Auditoria         | **Configurações**                                           | fica                  |
+| Agenda da clínica | menu principal, como **Agenda**                             | não existe            |
+| Pacientes         | menu principal                                              | não existe            |
+| Retornos          | seção **Acompanhamento**                                    | não existe            |
+| Faltas            | seção **Indicadores**                                       | não existe            |
+| Envios            | **Acompanhamento → Confirmações e reativações**             | não existe            |
+| Métricas do envio | **Indicadores → Envios**                                    | não existe            |
+| Catálogo          | **Configurações → Clínica**                                 | não existe            |
+| Liberação para IA | **Configurações → Privacidade e IA**                        | não existe            |
+
+No CRM nada muda, além da entrada Equipe, que já veio com a F5.1a.
+
+### 4. As duplicidades aparentes
+
+**"Agenda" e "Agenda da clínica".** São domínios diferentes:
+
+- o `CalendarEvent` do Core é um compromisso genérico: título, horário e, opcionalmente, um contato;
+- o agendamento do Clinics tem profissional habilitado, serviço com duração gravada, unidade e fuso, estados (marcado, confirmado, chegou, faltou) e sobreposição barrada pelo banco.
+
+Na experiência Clinics, **"Agenda" é só a da clínica**. A agenda genérica não aparece, porque um compromisso genérico não é um horário de atendimento. Se a clínica precisar bloquear um horário (reunião, folga), isso é uma capacidade do Clinics, um bloqueio na agenda do profissional, com decisão própria, e não a agenda do CRM ao lado.
+
+**"Contatos" e "Pacientes".** O contato é o registro da pessoa na base. Paciente é o contato com ficha do Clinics (`ClinicsPatient`), criada por uma ação explícita, que já existe na tela de Pacientes. Na experiência Clinics:
+
+- **Pacientes** lista quem tem ficha;
+- **Interessados** lista quem ainda não tem: chegou por conversa, está no funil ou pediu informação. Eles têm conversa, consentimento e oportunidade sem precisar de ficha;
+- abrir a ficha continua sendo **uma decisão de quem atende**, normalmente no primeiro agendamento. Nunca acontece para a pessoa caber na navegação, nem automaticamente ao conversar;
+- a busca mostra os dois, cada um com o seu rótulo e o seu destino.
+
+As duas listas são do Clinics. O Core não ganha o conceito de paciente. Listar **Interessados** com paginação certa pede ao servidor "os contatos sem a extensão", e isso hoje não existe: a decisão técnica D-E6 trata disso.
+
+### 5. A experiência completa, e não só o menu
+
+Esconder links não basta. A experiência ativa decide:
+
+- **as rotas montadas:** o roteador monta só as rotas da experiência ativa, mais as compartilhadas (configurações, login e aceite do convite). Uma rota de fora, aberta pelo endereço ou por um link antigo, leva ao início do produto com um aviso ("Esta seção não faz parte do Veyra Clinics"), nunca a uma tela do outro produto;
+- **os links internos:** cada experiência resolve os destinos da base. O "contato" vai para a ficha do paciente ou para Interessados, a "conversa" para Conversas, a "oportunidade" para o Funil. Hoje esses links estão fixos no código do CRM: `GlobalSearch`, `Today`, `Consentimentos`;
+- **a busca global (⌘K):** só as seções da experiência ativa, e os registros pelo que a experiência procura. No Clinics, pacientes e interessados, com o destino certo; nunca uma seção do outro produto;
+- **os atalhos:** o ⌘K é comum. Atalhos de produto são declarados pela experiência (nenhum novo agora);
+- **cabeçalho, título e marca:**
+  - a lateral mostra "veyra clinics" ou "veyra";
+  - o rastro mostra workspace › seção;
+  - a aba do navegador mostra "Seção · Workspace · Veyra Clinics";
+  - o login continua neutro, porque o produto só é conhecido depois da sessão;
+- **a linguagem:** o vocabulário das telas compartilhadas vem da experiência: Conversas em vez de Inbox, Interessados, Funil de captação, e os estados vazios.
+
+### 6. O produto e as permissões
+
+São duas perguntas diferentes:
+
+- **disponível no produto:** a seção faz parte da experiência do workspace?
+- **acessível ao membro:** o papel dele tem a permissão?
+
+O item aparece **só com as duas**. O Owner de um workspace Clinics vê todo o Clinics e nada do CRM que não pertença a ele. Ser Owner não abre os menus dos outros produtos.
+
+**A autorização continua no servidor**, como está: as permissões, a `PermissionsGuard` default-deny e a guarda de vertical ativo. A disponibilidade por produto **não é uma fronteira de segurança**: é apresentação, decidida pelo servidor (item 7) e aplicada pelo web por inteiro (item 5). Uma chamada direta à API de uma capacidade fora da experiência continua decidida pelas permissões, como hoje.
+
+Se um dia uma capacidade precisar ficar **desligada de fato** num produto, isso vira um portão de servidor com ADR próprio. Não se propõe agora: nenhuma das capacidades que saem do menu do Clinics expõe algo que as permissões não protejam.
+
+### 7. Como o workspace define a experiência
+
+**Recomendação: a experiência é um atributo do workspace, escolhido pela operação.**
+
+- **O servidor:**
+  - `Workspace.experience` é uma coluna nova do Core, texto, `NOT NULL DEFAULT 'crm'`, com migration conforme o ADR-051;
+  - o registro composto conhece as chaves válidas: o Core declara `crm`, e o Clinics declara `clinics`, com a exigência de estar **ativo** no workspace. O Core continua sem conhecer o Clinics: ele valida a chave contra o que a composição declarou;
+  - o `/api/auth/me` devolve a experiência da membership ativa e a de cada membership.
+- **Quem muda:** uma CLI de operação (`workspace-experience --slug <s> --experience <chave>`), como o provisionamento e o `clinics enable`, auditada (`workspace.experience_changed`). Não há tela para isso agora: trocar o produto de um workspace é raro e muda a vida de toda a equipe.
+- **Ativar não é escolher.** `clinics enable` **não** muda a experiência, e a experiência `clinics` exige o vertical ativo. Se o Clinics for desativado num workspace com a experiência `clinics`, a tela mostra "o Veyra Clinics está desativado neste workspace" com as configurações (Equipe, Auditoria, Uso), e **nunca** cai para os menus do CRM.
+- **Uso combinado:** uma experiência por workspace, sem juntar menus. O que a clínica precisa da base, como o funil de captação e as conversas, entra **dentro** da experiência dela, com a linguagem dela. Quem precisar dos dois produtos separados usa dois workspaces, com dados e equipe isolados. Uma experiência combinada desenhada de propósito, se vier, é ADR próprio.
+- **A troca de workspace pela interface** passa a fazer parte desta entrega. Hoje o web não tem seletor (lacuna registrada no ADR-054), e, com um produto por workspace, quem participa de dois só troca de produto trocando de workspace. O seletor no cabeçalho mostra o workspace e o produto de cada um.
+- **Sem workspace ativo.** Quem teve o acesso removido, ou nunca teve um workspace, continua com a sessão da conta. Hoje cai num shell vazio, e as notificações respondem 500 (dívida registrada na F5.1a). Esse estado ganha tela própria, neutra, sem produto: "você não tem acesso a nenhum workspace ativo", com o seletor quando houver outro workspace. As rotas pessoais que leem dado de workspace passam a recusar de forma limpa.
+
+### 8. Compatibilidade e transição
+
+- **Workspaces que usam o CRM:** o padrão `crm` não muda nada visível.
+- **O workspace `clinica` do E2E** passa a ser semeado com a experiência `clinics`.
+- **A demonstração no staging:** depois da implementação e de uma janela autorizada pelo usuário, com o roteiro do §14 do `DEPLOY_STAGING`:
+  - deploy com a coluna em `crm` (nada muda);
+  - a CLI põe `clinics` no workspace `demo`;
+  - o workspace `staging` continua `crm`.
+
+  A volta é a mesma CLI com `crm`. Nada disso acontece enquanto o usuário avalia a demonstração.
+
+### Alternativas comparadas
+
+| Alternativa                                                                   | Separação                                       | Custo e risco                                                                                      | Veredito                                                              |
+| ----------------------------------------------------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| **A. Um frontend por produto** (`apps/web-clinics`)                           | total                                           | duplica shell, sessão (ADR-050), cliente da API, componentes e E2E; cada correção em dois lugares  | recusada agora; fica possível depois, se os produtos divergirem muito |
+| **B. Uma SPA, experiência por workspace** (manifesto por produto)             | completa nas rotas, menu, busca, links, títulos | uma coluna, um ponto de extensão e a reorganização do web; a infraestrutura continua uma só        | **recomendada**                                                       |
+| **C. Produto pelo domínio** (`clinics.` no endereço)                          | boa                                             | amarra o produto ao endereço, que não é atributo do workspace; complica cookie, CORS e deploy      | recusada; pode virar só marca depois, sobre a B                       |
+| **D. Esconder do menu o que é do CRM quando o Clinics está ativo**            | só no menu                                      | rotas diretas, busca, links e o Hoje continuam do CRM; e presume que ativar é escolher             | recusada (o usuário: "esconder links não completa")                   |
+| **E. Experiência derivada da ativação** (Clinics ativo ⇒ experiência Clinics) | completa                                        | sem coluna, mas confunde módulo ativo com produto escolhido, e desativar cairia no CRM em silêncio | recusada                                                              |
+
+### O que muda nos pontos de extensão
+
+O **E5** passa de "contribuir grupos ao mapa único" para "declarar uma experiência":
+
+- o início;
+- o mapa de navegação;
+- as rotas;
+- as seções de configurações;
+- o vocabulário das telas compartilhadas;
+- os resolvedores de link;
+- os provedores da busca;
+- a exigência de ativação.
+
+O Core declara a experiência `crm` pelo mesmo contrato. As telas compartilhadas, como Equipe, Conversas e Configurações, são do Core e recebem a linguagem da experiência. Isso vira um **adendo ao ADR-047** quando este ADR for aprovado.
+
+### Decisões para o usuário
+
+- **D-E1 Tarefas no Clinics:** recomendação, fora até a F5.3, porque tarefa é texto livre do Core legível com `tasks:read` (B1).
+- **D-E2 IA no Clinics:** recomendação, sem a seção Sinais. A proposta de resposta continua na conversa, onde já está, com a restrição de conteúdo do E6.
+- **D-E3 Quem escolhe a experiência:** recomendação, só a operação, pela CLI, auditada.
+- **D-E4 O funil:** recomendação, na seção Captação, e não no menu principal.
+- **D-E5 O nome do papel Member no Clinics** ("Recepção"): fica para a D7 (F5.1b), que é quem decide os papéis.
+- **D-E6 Como listar Interessados (técnica).** Montar a lista na tela, buscando contatos e descartando os que têm ficha, quebra a paginação: páginas desiguais e contagem errada. A recomendação é um filtro genérico de contatos no Core, "com ou sem a extensão X", declarado pela composição, como o E6 já consulta a presença de dados do vertical. O Core continua sem saber o que é paciente; ele só filtra pela presença declarada.
+
+### Plano de entregas, depois da aprovação
+
+1. **E-1, contratos e API:** a coluna `experience` com migration (ADR-051), a declaração de experiência no registro composto, o `/auth/me`, a CLI auditada e os testes, inclusive a experiência `clinics` recusada sem o vertical ativo. Entram também o filtro de contatos da D-E6, se aprovado, e a recusa limpa das rotas pessoais sem workspace.
+2. **E-2, o web do Core:**
+   - o manifesto da experiência;
+   - a lateral, o rastro, o título e a marca;
+   - o roteador por experiência, com o aviso para rota de fora;
+   - os resolvedores de link;
+   - a busca por experiência;
+   - Configurações como uma entrada com seções;
+   - o seletor de workspace e a tela "sem workspace".
+
+   O CRM fica igual (E2E existente verde).
+
+3. **E-3, o web do Clinics:** o Hoje da clínica, Interessados, o menu e a linguagem do item 2, e o E2E das duas experiências. O E2E confere que rota direta, busca e link nunca levam a tela do outro produto, e que o Owner do Clinics não vê o CRM.
+4. **E-4, operação:** a transição da demonstração (item 8), numa janela autorizada.
+
+Depois disso, voltam a D7 (F5.1b), a correção de pacotes (F5.2) e as demais frentes, na ordem do ROADMAP.
+
+**Consequências:**
+
+- O Clinics passa a ser percebido como sistema de clínica sem um segundo frontend.
+- O E5 muda de natureza (adendo ao ADR-047).
+- O `Workspace` ganha uma coluna.
+- Toda tela compartilhada passa a receber a linguagem da experiência em vez de texto fixo do CRM.
+- Links fixos do CRM no código do Core viram resolvedores.
+- O seletor de workspace sai do backlog.
