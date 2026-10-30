@@ -1939,3 +1939,58 @@ O usuário entra e troca para o workspace Demonstração. Depois:
 3. Nas Métricas, a entrega e a resposta aparecem como "Sem dados", por desenho. Nada sai para a Meta.
 
 **Antes de voltar o staging à Graph,** algum dia, as versões `demo_*` saem de uso.
+
+### Etapa G — A E-4: a experiência da clínica no `demo` (proposta, 2026-10-30; nada executado; autorização própria)
+
+**O objetivo:** o workspace `demo` passa a abrir no Veyra Clinics (ADR-055, E-3 e adendo 5), e o workspace `staging` continua no CRM. **O que não muda:**
+
+- os dados continuam fictícios e o envio continua simulado;
+- o Clinics continua ativo só no `demo` (§7.1);
+- nenhum convite nem mensagem vai para pessoas reais.
+
+**Pré-condições:**
+
+- a E-1, a E-2 e a E-3 (com o complemento) publicadas, com o CI verde;
+- um commit fixado, nunca `main` flutuante (§4);
+- o usuário não está usando o staging;
+- a autorização da janela.
+
+1. **Diagnóstico, só leitura (como na etapa A):**
+   - o commit em uso (hoje, `2b6deb1`);
+   - `SELECT "slug", "name" FROM "Workspace" ORDER BY "slug";`;
+   - o `GET /api/health`;
+   - o backup recente conferido (§6). O desbloqueio do restic continua manual, depois de conferir que não há operação em andamento, nunca com `--remove-all`.
+2. **Aviso prévio, por causa das abas abertas.** O escopo da sessão muda com a E-1 (§4): é preciso fechar ou recarregar todas as abas do Veyra.
+3. **As duas migrations pendentes**, `20261029220000_invite_authority` e `20261030090000_workspace_experience`:
+   - **antes:** as consultas de PARADA da `invite_authority` (§4). O número de convites pendentes que ela vai invalidar vai para o log. Um workspace com convite de Owner pendente e sem Owner ativo **para a janela**: não há caminho seguro de reemissão, e nenhum criador é inventado;
+   - **como:** com um container avulso da imagem nova, antes de apontar o recurso (`run --rm --no-deps api npx prisma migrate deploy`, §4), já na janela de manutenção;
+   - **conferência:** os inventários do §4, 5 objetos para a primeira e 2 para a segunda.
+4. **O deploy do commit fixado.** Depois:
+   - o `GET /api/health`;
+   - numa aba NOVA, com uma conta do `staging`, o `GET /api/auth/me` deve trazer `experience: {"key":"crm","status":"ready"}`;
+   - a aba Rede do navegador não mostra 409 em sequência.
+
+   **Daqui até o passo 5, o `demo` mostra o CRM** (o Clinics está ativo nele, mas a experiência ainda é `crm`). Ninguém usa o staging nesse meio.
+
+5. **A troca, só do `demo`:**
+
+   ```bash
+   docker exec <container-api> node dist/cli/workspace-experience.js --slug demo --experience clinics
+   ```
+
+   A CLI exige o Clinics ativo no `demo` e audita a troca (`workspace.experience_changed`, ator `cli:workspace-experience`).
+
+6. **A conferência:**
+   - `SELECT "slug", "experience" FROM "Workspace" ORDER BY "slug";` deve dar `demo` em `clinics` e `staging` em `crm`;
+   - na trilha, uma só entrada `workspace.experience_changed`, a do `demo`;
+   - o Owner da demonstração entra numa aba nova e cai no Hoje da clínica;
+   - a busca e os links ficam na clínica, e um contato abre na pessoa;
+   - os Envios continuam com o aviso "Envio simulado".
+7. **A retomada** (etapa E). **O uso:**
+   - quem avalia cria interessados fictícios pela tela ("Novo interessado"), com telefone e consentimento fictícios (D-E3.4);
+   - a etapa F passa a registrar o consentimento na seção "Contato" da ficha do paciente.
+
+**A volta:**
+
+- **da experiência:** a mesma CLI com `--experience crm`, também auditada;
+- **do código:** o §5. As duas migrations são aditivas, exceto os convites pendentes que a `invite_authority` invalida, que não voltam.

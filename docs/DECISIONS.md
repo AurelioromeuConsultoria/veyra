@@ -9199,4 +9199,42 @@ Tornar `clinics` selecionável no código **não** autoriza mudar workspace nenh
    - **Etiquetas:** sem a lista, a tela não oferece a edição delas e não envia `tagIds`.
 5. **As permissões.** Consultar etiquetas e valores pede `contacts:read`, a mesma chave da pessoa. Editar pede `contacts:write`, a chave do `PATCH`. Os valores aparecem com o rótulo da definição. Uma chave que não está mais nas definições não é mostrada como campo.
 
-**O limite da garantia, dito com precisão.** Enviar só o que mudou protege o que **não** foi editado. Um valor que outra pessoa gravou enquanto a tela estava aberta continua lá, se esta edição não mexeu nele. Mas o Core não tem controle otimista de versão. Duas pessoas que editam o **mesmo** item a partir de telas desatualizadas fazem a última gravação prevalecer. O mesmo vale para o conjunto de etiquetas, que é gravado inteiro: uma etiqueta acrescentada por outra pessoa enquanto esta tela estava aberta é perdida se esta edição também mexer nas etiquetas. Nos telefones, o servidor serializa a escrita sob trava e revoga o consentimento de um número que saiu, com trilha. Isso protege a janela da gravação, não a da tela aberta. A versão otimista do contato é decisão própria, fora deste complemento.
+**O limite da garantia, dito com precisão.** Enviar só o que mudou protege o que **não** foi editado. A comparação é contra o contato **como a tela abriu**: essa base é congelada, e uma releitura (a rede que volta) não muda o que conta como editado. O nome também só vai quando mudou, e salvar sem mudança não grava nada (a tela só relê o que já tinha). Mexer e desfazer conta como mudança naquela mesma chave: marcar e desmarcar um booleano que estava ausente manda `false`, e um `multiselect` desfeito manda a lista vazia. Nada de outra chave vai junto. A edição só abre com o contato carregado sem erro e sem releitura em andamento. Um valor que outra pessoa gravou enquanto a tela estava aberta continua lá, se esta edição não mexeu nele. Mas o Core não tem controle otimista de versão. Duas pessoas que editam o **mesmo** item a partir de telas desatualizadas fazem a última gravação prevalecer. O mesmo vale para o conjunto de etiquetas, que é gravado inteiro: uma etiqueta acrescentada por outra pessoa enquanto esta tela estava aberta é perdida se esta edição também mexer nas etiquetas. As listas de telefones e de e-mails também são gravadas inteiras: se esta edição mexer nos telefones, um número que outra pessoa acrescentou com a tela aberta sai, e o consentimento dele é revogado. Nos telefones, o servidor serializa a escrita sob trava e revoga o consentimento de um número que saiu, com trilha. Isso protege a janela da gravação, não a da tela aberta. A versão otimista do contato é decisão própria, fora deste complemento, registrada como dívida (`technical-debt.md`), com o gatilho.
+
+**Do Core, registrado sem mudar agora:**
+
+- um campo `multiselect` obrigatório aceita a lista vazia, no servidor e na tela;
+- um `boolean` obrigatório desmarcado de início vale "ausente" até ser marcado;
+- o formulário de Contatos do CRM ainda reenvia todas as etiquetas e todos os campos.
+
+Estão na mesma linha da dívida.
+
+**A implementação do complemento (2026-10-30), com as revisões de fechamento.**
+
+- **`reviewer`:** pediu mudanças e, no delta, aprovou com ressalvas.
+- **`security`:** aprovou com ressalvas, sem P0 nem P1, e o mesmo no delta.
+
+O que as revisões corrigiram:
+
+- **a base da comparação:** agora congelada na abertura. Antes, ela acompanhava a releitura do contato, e uma rede que voltava com a gaveta aberta faria o que outra pessoa gravou ser reenviado e apagado;
+- **o nome:** só vai quando mudou;
+- **as falhas de carregamento:** a tela e o envio usam a mesma condição quando a releitura das definições ou das etiquetas falha com dado antigo no cache;
+- **o "Editar dados":** só abre com o contato carregado sem erro e sem releitura em andamento;
+- **os docs:** SECURITY, ARCHITECTURE e a dívida da versão otimista.
+
+**Validação:**
+
+- **mutações:** 11 casos (C1–C11), todos mortos por teste que falha (`e3/mut-e3c-1.log` a `-4.log`). Duas sobreviveram de início, e mostraram testes fracos:
+  - a base que acompanha a consulta: o teste salvava antes de o dado relido chegar;
+  - as etiquetas com erro: o teste nunca mudava uma etiqueta antes da falha.
+
+  Os dois testes foram reforçados;
+
+- **o teste do Core:** o `PATCH` parcial preserva etiquetas, outros campos e telefones, e `null` apaga só a chave enviada (13 no spec do CRM);
+- **a bateria b86, proporcional:**
+  - lint, formatação e build;
+  - web (272 no estado final);
+  - E2E (57);
+  - sem sono.
+
+  A integração, os unitários da API e o drift não foram repetidos: a API não mudou fora do teste. Um teste do web que lia o título neutro antes do efeito que o grava passou a esperar por ele.

@@ -194,6 +194,48 @@ describe('CRM — contatos, empresas, tags e custom fields (integração)', () =
     }).expect(400);
   });
 
+  it('PATCH parcial preserva o que não veio: etiquetas, os outros campos e os telefones (o que a clínica usa, ADR-055 adendo 5)', async () => {
+    for (const key of ['convenio', 'indicacao']) {
+      await post('/api/custom-fields', sessionA, {
+        entityType: 'contact',
+        key,
+        label: key,
+        type: 'text',
+      }).expect(201);
+    }
+    const tag = (
+      await post('/api/tags', sessionA, { name: 'Retorno', color: 'accent' }).expect(201)
+    ).body.id;
+    const criado = (
+      await post('/api/contacts', sessionA, {
+        name: 'Marina Fictícia',
+        phones: ['+5511999990000'],
+        tagIds: [tag],
+        customFields: { convenio: 'Particular', indicacao: 'Amiga' },
+      }).expect(201)
+    ).body;
+    // só o nome
+    await patch(`/api/contacts/${criado.id}`, sessionA, { name: 'Marina Nova' }).expect(200);
+    // só um campo
+    const depois = (
+      await patch(`/api/contacts/${criado.id}`, sessionA, {
+        customFields: { convenio: 'Convênio Fictício' },
+      }).expect(200)
+    ).body;
+    expect(depois.name).toBe('Marina Nova');
+    expect(depois.phones).toEqual(['+5511999990000']);
+    expect(depois.tags.map((t: { id: string }) => t.id)).toEqual([tag]);
+    expect(depois.customFields).toEqual({ convenio: 'Convênio Fictício', indicacao: 'Amiga' });
+    // limpar um campo opcional (null) apaga só ele
+    const limpo = (
+      await patch(`/api/contacts/${criado.id}`, sessionA, {
+        customFields: { indicacao: null },
+      }).expect(200)
+    ).body;
+    expect(limpo.customFields).toEqual({ convenio: 'Convênio Fictício' });
+    expect(limpo.tags.map((t: { id: string }) => t.id)).toEqual([tag]);
+  });
+
   it('custom fields: valida tipo, opções, obrigatório e chave desconhecida', async () => {
     await post('/api/custom-fields', sessionA, {
       entityType: 'contact',

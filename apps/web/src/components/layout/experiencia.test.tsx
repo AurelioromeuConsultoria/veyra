@@ -307,7 +307,8 @@ describe('os estados da experiência nunca mostram o CRM', () => {
     abrir('/');
     expect(await screen.findByText('Carregando…')).toBeInTheDocument();
     expect(screen.queryByRole('navigation', { name: 'Principal' })).toBeNull();
-    expect(document.title).toBe('Veyra');
+    // o título neutro é gravado num efeito, logo depois de a tela montar
+    await waitFor(() => expect(document.title).toBe('Veyra'));
     await act(async () => soltar());
     expect(await screen.findByRole('heading', { name: 'Hoje', level: 1 })).toBeInTheDocument();
   });
@@ -325,7 +326,8 @@ describe('os estados da experiência nunca mostram o CRM', () => {
       expect(await screen.findByRole('heading', { name: titulo })).toBeInTheDocument();
       expect(screen.queryByRole('navigation', { name: 'Principal' })).toBeNull();
       expect(screen.queryByText('veyra clinics')).toBeNull();
-      expect(document.title).toBe('Veyra');
+      // o título neutro é gravado num efeito, logo depois de a tela montar
+      await waitFor(() => expect(document.title).toBe('Veyra'));
     },
   );
 
@@ -546,7 +548,8 @@ describe('incompatibilidade de sessão', () => {
     expect(
       await screen.findByRole('heading', { name: 'Atualize a página para continuar' }),
     ).toBeInTheDocument();
-    expect(document.title).toBe('Veyra');
+    // o título neutro é gravado num efeito, logo depois de a tela montar
+    await waitFor(() => expect(document.title).toBe('Veyra'));
     const depois = s.chamadas.length;
     await new Promise((r) => setTimeout(r, 50));
     expect(s.chamadas.length).toBe(depois);

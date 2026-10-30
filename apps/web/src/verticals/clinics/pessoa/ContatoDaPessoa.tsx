@@ -1,10 +1,11 @@
 import { useQuery } from '@tanstack/react-query';
-import type { ContactDto, ConversationPageDto, DealDto } from '@veyra/contracts';
+import type { ContactDto, ConversationPageDto, CustomFieldDto, DealDto } from '@veyra/contracts';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '../../../components/ui/button';
 import { Drawer } from '../../../components/ui/drawer';
 import { Panel } from '../../../components/ui/page';
+import { TagBadge } from '../../../components/ui/tag-badge';
 import { api, toQuery } from '../../../lib/api';
 import { formatCents, relativeStamp } from '../../../lib/format';
 import { alcanca, useSession } from '../../../lib/session';
@@ -17,7 +18,7 @@ const TETO_DAS_OPORTUNIDADES = 100;
 const ESTADO_DA_OPORTUNIDADE = { open: 'em aberto', won: 'ganha', lost: 'perdida' } as const;
 
 /**
- * O contato da pessoa, na clínica (ADR-055, adendos 3 e 4): os dados, o
+ * O contato da pessoa, na clínica (ADR-055, adendos 3, 4 e 5): os dados, o
  * consentimento, as conversas e as oportunidades — o paciente continua na
  * captação. Cada parte só aparece, e só consulta, com TODAS as chaves que a
  * rota dela exige. Nada aqui diz se a pessoa é paciente.
@@ -33,6 +34,12 @@ export function ContatoDaPessoa({ contactId }: { contactId: string }) {
   const contato = useQuery({
     queryKey: ['contact', contactId],
     queryFn: () => api.get<ContactDto>(`/api/contacts/${contactId}`),
+    enabled: leContato,
+  });
+  // os rótulos dos campos personalizados: as definições do Core (adendo 5)
+  const definicoes = useQuery({
+    queryKey: ['custom-fields', 'contact'],
+    queryFn: () => api.get<CustomFieldDto[]>('/api/custom-fields?entityType=contact'),
     enabled: leContato,
   });
   const conversas = useQuery({
@@ -55,7 +62,9 @@ export function ContatoDaPessoa({ contactId }: { contactId: string }) {
     <section aria-label="Contato" className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-display-sm">Contato</h2>
-        {editaContato && contato.data ? (
+        {/* a edição congela o contato como está na tela: só com ele carregado sem
+            erro e sem releitura em andamento (a base não é um cache velho) */}
+        {editaContato && contato.data && !contato.isError && !contato.isFetching ? (
           <Button size="sm" variant="secondary" onClick={() => setEditando(true)}>
             Editar dados
           </Button>
@@ -76,6 +85,19 @@ export function ContatoDaPessoa({ contactId }: { contactId: string }) {
               <span className="text-muted-fg">E-mail: </span>
               {contato.data.emails.join(', ') || '—'}
             </p>
+            {contato.data.tags.length > 0 ? (
+              <p className="flex flex-wrap items-center gap-1.5">
+                <span className="text-muted-fg">Etiquetas: </span>
+                {contato.data.tags.map((t) => (
+                  <TagBadge key={t.id} name={t.name} color={t.color} />
+                ))}
+              </p>
+            ) : null}
+            <CamposPreenchidos
+              valores={contato.data.customFields}
+              definicoes={definicoes.data}
+              falhou={definicoes.isError}
+            />
           </>
         )}
       </Panel>
@@ -143,6 +165,7 @@ export function ContatoDaPessoa({ contactId }: { contactId: string }) {
       <Drawer open={editando} onOpenChange={setEditando} title="Editar dados">
         {editando && contato.data ? (
           <DadosDoContato
+            key={contactId}
             contato={contato.data}
             rotuloDoBotao="Salvar"
             onDone={() => setEditando(false)}
@@ -150,5 +173,48 @@ export function ContatoDaPessoa({ contactId }: { contactId: string }) {
         ) : null}
       </Drawer>
     </section>
+  );
+}
+
+/** Os campos personalizados preenchidos, com o rótulo da definição. */
+function CamposPreenchidos({
+  valores,
+  definicoes,
+  falhou,
+}: {
+  valores: Record<string, unknown>;
+  definicoes: CustomFieldDto[] | undefined;
+  falhou: boolean;
+}) {
+  if (falhou) {
+    return (
+      <p className="text-data text-negative">Não foi possível carregar os campos personalizados.</p>
+    );
+  }
+  if (!definicoes) return null;
+  // só o que tem definição: uma chave que saiu das definições não vira campo
+  const preenchidos = definicoes.filter((d) => {
+    const v = Object.hasOwn(valores, d.key) ? valores[d.key] : undefined;
+    return v !== undefined && v !== null && !(Array.isArray(v) && v.length === 0);
+  });
+  return (
+    <>
+      {preenchidos.map((d) => {
+        const v = valores[d.key];
+        const texto = Array.isArray(v)
+          ? v.join(', ')
+          : typeof v === 'boolean'
+            ? v
+              ? 'Sim'
+              : 'Não'
+            : String(v);
+        return (
+          <p key={d.id}>
+            <span className="text-muted-fg">{d.label}: </span>
+            {texto}
+          </p>
+        );
+      })}
+    </>
   );
 }

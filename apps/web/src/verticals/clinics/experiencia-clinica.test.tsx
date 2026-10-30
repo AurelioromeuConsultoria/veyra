@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { vi } from 'vitest';
@@ -121,6 +121,7 @@ function renderizar(ui: ReactNode, caminho = '/') {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return queryClient;
 }
 
 afterEach(() => {
@@ -513,7 +514,30 @@ const contato = {
   companyId: null,
   companyName: null,
   tags: [],
+  customFields: {},
 };
+
+/** As definições do Core para os testes do adendo 5 (fictícias). */
+const CONVENIO = {
+  id: 'cf1',
+  entityType: 'contact',
+  key: 'convenio',
+  label: 'Convênio',
+  type: 'text',
+  options: [],
+  required: true,
+};
+const INDICACAO = {
+  id: 'cf2',
+  entityType: 'contact',
+  key: 'indicacao',
+  label: 'Indicação',
+  type: 'text',
+  options: [],
+  required: false,
+};
+const TAG_VIP = { id: 't1', name: 'VIP', color: 'info', usageCount: 1 };
+const TAG_RETORNO = { id: 't2', name: 'Retorno', color: 'warning', usageCount: 0 };
 
 describe('a pessoa (o destino de um contato na clínica)', () => {
   it('quem consulta pacientes: se for paciente, vai à ficha', async () => {
@@ -619,9 +643,10 @@ describe('o contato na ficha e na pessoa: cada parte com TODAS as chaves da sua 
     mockSessao(['contacts:read']);
     renderizar(<ContatoDaPessoa contactId={C1} />);
     expect(await screen.findByText('+5511999990000')).toBeInTheDocument();
-    expect(chamadas.filter((c) => !c.startsWith('GET /api/auth/me'))).toEqual([
-      `GET /api/contacts/${C1}`,
-    ]);
+    // as definições dos campos também são do contato (`contacts:read`)
+    expect(chamadas.filter((c) => !c.startsWith('GET /api/auth/me')).sort()).toEqual(
+      [`GET /api/contacts/${C1}`, 'GET /api/custom-fields?entityType=contact'].sort(),
+    );
     expect(screen.queryByRole('heading', { name: 'Conversas' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Oportunidades' })).toBeNull();
   });
@@ -667,6 +692,8 @@ describe('o contato na ficha e na pessoa: cada parte com TODAS as chaves da sua 
     const { corpos } = mockApi({
       [`PATCH /api/contacts/${C1}`]: { body: { ...contato, phones: ['+5511988887777'] } },
       [`GET /api/contacts/${C1}`]: { body: contato },
+      'GET /api/custom-fields': { body: [] },
+      'GET /api/tags': { body: [] },
     });
     mockSessao(['contacts:read', 'contacts:write']);
     renderizar(<ContatoDaPessoa contactId={C1} />);
@@ -679,7 +706,8 @@ describe('o contato na ficha e na pessoa: cada parte com TODAS as chaves da sua 
       expect(corpos).toContainEqual({
         chave: `PATCH /api/contacts/${C1}`,
         // só o que mudou: os e-mails, iguais, não vão
-        corpo: { name: 'Marina Fictícia', phones: ['+5511988887777'] },
+        // só o que mudou: o nome e os e-mails, iguais, não vão
+        corpo: { phones: ['+5511988887777'] },
       }),
     );
   });
@@ -690,6 +718,8 @@ describe('editar só o nome não reenvia telefones nem e-mails', () => {
     const { corpos } = mockApi({
       [`PATCH /api/contacts/${C1}`]: { body: { ...contato, name: 'Marina Nova' } },
       [`GET /api/contacts/${C1}`]: { body: contato },
+      'GET /api/custom-fields': { body: [] },
+      'GET /api/tags': { body: [] },
     });
     mockSessao(['contacts:read', 'contacts:write']);
     renderizar(<ContatoDaPessoa contactId={C1} />);
@@ -704,6 +734,314 @@ describe('editar só o nome não reenvia telefones nem e-mails', () => {
         corpo: { name: 'Marina Nova' },
       }),
     );
+  });
+});
+
+// ── Etiquetas e campos personalizados (adendo 5) ─────────────────────────────
+
+describe('etiquetas e campos personalizados na clínica (os do Core)', () => {
+  const comCampos = {
+    ...contato,
+    tags: [{ id: 't1', name: 'VIP', color: 'info' }],
+    customFields: { convenio: 'Particular', indicacao: 'Amiga' },
+  };
+
+  it('criar com campo obrigatório: sem ele, nada é enviado; com ele, o POST leva o valor e as etiquetas', async () => {
+    const { corpos } = mockApi({
+      'GET /api/clinics/status': { body: { active: true } },
+      'GET /api/clinics/leads': { body: { items: [], nextCursor: null } },
+      'GET /api/custom-fields': { body: [CONVENIO, INDICACAO] },
+      'GET /api/tags': { body: [TAG_VIP, TAG_RETORNO] },
+      'POST /api/contacts': { status: 201, body: { ...contato, id: 'novo' } },
+      'GET /api/contacts/novo': { body: { ...contato, id: 'novo' } },
+    });
+    mockSessao(RECEPCAO);
+    renderizar(<ClinicsLeadsPage />, '/clinics/leads');
+    fireEvent.click(await screen.findByRole('button', { name: /Novo interessado/ }));
+    fireEvent.change(await screen.findByRole('textbox', { name: /^Nome/ }), {
+      target: { value: 'Nina Fictícia' },
+    });
+    await screen.findByLabelText('Convênio *');
+    fireEvent.click(screen.getByRole('button', { name: 'Criar interessado' }));
+    expect(
+      await screen.findByText('Preencha os campos obrigatórios: Convênio.'),
+    ).toBeInTheDocument();
+    expect(corpos).toEqual([]);
+
+    fireEvent.change(screen.getByLabelText('Convênio *'), { target: { value: 'Particular' } });
+    // o aviso acompanha o formulário: preenchido o campo, ele some
+    expect(screen.queryByText('Preencha os campos obrigatórios: Convênio.')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'VIP' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Criar interessado' }));
+    await waitFor(() =>
+      expect(corpos).toContainEqual({
+        chave: 'POST /api/contacts',
+        corpo: {
+          name: 'Nina Fictícia',
+          phones: [],
+          emails: [],
+          tagIds: ['t1'],
+          customFields: { convenio: 'Particular' },
+        },
+      }),
+    );
+  });
+
+  it('a validação é do servidor: a recusa dele aparece na tela', async () => {
+    mockApi({
+      'GET /api/clinics/status': { body: { active: true } },
+      'GET /api/clinics/leads': { body: { items: [], nextCursor: null } },
+      'GET /api/custom-fields': { body: [INDICACAO] },
+      'GET /api/tags': { body: [] },
+      'POST /api/contacts': {
+        status: 400,
+        body: { message: 'Campo obrigatório ausente: "cpf_do_responsavel"' },
+      },
+    });
+    mockSessao(RECEPCAO);
+    renderizar(<ClinicsLeadsPage />, '/clinics/leads');
+    fireEvent.click(await screen.findByRole('button', { name: /Novo interessado/ }));
+    fireEvent.change(await screen.findByRole('textbox', { name: /^Nome/ }), {
+      target: { value: 'Nina Fictícia' },
+    });
+    await screen.findByLabelText('Indicação');
+    fireEvent.click(screen.getByRole('button', { name: 'Criar interessado' }));
+    expect(
+      await screen.findByText('Campo obrigatório ausente: "cpf_do_responsavel"'),
+    ).toBeInTheDocument();
+  });
+
+  it('editar UM campo: o PATCH leva só ele — os outros valores e as etiquetas não vão (o servidor os preserva)', async () => {
+    const { corpos } = mockApi({
+      [`PATCH /api/contacts/${C1}`]: { body: comCampos },
+      [`GET /api/contacts/${C1}`]: { body: comCampos },
+      'GET /api/custom-fields': { body: [CONVENIO, INDICACAO] },
+      'GET /api/tags': { body: [TAG_VIP, TAG_RETORNO] },
+    });
+    mockSessao(['contacts:read', 'contacts:write']);
+    renderizar(<ContatoDaPessoa contactId={C1} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar dados' }));
+    // as etiquetas carregadas: a ausência de `tagIds` no corpo é a regra, não a espera
+    await screen.findByRole('button', { name: 'VIP' });
+    fireEvent.change(await screen.findByLabelText('Convênio *'), {
+      target: { value: 'Convênio Fictício' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    await waitFor(() =>
+      expect(corpos).toContainEqual({
+        chave: `PATCH /api/contacts/${C1}`,
+        corpo: { customFields: { convenio: 'Convênio Fictício' } },
+      }),
+    );
+  });
+
+  it('mudar as etiquetas manda o conjunto novo; limpar um obrigatório preenchido é barrado antes de enviar', async () => {
+    const { corpos } = mockApi({
+      [`PATCH /api/contacts/${C1}`]: { body: comCampos },
+      [`GET /api/contacts/${C1}`]: { body: comCampos },
+      'GET /api/custom-fields': { body: [CONVENIO, INDICACAO] },
+      'GET /api/tags': { body: [TAG_VIP, TAG_RETORNO] },
+    });
+    mockSessao(['contacts:read', 'contacts:write']);
+    renderizar(<ContatoDaPessoa contactId={C1} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar dados' }));
+    fireEvent.change(await screen.findByLabelText('Convênio *'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    expect(
+      await screen.findByText('Preencha os campos obrigatórios: Convênio.'),
+    ).toBeInTheDocument();
+    expect(corpos).toEqual([]);
+    fireEvent.change(screen.getByLabelText('Convênio *'), { target: { value: 'Particular' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Retorno' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    await waitFor(() =>
+      expect(corpos).toContainEqual({
+        chave: `PATCH /api/contacts/${C1}`,
+        corpo: { tagIds: ['t1', 't2'] },
+      }),
+    );
+  });
+
+  it('a base é o contato COMO A TELA ABRIU: relido com a gaveta aberta (outra pessoa mudou etiqueta, campo e telefone), editar só o nome manda só o nome', async () => {
+    const { corpos } = mockApi({
+      [`PATCH /api/contacts/${C1}`]: { body: comCampos },
+      [`GET /api/contacts/${C1}`]: { body: comCampos },
+      'GET /api/custom-fields': { body: [CONVENIO, INDICACAO] },
+      'GET /api/tags': { body: [TAG_VIP, TAG_RETORNO] },
+    });
+    mockSessao(['contacts:read', 'contacts:write']);
+    const queryClient = renderizar(<ContatoDaPessoa contactId={C1} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar dados' }));
+    await screen.findByRole('button', { name: 'VIP' });
+    // a consulta relida (a rede voltou): outra pessoa acrescentou etiqueta, valor e número
+    act(() => {
+      queryClient.setQueryData(['contact', C1], {
+        ...comCampos,
+        phones: ['+5511999990000', '+5511977776666'],
+        tags: [
+          { id: 't1', name: 'VIP', color: 'info' },
+          { id: 't2', name: 'Retorno', color: 'warning' },
+        ],
+        customFields: { convenio: 'Mudado por outra pessoa', indicacao: 'Amiga' },
+      });
+    });
+    // o componente já recebeu o contato relido (a seção de leitura mostra o número novo)
+    expect(await screen.findByText(/\+5511977776666/)).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('textbox', { name: /^Nome/ }), {
+      target: { value: 'Marina Nova' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    await waitFor(() =>
+      expect(corpos).toContainEqual({
+        chave: `PATCH /api/contacts/${C1}`,
+        corpo: { name: 'Marina Nova' },
+      }),
+    );
+  });
+
+  it('limpar um campo opcional manda `null` só para ele; salvar sem mudar nada não faz requisição', async () => {
+    const { corpos } = mockApi({
+      [`PATCH /api/contacts/${C1}`]: { body: comCampos },
+      [`GET /api/contacts/${C1}`]: { body: comCampos },
+      'GET /api/custom-fields': { body: [CONVENIO, INDICACAO] },
+      'GET /api/tags': { body: [TAG_VIP] },
+    });
+    mockSessao(['contacts:read', 'contacts:write']);
+    renderizar(<ContatoDaPessoa contactId={C1} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar dados' }));
+    await screen.findByRole('button', { name: 'VIP' });
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Salvar' })).toBeNull());
+    expect(corpos).toEqual([]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Editar dados' }));
+    fireEvent.change(await screen.findByLabelText('Indicação'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    await waitFor(() =>
+      expect(corpos).toContainEqual({
+        chave: `PATCH /api/contacts/${C1}`,
+        corpo: { customFields: { indicacao: null } },
+      }),
+    );
+  });
+
+  it('um contato antigo, sem o campo obrigatório criado depois, continua editável (a regra do servidor na edição)', async () => {
+    const antigo = { ...contato, customFields: {} };
+    const { corpos } = mockApi({
+      [`PATCH /api/contacts/${C1}`]: { body: { ...antigo, name: 'Marina Nova' } },
+      [`GET /api/contacts/${C1}`]: { body: antigo },
+      'GET /api/custom-fields': { body: [CONVENIO] },
+      'GET /api/tags': { body: [] },
+    });
+    mockSessao(['contacts:read', 'contacts:write']);
+    renderizar(<ContatoDaPessoa contactId={C1} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar dados' }));
+    await screen.findByLabelText('Convênio *');
+    fireEvent.change(screen.getByRole('textbox', { name: /^Nome/ }), {
+      target: { value: 'Marina Nova' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    await waitFor(() =>
+      expect(corpos).toContainEqual({
+        chave: `PATCH /api/contacts/${C1}`,
+        corpo: { name: 'Marina Nova' },
+      }),
+    );
+  });
+
+  it('as definições não carregaram: o formulário NÃO trata isso como "nenhum obrigatório" — não envia e diz por quê', async () => {
+    const { corpos } = mockApi({
+      'GET /api/clinics/status': { body: { active: true } },
+      'GET /api/clinics/leads': { body: { items: [], nextCursor: null } },
+      'GET /api/custom-fields': { status: 500, body: { message: 'falhou' } },
+      'GET /api/tags': { body: [] },
+    });
+    mockSessao(RECEPCAO);
+    renderizar(<ClinicsLeadsPage />, '/clinics/leads');
+    fireEvent.click(await screen.findByRole('button', { name: /Novo interessado/ }));
+    fireEvent.change(await screen.findByRole('textbox', { name: /^Nome/ }), {
+      target: { value: 'Nina Fictícia' },
+    });
+    expect(
+      await screen.findByText(/Não foi possível carregar os campos personalizados/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Criar interessado' })).toBeDisabled();
+    fireEvent.submit(screen.getByRole('button', { name: 'Criar interessado' }).closest('form')!);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(corpos).toEqual([]);
+  });
+
+  it('a releitura das definições falhou com um dado antigo no cache: a tela e o envio usam a mesma condição — nada é enviado', async () => {
+    const { corpos } = mockApi({
+      'GET /api/clinics/status': { body: { active: true } },
+      'GET /api/clinics/leads': { body: { items: [], nextCursor: null } },
+      'GET /api/custom-fields': { status: 500, body: { message: 'falhou' } },
+      'GET /api/tags': { body: [] },
+    });
+    mockSessao(RECEPCAO);
+    const queryClient = renderizar(<ClinicsLeadsPage />, '/clinics/leads');
+    // uma carga anterior deixou definições no cache (sem obrigatório)
+    queryClient.setQueryData(['custom-fields', 'contact'], [INDICACAO]);
+    fireEvent.click(await screen.findByRole('button', { name: /Novo interessado/ }));
+    fireEvent.change(await screen.findByRole('textbox', { name: /^Nome/ }), {
+      target: { value: 'Nina Fictícia' },
+    });
+    expect(
+      await screen.findByText(/Não foi possível carregar os campos personalizados/),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Criar interessado' })).toBeDisabled();
+    fireEvent.submit(screen.getByRole('button', { name: 'Criar interessado' }).closest('form')!);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(corpos).toEqual([]);
+  });
+
+  it('a pessoa marcou uma etiqueta e a releitura delas falhou: o seletor some, a tela diz, e nenhum `tagIds` é enviado', async () => {
+    let leiturasDasEtiquetas = 0;
+    const { corpos } = mockApi({
+      [`PATCH /api/contacts/${C1}`]: { body: comCampos },
+      [`GET /api/contacts/${C1}`]: { body: comCampos },
+      'GET /api/custom-fields': { body: [CONVENIO, INDICACAO] },
+      // a primeira carga funciona; a releitura falha
+      'GET /api/tags': () =>
+        (leiturasDasEtiquetas += 1) === 1
+          ? { body: [TAG_VIP, TAG_RETORNO] }
+          : { status: 500, body: { message: 'falhou' } },
+    });
+    mockSessao(['contacts:read', 'contacts:write']);
+    const queryClient = renderizar(<ContatoDaPessoa contactId={C1} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Editar dados' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Retorno' }));
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['tags'] });
+    });
+    expect(
+      await screen.findByText('Não foi possível carregar as etiquetas: elas ficam como estão.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retorno' })).toBeNull();
+    fireEvent.change(screen.getByRole('textbox', { name: /^Nome/ }), {
+      target: { value: 'Marina Nova' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+    await waitFor(() =>
+      expect(corpos).toContainEqual({
+        chave: `PATCH /api/contacts/${C1}`,
+        corpo: { name: 'Marina Nova' },
+      }),
+    );
+  });
+
+  it('só `contacts:read`: as etiquetas e os valores aparecem, com o rótulo da definição, e não há edição', async () => {
+    mockApi({
+      [`GET /api/contacts/${C1}`]: { body: comCampos },
+      'GET /api/custom-fields': { body: [CONVENIO, INDICACAO] },
+    });
+    mockSessao(['contacts:read']);
+    renderizar(<ContatoDaPessoa contactId={C1} />);
+    expect(await screen.findByText('Particular')).toBeInTheDocument();
+    expect(screen.getByText('Convênio:')).toBeInTheDocument();
+    expect(screen.getByText('Amiga')).toBeInTheDocument();
+    expect(screen.getByText('VIP')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Editar dados' })).toBeNull();
   });
 });
 
