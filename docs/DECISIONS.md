@@ -8516,6 +8516,9 @@ O servidor continua sem decidir autorização pela experiência. Isso precisa se
 
 - o ensaio da migration `20261030090000_workspace_experience` (ADR-051): a falha forçada deixa schema e dados intactos; aplicada, ela põe todo workspace em `crm`; o CHECK recusa a chave fora do formato;
 - **as mutações:** 18 casos das garantias novas, todos mortos por teste que falha ("N failed" na suíte alvo), nenhum por compilação. O log tem os 18 resultados;
+
+  > **Registro (2026-10-30):** o arquivo original deste log foi **sobrescrito** durante a E-2. O executor de mutações da E-2 foi copiado do da E-1 e herdou o caminho do log dele; importado para conferir as âncoras, rodou a rodada da E-2 e gravou por cima. O resumo acima continua valendo, mas **não substitui o artefato perdido**. Por decisão do usuário, o log não foi reconstruído e a rodada não foi repetida só por isso. Desde então, cada entrega e cada rodada grava num arquivo próprio, sem sobrescrever outro.
+
 - **a bateria b83:**
   - lint, formatação e build;
   - unidade da API (419) e web (201);
@@ -8627,3 +8630,382 @@ Decidido antes do código, com as condições do usuário de 2026-10-30.
   - E2E (55).
 
   Depois das correções da revisão delta, só no web, foram repetidos lint, formatação, build, web (231) e E2E (55). Nenhum evento de sono.
+
+**A E-2 foi publicada e validada em 2026-10-30:** `6a9707f`, os quatro jobs do CI verdes no run 41076033227, sem deploy.
+
+### Adendo 3 (2026-10-30): a proposta da E-3 — o web do Clinics (proposto)
+
+**Estado: proposto, para revisão do usuário antes do código.** Nada no staging muda nesta etapa.
+
+O usuário vai conferir quatro coisas, e a proposta foi escrita para responder a elas:
+
+- se o menu ficou mais simples (item 2);
+- se o Hoje ajuda na rotina da clínica (item 3);
+- se cada papel vê só as informações e as ações pertinentes (itens 2, 3 e 6);
+- se a busca e os links ficam dentro do Clinics (item 5).
+
+A base é o que o adendo 1 já aprovou: as entradas do menu, Tarefas e Sinais fora, o funil em Captação, Interessados como "contatos sem ficha", o filtro no servidor e o Hoje sem consulta não permitida ao papel.
+
+#### 1. A identidade da clínica sobre a base compartilhada
+
+**O que é compartilhado:** os contatos, as conversas, o funil, a equipe, a auditoria, a sessão, o servidor e o sistema visual (Mineral).
+
+**O que é da clínica:**
+
+- **o início:** o dia da clínica, e não um painel comercial;
+- **o menu:** organizado pelo trabalho da clínica (atender, captar, acompanhar, medir);
+- **o centro da pessoa:** a ficha do paciente, com os dados de contato, o consentimento, as conversas e as oportunidades ao alcance dela;
+- **o vocabulário:** Pacientes, Interessados, Conversas, Funil de captação, Retornos, e os estados vazios na voz da clínica;
+- **a marca:** "veyra clinics" na lateral e "Veyra Clinics" no título da aba, como na E-2.
+
+**Recomendação: sem cor nova.** A direção visual tem um acento só, e mudar isso pede ADR próprio (`DESIGN_DIRECTION`). A identidade vem da estrutura e da linguagem, que é o que o usuário da clínica percebe todo dia. O sistema visual igual mantém uma base só para corrigir e evoluir.
+
+#### 2. O menu final
+
+**O esboço da lateral** (Owner, com o Hoje ativo e os grupos recolhidos):
+
+```
+┌────────────────────────────┐
+│ veyra clinics              │
+├────────────────────────────┤
+│ ▌ Hoje                     │
+│   Agenda                   │
+│   Pacientes                │
+│   Conversas                │
+│                            │
+│   › Captação               │
+│   › Acompanhamento         │
+│   › Indicadores            │
+│                            │
+│   Configurações            │
+└────────────────────────────┘
+```
+
+**Com um grupo aberto** (a seção ativa é Retornos):
+
+```
+│   ⌄ Acompanhamento         │
+│       Confirmações e       │
+│       reativações          │
+│     ▌ Retornos             │
+```
+
+**A conta:** são 8 linhas visíveis, e os 6 subitens ficam guardados nos grupos. O menu provisório da E-2 expõe 17 entradas, e o do CRM, 15.
+
+**Os grupos:**
+
+- ficam recolhidos por padrão;
+- abrem pelo clique ou quando a seção ativa é deles, e a pessoa pode recolher de novo, mesmo com a seção ativa (o marcador fica no título do grupo);
+- **um grupo com um só item visível mostra o item direto**, sem o clique a mais. Para o Profissional, por exemplo, aparece "Retornos", e não "Acompanhamento › Retornos";
+- não há personalização nem preferência guardada: o estado vale só para a aba.
+
+**O destino de cada entrada e as chaves que ela exige**, sempre todas ao mesmo tempo (item 6.1):
+
+| Entrada                                     | Tela                                         | Chaves                                                      |
+| ------------------------------------------- | -------------------------------------------- | ----------------------------------------------------------- |
+| Hoje                                        | o Hoje da clínica (item 3)                   | nenhuma: cada cartão tem as suas                            |
+| Agenda                                      | a agenda da clínica                          | `clinics:schedule:read` + `clinics:catalog:read`            |
+| Pacientes                                   | a lista e a ficha                            | `clinics:schedule:read`                                     |
+| Conversas                                   | o Inbox do Core, com a linguagem da clínica  | `conversations:read`                                        |
+| Captação › Interessados                     | a lista nova (item 4)                        | `contacts:read` + `clinics:schedule:read`                   |
+| Captação › Funil                            | o Pipeline do Core, como "Funil de captação" | `pipelines:read`                                            |
+| Acompanhamento › Confirmações e reativações | os Envios                                    | `clinics:schedule:read` + `contacts:read` + `consents:read` |
+| Acompanhamento › Retornos                   | os Retornos                                  | `clinics:schedule:read` + `clinics:catalog:read`            |
+| Indicadores › Faltas                        | as Faltas                                    | `clinics:schedule:read` + `clinics:catalog:read`            |
+| Indicadores › Envios                        | as métricas do envio                         | `clinics:schedule:read` + `clinics:catalog:read`            |
+| Configurações                               | a página com seções (item 6)                 | alguma seção ao alcance do papel                            |
+
+**O que cada papel vê** (com os papéis de hoje; o nome "Recepção" para o Member continua com a D7):
+
+| Entrada                   | Owner e Admin | Member (a recepção)                                        | Profissional                   | Guest                           |
+| ------------------------- | ------------- | ---------------------------------------------------------- | ------------------------------ | ------------------------------- |
+| Hoje                      | sim           | sim                                                        | sim                            | sim                             |
+| Agenda, Pacientes         | sim           | sim                                                        | sim                            | não                             |
+| Conversas                 | sim           | sim                                                        | não                            | sim                             |
+| Captação                  | os dois       | os dois                                                    | não                            | só o Funil                      |
+| Acompanhamento            | os dois       | os dois                                                    | só Retornos                    | não                             |
+| Indicadores               | os dois       | os dois                                                    | os dois                        | não                             |
+| Configurações (as seções) | todas         | Clínica (leitura), Equipe, Etiquetas e campos, Uso e plano | Clínica (leitura), Uso e plano | Etiquetas e campos, Uso e plano |
+
+**A lateral do Profissional** fica assim:
+
+```
+│ ▌ Hoje                     │
+│   Agenda                   │
+│   Pacientes                │
+│   Retornos                 │
+│   › Indicadores            │
+│   Configurações            │
+```
+
+#### 3. O Hoje da clínica
+
+O Hoje responde às perguntas do dia, com as rotas que já existem. **Cada cartão declara as suas chaves.** Sem elas, o cartão não monta e a consulta dele não sai (nem 403, nem releitura). Cada ação dentro do cartão também tem as suas.
+
+| Cartão                   | Responde                                                                                           | Rota                                                                    | Chaves do cartão                                   | Ações (e as chaves delas)                                                                                                                                                 |
+| ------------------------ | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Agora e a seguir**     | quem está sendo atendido e quem vem depois, por profissional; atendidos, faltas e restantes do dia | `GET appointments?date=hoje` e o catálogo                               | `clinics:schedule:read` + `clinics:catalog:read`   | "Chegou" e "Faltou" (`clinics:schedule:write`); "Registrar atendimento" (`clinics:care:write`, o fluxo que já existe)                                                     |
+| **Confirmar amanhã**     | os horários de amanhã ainda não confirmados; os pedidos de envio esperando aprovação               | `GET appointments?date=amanhã`; os candidatos do envio, para os pedidos | `clinics:schedule:read` + `clinics:schedule:write` | "Confirmar" (`clinics:schedule:write`); a linha "N pedidos esperando aprovação → Revisar" só com `contacts:read` + `consents:read`, e aprovar continua na tela dos Envios |
+| **Retornos vencidos**    | quem passou do prazo de voltar, com o responsável                                                  | `GET returns?overdue=true`, os 5 primeiros                              | `clinics:schedule:read`                            | "Ver todos" leva aos Retornos, onde ficam atribuir e vincular                                                                                                             |
+| **Conversas aguardando** | as conversas abertas com a janela de 24h ainda aberta, a que fecha primeiro em cima                | `GET conversations?status=open` (a primeira página)                     | `conversations:read`                               | abrir a conversa em Conversas                                                                                                                                             |
+| **Faltas da semana**     | faltas, taxa e horários passados ainda sem registro                                                | `GET metrics/no-show` da semana                                         | `clinics:schedule:read`                            | "Ver faltas"; com `clinics:schedule:write`, "registrar" leva à Agenda do dia                                                                                              |
+
+**O esboço para o Member (a recepção):**
+
+```
+Hoje · quinta-feira, 30 de outubro                               Unidade Centro ▾
+─────────────────────────────────────────────────────────────────────────────────
+AGORA E A SEGUIR                               12 atendidos · 2 faltas · 9 a seguir
+  Dra. Ana Fictícia    14:00  Paula F. · Limpeza       chegou
+                       14:30  Rui F. · Avaliação       marcado     [Chegou] [Faltou]
+  Dr. Beto Fictício    14:15  Lia F. · Retorno         confirmado  [Chegou] [Faltou]
+                       15:00  livre
+─────────────────────────────────────────────────────────────────────────────────
+CONFIRMAR AMANHÃ  6                        │ RETORNOS VENCIDOS  4
+  09:00  Caio F. · Limpeza     [Confirmar] │   Sofia F.   venceu 22/10  sem responsável
+  09:30  Duda F. · Avaliação   [Confirmar] │   João F.    venceu 25/10  Dra. Ana
+  … mais 4                                 │   … ver todos
+  3 pedidos de envio esperando aprovação → Revisar
+─────────────────────────────────────────────────────────────────────────────────
+CONVERSAS AGUARDANDO  5                    │ FALTAS DA SEMANA
+  Bia F.    a janela fecha em 2 h          │   3 faltas · 7%
+  Davi F.   a janela fecha em 9 h          │   2 horários passados sem registro
+  … abrir Conversas                        │   → Ver faltas
+```
+
+**O esboço para o Profissional:**
+
+```
+Hoje · quinta-feira, 30 de outubro
+─────────────────────────────────────────────────────────────────────────────────
+SEUS ATENDIMENTOS                                        3 atendidos · 4 a seguir
+  14:00  Paula F. · Limpeza       chegou       [Registrar atendimento]
+  14:30  Rui F. · Avaliação       marcado
+  15:30  Lia F. · Retorno         confirmado
+  › Os outros profissionais                                         (recolhido)
+─────────────────────────────────────────────────────────────────────────────────
+RETORNOS VENCIDOS  4                       │ FALTAS DA SEMANA
+  Sofia F.   venceu 22/10                  │   3 faltas · 7%
+  … ver todos                              │   → Ver faltas
+```
+
+**Por papel:**
+
+| Papel         | Cartões                                                                         | O que fica de fora, e por quê                                                                                                              |
+| ------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Owner e Admin | todos, com todas as ações                                                       | nada                                                                                                                                       |
+| Member        | todos; "Chegou", "Faltou" e "Confirmar"                                         | "Registrar atendimento" (sem `clinics:care:write`)                                                                                         |
+| Profissional  | Agora e a seguir, Retornos vencidos e Faltas da semana; "Registrar atendimento" | Confirmar amanhã (não confirma horário), Conversas (sem `conversations:read`): **nenhuma consulta** de conversa, envio ou oportunidade sai |
+| Guest         | Conversas aguardando                                                            | o resto, sem as chaves do Clinics                                                                                                          |
+
+**"Seus atendimentos"** aparece em cima quando a conta da pessoa está ligada a um profissional do catálogo. Os outros profissionais ficam recolhidos logo abaixo. **Isso é ordem, não privacidade:** com as chaves de hoje, o Profissional pode ver a agenda inteira (é o que a Agenda já mostra). Restringir ao que é dele é a D8, na F5.3, e o Hoje só segue o que o servidor permitir.
+
+**O custo:**
+
+- **o Owner:** cerca de 7 consultas, todas de rotas existentes, com o catálogo em cache;
+- **o Profissional:** 4 consultas.
+
+Uma rota de resumo só entra se a medição mostrar lentidão (adendo 1).
+
+**O que não entra:** nada do Hoje do CRM (sinais, tarefas, valor do pipeline, oportunidades paradas). O funil tem a sua entrada em Captação.
+
+#### 4. Interessados e a passagem para paciente
+
+**A consulta: uma rota do Clinics, sem porta genérica no Core.**
+
+`GET /api/clinics/leads?search&cursor&limit`:
+
+- **o que lista:** contatos ativos do workspace **sem** ficha de paciente;
+- **como lê:** pelo cliente filtrado por tenant, com a relação reversa que o Core já declara (`clinicsPatient: { is: null }`);
+- **a ordem e a paginação:** do mais recente para o mais antigo (`createdAt`, `id`), por cursor no servidor;
+- **o limite:** de 1 a 100, com 50 por padrão;
+- **a busca:** por nome, de 2 a 80 caracteres, como a de Pacientes;
+- **a resposta:** `{ items: { id, name, createdAt }[], nextCursor }`.
+
+O vertical **só lê** o contato do Core, como já faz em Pacientes e na Agenda. O teste estático de escrita continua igual.
+
+**As chaves: `contacts:read` + `clinics:schedule:read`.** As duas são obrigatórias porque a lista é o complemento da de pacientes. Quem tem só `contacts:read`, como o Guest, poderia deduzir quem é paciente subtraindo a lista do total de contatos. Com as duas, só vê a lista quem já pode consultar pacientes (adendo 1: nenhum filtro revela o vínculo por outro caminho). Sem as duas, a resposta é 403, como em toda rota do vertical.
+
+**O índice:** a consulta usa o índice que o contato já tem, `(workspaceId, status, createdAt)`, e a exclusão dos pacientes usa a unique `(workspaceId, contactId)` da ficha. Outro índice só entra se o plano de consulta pedir, com uma migration própria (ADR-051).
+
+**A tela:**
+
+```
+Interessados                                               [+ Novo interessado]
+Quem ainda não tem ficha de paciente. Abrir a ficha é decisão de quem atende.
+[ Buscar por nome…                    ]
+─────────────────────────────────────────────────────────────────────────────────
+  Marina Fictícia        chegou em 28/10                       [Tornar paciente]
+  Otávio Fictício        chegou em 27/10                       [Tornar paciente]
+  …
+                               [ Carregar mais ]
+```
+
+**As ações:**
+
+- **a linha** abre a pessoa (item 5);
+- **"Novo interessado"** cria o contato pela API do Core (`POST /api/contacts`), com `contacts:write`;
+- **"Tornar paciente"** é a passagem explícita:
+  - usa o fluxo que já existe em Pacientes, com as consequências na tela antes de confirmar;
+  - grava pelo `POST /api/clinics/patients`, com `clinics:schedule:write` + `contacts:read`;
+  - depois, a pessoa sai da lista e a tela vai à ficha;
+  - nunca acontece sozinha.
+
+**O paciente continua na captação.** O Funil e as Conversas listam todos os contatos, pacientes ou não, como hoje. A ficha do paciente ganha a seção **"Contato"**, sempre com as chaves de cada parte:
+
+- os dados de contato;
+- o consentimento (`consents:read`);
+- as conversas, que abrem em Conversas (`conversations:read`);
+- as oportunidades, que abrem no Funil (`pipelines:read`).
+
+Isso também corrige a etapa F do roteiro da demonstração, que pede o consentimento "na ficha de um paciente": hoje ele só aparece na ficha do contato.
+
+#### 5. Busca e links
+
+**A busca (⌘K) no Clinics:**
+
+- **as seções:** só as do manifesto, como na E-2;
+- **os registros:** dois provedores, cada um com as suas chaves e o seu rótulo:
+  - **Pacientes** (`clinics:schedule:read`): a busca de pacientes que já existe, com o rótulo "Paciente", leva à ficha;
+  - **Interessados** (`contacts:read` + `clinics:schedule:read`): a rota do item 4, com o rótulo "Interessado", leva à pessoa;
+- **o Guest** busca só seções. Uma busca de contatos sem rótulo, para ele, misturaria pacientes sem dizer, e não vale o caso.
+
+O shell passa a aceitar uma lista de provedores (`busca: SearchProvider[]`). O CRM continua com um só, o de contatos.
+
+**Os links:**
+
+- **o contato** vai para uma rota única da pessoa, `/clinics/person?id=`:
+  - **com `clinics:schedule:read`:** se for paciente, segue para a ficha; se não, abre como interessado, com "Tornar paciente";
+  - **sem `clinics:schedule:read`:** mostra só os dados de contato, as conversas e as oportunidades que as chaves permitirem, **sem dizer** se é paciente;
+- **a conversa** vai para Conversas (`/inbox?c=`), e **a oportunidade** para o Funil (`/pipeline`). Os dois produtos montam essas rotas no mesmo caminho;
+- **a empresa:** o Clinics não monta Empresas, então ela aparece como texto, sem link.
+
+**A regra:** todo link do Core para outra seção passa por um resolvedor da experiência. Sem resolvedor, vira texto. O E2E percorre os fluxos do Clinics (busca, ficha, pessoa, Conversas, Funil) e confere que o aviso "Esta seção não faz parte do Veyra Clinics" nunca aparece e que nenhuma tela do CRM monta.
+
+#### 6. Configurações e permissões cumulativas
+
+**A página** é uma entrada só no menu, com as seções:
+
+```
+Configurações
+─────────────────────────────────────────────────────────────────────────────────
+  Clínica               unidade, serviços, profissionais e horários
+  Equipe                quem acessa a clínica e com qual papel
+  Privacidade e IA      quais conversas a IA pode ler
+  Integrações           webhooks
+  Etiquetas e campos    tags e campos personalizados
+  Uso e plano           consumo e limites
+  Auditoria             quem fez o quê
+```
+
+| Seção              | Tela                                | Chaves                                                     |
+| ------------------ | ----------------------------------- | ---------------------------------------------------------- |
+| Clínica            | o Catálogo (escrever pede `manage`) | `clinics:catalog:read`                                     |
+| Equipe             | a Equipe do Core (ADR-054)          | `members:read`                                             |
+| Privacidade e IA   | a Liberação para IA                 | `clinics:restriction:manage` + `contacts:read` (corrigido) |
+| Integrações        | os Webhooks                         | `webhooks:manage`                                          |
+| Etiquetas e campos | as Tags e os Campos                 | `contacts:read`                                            |
+| Uso e plano        | o Uso                               | `workspace:read`                                           |
+| Auditoria          | a Auditoria                         | `audit:read`                                               |
+
+**A navegação nas subpáginas:** dentro de uma delas, o menu marca "Configurações" e o rastro mostra "Configurações › Equipe". A lateral não ganha grupo de configuração. O CRM mantém o grupo "Configuração" de hoje.
+
+**6.1 Permissões cumulativas.** O item do menu, a seção das configurações, o provedor da busca e o cartão do Hoje passam a declarar **uma lista** de chaves (`permissions: string[]`), e aparecem **só com todas**. Isso corrige a "Liberação para IA", que declarava só `clinics:restriction:manage` (pendência da E-2), e as outras telas cuja porta já exigia duas chaves (Agenda, Retornos, Faltas, Envios). **A autorização continua no servidor:** a lista só evita oferecer o que vai dar 403.
+
+#### 7. A linguagem
+
+O manifesto ganha `linguagem`, uma lista **fechada** de termos que as telas compartilhadas usam, com o texto do CRM como padrão:
+
+- o título e o estado vazio do Inbox: "Conversas" e "Nenhuma conversa aberta. As mensagens de pacientes e interessados chegam aqui.";
+- o título e o estado vazio do Pipeline: "Funil de captação";
+- o rótulo do registro na busca.
+
+Não é um sistema de tradução: a lista só cresce quando uma tela compartilhada precisar.
+
+#### 8. A transição e o roteiro da E-4
+
+**Na E-3:**
+
+- **`clinics` passa a ser selecionável:** `selectable: true` no código da extensão;
+- **a CLI `workspace:experience` não muda:** continua exigindo o vertical ativo (status `ready`) e auditando a troca;
+- **os testes:** a CLI aceita `clinics` com o vertical ativo e recusa com ele inativo.
+
+Como o código não vai ao staging antes da E-4, isso não muda nada lá.
+
+**A E-4, só com autorização própria e numa janela combinada:**
+
+1. **Antes:**
+   - aviso ao usuário de que a demonstração vai parar;
+   - o backup conferido (restic, sem `--remove-all`);
+   - as abas abertas fechadas ou recarregadas, porque o escopo da sessão muda com a E-1 (`DEPLOY_STAGING`, roteiro do deploy da E-1).
+2. **O deploy** do commit fixado com a E-1, a E-2 e a E-3, com a migration da E-1 (todo workspace fica em `crm`).
+3. **Logo em seguida, na mesma janela:**
+
+   ```
+   workspace-experience --slug demo --experience clinics
+   ```
+
+   Entre esses dois passos, o `demo` mostra o CRM. Por isso eles vêm juntos e sem uso no meio.
+
+4. **A conferência:**
+   - o Owner da demonstração entra no Hoje da clínica;
+   - o workspace `staging` continua em `crm`, conferido pelo `/auth/me` de uma conta dele e pela auditoria (`workspace.experience_changed` só para o `demo`);
+   - a busca e os links ficam no Clinics.
+5. **A volta:**
+   - da experiência: a mesma CLI com `--experience crm`;
+   - do código: o roteiro do `DEPLOY_STAGING` §4.
+
+**Os dados da demonstração:** a carga cria seis contatos, todos pacientes, e nenhum interessado (D-E3.4).
+
+#### 9. Decisões para o usuário
+
+| Decisão                                 | Recomendação                                                                                                                            | Alternativa                                                                                             |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| **D-E3.1** Como listar Interessados     | a rota do Clinics (item 4), com as duas chaves                                                                                          | a porta genérica "com ou sem extensão" no Core (D-E6), que não se justifica: a rota do vertical resolve |
+| **D-E3.2** Permissões cumulativas       | a lista de chaves no menu, nas configurações, na busca e no Hoje (item 6.1)                                                             | uma chave por item, com a tela recusando depois                                                         |
+| **D-E3.3** O destino do contato         | a rota única da pessoa (item 5), que decide pela permissão                                                                              | o link direto para a ficha ou para Interessados, o que exigiria saber, antes de clicar, se é paciente   |
+| **D-E3.4** Interessados na demonstração | criados pela tela ("Novo interessado"), por quem avalia: nenhuma escrita da operação, e o fluxo real é exercitado                       | a carga fictícia ganha 2 interessados e 1 oportunidade, executada só na E-4                             |
+| **D-E3.5** A cor da clínica             | sem cor nova (item 1)                                                                                                                   | um acento próprio da clínica, com ADR de direção visual                                                 |
+| **D-E3.6** "Confirmar amanhã"           | pelos agendamentos não confirmados, para quem confirma (`clinics:schedule:write`); os pedidos de envio, como uma linha, para quem os vê | o cartão pela lista de candidatos do envio, que exige `contacts:read` + `consents:read` de todos        |
+
+#### 10. A implementação e a validação, depois da aprovação
+
+**A ordem:** `packages/contracts` (a consulta e a resposta de Interessados, `permissions` em lista, `linguagem`), depois `apps/api` (a rota de Interessados e o `selectable`), depois `apps/web`.
+
+**Os testes:**
+
+- **na API:**
+  - isolamento entre workspaces da rota nova (P0);
+  - 403 sem cada uma das duas chaves, inclusive com só `contacts:read`;
+  - o paciente fora da lista;
+  - a paginação estável com inserção no meio;
+  - a busca;
+  - a CLI aceitando `clinics`;
+- **no web:**
+  - o menu de cada papel;
+  - o grupo com um item só;
+  - os cartões do Hoje por chave, conferindo também que **a consulta de quem não pode não sai**;
+  - "Tornar paciente";
+  - a pessoa decidindo pela permissão;
+  - os dois provedores da busca;
+- **no E2E, as duas experiências:**
+  - o Owner do Clinics não vê o CRM;
+  - rota direta, busca e link nunca levam ao outro produto;
+  - o Profissional com o Hoje dele.
+
+**O fechamento:**
+
+- `reviewer` e `security`, porque a entrega toca a API, as permissões e o vínculo de paciente;
+- as mutações, com log próprio por rodada (`e3/mut-e3-<n>.log`);
+- a bateria completa, porque a API muda.
+
+**Fora da E-3:**
+
+- a D7 (os papéis e o nome "Recepção");
+- a D8 e a F5.3 (o Profissional só com o que é dele, e a privacidade clínica);
+- Tarefas e Sinais na clínica;
+- o bloqueio de horário na agenda;
+- a rota de resumo do Hoje (só com medição);
+- a experiência combinada;
+- a personalização de menu;
+- a E-4.
