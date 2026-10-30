@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import type { Client } from 'pg';
 import { E2E_WEB_ORIGIN, OWNER_C, PROF_C } from '../env';
-import { login, openE2eDb } from './helpers';
+import { abrirNoMenu, login, openE2eDb } from './helpers';
 
 /**
  * O envio da clínica, o vínculo com a oportunidade e as métricas pela UI (F4.4,
@@ -192,10 +192,11 @@ const quando = (c: Cenario) => {
   return `${dia}/${mes}/${ano} 10:00`;
 };
 
-async function abrir(page: Page, email: string, secao: string) {
+/** As métricas do envio: Indicadores › Envios, no menu da clínica (ADR-055, E-3). */
+async function abrirMetricas(page: Page, email: string) {
   await login(page, email);
-  await page.getByRole('link', { name: secao, exact: true }).click();
-  await expect(page.getByRole('heading', { name: secao, level: 1 })).toBeVisible();
+  await abrirNoMenu(page, 'Indicadores', 'Envios');
+  await expect(page.getByRole('heading', { name: 'Métricas do envio', level: 1 })).toBeVisible();
 }
 
 test.describe('Clinics — envios, oportunidade e métricas', () => {
@@ -210,7 +211,7 @@ test.describe('Clinics — envios, oportunidade e métricas', () => {
       const transporte = page.waitForResponse(
         (r) => r.url().endsWith('/api/clinics/outreach/transport') && r.ok(),
       );
-      await page.getByRole('link', { name: 'Envios', exact: true }).click();
+      await abrirNoMenu(page, 'Acompanhamento', 'Confirmações e reativações');
       expect(await (await transporte).json()).toEqual({ simulated: false });
       // fora de staging o transporte não é o falso: sem o aviso de simulado
       await expect(page.getByTestId('envio-simulado')).toHaveCount(0);
@@ -288,7 +289,7 @@ test.describe('Clinics — envios, oportunidade e métricas', () => {
   test('`Profissional` não vê os envios nem a conversão, e a resposta é omitida, não zerada', async ({
     page,
   }) => {
-    await abrir(page, PROF_C, 'Métricas do envio');
+    await abrirMetricas(page, PROF_C);
     const funil = page.getByRole('region', { name: 'Funil da confirmação' });
     const resposta = funil
       .locator('[data-status]')
@@ -297,7 +298,14 @@ test.describe('Clinics — envios, oportunidade e métricas', () => {
     await expect(resposta).toContainText('Omitida');
     await expect(page.getByTestId('conversao-sem-acesso')).toBeVisible();
 
-    await page.getByRole('link', { name: 'Envios', exact: true }).click();
+    // sem TODAS as chaves da tela, o menu não oferece os envios (ADR-055,
+    // adendo 4); a URL direta continua só explicando
+    await expect(
+      page
+        .getByRole('navigation', { name: 'Principal' })
+        .getByRole('link', { name: 'Confirmações e reativações' }),
+    ).toHaveCount(0);
+    await page.goto('/clinics/outreach');
     await expect(page.getByText(/Os envios mostram o número do paciente/)).toBeVisible();
   });
 });

@@ -10,6 +10,8 @@ import {
   TEST_PASSWORD,
 } from '../../../test/integration/fixtures';
 import { resetDb } from '../../../test/integration/harness';
+import { AuditService } from '../../audit/audit.service';
+import { trocarExperiencia } from '../../cli/workspace-experience.core';
 import { ExperienceService } from '../../extensions/experience';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ClinicsActivationService } from './clinics-activation.service';
@@ -55,6 +57,27 @@ describe('Clinics — a disponibilidade da experiência (integração)', () => {
       .map((c) => c.split(';')[0])
       .join('; ');
   };
+
+  it('a CLI põe a `clinics` (selecionável desde a E-3) só com o vertical ATIVO, e audita', async () => {
+    const deps = { prisma, audit: app.get(AuditService), experiencias: experiencias() };
+    const atual = async () =>
+      (await prisma.raw.workspace.findFirst({ where: { id: workspaceId } }))?.experience;
+    await expect(trocarExperiencia(deps, { slug: 'acme', experiencia: 'clinics' })).rejects.toThrow(
+      /não está disponível/,
+    );
+    expect(await atual()).toBe('crm');
+    await app.get(ClinicsActivationService).enable('acme');
+    expect(await trocarExperiencia(deps, { slug: 'acme', experiencia: 'clinics' })).toEqual({
+      workspaceId,
+      antes: 'crm',
+      depois: 'clinics',
+    });
+    expect(await atual()).toBe('clinics');
+    const trilha = await prisma.raw.auditLog.findMany({
+      where: { workspaceId, action: 'workspace.experience_changed' },
+    });
+    expect(trilha).toHaveLength(1);
+  });
 
   it('sem o vertical, a `clinics` está indisponível; ativo, pronta; desativado, indisponível de novo', async () => {
     expect(await experiencias().status(workspaceId, 'clinics')).toBe('unavailable');

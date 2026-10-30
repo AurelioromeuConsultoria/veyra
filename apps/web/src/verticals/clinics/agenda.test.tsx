@@ -212,11 +212,11 @@ describe('Agenda da clínica (F2.3)', () => {
     },
   );
 
-  it('a lateral mostra Agenda da clínica e Pacientes a quem lê a agenda', async () => {
+  it('a lateral mostra Agenda e Pacientes a quem lê a agenda', async () => {
     mockApi({ 'GET /api/auth/me': { body: usuario(RECEPCAO) }, ...catalogo });
     renderizar(<AppShell manifestos={[crmExperience, clinicsExperience]} />, '/');
     const lateral = within(screen.getByRole('navigation', { name: 'Principal' }));
-    expect(await lateral.findByRole('link', { name: 'Agenda da clínica' })).toHaveAttribute(
+    expect(await lateral.findByRole('link', { name: /^Agenda$/ })).toHaveAttribute(
       'href',
       '/clinics/agenda',
     );
@@ -226,12 +226,12 @@ describe('Agenda da clínica (F2.3)', () => {
     );
   });
 
-  it('só o catálogo: a lateral não tem Agenda da clínica nem Pacientes', async () => {
+  it('só o catálogo: a lateral não tem Agenda nem Pacientes; o catálogo fica nas Configurações', async () => {
     mockApi({ 'GET /api/auth/me': { body: usuario(['clinics:catalog:read']) }, ...catalogo });
     renderizar(<AppShell manifestos={[crmExperience, clinicsExperience]} />, '/');
     const lateral = within(screen.getByRole('navigation', { name: 'Principal' }));
-    expect(await lateral.findByRole('link', { name: 'Catálogo' })).toBeInTheDocument();
-    expect(lateral.queryByRole('link', { name: 'Agenda da clínica' })).toBeNull();
+    expect(await lateral.findByRole('link', { name: 'Configurações' })).toBeInTheDocument();
+    expect(lateral.queryByRole('link', { name: /^Agenda$/ })).toBeNull();
     expect(lateral.queryByRole('link', { name: 'Pacientes' })).toBeNull();
   });
 
@@ -268,7 +268,9 @@ describe('Agenda da clínica (F2.3)', () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Agendar/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: `Confirmar: ${QUEM}` })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: `Marcar como confirmado: ${QUEM}` }),
+    ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: `Marcar falta: ${QUEM}` })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Registrar atendimento/ })).toBeNull();
 
@@ -365,7 +367,7 @@ describe('Agenda da clínica (F2.3)', () => {
     expect(
       await screen.findByRole('region', { name: 'Agenda de Carla Arquivada (arquivado)' }),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: `Confirmar: ${QUEM}` }));
+    fireEvent.click(screen.getByRole('button', { name: `Marcar como confirmado: ${QUEM}` }));
     expect(
       await screen.findByText('Não foi possível carregar a agenda do dia.'),
     ).toBeInTheDocument();

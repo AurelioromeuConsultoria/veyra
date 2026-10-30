@@ -37,6 +37,7 @@ import { SenderPanel } from './InboxSender';
 import { ConsentimentoDaConversa, podeVerConsentimentoDaConversa } from './Consentimentos';
 import { TemplatePanel } from './InboxTemplate';
 import { dayLabel, fullStamp, relativeStamp, timeOfDay } from '../lib/format';
+import { useTermo } from '../lib/experience';
 import { DISPATCH_ERROR_LABEL } from '../lib/motivos-do-envio';
 import { hasPermission, useSession } from '../lib/session';
 
@@ -139,6 +140,8 @@ export function DispatchBadge({
 }
 
 export function InboxPage() {
+  // o nome da tela vem do produto (ADR-055): "Conversas" na clínica
+  const titulo = useTermo('conversas');
   const { data: user } = useSession();
   const canWrite = hasPermission(user, 'conversations:write');
   const canUseAi = hasPermission(user, 'intelligence:use');
@@ -552,7 +555,7 @@ export function InboxPage() {
       {/* ── lista densa ─────────────────────────────────────────────────── */}
       <div className="flex w-[19.5rem] shrink-0 flex-col border-r border-border bg-surface">
         <header className="flex items-center gap-2 border-b border-border px-4 py-3.5">
-          <h1 className="mr-auto text-display-sm">Inbox</h1>
+          <h1 className="mr-auto text-display-sm">{titulo}</h1>
           <Select
             size="sm"
             value={status}

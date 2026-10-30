@@ -15,8 +15,10 @@ import {
   Webhook,
   Workflow,
 } from 'lucide-react';
+import type { AuthUserDto } from '@veyra/contracts';
 import type { ComponentType, ReactNode } from 'react';
 import { useExperience } from './experience';
+import { alcanca } from './session';
 
 /**
  * As seções de um produto. Três consumidores leem do mapa da experiência ativa
@@ -33,6 +35,13 @@ export type NavItem = {
   label: string;
   icon: ComponentType<{ size?: number; strokeWidth?: number; className?: string }>;
   permission?: string;
+  /** as demais chaves que a tela exige, TODAS (ADR-055, adendo 4) */
+  permissions?: readonly string[];
+  /**
+   * Quando a entrada depende de mais do que chaves fixas (as Configurações do
+   * produto aparecem se ALGUMA seção estiver ao alcance).
+   */
+  disponivel?: (user: AuthUserDto | null | undefined) => boolean;
   /** sinônimos que a busca global aceita — o rótulo não é a única palavra que a
    *  pessoa tem na cabeça ("deals" para pipeline, "clientes" para contatos) */
   aliases?: string[];
@@ -41,6 +50,13 @@ export type NavItem = {
 export type NavGroup = {
   label: string;
   items: NavItem[];
+  /**
+   * Recolhido por padrão, aberto a pedido ou ao entrar numa seção dele (ADR-055,
+   * adendo 1, item 2). Com um só item visível, o item aparece direto.
+   */
+  recolhivel?: boolean;
+  /** as entradas principais do produto, sem o rótulo do grupo em cima */
+  semRotulo?: boolean;
 };
 
 /** Uma rota de um produto, montada dentro do shell da experiência. */
@@ -175,13 +191,14 @@ export function useNavGroups(): readonly NavGroup[] {
 export function currentSection(
   pathname: string,
   groups: readonly NavGroup[],
-): { group: string; item: NavItem } | null {
-  let best: { group: string; item: NavItem } | null = null;
+): { group: string | null; item: NavItem } | null {
+  // o rótulo do grupo vai ao rastro; as entradas principais de um produto não têm
+  let best: { group: string | null; item: NavItem } | null = null;
   for (const group of groups) {
     for (const item of group.items) {
       const matches = item.to === '/' ? pathname === '/' : pathname.startsWith(item.to);
       if (matches && (!best || item.to.length > best.item.to.length)) {
-        best = { group: group.label, item };
+        best = { group: group.semRotulo ? null : group.label, item };
       }
     }
   }
@@ -195,4 +212,9 @@ export function fold(value: string): string {
     .replace(/\p{Diacritic}/gu, '')
     .toLowerCase()
     .trim();
+}
+
+/** O item aparece só com TODAS as chaves e, se houver, a condição dele. */
+export function itemAlcancavel(user: AuthUserDto | null | undefined, item: NavItem): boolean {
+  return alcanca(user, item) && (item.disponivel?.(user) ?? true);
 }

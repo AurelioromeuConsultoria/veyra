@@ -3,20 +3,21 @@ import { clsx } from 'clsx';
 import { CornerDownLeft, Search, User, ArrowRight } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useExperience, type SearchProvider } from '../../lib/experience';
-import { fold, useNavGroups, type NavItem } from '../../lib/nav';
-import { hasPermission, useSession } from '../../lib/session';
+import { secoesAlcancaveis, useExperience } from '../../lib/experience';
+import { fold, itemAlcancavel, useNavGroups, type NavItem } from '../../lib/nav';
+import { alcanca, useSession } from '../../lib/session';
 
 /**
  * Busca global (⌘K / Ctrl+K), do PRODUTO ativo (ADR-055, adendo 2, item 4).
  *
- * Duas fontes, e SÓ duas, porque só duas existem de verdade: as seções do
- * produto (o mapa da experiência — nunca a de outro produto) e os registros do
- * provedor que o manifesto declara (no CRM, os contatos). Nenhuma categoria
+ * As fontes são as que existem de verdade: as seções do produto (o mapa da
+ * experiência — nunca a de outro produto) e os registros dos provedores que o
+ * manifesto declara (no CRM, os contatos; no Clinics, pacientes e
+ * interessados, cada um com o seu rótulo e o seu destino). Nenhuma categoria
  * decorativa — uma linha "Oportunidades" que nunca traz resultado é pior que
  * ausência, porque ensina a pessoa a não confiar na busca.
  *
- * A consulta de registros só é DISPARADA com a permissão do provedor: sem essa
+ * A consulta de cada provedor só é DISPARADA com TODAS as chaves dele: sem essa
  * guarda, um papel restrito acionaria um 403 a cada tecla (a lição do inbox).
  */
 
@@ -25,14 +26,6 @@ type Result =
   | { kind: 'contact'; id: string; to: string; label: string; hint: string };
 
 const DEBOUNCE_MS = 200;
-
-/** O produto sem busca de registros: o hook é chamado do mesmo jeito, sem consulta. */
-const SEM_REGISTROS: SearchProvider = {
-  label: '',
-  singular: '',
-  permission: '',
-  useResultados: () => ({ resultados: [], buscando: false }),
-};
 
 function matchesSection(item: NavItem, needle: string): boolean {
   if (!needle) return true;
@@ -49,9 +42,6 @@ export function GlobalSearch({
 }) {
   const { data: user } = useSession();
   const experiencia = useExperience();
-  const provedor = experiencia.busca ?? SEM_REGISTROS;
-  const podeBuscarRegistros =
-    experiencia.busca !== null && hasPermission(user, provedor.permission);
   const navigate = useNavigate();
   const [term, setTerm] = useState('');
   const [debounced, setDebounced] = useState('');
@@ -73,18 +63,45 @@ export function GlobalSearch({
     }
   }, [open]);
 
-  const registros = provedor.useResultados(
-    debounced,
-    open && podeBuscarRegistros && debounced.length >= 2,
+  // a lista de provedores é fixa durante a sessão (o manifesto): cada hook é
+  // chamado sempre no mesmo ponto, e cada um só consulta com as chaves dele
+  const porProvedor = experiencia.busca.map((provedor) =>
+    provedor.useResultados(debounced, open && alcanca(user, provedor) && debounced.length >= 2),
   );
+  const registros = {
+    resultados: porProvedor.flatMap((r) => r.resultados),
+    buscando: porProvedor.some((r) => r.buscando),
+  };
+  const alcancaveis = experiencia.busca.filter((provedor) => alcanca(user, provedor));
+  const podeBuscarRegistros = alcancaveis.length > 0;
+  const rotulo = (lista: readonly { label: string }[]) =>
+    juntar(lista.map((p, i) => (i === 0 ? p.label : p.label.toLowerCase())));
 
   const needle = fold(debounced);
   const groups = useNavGroups();
-  const sections = useMemo<Result[]>(
-    () =>
-      groups
-        .flatMap((group) => group.items.map((item) => ({ group, item })))
-        .filter(({ item }) => !item.permission || hasPermission(user, item.permission))
+  const sections = useMemo<Result[]>(() => {
+    const doMenu = groups
+      .flatMap((group) => group.items.map((item) => ({ group, item })))
+      .filter(({ item }) => itemAlcancavel(user, item));
+    const noMenu = new Set(doMenu.map(({ item }) => item.to));
+    // as seções das Configurações que o menu não lista (o produto tem uma
+    // entrada só para elas): achadas também pela descrição ("profissionais")
+    const dasConfiguracoes = secoesAlcancaveis(experiencia, user)
+      .filter((secao) => !noMenu.has(secao.to))
+      .filter(
+        (secao) =>
+          !needle || fold(secao.label).includes(needle) || fold(secao.description).includes(needle),
+      )
+      .map((secao) => ({
+        kind: 'section' as const,
+        id: `section:${secao.to}`,
+        to: secao.to,
+        label: secao.label,
+        hint: 'Configurações',
+        icon: secao.icon,
+      }));
+    return [
+      ...doMenu
         .filter(({ item }) => matchesSection(item, needle))
         .map(({ group, item }) => ({
           kind: 'section' as const,
@@ -93,12 +110,14 @@ export function GlobalSearch({
           label: item.label,
           // o bloco, não a palavra "Seção": o cabeçalho do grupo já disse o
           // que são, e onde a seção mora é informação que não estava em lugar
-          // nenhum ("Campos" fica em Configuração, "Sinais" em Inteligência)
-          hint: group.label,
+          // nenhum ("Campos" fica em Configuração, "Sinais" em Inteligência);
+          // as entradas principais de um produto não têm bloco
+          hint: group.semRotulo ? '' : group.label,
           icon: item.icon,
         })),
-    [groups, needle, user],
-  );
+      ...dasConfiguracoes,
+    ];
+  }, [groups, needle, user, experiencia]);
 
   const contactResults = useMemo<Result[]>(
     () => registros.resultados.map((hit) => ({ kind: 'contact' as const, ...hit })),
@@ -171,7 +190,7 @@ export function GlobalSearch({
               onKeyDown={onKeyDown}
               placeholder={
                 podeBuscarRegistros
-                  ? `Buscar ${provedor.singular} ou seção…`
+                  ? `Buscar ${alcancaveis.map((p) => p.singular).join(', ')} ou seção…`
                   : 'Buscar uma seção do produto…'
               }
               aria-label="Buscar no workspace"
@@ -199,7 +218,7 @@ export function GlobalSearch({
               <li key={result.id} role="presentation">
                 {agrupado && (index === 0 || index === contactResults.length) ? (
                   <p className="eyebrow px-4 pb-1 pt-2.5 text-muted-fg/80" aria-hidden>
-                    {index === 0 ? provedor.label : 'Ir para'}
+                    {index === 0 ? rotulo(alcancaveis) : 'Ir para'}
                   </p>
                 ) : null}
                 <button
@@ -239,9 +258,9 @@ export function GlobalSearch({
                 <p className="text-body-sm">Nada com esse nome.</p>
                 <p className="mt-1 text-data text-muted-fg">
                   {podeBuscarRegistros
-                    ? `A busca cobre ${provedor.label.toLowerCase()} e as seções do produto.`
-                    : experiencia.busca
-                      ? `A busca cobre as seções do produto — ${provedor.label.toLowerCase()} exigem permissão de leitura.`
+                    ? `A busca cobre ${rotulo(alcancaveis).toLowerCase()} e as seções do produto.`
+                    : experiencia.busca.length > 0
+                      ? `A busca cobre as seções do produto — ${rotulo(experiencia.busca).toLowerCase()} exigem permissão de leitura.`
                       : 'A busca cobre as seções do produto.'}
                 </p>
               </li>
@@ -272,4 +291,10 @@ function Key({ children }: { children: React.ReactNode }) {
       {children}
     </kbd>
   );
+}
+
+/** "a", "a e b", "a, b e c". */
+function juntar(partes: readonly string[]): string {
+  if (partes.length <= 1) return partes[0] ?? '';
+  return `${partes.slice(0, -1).join(', ')} e ${partes[partes.length - 1]}`;
 }

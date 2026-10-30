@@ -207,6 +207,34 @@ function subirServidor(): Servidor {
           ),
         );
       }
+      // o Hoje e a busca da clínica (ADR-055, E-3)
+      if (url.startsWith('/api/clinics/leads')) {
+        return segurar(
+          json(
+            {
+              items: [
+                { id: `c-${viva.id}`, name: CONTATOS[viva.id], createdAt: '2030-01-01T00:00:00Z' },
+              ],
+              nextCursor: null,
+            },
+            200,
+            escopo,
+          ),
+        );
+      }
+      if (
+        url.startsWith('/api/clinics/appointments') ||
+        url.startsWith('/api/clinics/professionals')
+      ) {
+        return json([], 200, escopo);
+      }
+      if (url.startsWith('/api/clinics/metrics/no-show')) {
+        return json(
+          { attended: 0, noShow: 0, rate: null, pendingPast: 0, canceled: 0 },
+          200,
+          escopo,
+        );
+      }
       return json({ message: `fora do teste: ${url}` }, 404, escopo);
     }),
   );
@@ -295,12 +323,14 @@ describe('duas sessões na mesma aba (ADR-050)', () => {
     }
   });
 
-  it('busca global com cache de 30 s (Core): a busca de A não reaparece para B no mesmo termo', async () => {
+  it('busca global com cache de 30 s: a busca de A não reaparece para B no mesmo termo', async () => {
     const servidor = subirServidor();
     abrirAba();
     await entrar('a@teste.test');
     const abrirBusca = async () =>
-      fireEvent.click(await screen.findByRole('button', { name: /Buscar contato ou seção/ }));
+      fireEvent.click(
+        await screen.findByRole('button', { name: /Buscar paciente, interessado ou seção/ }),
+      );
     await abrirBusca();
     fireEvent.change(screen.getByRole('combobox', { name: 'Buscar no workspace' }), {
       target: { value: 'Ana' },
@@ -315,7 +345,7 @@ describe('duas sessões na mesma aba (ADR-050)', () => {
 
     // B, segundos depois, busca o MESMO termo; a resposta de B demora
     await entrar('b@teste.test');
-    servidor.segurar = '/api/contacts?';
+    servidor.segurar = '/api/clinics/leads';
     await abrirBusca();
     fireEvent.change(await screen.findByRole('combobox', { name: 'Buscar no workspace' }), {
       target: { value: 'Ana' },
@@ -368,10 +398,8 @@ describe('duas sessões na mesma aba (ADR-050)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Sair' }));
     await waitFor(() => expect(escopoAtual()).toBe('u-b:m-b:clinics'));
     expect(servidor.cookie).toBe(B); // a sessão de B não foi encerrada pela aba de A
-    // o início da experiência da clínica (ADR-055): a agenda, não o Hoje do CRM
-    expect(
-      await screen.findByRole('heading', { name: 'Agenda da clínica', level: 1 }),
-    ).toBeInTheDocument();
+    // o início da experiência da clínica (ADR-055): o Hoje dela, não o do CRM
+    expect(await screen.findByRole('heading', { name: 'Hoje', level: 1 })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Entrar' })).toBeNull();
     expect(screen.queryByText('Paciente de A')).toBeNull();
   });
@@ -415,10 +443,8 @@ describe('duas sessões na mesma aba (ADR-050)', () => {
     // a aba recomeça e relê quem é a sessão: agora B (aqui, a partir do /login
     // do MemoryRouter; no navegador, o BrowserRouter mantém a URL)
     await waitFor(() => expect(escopoAtual()).toBe('u-b:m-b:clinics'));
-    // o início da experiência da clínica (ADR-055): a agenda, não o Hoje do CRM
-    expect(
-      await screen.findByRole('heading', { name: 'Agenda da clínica', level: 1 }),
-    ).toBeInTheDocument();
+    // o início da experiência da clínica (ADR-055): o Hoje dela, não o do CRM
+    expect(await screen.findByRole('heading', { name: 'Hoje', level: 1 })).toBeInTheDocument();
     expect(screen.queryByText('Paciente de A')).toBeNull();
     await abrirPacientes();
     expect(await screen.findByText('Paciente de B')).toBeInTheDocument();

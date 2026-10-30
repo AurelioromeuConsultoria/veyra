@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { CLINICS_PERMISSION_CATALOG } from '../../packages/contracts/src/verticals/clinics';
 import { OWNER_C } from '../env';
-import { login } from './helpers';
+import { abrirConfiguracao, login } from './helpers';
 
 /**
  * A gestão de equipe pela interface (ADR-054, F5.1a), de ponta a ponta, no
@@ -16,7 +16,8 @@ test.describe('Equipe pela interface (ADR-054)', () => {
     browser,
   }) => {
     const EMAIL = 'convidada-e2e@clinica.test';
-    await login(page, OWNER_C, 'Equipe');
+    await login(page, OWNER_C);
+    await abrirConfiguracao(page, /^Equipe/, 'Equipe');
 
     // o Core mostra a descrição que o vertical declarou, sem conhecê-lo
     const profissional = page.locator('details', {
@@ -51,8 +52,12 @@ test.describe('Equipe pela interface (ADR-054)', () => {
     await convidada.getByRole('button', { name: 'Aceitar e entrar' }).click();
     // o início do produto do workspace (a clínica, ADR-055): o menu dele
     await expect(convidada.getByRole('navigation', { name: 'Principal' })).toBeVisible();
-    // Member lê a equipe
-    await expect(convidada.getByRole('link', { name: 'Equipe', exact: true })).toBeVisible();
+    // Member lê a equipe (nas Configurações da clínica)
+    await convidada
+      .getByRole('navigation', { name: 'Principal' })
+      .getByRole('link', { name: 'Configurações', exact: true })
+      .click();
+    await expect(convidada.getByRole('main').getByRole('link', { name: /^Equipe/ })).toBeVisible();
 
     // quem convidou vê a nova membro, e o convite saiu da lista
     await page.reload();
@@ -73,8 +78,13 @@ test.describe('Equipe pela interface (ADR-054)', () => {
     await convidada.reload();
     // o início do produto do workspace (a clínica, ADR-055): o menu dele
     await expect(convidada.getByRole('navigation', { name: 'Principal' })).toBeVisible();
-    await expect(convidada.getByRole('link', { name: 'Contatos', exact: true })).toBeVisible();
-    await expect(convidada.getByRole('link', { name: 'Equipe', exact: true })).toHaveCount(0);
+    await expect(convidada.getByRole('link', { name: 'Conversas', exact: true })).toBeVisible();
+    await convidada
+      .getByRole('navigation', { name: 'Principal' })
+      .getByRole('link', { name: 'Configurações', exact: true })
+      .click();
+    await expect(convidada.getByRole('heading', { name: 'Configurações', level: 1 })).toBeVisible();
+    await expect(convidada.getByRole('main').getByRole('link', { name: /^Equipe/ })).toHaveCount(0);
 
     // remover: o acesso emitido cai na requisição seguinte
     await page
@@ -104,7 +114,7 @@ test.describe('Equipe pela interface (ADR-054)', () => {
     await outro.close();
 
     // a trilha: cada passo, sem o token
-    await page.getByRole('link', { name: 'Auditoria', exact: true }).click();
+    await abrirConfiguracao(page, /^Auditoria/, 'Auditoria');
     for (const acao of [
       'invite.created',
       'member.joined',

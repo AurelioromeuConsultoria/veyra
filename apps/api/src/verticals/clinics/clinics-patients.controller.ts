@@ -11,15 +11,19 @@ import {
 } from '@nestjs/common';
 import {
   createClinicsPatientSchema,
+  listClinicsLeadsSchema,
   listClinicsPatientsSchema,
+  type ClinicsLeadsPageDto,
   type ClinicsPatientDto,
   type CreateClinicsPatientInput,
+  type ListClinicsLeadsInput,
   type ListClinicsPatientsInput,
 } from '@veyra/contracts/verticals/clinics';
 import { PermissionsService } from '../../auth/permissions.service';
 import { AuthContext, CurrentAuth } from '../../common/decorators';
 import { ZodPipe } from '../../common/zod.pipe';
 import { ClinicsActiveGuard } from './clinics-active.guard';
+import { ClinicsLeadsService } from './clinics-leads.service';
 import { RequireClinicsPermissions } from './clinics-permissions';
 import { ClinicsPatientsService } from './clinics-patients.service';
 
@@ -33,6 +37,7 @@ import { ClinicsPatientsService } from './clinics-patients.service';
 export class ClinicsPatientsController {
   constructor(
     private readonly patients: ClinicsPatientsService,
+    private readonly leads: ClinicsLeadsService,
     private readonly permissions: PermissionsService,
   ) {}
 
@@ -59,6 +64,19 @@ export class ClinicsPatientsController {
     @Param('id', new ParseUUIDPipe()) id: string,
   ): Promise<ClinicsPatientDto> {
     return this.patients.get(id, await this.permissions.has(auth, 'contacts:read'));
+  }
+
+  /**
+   * Interessados (E-3 do ADR-055): os contatos sem ficha. As DUAS chaves: a
+   * lista é o complemento da de pacientes, e só com `contacts:read` ela
+   * revelaria quem é paciente a quem não consulta pacientes.
+   */
+  @RequireClinicsPermissions('contacts:read', 'clinics:schedule:read')
+  @Get('leads')
+  listLeads(
+    @Query(new ZodPipe(listClinicsLeadsSchema)) query: ListClinicsLeadsInput,
+  ): Promise<ClinicsLeadsPageDto> {
+    return this.leads.list(query);
   }
 
   @RequireClinicsPermissions('clinics:schedule:write', 'contacts:read')

@@ -359,6 +359,37 @@ export interface ClinicsPatientDto {
   createdAt: string;
 }
 
+// ── Interessados (E-3 do ADR-055, adendos 3 e 4) ────────────────────────────
+
+/**
+ * Os contatos ativos SEM ficha de paciente, paginados no servidor. A lista é o
+ * complemento da de pacientes: a rota exige `contacts:read` E
+ * `clinics:schedule:read`, para não revelar o vínculo a quem não o consulta.
+ */
+export const listClinicsLeadsSchema = z
+  .object({
+    /** pelo nome, a partir de 2 letras (como a busca de pacientes) */
+    search: z.string().trim().min(2).max(80).optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+    /** opaco: o `nextCursor` da página anterior */
+    cursor: z.string().min(1).max(200).optional(),
+  })
+  .strict();
+export type ListClinicsLeadsInput = z.infer<typeof listClinicsLeadsSchema>;
+
+export interface ClinicsLeadDto {
+  /** o id do CONTATO: o interessado não tem ficha */
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
+export interface ClinicsLeadsPageDto {
+  items: ClinicsLeadDto[];
+  /** `null` = não há mais */
+  nextCursor: string | null;
+}
+
 // ── Agenda e atendimento (F2.2, ADR-048 adendo 4) ──────────────────────────
 
 export const clinicsAppointmentStatusSchema = z.enum([

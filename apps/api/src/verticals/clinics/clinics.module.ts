@@ -15,6 +15,7 @@ import { ClinicsActivationService } from './clinics-activation.service';
 import { ClinicsActiveGuard } from './clinics-active.guard';
 import { ClinicsController } from './clinics.controller';
 import { ClinicsPatientsController } from './clinics-patients.controller';
+import { ClinicsLeadsService } from './clinics-leads.service';
 import { ClinicsPatientsService } from './clinics-patients.service';
 import { ClinicsReleasesService } from './clinics-releases.service';
 import { ClinicsCommercialController } from './commercial/clinics-commercial.controller';
@@ -59,6 +60,7 @@ import { ClinicsReturnsService } from './schedule/clinics-returns.service';
     ClinicsServiceCatalog,
     ClinicsProfessionalsService,
     ClinicsPatientsService,
+    ClinicsLeadsService,
     ClinicsAppointmentsService,
     ClinicsAttendanceService,
     ClinicsPackagesService,

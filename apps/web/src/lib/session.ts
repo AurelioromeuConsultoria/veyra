@@ -67,3 +67,17 @@ export function logoutFalhou(erro: unknown): boolean {
 export function hasPermission(user: AuthUserDto | null | undefined, key: string): boolean {
   return user?.permissions.includes(key as AuthUserDto['permissions'][number]) ?? false;
 }
+
+/** O que um destino, um cartão ou uma ação exige: TODAS as chaves ao mesmo tempo. */
+export type Exige = { permission?: string; permissions?: readonly string[] };
+
+/**
+ * As permissões são CUMULATIVAS (ADR-055, adendo 4): o item aparece só com
+ * todas as chaves que a rota dele exige no servidor. A autorização continua lá;
+ * aqui só se evita oferecer o que daria 403.
+ */
+export function alcanca(user: AuthUserDto | null | undefined, exige: Exige): boolean {
+  return [exige.permission, ...(exige.permissions ?? [])].every(
+    (chave) => !chave || hasPermission(user, chave),
+  );
+}

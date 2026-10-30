@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { MEMBER_C, OWNER_A, OWNER_C } from '../env';
-import { login, openE2eDb } from './helpers';
+import { abrirConfiguracao, login, openE2eDb } from './helpers';
 
 /**
  * Catálogo do Veyra Clinics (F1.c, ADR-048 adendo 1) pela UI, no workspace
@@ -33,7 +33,8 @@ test.describe('Clinics — catálogo da clínica', () => {
         [antes.id],
       );
 
-      await login(page, OWNER_C, 'Catálogo');
+      await login(page, OWNER_C);
+      await abrirConfiguracao(page, /^Clínica/, 'Catálogo');
 
       await page.getByRole('button', { name: 'Novo serviço' }).click();
       await page.getByLabel('Nome', { exact: true }).fill(servico);
@@ -85,7 +86,8 @@ test.describe('Clinics — catálogo da clínica', () => {
   });
 
   test('recepção (Member): vê o catálogo, sem nenhuma ação de escrita', async ({ page }) => {
-    await login(page, MEMBER_C, 'Catálogo');
+    await login(page, MEMBER_C);
+    await abrirConfiguracao(page, /^Clínica/, 'Catálogo');
     await expect(page.getByRole('tab', { name: 'Serviços' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Novo serviço' })).toHaveCount(0);
     await page.getByRole('tab', { name: 'Profissionais' }).click();

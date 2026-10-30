@@ -174,6 +174,34 @@ describe('Clinics — agenda e atendimento (integração, F2.2)', () => {
 
   // ── Agendar ───────────────────────────────────────────────────────────────
 
+  describe('o teto do dia', () => {
+    it('até 500 horários, o dia inteiro; acima, a rota RECUSA (422) em vez de cortar sem aviso', async () => {
+      const date = segundaFutura();
+      const dono = await prisma.raw.membership.findFirst({
+        where: { workspaceId: wsA.workspaceId, user: { email: 'owner-a@veyra.test' } },
+      });
+      // horários de 1 minuto, a cada 2, a partir de 00:00 local (UTC-3)
+      const inicio = Date.parse(`${date}T03:00:00Z`);
+      const horario = (i: number) => ({
+        workspaceId: wsA.workspaceId,
+        patientId: paciente,
+        professionalId: ana,
+        serviceId: servico,
+        unitId: unitA,
+        startsAt: new Date(inicio + i * 120_000),
+        endsAt: new Date(inicio + i * 120_000 + 60_000),
+        createdByMembershipId: dono!.id,
+      });
+      await prisma.raw.clinicsAppointment.createMany({
+        data: Array.from({ length: 500 }, (_, i) => horario(i)),
+      });
+      expect((await dia(date)).body).toHaveLength(500);
+      await prisma.raw.clinicsAppointment.create({ data: horario(500) });
+      const recusa = await get(`/api/clinics/appointments?date=${date}`, owner).expect(422);
+      expect(recusa.body.message).toMatch(/mais de 500 horários/);
+    });
+  });
+
   describe('agendar', () => {
     it('instantes no fuso da unidade, fim pela duração do serviço, e o dia mostra o paciente só pelo nome', async () => {
       const criado = (await agendar().expect(201)).body;

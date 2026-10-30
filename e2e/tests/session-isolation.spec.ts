@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { E2E_PASSWORD, E2E_WEB_ORIGIN, MEMBER_C, OWNER_A } from '../env';
-import { login, openE2eDb } from './helpers';
+import { abrirNoMenu, login, openE2eDb } from './helpers';
 
 /**
  * Duas sessões na MESMA aba, sem recarregar a página (ADR-050), no navegador
@@ -19,7 +19,8 @@ async function reterBuscas(page: Page) {
   const retidas: { termo: string; soltar: () => void }[] = [];
   let reter: string | null = null;
   await page.route(
-    (url) => url.pathname === '/api/contacts',
+    // a busca de contatos do CRM e a de interessados da clínica (ADR-055, E-3)
+    (url) => url.pathname === '/api/contacts' || url.pathname === '/api/clinics/leads',
     async (route) => {
       const termo = new URL(route.request().url()).searchParams.get('search');
       if (reter === null || termo !== reter) return route.continue();
@@ -99,32 +100,31 @@ test('duas sessões na mesma aba: expiração sem logout, outro workspace e resp
     // a troca abortou o pedido de A que estava a caminho
     expect((await abortado).failure()?.errorText).toMatch(/ABORTED|aborted|cancel/i);
 
-    // B, no workspace clinica, na MESMA aba (sem recarregar)
+    // B, no workspace clinica (a experiência da clínica), na MESMA aba (sem
+    // recarregar): os contatos dela estão em Interessados
     await entrarNaMesmaAba(page, MEMBER_C);
-    await page
-      .getByRole('navigation', { name: 'Principal' })
-      .getByRole('link', { name: 'Contatos' })
-      .click();
+    await abrirNoMenu(page, 'Captação', 'Interessados');
+    const buscaDeB = page.getByLabel('Buscar interessado pelo nome');
     // B busca o MESMO termo que A buscou; a resposta de B demora
     rede.reter(nomeA);
-    await page.getByLabel('Buscar contatos').fill(nomeA);
+    await buscaDeB.fill(nomeA);
     await expect.poll(() => rede.retidas.length).toBe(2);
     // enquanto a de B não chega, nada do cache de A aparece
-    await expect(linha(page, nomeA)).toHaveCount(0);
+    await expect(page.getByText(nomeA)).toHaveCount(0);
 
     // a resposta ANTIGA de A é solta agora, depois do login de B (o pedido já foi
     // abortado na troca: ela não tem mais a quem chegar)
     rede.retidas[0].soltar();
     await page.waitForTimeout(500);
-    await expect(linha(page, nomeA)).toHaveCount(0);
+    await expect(page.getByText(nomeA)).toHaveCount(0);
 
     // a de B chega: o contato de A não é do workspace de B
     rede.retidas[1].soltar();
-    await expect(page.getByText('Nenhum contato para esta busca.')).toBeVisible();
+    await expect(page.getByText('Ninguém com esse nome.')).toBeVisible();
     await expect(page.getByText(nomeA)).toHaveCount(0);
-    await page.getByLabel('Buscar contatos').fill(nomeC);
-    await expect(linha(page, nomeC)).toBeVisible();
-    await expect(linha(page, nomeA)).toHaveCount(0);
+    await buscaDeB.fill(nomeC);
+    await expect(page.getByRole('link', { name: nomeC })).toBeVisible();
+    await expect(page.getByText(nomeA)).toHaveCount(0);
   } finally {
     await db.end();
   }

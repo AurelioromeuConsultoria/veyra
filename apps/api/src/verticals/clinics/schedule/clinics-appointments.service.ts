@@ -3,6 +3,7 @@ import {
   ConflictException,
   Injectable,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import type {
   ChangeClinicsAppointmentStatusInput,
@@ -71,7 +72,11 @@ export const ROTULO: Record<ClinicsAppointmentStatus, string> = {
   attended: 'Atendido',
 };
 
-/** O dia de uma unidade não passa de algumas dezenas; o teto é defesa. */
+/**
+ * O dia de uma unidade não passa de algumas dezenas; o teto é defesa. Acima
+ * dele a rota RECUSA, em vez de devolver o dia cortado sem aviso: quem conta
+ * (o Hoje da clínica, ADR-055 adendo 4) não pode afirmar um total que não sabe.
+ */
 const TETO_DO_DIA = 500;
 
 const COM_NOMES = {
@@ -118,8 +123,14 @@ export class ClinicsAppointmentsService {
         ...(comAtendimento ? { attendance: { select: { id: true } } } : {}),
       },
       orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
-      take: TETO_DO_DIA,
+      take: TETO_DO_DIA + 1,
     } as never)) as unknown as AppointmentRow[];
+    // a janela (com a folga) passou do teto: o dia pode estar incompleto
+    if (rows.length > TETO_DO_DIA) {
+      throw new UnprocessableEntityException(
+        `Este dia tem mais de ${TETO_DO_DIA} horários e não cabe numa lista só.`,
+      );
+    }
     return rows
       .filter((row) => horaLocal(row.startsAt, unidade.timezone).data === query.date)
       .map((row) => toDto(row, unidade.timezone, comAtendimento));

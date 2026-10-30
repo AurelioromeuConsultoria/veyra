@@ -22,6 +22,8 @@ import { reiniciarSessaoParaTestes } from '../../lib/session-scope';
 const PERMISSOES = [
   'contacts:read',
   'members:read',
+  'conversations:read',
+  'pipelines:read',
   'clinics:schedule:read',
   'clinics:catalog:read',
 ];
@@ -103,6 +105,10 @@ function subirServidor(sessao: AuthUserDto | null): Servidor {
         return json(s.sessao, 201, escopo, true);
       }
       if (url === '/api/clinics/status') return json({ active: true }, 200, escopo);
+      if (url.startsWith('/api/clinics/leads'))
+        return json({ items: [], nextCursor: null }, 200, escopo);
+      if (url.startsWith('/api/conversations'))
+        return json({ items: [], nextCursor: null }, 200, escopo);
       if (url.startsWith('/api/notifications'))
         return json({ items: [], unreadCount: 0 }, 200, escopo);
       if (url.startsWith('/api/contacts')) {
@@ -155,6 +161,17 @@ function abrir(caminho: string) {
 
 const lateral = async () => within(await screen.findByRole('navigation', { name: 'Principal' }));
 
+/** A faixa do produto (o `AppHeader`), não o cabeçalho de uma página. */
+const cabecalho = () =>
+  screen.getByRole('navigation', { name: 'Onde você está' }).closest('header') as HTMLElement;
+
+/** Na clínica, as Tags ficam nas Configurações (Etiquetas e campos), não na lateral. */
+async function irParaTags() {
+  fireEvent.click((await lateral()).getByRole('link', { name: /^Configurações$/ }));
+  await screen.findByRole('heading', { name: 'Configurações', level: 1 });
+  fireEvent.click(within(screen.getByRole('main')).getByRole('link', { name: /^Tags$/ }));
+}
+
 beforeEach(() => reiniciarSessaoParaTestes());
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -174,19 +191,34 @@ describe('cada produto, o seu menu e as suas rotas', () => {
     await waitFor(() => expect(document.title).toMatch(/Empresa Fictícia · Veyra$/));
   });
 
-  it('Clinics: o início é o do produto, e o menu não traz o CRM que não é da clínica', async () => {
+  it('Clinics: o início é o Hoje da clínica, e o menu é o da clínica — nada do CRM que não é dela', async () => {
     subirServidor(pessoa(CLINICA));
     abrir('/');
-    expect(
-      await screen.findByRole('heading', { name: 'Agenda da clínica', level: 1 }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Hoje', level: 1 })).toBeInTheDocument();
+    // o Hoje é o da clínica: os cartões dela, não o painel comercial
+    expect(await screen.findByRole('region', { name: 'Retornos vencidos' })).toBeInTheDocument();
     const menu = await lateral();
-    expect(menu.getByRole('link', { name: 'Pacientes' })).toBeInTheDocument();
-    for (const fora of ['Hoje', 'Empresas', 'Tarefas', 'Sinais', 'Automações', 'Agenda']) {
-      expect(menu.queryByRole('link', { name: fora })).toBeNull();
+    for (const da of ['Hoje', 'Agenda', 'Pacientes', 'Conversas', 'Retornos', 'Configurações']) {
+      expect(menu.getByRole('link', { name: new RegExp(`^${da}$`) })).toBeInTheDocument();
+    }
+    // os grupos agrupam: os subitens não ficam expostos até a pessoa abrir
+    expect(menu.getByRole('button', { name: 'Captação' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(menu.queryByRole('link', { name: 'Interessados' })).toBeNull();
+    fireEvent.click(menu.getByRole('button', { name: 'Captação' }));
+    expect(menu.getByRole('link', { name: 'Interessados' })).toBeInTheDocument();
+    expect(menu.getByRole('link', { name: 'Funil' })).toBeInTheDocument();
+    // um grupo com um item só (sem consents:read, só Retornos) mostra o item direto
+    expect(menu.queryByRole('button', { name: 'Acompanhamento' })).toBeNull();
+    for (const fora of ['Empresas', 'Tarefas', 'Sinais', 'Automações', 'Contatos', 'Tags']) {
+      expect(menu.queryByRole('link', { name: new RegExp(`^${fora}$`) })).toBeNull();
     }
     expect(screen.getByText('veyra clinics')).toBeInTheDocument();
-    await waitFor(() => expect(document.title).toMatch(/Clínica Fictícia · Veyra Clinics$/));
+    await waitFor(() =>
+      expect(document.title).toMatch(/^Hoje · Clínica Fictícia · Veyra Clinics$/),
+    );
   });
 
   it('rota direta de OUTRO produto leva ao início deste, com o aviso — nos dois sentidos', async () => {
@@ -195,9 +227,7 @@ describe('cada produto, o seu menu e as suas rotas', () => {
     expect(await screen.findByTestId('fora-da-experiencia')).toHaveTextContent(
       'Esta seção não faz parte do Veyra Clinics',
     );
-    expect(
-      await screen.findByRole('heading', { name: 'Agenda da clínica', level: 1 }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Hoje', level: 1 })).toBeInTheDocument();
   });
 
   it('no CRM, a rota do Clinics também não existe', async () => {
@@ -215,18 +245,43 @@ describe('cada produto, o seu menu e as suas rotas', () => {
 });
 
 describe('a busca é do produto ativo', () => {
-  it('no Clinics, "empresas" não acha a seção do CRM; no CRM, acha', async () => {
-    subirServidor(pessoa(CLINICA));
+  it('no Clinics, a busca traz pacientes e interessados com o rótulo e o destino de cada um, e nenhuma seção do CRM', async () => {
+    const s = subirServidor(pessoa(CLINICA));
+    s.rotas['GET /api/clinics/patients'] = () =>
+      json(
+        [{ id: 'p-1', name: 'Paciente Fictício', createdAt: '2030-01-01T00:00:00Z' }],
+        200,
+        escopoDe(s.sessao!),
+      );
+    s.rotas['GET /api/clinics/leads'] = () =>
+      json(
+        {
+          items: [{ id: 'c-9', name: 'Interessada Fictícia', createdAt: '2030-01-01T00:00:00Z' }],
+          nextCursor: null,
+        },
+        200,
+        escopoDe(s.sessao!),
+      );
     abrir('/');
-    await screen.findByRole('heading', { name: 'Agenda da clínica', level: 1 });
+    await screen.findByRole('heading', { name: 'Hoje', level: 1 });
+    fireEvent.keyDown(window, { key: 'k', metaKey: true });
+    fireEvent.change(await screen.findByLabelText('Buscar no workspace'), {
+      target: { value: 'fic' },
+    });
+    const paciente = await screen.findByRole('option', { name: /Paciente Fictício.*Paciente/ });
+    expect(
+      screen.getByRole('option', { name: /Interessada Fictícia.*Interessado/ }),
+    ).toBeInTheDocument();
+    // a busca de contatos do CRM não sai no Clinics
+    expect(s.chamadas.some((c) => c.startsWith('GET /api/contacts?'))).toBe(false);
+    fireEvent.click(paciente);
+    expect(await screen.findByText('Paciente não encontrado.')).toBeInTheDocument();
+    // a seção do CRM não existe aqui
     fireEvent.keyDown(window, { key: 'k', metaKey: true });
     fireEvent.change(await screen.findByLabelText('Buscar no workspace'), {
       target: { value: 'empresas' },
     });
-    // o provedor responde com um contato; a SEÇÃO do CRM não vem
-    expect(
-      await screen.findByRole('option', { name: /Contato de Clínica Fictícia/ }),
-    ).toBeInTheDocument();
+    await new Promise((r) => setTimeout(r, 250));
     expect(screen.queryByRole('option', { name: /^Empresas/ })).toBeNull();
   });
 
@@ -254,9 +309,7 @@ describe('os estados da experiência nunca mostram o CRM', () => {
     expect(screen.queryByRole('navigation', { name: 'Principal' })).toBeNull();
     expect(document.title).toBe('Veyra');
     await act(async () => soltar());
-    expect(
-      await screen.findByRole('heading', { name: 'Agenda da clínica', level: 1 }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Hoje', level: 1 })).toBeInTheDocument();
   });
 
   it.each([
@@ -319,7 +372,7 @@ describe('os estados da experiência nunca mostram o CRM', () => {
     reter = true;
     fireEvent.click(screen.getByRole('button', { name: 'Verificar de novo' }));
     expect(await screen.findByRole('heading', { name: 'Pacientes', level: 1 })).toBeInTheDocument();
-    fireEvent.click((await lateral()).getByRole('link', { name: 'Tags' }));
+    await irParaTags();
     await screen.findByRole('heading', { name: 'Tags', level: 1 });
     await waitFor(() => expect(retida).toBe(true));
     // a consulta nova está retida: o dado de ANTES da desativação não volta
@@ -357,9 +410,7 @@ describe('troca de workspace e de experiência', () => {
     await lateral();
     fireEvent.click(await screen.findByRole('button', { name: /Trocar de workspace/ }));
     fireEvent.click(await screen.findByRole('button', { name: /Clínica Fictícia/ }));
-    expect(
-      await screen.findByRole('heading', { name: 'Agenda da clínica', level: 1 }),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Hoje', level: 1 })).toBeInTheDocument();
     expect((await lateral()).queryByRole('link', { name: 'Empresas' })).toBeNull();
     expect(s.chamadas).toContain('POST /api/auth/switch-workspace');
   });
@@ -403,9 +454,9 @@ describe('troca de workspace e de experiência', () => {
     await waitFor(() => expect(retida).toBe(true));
     fireEvent.click(await screen.findByRole('button', { name: /Trocar de workspace/ }));
     fireEvent.click(await screen.findByRole('button', { name: /Clínica Fictícia/ }));
-    await screen.findByRole('heading', { name: 'Agenda da clínica', level: 1 });
+    await screen.findByRole('heading', { name: 'Hoje', level: 1 });
     // a mesma tela (Tags existe nos dois produtos), agora na clínica
-    fireEvent.click((await lateral()).getByRole('link', { name: 'Tags' }));
+    await irParaTags();
     expect(await screen.findByText('Tag de Clínica Fictícia')).toBeInTheDocument();
     await act(async () => soltar());
     expect(screen.queryByText('Tag de Empresa Fictícia')).toBeNull();
@@ -432,22 +483,47 @@ describe('troca de workspace e de experiência', () => {
 });
 
 describe('as configurações do produto', () => {
-  it('o atalho do cabeçalho leva à página do produto, com só as seções que o papel alcança', async () => {
+  it('no Clinics, a entrada do menu leva à página com só as seções que o papel alcança, e o rastro diz onde se está', async () => {
     subirServidor(pessoa(CLINICA));
-    abrir('/tags');
-    await lateral();
-    fireEvent.click(screen.getByRole('link', { name: 'Configurações' }));
+    abrir('/');
+    const menu = await lateral();
+    // a entrada está no menu: o cabeçalho não repete o atalho
+    expect(within(cabecalho()).queryByRole('link', { name: 'Configurações' })).toBeNull();
+    fireEvent.click(menu.getByRole('link', { name: /^Configurações$/ }));
     expect(
       await screen.findByRole('heading', { name: 'Configurações', level: 1 }),
     ).toBeInTheDocument();
     const pagina = within(screen.getByRole('main'));
-    for (const alcanca of [/^Catálogo/, /^Equipe/, /^Tags/]) {
+    for (const alcanca of [/^Clínica/, /^Equipe/, /^Etiquetas e campos/]) {
       expect(pagina.getByRole('link', { name: alcanca })).toBeInTheDocument();
     }
     // sem a permissão de cada uma, e nada do CRM que a clínica não monta
-    for (const fora of [/^Liberação para IA/, /^Auditoria/, /^Webhooks/, /^Automações/]) {
+    // (Uso e plano exige `workspace:read`, que esta pessoa não tem)
+    for (const fora of [
+      /^Privacidade e IA/,
+      /^Auditoria/,
+      /^Integrações/,
+      /^Automações/,
+      /^Uso e plano/,
+    ]) {
       expect(pagina.queryByRole('link', { name: fora })).toBeNull();
     }
+    // a subpágina: o menu marca Configurações e o rastro diz "Configurações › Campos"
+    fireEvent.click(pagina.getByRole('link', { name: /^Campos$/ }));
+    const rastro = within(await screen.findByRole('navigation', { name: 'Onde você está' }));
+    expect(await rastro.findByText('Campos')).toBeInTheDocument();
+    expect(rastro.getByText('Configurações')).toBeInTheDocument();
+    expect(menu.getByRole('link', { name: /^Configurações$/ }).className).toMatch(/font-medium/);
+  });
+
+  it('no CRM, o atalho do cabeçalho leva à página (o menu dele não tem a entrada)', async () => {
+    subirServidor(pessoa(CRM));
+    abrir('/tags');
+    await lateral();
+    fireEvent.click(within(cabecalho()).getByRole('link', { name: 'Configurações' }));
+    expect(
+      await screen.findByRole('heading', { name: 'Configurações', level: 1 }),
+    ).toBeInTheDocument();
   });
 
   it('sem nenhuma seção ao alcance do papel, nenhum atalho', async () => {

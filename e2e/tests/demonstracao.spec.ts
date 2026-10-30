@@ -9,7 +9,7 @@ import {
   OWNER_DEMO,
   PACIENTE_DEMO,
 } from '../env';
-import { login, openE2eDb } from './helpers';
+import { abrirNoMenu, login, openE2eDb } from './helpers';
 
 /**
  * O FLUXO COMPLETO DA DEMONSTRAÇÃO pelo navegador (ADR-048 adendo 12, item 3),
@@ -52,9 +52,10 @@ test.describe('A demonstração: o envio da clínica de ponta a ponta, simulado'
       const aPartirDoAgendamento = () => page.getByLabel('A partir de').fill(dia);
       const confirmacao = FINALIDADES_DEMO[0];
 
-      // ── o consentimento, pela ficha do contato ──────────────────────────
-      await login(page, OWNER_DEMO, 'Contatos');
-      await page.getByRole('row', { name: new RegExp(PACIENTE_DEMO) }).click();
+      // ── o consentimento, pela ficha do paciente (a seção Contato) ───────
+      await login(page, OWNER_DEMO, 'Pacientes');
+      await page.getByRole('link', { name: PACIENTE_DEMO }).click();
+      await expect(page.getByRole('heading', { name: PACIENTE_DEMO, level: 1 })).toBeVisible();
       const secao = page.getByTestId('consentimentos-do-contato');
       await expect(secao).toContainText(NUMERO_DEMO);
       await secao.getByLabel('Canal do consentimento').selectOption({ label: CANAL_DEMO });
@@ -73,7 +74,7 @@ test.describe('A demonstração: o envio da clínica de ponta a ponta, simulado'
       const transporte = page.waitForResponse(
         (r) => r.url().endsWith('/api/clinics/outreach/transport') && r.ok(),
       );
-      await page.getByRole('link', { name: 'Envios', exact: true }).click();
+      await abrirNoMenu(page, 'Acompanhamento', 'Confirmações e reativações');
       expect(await (await transporte).json()).toEqual({ simulated: true });
       await expect(page.getByTestId('envio-simulado')).toContainText('Envio simulado.');
 

@@ -26,6 +26,7 @@ import {
 import { reaisToCents } from './format';
 import { CLINICS_PATIENTS_PATH } from './nav';
 import { ListaDeRetornos } from './retornos/ListaDeRetornos';
+import { ContatoDaPessoa } from './pessoa/ContatoDaPessoa';
 
 const mensagem = (erro: unknown) =>
   erro instanceof ApiError ? erro.message : 'Não foi possível concluir.';
@@ -98,6 +99,9 @@ function FichaReady() {
           <ListaDeRetornos filtros={{ patientId: id }} mostrarPaciente={false} />
         </section>
         {lePacotes ? <PacotesDoPaciente pacienteId={id} /> : null}
+        {/* o paciente continua na captação: o contato, o consentimento, as
+            conversas e as oportunidades, cada um com as suas chaves */}
+        {paciente.data.contactId ? <ContatoDaPessoa contactId={paciente.data.contactId} /> : null}
       </div>
       <Drawer open={novoRetorno} onOpenChange={setNovoRetorno} title="Novo retorno">
         {novoRetorno ? <NovoRetorno pacienteId={id} onDone={() => setNovoRetorno(false)} /> : null}

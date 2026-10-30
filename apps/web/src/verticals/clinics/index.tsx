@@ -4,12 +4,15 @@ import {
   CLINICS_AGENDA_PATH,
   CLINICS_AI_RELEASES_PATH,
   CLINICS_CATALOG_PATH,
+  CLINICS_LEADS_PATH,
   CLINICS_NO_SHOW_PATH,
   CLINICS_OUTREACH_METRICS_PATH,
   CLINICS_OUTREACH_PATH,
   CLINICS_PATIENT_PATH,
   CLINICS_PATIENTS_PATH,
+  CLINICS_PERSON_PATH,
   CLINICS_RETURNS_PATH,
+  CLINICS_TODAY_PATH,
 } from './nav';
 
 const ClinicsCatalogPage = lazy(() =>
@@ -38,12 +41,24 @@ const ClinicsOutreachMetricsPage = lazy(() =>
     default: m.ClinicsOutreachMetricsPage,
   })),
 );
+const ClinicsTodayPage = lazy(() =>
+  import('./hoje/HojePage').then((m) => ({ default: m.ClinicsTodayPage })),
+);
+const ClinicsLeadsPage = lazy(() =>
+  import('./InteressadosPage').then((m) => ({ default: m.ClinicsLeadsPage })),
+);
+const ClinicsPersonPage = lazy(() =>
+  import('./pessoa/PessoaPage').then((m) => ({ default: m.ClinicsPersonPage })),
+);
 const ClinicsAiReleasesPage = lazy(() =>
   import('./AiReleasesPage').then((m) => ({ default: m.ClinicsAiReleasesPage })),
 );
 
 /** Rotas do Clinics, montadas pela raiz dentro do shell protegido. */
 export const clinicsRoutes: readonly VerticalRoute[] = [
+  { path: CLINICS_TODAY_PATH, element: <ClinicsTodayPage /> },
+  { path: CLINICS_LEADS_PATH, element: <ClinicsLeadsPage /> },
+  { path: CLINICS_PERSON_PATH, element: <ClinicsPersonPage /> },
   { path: CLINICS_AGENDA_PATH, element: <ClinicsAgendaPage /> },
   { path: CLINICS_PATIENTS_PATH, element: <ClinicsPatientsPage /> },
   { path: CLINICS_PATIENT_PATH, element: <ClinicsPatientPage /> },

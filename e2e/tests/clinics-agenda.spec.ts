@@ -146,8 +146,9 @@ async function irParaAgenda(page: Page, dia: string) {
 }
 
 /**
- * Entra e espera a rede assentar: o início da clínica JÁ É a agenda (ADR-055),
- * e a consulta dela não pode ser confundida com a do dia pedido depois.
+ * Entra e espera a rede assentar: o Hoje da clínica (ADR-055, E-3) consulta a
+ * agenda de hoje, e essa consulta não pode ser confundida com a do dia pedido
+ * depois.
  */
 async function entrarNaClinica(page: Page, email: string) {
   await login(page, email);
@@ -315,9 +316,12 @@ test.describe('Clinics — agenda da clínica', () => {
       );
     }
     const lateral = page.getByRole('navigation', { name: 'Principal' });
-    await expect(lateral.getByRole('link', { name: 'Agenda da clínica' })).toHaveCount(0);
     await expect(lateral.getByRole('link', { name: 'Pacientes' })).toHaveCount(0);
-    await expect(lateral.getByRole('link', { name: 'Agenda', exact: true })).toBeVisible(); // a do Core
+    // a Agenda do CRM é a do Core (o calendário), não a da clínica
+    await expect(lateral.getByRole('link', { name: 'Agenda', exact: true })).toHaveAttribute(
+      'href',
+      '/calendar',
+    );
     expect(consultas).toEqual([]);
   });
 });

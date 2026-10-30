@@ -2,9 +2,14 @@ import { LogOut, Moon, Search, Settings as Engrenagem, Sun } from 'lucide-react'
 import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { ROTAS_DO_CORE } from '../../experiences/core-routes';
-import { useExperience, type ExperienceManifest } from '../../lib/experience';
+import {
+  secaoDeConfiguracao,
+  secoesAlcancaveis,
+  useExperience,
+  type ExperienceManifest,
+} from '../../lib/experience';
 import { currentSection, useNavGroups } from '../../lib/nav';
-import { hasPermission, logoutFalhou, useLogout, useSession } from '../../lib/session';
+import { alcanca, logoutFalhou, useLogout, useSession } from '../../lib/session';
 import { useTheme } from '../../lib/theme';
 import { GlobalSearch } from './GlobalSearch';
 import { NotificationBell } from './NotificationBell';
@@ -64,16 +69,27 @@ export function AppHeader({ manifestos }: { manifestos: readonly ExperienceManif
 
   const experiencia = useExperience();
   const groups = useNavGroups();
-  const section = currentSection(location.pathname, groups);
-  const workspace = user?.activeMembership?.workspaceName;
-  const busca = experiencia.busca;
-  const buscaRegistros = busca && hasPermission(user, busca.permission) ? busca : null;
-  // a página das configurações do produto (adendo 2, item 5): o atalho só com a
-  // página montada nele e alguma seção que o papel alcance
   const configuracoes = ROTAS_DO_CORE.configuracoes;
+  const noMenu = currentSection(location.pathname, groups);
+  // numa subpágina das configurações que o menu não lista (o produto tem uma
+  // entrada só para elas), o rastro diz "Configurações › Equipe"
+  const naConfiguracao = secaoDeConfiguracao(experiencia, location.pathname);
+  const section =
+    naConfiguracao && (!noMenu || noMenu.item.to === configuracoes.path)
+      ? {
+          group: 'Configurações',
+          item: { to: naConfiguracao.secao.to, label: naConfiguracao.label },
+        }
+      : noMenu;
+  const workspace = user?.activeMembership?.workspaceName;
+  const singulares = experiencia.busca.filter((p) => alcanca(user, p)).map((p) => p.singular);
+  // a página das configurações do produto (adendo 2, item 5): o atalho no
+  // cabeçalho quando o menu não tem a entrada, com a página montada e alguma
+  // seção ao alcance do papel
   const comConfiguracoes =
     experiencia.rotas.includes(configuracoes) &&
-    experiencia.configuracoes.some((s) => !s.permission || hasPermission(user, s.permission));
+    !groups.some((g) => g.items.some((i) => i.to === configuracoes.path)) &&
+    secoesAlcancaveis(experiencia, user).length > 0;
 
   /**
    * O título da aba diz onde a pessoa está, em qual workspace E em qual produto
@@ -111,8 +127,12 @@ export function AppHeader({ manifestos }: { manifestos: readonly ExperienceManif
         <WorkspaceSwitcher manifestos={manifestos} />
         {section ? (
           <>
-            <Slash />
-            <span className="eyebrow truncate text-muted-fg/80">{section.group}</span>
+            {section.group ? (
+              <>
+                <Slash />
+                <span className="eyebrow truncate text-muted-fg/80">{section.group}</span>
+              </>
+            ) : null}
             <Slash />
             <span className="eyebrow truncate text-muted-fg">{section.item.label}</span>
           </>
@@ -128,7 +148,7 @@ export function AppHeader({ manifestos }: { manifestos: readonly ExperienceManif
         >
           <Search size={14} aria-hidden className="shrink-0" />
           <span className="truncate text-body-sm">
-            {buscaRegistros ? `Buscar ${buscaRegistros.singular} ou seção` : 'Buscar seção'}
+            {singulares.length > 0 ? `Buscar ${singulares.join(', ')} ou seção` : 'Buscar seção'}
           </span>
           <kbd className="num ml-auto shrink-0 rounded-sm border border-border bg-surface px-1 text-data-xs">
             {isMac ? '⌘K' : 'Ctrl K'}

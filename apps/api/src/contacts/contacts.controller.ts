@@ -12,6 +12,7 @@ import {
 import {
   ContactDto,
   CreateContactInput,
+  DealDto,
   ImportContactsInput,
   ListContactsInput,
   Paginated,
@@ -25,11 +26,15 @@ import { Throttle } from '@nestjs/throttler';
 import { AuthContext, CurrentAuth, RequirePermissions } from '../common/decorators';
 import { Idempotent } from '../common/idempotency.decorator';
 import { ZodPipe } from '../common/zod.pipe';
+import { DealsService } from '../deals/deals.service';
 import { ContactsService } from './contacts.service';
 
 @Controller('contacts')
 export class ContactsController {
-  constructor(private readonly contacts: ContactsService) {}
+  constructor(
+    private readonly contacts: ContactsService,
+    private readonly dealsService: DealsService,
+  ) {}
 
   @RequirePermissions('contacts:read')
   @Get()
@@ -43,6 +48,18 @@ export class ContactsController {
   @Get(':id')
   get(@Param('id', new ParseUUIDPipe()) id: string): Promise<ContactDto> {
     return this.contacts.get(id);
+  }
+
+  /**
+   * As oportunidades do contato, em qualquer pipeline (ADR-055, adendo 4): a
+   * ficha da pessoa, sem precisar abrir um board. As duas chaves: a do contato
+   * e a das oportunidades. Contato de outro workspace ou inexistente: 404.
+   */
+  @RequirePermissions('contacts:read', 'pipelines:read')
+  @Get(':id/deals')
+  async listDeals(@Param('id', new ParseUUIDPipe()) id: string): Promise<DealDto[]> {
+    await this.contacts.get(id);
+    return this.dealsService.listByContact(id);
   }
 
   @RequirePermissions('contacts:write')

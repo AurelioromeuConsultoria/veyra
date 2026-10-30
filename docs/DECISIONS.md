@@ -9088,3 +9088,87 @@ O Funil não tem link direto para uma oportunidade, então a seção leva ao Fun
 - commit local, parando antes do push.
 
 Tornar `clinics` selecionável no código **não** autoriza mudar workspace nenhum no staging. A troca da demonstração continua na E-4, com autorização própria.
+
+**A implementação da E-3 (2026-10-30), com as revisões de fechamento.**
+
+**A API:**
+
+- `GET /api/clinics/leads`, com as duas chaves, o cursor keyset `(createdAt, id)` extraído para `cursor-keyset.ts` (a lista de liberações passou a usá-lo) e a recusa de cursor com data fora da faixa;
+- `GET /api/contacts/:id/deals` no Core;
+- `selectable: true` para a `clinics`.
+
+**A rota da agenda do dia passou a RECUSAR (422) acima do teto de 500,** em vez de devolver o dia cortado sem aviso:
+
+- a janela com a folga de 3 h podia gastar o teto com horários do dia vizinho;
+- o Hoje, que conta o dia, não pode afirmar um total que não sabe (a regra de recusar o resíduo raro que quebra o contrato);
+- a Agenda também mostra a recusa, com o motivo;
+- a folga de 3 h pode fazer a rota recusar um dia que, sozinho, teria até 500 horários: o erro é para o lado seguro;
+- a paginação continua dívida (`technical-debt.md`).
+
+**O web:**
+
+- o menu e as permissões cumulativas (`alcanca`);
+- os grupos recolhíveis;
+- o Hoje;
+- Interessados;
+- a pessoa;
+- o contato na ficha (dados, consentimento, conversas de **todos** os estados e oportunidades);
+- a busca em lista de provedores, que também acha as seções das Configurações pela descrição;
+- a `linguagem`;
+- "Marcar como confirmado" também na Agenda;
+- o rastro "Configurações › Equipe".
+
+**Corrigido na entrega, pelas revisões:**
+
+- **`reviewer`** (mudanças necessárias):
+  - os docs;
+  - as conversas da ficha só mostravam as abertas;
+  - não havia onde dar telefone e e-mail ao contato na clínica. Agora o "Novo interessado" e o "Editar dados" (`contacts:write`) cuidam disso: sem número no cadastro, o consentimento não tem como ser registrado;
+  - as ações do Hoje não atualizavam as faltas da semana;
+  - os cartões do dia sumiam em silêncio sem unidade;
+  - os retornos ignoravam a unidade;
+  - o teto da agenda;
+  - os testes que passariam com a garantia quebrada: o desempate do cursor, um papel só com `pipelines:read` e o menu de cada papel.
+- **`security`** (aprovado com ressalvas, sem P0/P1):
+  - a SECURITY com as regras das rotas novas;
+  - um papel só com `pipelines:read`;
+  - a faixa de datas do cursor;
+  - a pessoa só consulta o vínculo com as chaves da ficha (inclusive o catálogo);
+  - "Registrar atendimento" declara as duas chaves da rota;
+  - o E2E do Profissional também vigia oportunidades;
+  - a busca esquece "Interessado" de quem acabou de virar paciente.
+
+**Decisões de implementação, registradas:**
+
+- **"Registrar atendimento" no Hoje** só aparece para quem chegou. A Agenda continua permitindo o registro nos outros estados que a regra aceita.
+- **Atendidos e faltas** aparecem no Hoje só como contagem: são o que já passou. Os blocos listados são o que pede ação (pendentes, chegaram, a seguir).
+- **"Abrir a Agenda"** leva à Agenda do dia, que hoje mostra uma unidade só (a primeira), como antes.
+- **O contato arquivado** abre como "Arquivado", sem "Tornar paciente".
+- **No teto das oportunidades do serviço do Core (100),** a ficha avisa que é parte.
+
+**Pendência para o usuário decidir antes da E-4: as etiquetas e os campos personalizados.** Na clínica, eles são configurados em Configurações › Etiquetas e campos, mas ninguém os aplica a um contato, porque o "Editar dados" cobre só o nome, os telefones e os e-mails. Um campo personalizado OBRIGATÓRIO faria o "Novo interessado" recusar, com a mensagem do Core. As duas saídas:
+
+- aplicar etiquetas e campos na pessoa;
+- declarar que a clínica não os usa nesta etapa.
+
+**Validação de fechamento da E-3 (2026-10-30):**
+
+- **a proposta** (`1549f65`) foi publicada com o CI verde (run 41081955477); o registro dos ajustes (`7274a5d`) ficou em commit local, antes do código;
+- **as mutações:** 34 casos das garantias novas (10 na API, 24 no web), todos mortos por teste que falha. A primeira rodada (`e3/mut-e3-1.log`) matou 31; três não morreram, e mostraram testes fracos, não código errado:
+  - dois testes de "sem acesso" passavam no instante antes de a sessão chegar;
+  - um teste do carregamento da pessoa só "falhava" por um erro dos dados falsos.
+
+  Os testes passaram a montar a tela com a sessão já carregada, como no app, e a afirmar o carregamento. A segunda rodada (`e3/mut-e3-2.log`, as 24 do web) matou todas;
+
+- **a bateria b85:**
+  - lint, formatação e build;
+  - unidade da API (419) e web (258);
+  - integração em 5 blocos (1.228);
+  - drift;
+  - E2E (57).
+
+  Depois das correções da revisão delta, foram repetidos lint, formatação, build, web (261), E2E (57) e o spec de Interessados (11). Sem migration, a migration do zero e o `check:fk` não foram repetidos. Nenhum evento de sono;
+
+- **a evidência visual:**
+  - 11 capturas das telas finais, com dados fictícios no banco descartável do E2E: o Hoje do Owner, da recepção e do Profissional, o menu com os grupos abertos, Interessados, a pessoa, a passagem para paciente, a ficha com o contato, as Configurações, a busca e o CRM para comparar;
+  - o roteiro das capturas não entrou no repositório.

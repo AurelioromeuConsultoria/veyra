@@ -1,7 +1,8 @@
+import { clsx } from 'clsx';
 import { Link } from 'react-router-dom';
 import { EmptyState, PageBody, PageHeader, Panel } from '../components/ui/page';
-import { useExperience } from '../lib/experience';
-import { hasPermission, useSession } from '../lib/session';
+import { secoesAlcancaveis, useExperience } from '../lib/experience';
+import { useSession } from '../lib/session';
 
 /**
  * As configurações do produto (ADR-055, adendo 2): uma página, organizada nas
@@ -11,9 +12,7 @@ import { hasPermission, useSession } from '../lib/session';
 export function SettingsPage() {
   const { data: user } = useSession();
   const experiencia = useExperience();
-  const secoes = experiencia.configuracoes.filter(
-    (s) => !s.permission || hasPermission(user, s.permission),
-  );
+  const secoes = secoesAlcancaveis(experiencia, user);
   return (
     <div className="flex h-full flex-col">
       <PageHeader title="Configurações" meta={`As configurações do ${experiencia.produto}.`} />
@@ -25,16 +24,28 @@ export function SettingsPage() {
           />
         ) : (
           <ul className="grid max-w-4xl gap-3 sm:grid-cols-2">
-            {secoes.map(({ to, label, description, icon: Icon }) => (
+            {secoes.map(({ to, label, description, icon: Icon, destinos }) => (
               <li key={to}>
                 <Panel className="h-full transition-colors duration-150 hover:border-border-strong">
-                  <Link to={to} className="flex h-full items-start gap-3 p-4">
+                  <Link
+                    to={to}
+                    className={clsx('flex items-start gap-3 p-4', !destinos?.length && 'h-full')}
+                  >
                     <Icon size={16} strokeWidth={1.75} className="mt-0.5 shrink-0 text-muted-fg" />
                     <span>
                       <span className="block text-body-sm font-medium">{label}</span>
                       <span className="mt-0.5 block text-data text-muted-fg">{description}</span>
                     </span>
                   </Link>
+                  {destinos?.length ? (
+                    <p className="-mt-2 flex gap-3 px-4 pb-4 pl-11 text-data">
+                      {destinos.map((d) => (
+                        <Link key={d.to} to={d.to} className="text-accent hover:underline">
+                          {d.label}
+                        </Link>
+                      ))}
+                    </p>
+                  ) : null}
                 </Panel>
               </li>
             ))}

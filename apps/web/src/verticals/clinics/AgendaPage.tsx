@@ -33,7 +33,8 @@ import { VinculoComOportunidade } from './agenda/VinculoComOportunidade';
 
 const AGENDA_KEY = ['clinics', 'appointments'] as const;
 const ROTULO_DA_ACAO = {
-  confirmed: 'Confirmar',
+  // confirmar à mão não é enviar a confirmação por WhatsApp (ADR-055, adendo 4)
+  confirmed: 'Marcar como confirmado',
   arrived: 'Registrar chegada',
   no_show: 'Marcar falta',
 } as const;
@@ -238,7 +239,10 @@ function AgendaReady() {
       <div className="min-h-0 flex-1 overflow-auto p-6">
         {agenda.isError ? (
           <p role="alert" className="mb-3 text-data text-negative">
-            Não foi possível carregar a agenda do dia.
+            {/* a recusa do dia acima do teto diz o porquê (ADR-055, adendo 4) */}
+            {agenda.error instanceof ApiError && agenda.error.status === 422
+              ? agenda.error.message
+              : 'Não foi possível carregar a agenda do dia.'}
           </p>
         ) : null}
         {agenda.isPending ? (

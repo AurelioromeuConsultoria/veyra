@@ -49,7 +49,10 @@ describe('raiz de composição do web', () => {
       for (const grupo of manifesto.grupos) {
         for (const item of grupo.items) expect(caminhos).toContain(item.to);
       }
-      for (const secao of manifesto.configuracoes) expect(caminhos).toContain(secao.to);
+      for (const secao of manifesto.configuracoes) {
+        expect(caminhos).toContain(secao.to);
+        for (const destino of secao.destinos ?? []) expect(caminhos).toContain(destino.to);
+      }
     }
   });
 

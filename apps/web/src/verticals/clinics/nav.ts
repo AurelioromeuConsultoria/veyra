@@ -1,15 +1,8 @@
-import {
-  BarChart3,
-  CalendarClock,
-  CalendarDays,
-  ClipboardList,
-  Percent,
-  Send,
-  ShieldCheck,
-  UsersRound,
-} from 'lucide-react';
-import type { NavGroup } from '../../lib/nav';
-
+/**
+ * Os caminhos do Clinics. O menu da experiência da clínica está no manifesto
+ * (`experience.tsx`), organizado pelo trabalho da clínica (ADR-055, adendo 3).
+ */
+export const CLINICS_TODAY_PATH = '/clinics/today';
 export const CLINICS_AGENDA_PATH = '/clinics/agenda';
 export const CLINICS_PATIENTS_PATH = '/clinics/patients';
 /**
@@ -27,72 +20,14 @@ export const CLINICS_CATALOG_PATH = '/clinics/catalog';
 export const CLINICS_AI_RELEASES_PATH = '/clinics/ai-releases';
 export const CLINICS_OUTREACH_PATH = '/clinics/outreach';
 export const CLINICS_OUTREACH_METRICS_PATH = '/clinics/outreach-metrics';
-
+export const CLINICS_LEADS_PATH = '/clinics/leads';
 /**
- * O grupo "Clínica" do menu da experiência `clinics` (ADR-055, adendo 2). Antes
- * ele era CONTRIBUÍDO ao menu do CRM quando o vertical estava ativo; agora só
- * existe na experiência da clínica, e é ela que decide o que aparece. Cada item
- * leva a permissão da sua rota; o shell e a busca escondem o que a pessoa não
- * pode abrir (e o grupo, se nada sobrar).
+ * A pessoa (ADR-055, adendos 3 e 4): o destino único de um contato na clínica.
+ * Ela decide pela permissão de quem abre — a ficha, se for paciente e a pessoa
+ * puder saber; senão, o contato, sem dizer se é paciente.
  */
-export const CLINICS_NAV_GROUP: NavGroup = {
-  label: 'Clínica',
-  items: [
-    {
-      to: CLINICS_AGENDA_PATH,
-      label: 'Agenda da clínica',
-      icon: CalendarDays,
-      permission: 'clinics:schedule:read',
-      aliases: ['agendamento', 'horário', 'atendimento', 'consulta'],
-    },
-    {
-      to: CLINICS_PATIENTS_PATH,
-      label: 'Pacientes',
-      icon: UsersRound,
-      permission: 'clinics:schedule:read',
-      aliases: ['paciente', 'cliente da clínica'],
-    },
-    {
-      to: CLINICS_RETURNS_PATH,
-      label: 'Retornos',
-      icon: CalendarClock,
-      permission: 'clinics:schedule:read',
-      aliases: ['retorno', 'volta', 'follow-up'],
-    },
-    {
-      to: CLINICS_NO_SHOW_PATH,
-      label: 'Faltas',
-      icon: Percent,
-      permission: 'clinics:schedule:read',
-      aliases: ['falta', 'taxa de faltas', 'no-show'],
-    },
-    {
-      to: CLINICS_OUTREACH_PATH,
-      label: 'Envios',
-      icon: Send,
-      permission: 'clinics:schedule:read',
-      aliases: ['confirmação', 'reativação', 'whatsapp', 'mensagem', 'lembrete'],
-    },
-    {
-      to: CLINICS_OUTREACH_METRICS_PATH,
-      label: 'Métricas do envio',
-      icon: BarChart3,
-      permission: 'clinics:schedule:read',
-      aliases: ['funil', 'conversão', 'entrega', 'resposta', 'reativação'],
-    },
-    {
-      to: CLINICS_CATALOG_PATH,
-      label: 'Catálogo',
-      icon: ClipboardList,
-      permission: 'clinics:catalog:read',
-      aliases: ['clínica', 'serviços', 'profissionais', 'horários', 'unidade'],
-    },
-    {
-      to: CLINICS_AI_RELEASES_PATH,
-      label: 'Liberação para IA',
-      icon: ShieldCheck,
-      permission: 'clinics:restriction:manage',
-      aliases: ['restrição', 'inteligência', 'fornecedor', 'parceiro'],
-    },
-  ],
-};
+export const CLINICS_PERSON_PATH = '/clinics/person';
+
+/** O caminho da pessoa de um contato. */
+export const pessoaDoContato = (contactId: string) =>
+  `${CLINICS_PERSON_PATH}?id=${encodeURIComponent(contactId)}`;

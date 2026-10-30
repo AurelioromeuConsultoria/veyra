@@ -9,10 +9,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RecusaDaTroca, trocarExperiencia } from './workspace-experience.core';
 
 /**
- * A troca da experiência pela operação (ADR-055 adendo 1, item 6). Com a
- * composição REAL, a `clinics` ainda é recusada (condição do usuário: não é
- * selecionável antes do frontend dela). O caminho da troca é provado com uma
- * experiência de teste, selecionável, injetada no serviço.
+ * A troca da experiência pela operação (ADR-055 adendo 1, item 6). Os casos da
+ * porta (que falha, a troca no meio, a não selecionável) usam uma experiência
+ * de teste, injetada no serviço. A `clinics` real, selecionável desde a E-3 e
+ * só com o vertical ativo, é provada no spec do vertical (o Core não o importa).
  */
 describe('CLI workspace-experience (integração)', () => {
   let app: INestApplication;
@@ -81,10 +81,17 @@ describe('CLI workspace-experience (integração)', () => {
     expect(await trilha()).toHaveLength(0);
   });
 
-  it('recusa a `clinics`: ainda não selecionável pela operação (antes do frontend dela)', async () => {
-    await expect(
-      trocarExperiencia(real(), { slug: 'acme', experiencia: 'clinics' }),
-    ).rejects.toThrow(/ainda não é selecionável/);
+  it('a experiência que a composição declara NÃO selecionável é recusada, mesmo disponível', async () => {
+    const deps = {
+      ...comTeste(async () => true),
+      experiencias: new ExperienceService(
+        composeRegistry([{ name: 'teste', experience: { selectable: false } }]),
+        [{ experience: 'teste', isAvailable: async () => true }],
+      ),
+    };
+    await expect(trocarExperiencia(deps, { slug: 'acme', experiencia: 'teste' })).rejects.toThrow(
+      /ainda não é selecionável/,
+    );
     expect(await experienciaAtual()).toBe('crm');
     expect(await trilha()).toHaveLength(0);
   });

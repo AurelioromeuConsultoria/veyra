@@ -1,10 +1,4 @@
-import {
-  BadRequestException,
-  ConflictException,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import type {
   ClinicsAiReleaseDto,
   ClinicsAiReleasePageDto,
@@ -17,6 +11,7 @@ import { ContactsService } from '../../contacts/contacts.service';
 import { MudancasDeRestricao, type OpcoesDaTransacao } from '../../content-use/restriction-changes';
 import { IntelligenceService } from '../../intelligence/intelligence.service';
 import { PrismaService, type Db } from '../../prisma/prisma.service';
+import { decodeCursor, depoisDoCursor, encodeCursor } from './cursor-keyset';
 
 type TxRunner = {
   $transaction: <T>(fn: (tx: Db) => Promise<T>, options?: OpcoesDaTransacao) => Promise<T>;
@@ -61,17 +56,7 @@ export class ClinicsReleasesService {
   }: ListClinicsAiReleasesInput): Promise<ClinicsAiReleasePageDto> {
     const cursor = rawCursor ? decodeCursor(rawCursor) : null;
     const rows = (await this.prisma.db.clinicsContactRelease.findMany({
-      where: {
-        consumer: 'ai',
-        ...(cursor
-          ? {
-              OR: [
-                { createdAt: { lt: cursor.createdAt } },
-                { createdAt: cursor.createdAt, id: { lt: cursor.id } },
-              ],
-            }
-          : {}),
-      },
+      where: { consumer: 'ai', ...depoisDoCursor(cursor) },
       include: { contact: { select: { name: true } } },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: limit + 1,
@@ -179,26 +164,6 @@ export class ClinicsReleasesService {
       );
     }
   }
-}
-
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-interface Cursor {
-  createdAt: Date;
-  id: string;
-}
-
-function encodeCursor(cursor: Cursor): string {
-  return Buffer.from(`${cursor.createdAt.toISOString()}|${cursor.id}`).toString('base64url');
-}
-
-function decodeCursor(raw: string): Cursor {
-  const [iso, id] = Buffer.from(raw, 'base64url').toString('utf8').split('|');
-  const createdAt = new Date(iso);
-  if (Number.isNaN(createdAt.getTime()) || !UUID.test(id ?? '')) {
-    throw new BadRequestException('Cursor inválido');
-  }
-  return { createdAt, id };
 }
 
 function toDto(row: ReleaseRow): ClinicsAiReleaseDto {

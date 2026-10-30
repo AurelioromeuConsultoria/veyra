@@ -1,6 +1,7 @@
 import type { AuthUserDto } from '@veyra/contracts';
 import { createContext, useContext, type ComponentType } from 'react';
 import type { NavGroup, VerticalRoute } from './nav';
+import { alcanca } from './session';
 
 /**
  * A EXPERIÊNCIA DE PRODUTO no web (ADR-055, adendo 2). Cada produto declara o
@@ -18,6 +19,10 @@ export type SettingsSection = {
   icon: ComponentType<{ size?: number; strokeWidth?: number; className?: string }>;
   /** a MESMA chave que o servidor exige na rota da seção */
   permission?: string;
+  /** as demais chaves da rota, TODAS (ADR-055, adendo 4) */
+  permissions?: readonly string[];
+  /** outros destinos da mesma seção ("Etiquetas e campos": as Tags e os Campos) */
+  destinos?: readonly { to: string; label: string }[];
 };
 
 /**
@@ -32,17 +37,18 @@ export type LinkResolvers = {
 export type SearchHit = { id: string; to: string; label: string; hint: string };
 
 /**
- * O provedor de registros da busca global (⌘K) de um produto, no máximo um. É
- * um HOOK, chamado sempre no mesmo ponto: o manifesto é fixo durante a sessão
- * (trocar de experiência é troca de sessão, ADR-050).
+ * Um provedor de registros da busca global (⌘K) de um produto. É um HOOK: a
+ * lista do manifesto é fixa durante a sessão (trocar de experiência é troca de
+ * sessão, ADR-050), então cada provedor é chamado sempre no mesmo ponto.
  */
 export type SearchProvider = {
   /** o nome do grupo na lista de resultados ("Contatos") */
   label: string;
   /** o nome no campo de busca ("contato") */
   singular: string;
-  /** só consulta com esta permissão: sem ela, nenhum 403 a cada tecla */
+  /** só consulta com estas chaves, TODAS: sem elas, nenhum 403 a cada tecla */
   permission: string;
+  permissions?: readonly string[];
   useResultados: (termo: string, ativo: boolean) => { resultados: SearchHit[]; buscando: boolean };
 };
 
@@ -60,8 +66,25 @@ export type ExperienceManifest = {
   rotas: readonly VerticalRoute[];
   configuracoes: readonly SettingsSection[];
   links: LinkResolvers;
-  busca: SearchProvider | null;
+  /** os provedores de registros da busca, na ordem dos resultados (nenhum = só seções) */
+  busca: readonly SearchProvider[];
+  /** os termos das telas compartilhadas que o produto chama do seu jeito */
+  linguagem?: Partial<Linguagem>;
 };
+
+/**
+ * Os termos que as telas COMPARTILHADAS mostram e que um produto pode trocar
+ * (ADR-055, adendo 3, item 7): uma lista fechada, com o texto do CRM como
+ * padrão. Não é tradução: só cresce quando uma tela compartilhada precisar.
+ */
+export type Linguagem = {
+  /** o título do Inbox */
+  conversas: string;
+  /** o título do Pipeline quando o board ainda não tem nome */
+  funil: string;
+};
+
+const LINGUAGEM_DO_CRM: Linguagem = { conversas: 'Inbox', funil: 'Pipeline' };
 
 const ExperienceContext = createContext<ExperienceManifest | null>(null);
 export const ExperienceProvider = ExperienceContext.Provider;
@@ -85,6 +108,39 @@ export function useExperienceOpcional(): ExperienceManifest | null {
 /** Os resolvedores de link da experiência ativa; sem experiência, nenhum link. */
 export function useLinks(): LinkResolvers {
   return useContext(ExperienceContext)?.links ?? {};
+}
+
+/** Um termo das telas compartilhadas, na linguagem do produto ativo. */
+export function useTermo(termo: keyof Linguagem): string {
+  return useContext(ExperienceContext)?.linguagem?.[termo] ?? LINGUAGEM_DO_CRM[termo];
+}
+
+/** As seções de configuração ao alcance do papel (TODAS as chaves de cada uma). */
+export function secoesAlcancaveis(
+  manifesto: ExperienceManifest,
+  user: AuthUserDto | null | undefined,
+): SettingsSection[] {
+  return manifesto.configuracoes.filter((s) => alcanca(user, s));
+}
+
+/**
+ * A seção de configuração em que o caminho está (o rastro "Configurações ›
+ * Equipe" e a entrada do menu marcada), pelo destino principal ou um extra.
+ */
+export function secaoDeConfiguracao(
+  manifesto: ExperienceManifest,
+  pathname: string,
+): { secao: SettingsSection; label: string } | null {
+  const casa = (to: string) => pathname === to || pathname.startsWith(`${to}/`);
+  // o destino nomeado primeiro: o rastro diz o nome da tela ("Tags", "Webhooks")
+  for (const secao of manifesto.configuracoes) {
+    const destino = secao.destinos?.find((d) => casa(d.to));
+    if (destino) return { secao, label: destino.label };
+  }
+  for (const secao of manifesto.configuracoes) {
+    if (casa(secao.to)) return { secao, label: secao.label };
+  }
+  return null;
 }
 
 /** O que a tela mostra para a sessão — nunca o CRM por omissão. */

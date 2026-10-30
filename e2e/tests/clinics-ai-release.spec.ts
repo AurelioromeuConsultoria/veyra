@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { MEMBER_C, OWNER_C } from '../env';
-import { login, openE2eDb } from './helpers';
+import { abrirConfiguracao, login, openE2eDb } from './helpers';
 
 /**
  * Liberação de contatos para IA do Veyra Clinics (F2.1, ADR-048 adendo 2)
@@ -42,7 +42,8 @@ test.describe('Clinics — liberação para IA', () => {
         [dona.workspaceId, idPaciente, dona.membershipId],
       );
 
-      await login(page, OWNER_C, 'Liberação para IA');
+      await login(page, OWNER_C);
+      await abrirConfiguracao(page, /^Privacidade e IA/, 'Liberação para IA');
       await expect(page.getByText(/Paciente nunca é liberável/)).toBeVisible();
 
       const liberar = async (nome: string, motivo: string) => {
@@ -98,8 +99,13 @@ test.describe('Clinics — liberação para IA', () => {
     await login(page, MEMBER_C);
     await page.goto('/clinics/ai-releases');
     await expect(page.getByText('Você não tem acesso à liberação para IA.')).toBeVisible();
+    // a seção mora nas Configurações, e a recepção não tem as chaves dela
     const lateral = page.getByRole('navigation', { name: 'Principal' });
-    await expect(lateral.getByRole('link', { name: 'Catálogo' })).toBeVisible();
     await expect(lateral.getByRole('link', { name: 'Liberação para IA' })).toHaveCount(0);
+    await lateral.getByRole('link', { name: 'Configurações', exact: true }).click();
+    await expect(page.getByRole('main').getByRole('link', { name: /^Clínica/ })).toBeVisible();
+    await expect(
+      page.getByRole('main').getByRole('link', { name: /^Privacidade e IA/ }),
+    ).toHaveCount(0);
   });
 });

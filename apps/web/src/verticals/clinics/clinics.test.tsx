@@ -6,8 +6,10 @@ import { vi } from 'vitest';
 import { AppShell } from '../../components/layout/AppShell';
 import { GlobalSearch } from '../../components/layout/GlobalSearch';
 import { ExperienceProvider } from '../../lib/experience';
+import { ME_KEY } from '../../lib/session';
 import { clinicsExperience } from './experience';
 import { crmExperience } from '../../experiences/crm';
+import { SettingsPage } from '../../pages/Settings';
 import { ClinicsAiReleasesPage, RELEASE_REASON_LABELS } from './AiReleasesPage';
 import { ACCOUNT_LINK_NOTICE, ProfessionalsTab } from './catalog/ProfessionalsTab';
 import { ClinicsCatalogPage } from './CatalogPage';
@@ -112,19 +114,18 @@ describe('Clinics no web — o menu é da experiência; a página só consulta c
     expect(lateral().queryByText('Clínica')).toBeNull();
   });
 
-  it('na experiência da clínica, o menu mostra o Clinics com a permissão de cada item', async () => {
+  it('na experiência da clínica, o catálogo fica nas Configurações: a entrada do menu fica marcada nele, e o Hoje é o da clínica', async () => {
     mockApi({
       'GET /api/auth/me': { body: usuario(GESTAO) },
       'GET /api/clinics/status': { body: { active: true } },
     });
     renderizar(<AppShell manifestos={[crmExperience, clinicsExperience]} />, '/clinics/catalog');
-    expect(await lateral().findByRole('link', { name: 'Catálogo' })).toHaveAttribute(
-      'href',
-      '/clinics/catalog',
-    );
-    expect(lateral().getByText('Clínica')).toBeInTheDocument();
-    // nada do CRM que não é da clínica
-    expect(lateral().queryByRole('link', { name: 'Hoje' })).toBeNull();
+    const configuracoes = await lateral().findByRole('link', { name: 'Configurações' });
+    expect(configuracoes).toHaveAttribute('href', '/settings');
+    expect(configuracoes.className).toMatch(/font-medium/);
+    expect(lateral().queryByRole('link', { name: 'Catálogo' })).toBeNull();
+    // o Hoje é o da clínica; nada do CRM que não é dela
+    expect(lateral().getByRole('link', { name: 'Hoje' })).toHaveAttribute('href', '/clinics/today');
     expect(lateral().queryByRole('link', { name: 'Empresas' })).toBeNull();
   });
 
@@ -187,11 +188,10 @@ describe('Clinics no web — o menu é da experiência; a página só consulta c
     expect(doCatalogo(chamadas)).toEqual([]);
 
     status.soltar({ body: { active: true } });
-    expect(await lateral().findByRole('link', { name: 'Catálogo' })).toHaveAttribute(
+    expect(await lateral().findByRole('link', { name: 'Configurações' })).toHaveAttribute(
       'href',
-      '/clinics/catalog',
+      '/settings',
     );
-    expect(lateral().getByText('Clínica')).toBeInTheDocument();
     expect(await screen.findByRole('tablist', { name: 'Partes do catálogo' })).toBeInTheDocument();
     await waitFor(() => expect(doCatalogo(chamadas)).toContain('GET /api/clinics/services'));
 
@@ -199,7 +199,10 @@ describe('Clinics no web — o menu é da experiência; a página só consulta c
     fireEvent.change(screen.getByLabelText('Buscar no workspace'), {
       target: { value: 'profissionais' },
     });
-    expect(await screen.findByRole('option', { name: /Catálogo/ })).toBeInTheDocument();
+    // a seção das Configurações é achada pela descrição, com o lugar onde mora
+    expect(
+      await screen.findByRole('option', { name: /Clínica.*Configurações/ }),
+    ).toBeInTheDocument();
   });
 
   it('só LEITURA (recepção, Profissional): nenhum botão de ação', async () => {
@@ -457,14 +460,30 @@ describe('liberação para IA — porta, lista, conceder e revogar', () => {
     },
   );
 
-  it('a lateral mostra cada item da Clínica só a quem tem a permissão da rota', async () => {
+  it('as Configurações mostram cada seção só a quem tem TODAS as chaves da rota', async () => {
     mockApi({
       'GET /api/auth/me': { body: usuario(['clinics:catalog:read']) },
       'GET /api/clinics/status': { body: { active: true } },
     });
-    renderizar(<AppShell manifestos={[crmExperience, clinicsExperience]} />);
-    expect(await lateral().findByRole('link', { name: 'Catálogo' })).toBeInTheDocument();
-    expect(lateral().queryByRole('link', { name: 'Liberação para IA' })).toBeNull();
+    renderizar(<SettingsPage />, '/settings');
+    expect(await screen.findByRole('link', { name: /^Clínica/ })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /^Privacidade e IA/ })).toBeNull();
+  });
+
+  it('"Privacidade e IA" exige as DUAS chaves da rota: só `restriction:manage`, sem `contacts:read`, não aparece', async () => {
+    mockApi({
+      'GET /api/auth/me': { body: usuario(['clinics:restriction:manage']) },
+      'GET /api/clinics/status': { body: { active: true } },
+    });
+    // a sessão já carregada, como no app: o "nenhuma" não pode passar no
+    // instante antes de ela chegar
+    const queryClient = novoCliente();
+    queryClient.setQueryData(ME_KEY, usuario(['clinics:restriction:manage']));
+    renderizar(<SettingsPage />, '/settings', queryClient);
+    expect(
+      screen.getByText('Nenhuma configuração disponível para o seu papel.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /^Privacidade e IA/ })).toBeNull();
   });
 
   it('RECARGA do status que falha depois de confirmar: a página volta a só explicar e não consulta mais', async () => {
@@ -503,11 +522,12 @@ describe('liberação para IA — porta, lista, conceder e revogar', () => {
       </>,
       '/clinics/ai-releases',
     );
-    expect(await lateral().findByRole('link', { name: 'Liberação para IA' })).toHaveAttribute(
+    // a tela mora nas Configurações: a entrada do menu fica marcada
+    expect(await lateral().findByRole('link', { name: 'Configurações' })).toHaveAttribute(
       'href',
-      '/clinics/ai-releases',
+      '/settings',
     );
-    expect(lateral().queryByRole('link', { name: 'Catálogo' })).toBeNull();
+    expect(lateral().queryByRole('link', { name: 'Liberação para IA' })).toBeNull();
     expect(await screen.findByText('Fornecedora de Luvas')).toBeInTheDocument();
     expect(screen.getByText(RELEASE_REASON_LABELS.supplier)).toBeInTheDocument();
     expect(screen.getByText(/Paciente nunca é liberável/)).toBeInTheDocument();

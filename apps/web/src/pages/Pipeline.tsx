@@ -12,6 +12,7 @@ import { Drawer } from '../components/ui/drawer';
 import { Field, Input, Select } from '../components/ui/input';
 import { PageHeader } from '../components/ui/page';
 import { api, ApiError } from '../lib/api';
+import { useTermo } from '../lib/experience';
 import { formatCents } from '../lib/format';
 import { hasPermission, useSession } from '../lib/session';
 
@@ -72,6 +73,7 @@ const dealFormSchema = z.object({
 type DealFormValues = z.infer<typeof dealFormSchema>;
 
 export function PipelinePage() {
+  const nomeReserva = useTermo('funil');
   const { data: user } = useSession();
   const canWrite = hasPermission(user, 'deals:write');
   const queryClient = useQueryClient();
@@ -125,7 +127,7 @@ export function PipelinePage() {
       {/* o eyebrow "Pipeline" saiu: a seção agora vive no rastro do
           cabeçalho da aplicação, e repeti-la aqui era eco, não hierarquia */}
       <PageHeader
-        title={board.data?.pipelineName ?? 'Pipeline'}
+        title={board.data?.pipelineName ?? nomeReserva}
         meta={
           <span className="num">
             {formatCents(abertoCents)} em aberto · {abertoCount} oportunidades

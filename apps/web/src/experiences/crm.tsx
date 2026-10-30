@@ -99,5 +99,5 @@ export const crmExperience: ExperienceManifest = {
   links: {
     contato: (id, user) => (hasPermission(user, 'contacts:read') ? `/contacts?c=${id}` : null),
   },
-  busca: buscaDeContatos((id) => `/contacts?c=${id}`),
+  busca: [buscaDeContatos((id) => `/contacts?c=${id}`)],
 };
