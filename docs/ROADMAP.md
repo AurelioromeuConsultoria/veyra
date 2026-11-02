@@ -179,7 +179,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
 
     Revisada (`reviewer` e `security`, mais o delta) e validada (36 mutações e a bateria b82); publicada em 2026-10-29 (`0c4aba4`, os quatro jobs do CI verdes no run 40994699372), **sem deploy**. **Atende só parte do B4:** a gestão de equipe e a D7 **não** estão resolvidas por inteiro.
 
-  - **F5.E — Experiência por produto** 🚧 (ADR-055: direção aprovada pelo usuário em 2026-10-29 com as condições do adendo 1; E-1, a fundação de contratos e API, publicada e validada em 2026-10-30: `9643ff7`, CI verde no run 40999980152, sem deploy; E-2, o web do Core por experiência, publicada e validada em 2026-10-30: `6a9707f`, CI verde no run 41076033227, sem deploy; E-3, o web do Clinics, publicada e validada em 2026-10-30: `5b28956`, CI verde no run 41106749343, sem deploy; o complemento das etiquetas e dos campos personalizados (adendo 5) publicado e validado em 2026-10-30: `ffe8dba`, CI verde no run 41111607093, sem deploy; a `clinics` é selecionável pela CLI, e nenhum workspace do staging mudou: a troca da demonstração é a E-4, com o roteiro no `DEPLOY_STAGING` §14, etapa G, e autorização própria; antes da janela, a trava de manutenção no banco do ADR-053, adendo 1, aprovada pelo usuário em 2026-11-02 e publicada em `737105c` (CI verde no run 41451992704), para que a imagem nova suba protegida sem depender do painel nem do vigia). A base é compartilhada, e o CRM e o Clinics têm, cada um, página inicial, navegação, linguagem e fluxos próprios:
+  - **F5.E — Experiência por produto** 🚧 (ADR-055: direção aprovada pelo usuário em 2026-10-29 com as condições do adendo 1; E-1, a fundação de contratos e API, publicada e validada em 2026-10-30: `9643ff7`, CI verde no run 40999980152, sem deploy; E-2, o web do Core por experiência, publicada e validada em 2026-10-30: `6a9707f`, CI verde no run 41076033227, sem deploy; E-3, o web do Clinics, publicada e validada em 2026-10-30: `5b28956`, CI verde no run 41106749343, sem deploy; o complemento das etiquetas e dos campos personalizados (adendo 5) publicado e validado em 2026-10-30: `ffe8dba`, CI verde no run 41111607093, sem deploy; a `clinics` é selecionável pela CLI, e nenhum workspace do staging mudou: a E-4, a troca da demonstração, executada em 2026-11-02: o staging no `df94fb5`, com o `demo` em `clinics` e o `staging` em `crm` (`DEPLOY_STAGING` §14, "A execução de 2026-11-02"); a tela inicial conferida pelo usuário, e os demais critérios de aceitação da E-4 pendentes; um deploy automático do staging proposto à parte, em revisão separada; antes da janela, a trava de manutenção no banco do ADR-053, adendo 1, aprovada pelo usuário em 2026-11-02 e publicada em `737105c` (CI verde no run 41451992704), para que a imagem nova suba protegida sem depender do painel nem do vigia). A base é compartilhada, e o CRM e o Clinics têm, cada um, página inicial, navegação, linguagem e fluxos próprios:
     - rotas diretas, busca, atalhos, links e cabeçalhos por experiência;
     - o produto separado da permissão;
     - a experiência como atributo do workspace, escolhida pela operação;
@@ -187,9 +187,18 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
 
     Entregas: E-1 (fundação), E-2 (o web do Core por experiência), E-3 (o web do Clinics; só então a `clinics` fica selecionável) e E-4 (a demonstração, com autorização própria). Cada uma para no commit local para revisão.
 
+    - **Acabamento visual, antes da apresentação ao cliente** (registrado pelo usuário em 2026-11-02; sem redesenho agora). A experiência separada do Clinics atende à direção, mas o layout atual não é a versão final. A etapa cobre:
+      - a hierarquia das informações;
+      - a organização dos cartões;
+      - o espaçamento e a tipografia;
+      - as ações principais;
+      - os estados vazios.
+
+      Ela é feita com dados fictícios representativos e não substitui os testes de aceitação da E-4.
+
   - **Normalização dos e-mails** (aprovada pelo usuário como entrega própria, **antes do piloto**): começa pelo diagnóstico das colisões e pelo desenho da migração, sem unir contas nem escolher vencedora automaticamente. Até lá vale o critério único da F5.1a (ADR-054 item 13).
   1. **F5.1 — Equipe e permissões 🚧** (a F5.1a acima)
-     - **F5.1b — D7, quem acumula funções:** a menor evolução para combinar recepção, atendimento e, quando preciso, o Inbox. O desenho é apresentado antes do código. Owner ou Admin não servem de solução provisória, e nada de múltiplos papéis ou edição de permissões sem o desenho aprovado.
+     - **F5.1b — D7, quem acumula funções:** a menor evolução para combinar recepção, atendimento e, quando preciso, o Inbox. O desenho é apresentado antes do código. **Desenho proposto em 2026-11-02 (ADR-056): papéis combinados do vertical, com um gatilho para vários papéis por membership; aguarda a decisão do usuário.** Owner ou Admin não servem de solução provisória, e nada de múltiplos papéis ou edição de permissões sem o desenho aprovado.
   2. **F5.2 — Correção de um consumo de pacote registrado por engano.** Primeiro o plano, com as operações propostas e as permissões, antes do código:
      - preserva o atendimento e o lançamento original;
      - registra quem corrigiu e o motivo;

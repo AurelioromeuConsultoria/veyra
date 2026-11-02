@@ -1578,14 +1578,14 @@ Na ordem, cada passo com a própria autorização:
 
 **5. O que falta para o usuário acessar o sistema (acompanhamento; atualizar a cada entrega).** Nenhum item abaixo autoriza execução: cada passo no staging tem autorização própria. Nada novo entra no caminho da demonstração.
 
-| Frente                                    | Situação                                                                                             | O que falta                                                      |
-| ----------------------------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| **Funcionalidades**                       | F4.1 a F4.4d publicadas e validadas, no ar no staging em `2b6deb1`                                   | nenhuma nova                                                     |
-| **Templates falsos**                      | os três `demo_*` cadastrados e revisados no `demo` (2026-10-29)                                      | nada                                                             |
-| **Dados fictícios**                       | a carga no `demo` (2026-10-29): 3 serviços, 2 profissionais, 6 pacientes, 5 agendamentos e 1 retorno | os consentimentos, pela tela, no uso                             |
-| **Manutenção do deploy**                  | a janela executada em 2026-10-29 (§14, "A execução de 2026-10-29"); o Auto Deploy desligado          | o backup externo (o destino do `restic` nunca foi configurado)   |
-| **Diagnóstico do staging**                | INC-2026-10-26-01 fechado (§12)                                                                      | apagar os logs e o dump da janela depois da validação do usuário |
-| **Ativação do workspace de demonstração** | o `demo`, com o Clinics ativo só nele e o canal fictício                                             | o uso pelo usuário (§14, etapa F)                                |
+| Frente                                    | Situação                                                                                                                       | O que falta                                                      |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| **Funcionalidades**                       | F4.1 a F4.4d e a experiência por produto (E-1 a E-3) publicadas e validadas, no ar no staging em `df94fb5` (a E-4, 2026-11-02) | nenhuma nova                                                     |
+| **Templates falsos**                      | os três `demo_*` cadastrados e revisados no `demo` (2026-10-29)                                                                | nada                                                             |
+| **Dados fictícios**                       | a carga no `demo` (2026-10-29): 3 serviços, 2 profissionais, 6 pacientes, 5 agendamentos e 1 retorno                           | os consentimentos, pela tela, no uso                             |
+| **Manutenção do deploy**                  | as janelas de 2026-10-29 e de 2026-11-02 (§14); o estado do Auto Deploy depois da E-4 está por confirmar no painel             | o backup externo (o destino do `restic` nunca foi configurado)   |
+| **Diagnóstico do staging**                | INC-2026-10-26-01 fechado (§12)                                                                                                | apagar os logs e o dump da janela depois da validação do usuário |
+| **Ativação do workspace de demonstração** | o `demo`, com o Clinics ativo só nele e o canal fictício                                                                       | o uso pelo usuário (§14, etapa F)                                |
 
 ## 14. Plano operacional da demonstração (2026-10-29; nada executado)
 
@@ -1955,7 +1955,7 @@ O usuário entra e troca para o workspace Demonstração. Depois:
 
 **Antes de voltar o staging à Graph,** algum dia, as versões `demo_*` saem de uso.
 
-### Etapa G — A E-4: a experiência da clínica no `demo` (roteiro revisto em 2026-10-30; nada executado; autorização própria)
+### Etapa G — A E-4: a experiência da clínica no `demo` (roteiro revisto em 2026-10-30; executada em 2026-11-02, em forma simplificada: ver "A execução de 2026-11-02", no fim)
 
 **O objetivo:** o workspace `demo` passa a abrir no Veyra Clinics (ADR-055, E-3 e adendo 5), e o `staging` continua no CRM. **O que não muda:**
 
@@ -2330,3 +2330,28 @@ O usuário entra e troca para o workspace Demonstração. Depois:
   - É a exceção declarada ao "nada de commit anterior": o `2b6deb1` é posterior ao PO-1 e é o código do schema restaurado.
 
   É o único caminho que traz de volta os convites invalidados, e ele descarta tudo o que foi escrito depois do snapshot.
+
+### A execução de 2026-11-02 (a E-4 concluída, em forma simplificada)
+
+- **G0, o bloco A (14:28 UTC):** o estado esperado. O `2b6deb1` em uso, 56 migrations, nenhum convite pendente, nenhum campo personalizado e `DISABLE_JOBS=false`.
+- **G1, o bloco 1:** a trava ligada no banco `veyra` às 14:47:57, a API e o `web` parados, e `BARREIRA_OK` às 14:48:13.
+  - **A divergência:** os domínios do `web` não saíram do painel. O `web` voltou depois com as rotas: o HTML estático respondeu 200, e a API, 503.
+- **G2, o bloco 2:** o dump `/root/veyra-e4/janela-20261102T144922Z.dump` (3,2 MB, sha256 começando por `a60ff09701635379`), lido por inteiro.
+- **G3, o Deploy do `df94fb5` (15:00 às 15:05):**
+  - **O que aconteceu:** o Deploy recriou TODOS os containers, inclusive o `db`. O vigia guardava o nome do `db` antigo. Quando esse container foi removido, ele não conseguiu ler a trava, conteve (nada rodava) e parou, ANTES de a API nova subir.
+  - **O defeito:** é do bloco 3, e o ensaio não o pegou, porque recriava só a API. **Ele não foi corrigido:** os blocos só voltam a ser usados depois da correção.
+  - **A garantia segurou.** A conferência seguinte mostrou a API nova (`df94fb5`) em manutenção pela trava: o registro na subida, às 15:05:24, `MAINTENANCE_MODE=true`, os jobs desligados e 503 pela rede interna. As contagens estavam iguais às do dump.
+- **A decisão do usuário:** o vigia foi colado de novo e adotou a API (`BLOCO3_OK`). O ensaio na cópia (bloco 4) deu `ENSAIO_DA_JANELA_E4_OK`.
+- **A simplificação, a pedido do usuário:**
+  - pelo terminal, de uma vez: as duas migrations aplicadas, o `demo` em `clinics` (com a trilha) e a trava desligada;
+  - depois, o Redeploy do `df94fb5` com `MAINTENANCE_MODE=false` e `DISABLE_JOBS=false` (15:57 às 16:00). A instrução incluía religar o Auto Deploy e seguir `HEAD`; o estado do painel está por confirmar;
+  - às 16:08 UTC, `/api/health` deu 200 de fora.
+- **O que não rodou:** o bloco 5. As conferências equivalentes vieram do ensaio na cópia, com a mesma imagem e o mesmo dump, e das contagens iguais às do dump antes das migrations.
+- **Convites invalidados:** 0.
+- **A aceitação (o usuário, 2026-11-02):** a tela inicial foi conferida, e o Clinics tem a experiência própria, como pedido. O layout atual **não** é a versão final: o acabamento visual é uma etapa registrada no ROADMAP (F5.E), antes da apresentação ao cliente. **Essa conferência não substitui os demais critérios de aceitação da E-4, que seguem pendentes:**
+  - o `staging` no CRM;
+  - a busca, a pessoa, o paciente e as Configurações na experiência escolhida;
+  - os campos obrigatórios (não há nenhum);
+  - os Envios com "Envio simulado";
+  - nenhuma repetição contínua de 409 em abas novas.
+- **Depois:** um deploy automático do staging foi proposto à parte (a branch local `proposta/deploy-automatico`, com o ADR-053, adendo 2) e está em revisão separada. Enquanto isso, nada muda no staging sem autorização.
