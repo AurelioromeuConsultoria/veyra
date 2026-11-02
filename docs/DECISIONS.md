@@ -9624,12 +9624,13 @@ O desenho decide três coisas de estrutura, pequenas:
 1. **Um ponto de composição novo, as concessões declaradas.** A extensão declara na composição as chaves que a ativação dela concede a cada papel, por `systemKey`: `roleGrants`.
    - **A fonte é única:** no Clinics, é a mesma `CLINICS_ROLE_GRANTS` que a ativação aplica (`grantMatrix`). Um teste estático prende isso.
    - **O boot recusa** chave fora do catálogo da extensão e `systemKey` que não seja do Core nem da própria extensão.
-2. **As chaves potenciais de um papel** são as atuais somadas às que as extensões compostas declaram para o `systemKey` dele. O papel personalizado (`systemKey` nulo) não soma nada.
+2. **As chaves potenciais de um papel** são as atuais somadas às que as extensões declaram para o `systemKey` dele, no escopo que o item 4 decidir (ainda não aprovado). O papel personalizado (`systemKey` nulo) não soma nada.
 3. **Toda conferência do subconjunto listada acima** usa as chaves potenciais dos dois lados: de quem age e do papel conferido.
-4. **O escopo da soma.** **Recomendado:** toda extensão composta, ative ela ou não o workspace.
-   - **O que fecha:** os cinco casos, inclusive o S3, sem ler o estado de vertical nenhum.
-   - **A consequência:** num workspace que nunca ativou a extensão, um papel personalizado sem as chaves dela não atribui nem toca Owner, Admin e Member. Hoje não há efeito, porque nenhuma rota cria papéis. Uma futura `roles:manage` precisa considerar isso no ADR dela.
-   - **A alternativa,** se essa consequência não for aceitável: só onde a extensão já tem papel próprio no workspace. O papel do vertical é criado na primeira ativação e nunca é apagado, e o Core o lê na mesma transação. Ela deixa o S3 aberto.
+4. **O escopo da soma.** **NÃO aprovado (o usuário, 2026-11-02):** ele não aprova que uma extensão apenas composta passe a limitar a administração de papéis em produtos e workspaces que nunca a ativaram. A consequência precisa ser avaliada preservando a independência entre os produtos. As duas opções, para essa avaliação:
+   - **toda extensão composta, ative ela ou não o workspace** (a recomendação inicial, não aprovada):
+     - **o que fecha:** os cinco casos, inclusive o S3, sem ler o estado de vertical nenhum;
+     - **a consequência:** num workspace que nunca ativou a extensão, um papel personalizado sem as chaves dela não atribui nem toca Owner, Admin e Member. A administração de papéis de um produto (o CRM) passa a depender de outro (o Clinics), que o workspace nunca usou;
+   - **só onde a extensão já tem papel próprio no workspace:** o papel do vertical é criado na primeira ativação e nunca é apagado, e o Core o lê na mesma transação. Preserva a independência do workspace que nunca ativou, mas deixa o S3 aberto, que então precisa de outra resposta: por exemplo, a primeira ativação conferir as atribuições já existentes, ou recusar ativar com papel personalizado que gere a equipe.
 5. **A corrida.** Não há trava nova: a declaração é estática, e as leituras já correm sob a trava dos membros, que a ativação e a desativação pegam (ADR-056 adendo 1).
 6. **O adendo 1 do ADR-056 continua.** As chaves potenciais sozinhas não impediriam o Owner de atribuir o `Profissional` com o Clinics desativado.
 
@@ -9642,10 +9643,193 @@ O desenho decide três coisas de estrutura, pequenas:
 
 **As provas, quando implementado:**
 
-- os casos S1 a S5 recusados com a extensão ativa, desativada e nunca ativada;
+- os casos S1 a S5 recusados com a extensão ativa e desativada, e, conforme o escopo decidido no item 4, no workspace que nunca a ativou;
 - Owner e Admin continuam atribuindo, rebaixando, removendo e convidando como hoje;
 - o boot recusa a declaração inválida;
 - a fonte única com a ativação;
 - as mutações em cada caminho da lista.
 
 **O gatilho** (decisão do usuário, 2026-11-02): resolver antes do piloto com acessos reais, cobrindo a atribuição, os convites, o rebaixamento e a remoção. Não basta tratar quando surgir uma tela de papéis.
+
+## ADR-058 — Staging: a entrega publicada vai ao ar depois do CI verde
+
+**Status:** APROVADO pelo usuário em 2026-11-02, a política e a configuração. O desenho abaixo já traz as correções das três rodadas de revisão de `reviewer` e `security`. · **Data:** 2026-11-02
+
+**Contexto.**
+
+- **Até aqui, cada atualização do staging pedia autorização própria e passos no painel:** fixar o commit, abrir janela e colar blocos. O usuário quer continuar usando a demonstração enquanto as funcionalidades avançam: "uma entrega autorizada para publicação deve ir ao ar automaticamente depois do CI verde, sem outra autorização minha".
+- **O Auto Deploy do Coolify não espera o CI.** Ele publica no push, pelo webhook do Git. No painel, em 2026-11-02, ele estava ligado e seguindo `HEAD`, uma sobra do fechamento da E-4. Assim, um CI com falha poria a versão no ar.
+- **A API do Coolify, conferida no código-fonte dele** (`routes/api.php`, `DeployController` e o modelo `Application`):
+  - `POST /api/v1/deploy?uuid=…` enfileira o deploy (`deploy`) e devolve o `deployment_uuid`. Não há parâmetro de commit: o Coolify publica a ponta do branch quando o deploy sai da fila;
+  - `GET /deployments/{uuid}` dá o status e o `commit` resolvido;
+  - `GET /deployments/applications/{uuid}` lista os deploys do recurso, do mais novo ao mais antigo, inclusive os feitos pelo painel;
+  - os dois exigem `read`.
+- **O repositório é público.**
+
+**A política (decisão do usuário):**
+
+1. A publicação autorizada de uma entrega comum inclui atualizar o staging depois do CI verde.
+2. Um CI com falha mantém a versão anterior no ar.
+3. Continuam pedindo uma janela específica:
+   - as mudanças que exijam manutenção;
+   - as migrations incompatíveis;
+   - a restauração;
+   - a alteração destrutiva.
+4. Produção, dados reais e envios reais continuam fora dessa autorização.
+
+**O mecanismo:**
+
+1. **No Coolify, o Auto Deploy fica em "Manual deployments only":** o push não publica nada. O recurso segue a `main` (`HEAD`), porque o usuário dispensou fixar o commit. **Isso vem antes do primeiro push com este ADR:** com o Auto Deploy ligado, o próprio push publicaria antes do CI.
+2. **O CI ganha um quinto job, `Staging`.**
+   - **Quando roda:** só no push na `main`, depois dos quatro (`Lint & format`, `Typecheck & build`, `Testes` e `E2E`).
+   - **Onde:** no ambiente `staging` do GitHub, criado à mão com "Deployment branches" restrito à `main`. Os secrets ficam nesse ambiente, não no repositório: num repositório, eles chegariam a qualquer workflow de qualquer branch.
+   - **A concorrência:**
+     - um job leve, `Staging (ponta)`, fora do grupo, confere antes se o commit ainda é a ponta da `main`. Só a ponta entra no grupo dos deploys (`staging-deploy`), em série. Lá, um job pendente substitui o anterior, e sem essa conferência um run mais velho cancelaria o da ponta;
+     - na `main`, um run não cancela mais o outro: o cancelamento no meio do deploy deixaria o staging sem a conferência do commit publicado. No PR, o run novo continua cancelando o anterior.
+3. **O script** (`.github/scripts/staging-deploy.sh`) faz, em ordem:
+   1. **Confere a ponta.** Se a `main` já andou, sai sem deploy, e o run do commit mais novo publica depois do CI dele.
+   2. **Confere o recurso no Coolify:**
+      - o Auto Deploy ligado falha. Essa conferência só roda com o CI verde; a que vale é a do painel;
+      - o recurso fixado num commit, ou seguindo outro branch, falha: é janela em curso (§4.1). Fixar o commit é o que pausa a publicação automática;
+      - sem os dois campos na resposta, falha: sem saber se há janela, nada é publicado.
+   3. **Encontra a base:** o commit do último deploy concluído do recurso no Coolify, sem os previews de PR. Ela reflete os deploys feitos pelo painel numa janela. **Ela é o código no ar, não o schema aplicado**, e por isso recusa tudo o que pode ter ido ao ar sem a guarda:
+      - um deploy na fila ou em andamento;
+      - a base que veio do webhook do Git (`is_webhook`): o Auto Deploy publicou sem o CI;
+      - o Auto Deploy e a origem do deploy, os dois sem informação: o webhook pode ter publicado;
+      - **a base igual ao commit testado:** ele chegou ao ar por fora deste job (pelo painel, pelo webhook ou pela corrida de outro run), e a guarda nunca o conferiu. Isso inclui o re-run de um `Staging` que já publicou, que falha, sem dano;
+      - **sem base.** Se o Coolify não informa o commit no ar, só a variável `STAGING_BASE` do ambiente a substitui. Um nome (`HEAD`, `main`) é recusado, porque resolveria para o próprio commit;
+      - **a base não conferida.** O código no ar só serve de base se foi **conferido**, de um de dois jeitos:
+        - **pelo registro:** ele foi publicado por um `Staging` que conferiu o commit e a saúde. O registro é um deployment do GitHub no ambiente `staging-conferido`, gravado pelo script no fim de um deploy conferido (`deployments: write`). Ele não nasce de um job verde que não publicou. O GitHub não impede outro ator com `deployments: write` de gravar ali, e por isso o registro tem a confiança de quem pode empurrar na `main` (abaixo);
+        - **por quem opera:** a `STAGING_BASE` é igual a ela, definida de propósito com o SHA completo, depois de conferir que as migrations dele estão aplicadas (`migrate status` sem pendência). É o caso do primeiro deploy (`df94fb5`) e do fim de toda janela.
+
+        O commit que foi ao ar por fora, como na corrida ou num Deploy pelo painel fora de janela, não serve de base, porque o diff contra ele esconderia a migration dele.
+
+        **O alcance do registro:**
+        - ele protege contra a publicação acidental por fora, não contra quem tem escrita no repositório. Essa pessoa pode criar um deployment `success` ali, o mesmo poder de empurrar na `main`. O token de um PR de fork é só leitura;
+        - ao gravar `success`, o GitHub marca como `inactive` os registros anteriores do mesmo ambiente (`auto_inactive`), e por isso só o último commit registrado vale como conferido. Isso combina com o desenho, porque a base é o que está no ar. Um rollback para um commit registrado mais antigo recusa, que é o lado seguro;
+        - um commit que passou pela guarda fica sem registro se a saúde falhar, se o registro falhar ou se o commit publicado for outro. O push seguinte recusa e pede a `STAGING_BASE`.
+
+      O log diz de onde veio a base e como ela foi conferida.
+
+   4. **Recusa, sem deploy,** se desde a base há mudança no que não vai ao ar sozinho. A versão no ar continua:
+      - `apps/api/prisma/migrations/`: as migrations não rodam na subida, porque o `00ef0ba` (as migrations na subida, na branch `proposta/deploy-automatico`) continua sendo uma decisão separada;
+      - `apps/api/src/common/env.ts`: uma variável exigida nova derrubaria a API, como no INC-2026-10-26-01;
+      - a pilha, que o CI não constrói: o `deploy/staging/docker-compose.yml`, `deploy/staging/web/`, `deploy/staging/backup/` e os dois `Dockerfile`. Os ensaios e roteiros de `deploy/staging/` não sobem e ficam de fora.
+
+      Essas mudanças vão pelo §4.1, com autorização própria.
+
+   5. **Dispara o deploy** e o acompanha até o fim (30 min), tolerando até 5 falhas seguidas da API.
+   6. **Confere o commit publicado.** Se não for o testado, falha e diz qual foi ao ar sem este CI, e se ele traz migration ou mudança guardada.
+   7. **Confere a saúde de fora** (`/api/health`, 200).
+      - O `/api/health` não toca o banco: prova que a API subiu, não que o schema é compatível.
+      - A compatibilidade com o schema vem da guarda de migration sobre uma base conferida.
+   8. **Registra a publicação conferida** no `staging-conferido`. Se o registro falhar, o job falha, e o próximo deploy pede a `STAGING_BASE`.
+4. **A versão no ar** é o commit do último deploy concluído no Coolify. O log do `Staging` que publicou diz `staging no ar com <commit>`.
+5. **O que continua manual, fora do deploy:** o `seed-permissions` e a `clinics sync-roles` (§7.1). A entrega que precisar deles diz isso no pedido de push.
+
+**Os limites, declarados:**
+
+- **A corrida da ponta.** O Coolify resolve a ponta quando o deploy sai da fila. Num servidor compartilhado, isso pode levar minutos, não segundos. Se um push chegar nesse intervalo, o Coolify publica o commit novo antes do CI dele.
+  - O job do commit testado detecta: falha, diz qual commit foi ao ar e se ele traz migration. Se trouxer, manda **fixar agora o recurso** nesse commit, o que pausa a publicação, e seguir o §4.1.
+  - O job do commit novo, depois do CI dele, encontra a base igual a ele e recusa: ele foi ao ar sem a guarda.
+  - **Os pushes seguintes também recusam:** a base no ar foi publicada pela corrida, sem registro de conferência. Eles recusam até alguém conferir as migrations dela e defini-la na `STAGING_BASE`, ou seguir o §4.1.
+  - O commit da corrida chega ao `origin` depois do checkout do job, e o script o busca antes de dizer se ele traz migration. Se não o achar, manda fixar o recurso.
+  - Evitar a corrida exigiria um token com escrita, para fixar o commit (abaixo). O que a guarda garante é que nada publica por cima dela sem conferência.
+- **O Deploy pelo painel fora de uma janela** não tem registro de conferência. O próximo push recusa até a `STAGING_BASE` confirmar o commit dele. Mesmo assim, depois de uma recusa por migration, nunca se clica em Deploy no painel: o caminho é o §4.1.
+- **A falha do próprio deploy.** O `needs` garante que um CI com falha não publica nada. Um deploy que falha no Coolify depois de começar é outro caso:
+  - a construção que falha deixa os containers de antes;
+  - um container novo que não sobe saudável pode deixar o staging fora do ar.
+
+  O job falha nos dois casos, e a correção é para frente, por um commit novo (§5).
+
+- **O contrato da API foi provado contra um Coolify simulado** (abaixo). Contra o real, ele é provado no primeiro run. Se a versão instalada for outra, o job falha fechado, com a mensagem da API.
+
+**O token, a segurança:**
+
+- **O token é do time do Coolify, não do recurso:** o Coolify não tem token por recurso. Ele tem só `read` e `deploy`, nunca `write`, `root` nem `read:sensitive`.
+- **Com `deploy`, quem tiver o token pode, em todo o time** (conferido no `routes/api.php`):
+  - disparar deploy, rollback e cancelamento de qualquer recurso;
+  - iniciar, parar e reiniciar aplicações, bancos e serviços;
+  - **reiniciar o proxy do servidor, que é compartilhado**;
+  - construir o preview de um PR (`pr=`), que, num repositório público, pode ser de um fork.
+- **Com `read`, pode ler a configuração não sensível e os metadados dos deploys.** Sem os logs, que exigem `read:sensitive`.
+- **As mitigações:**
+  - o token fica nos secrets do ambiente `staging`, restrito à `main`, e nenhum workflow de outro branch o recebe. PR de fork não recebe secrets;
+  - o script nunca o imprime e o passa ao `curl` por arquivo, fora da linha de comando;
+  - o endereço do Coolify precisa ser `https://`;
+  - criar o token no time que só tem o Veyra, se houver;
+  - revogar e recriar no Coolify a qualquer suspeita.
+- **O endereço do painel e o uuid do recurso** também são secrets do ambiente (`COOLIFY_URL` e `COOLIFY_APP_UUID`). O endereço público do staging já está no roteiro.
+- **O `GITHUB_TOKEN` do job `Staging`** tem `deployments: write`, só para gravar o registro, e vale só durante o job. O registro é uma guarda operacional, não uma fronteira de segurança: se um dia a `main` ganhar proteção com revisão, ele passa a ser o elo mais fraco. Nesse caso, ele deve gravar o `run_id` e conferir que o job daquele run terminou verde para o mesmo SHA.
+
+**As alternativas descartadas:**
+
+- **O Auto Deploy do Coolify direto:** publica antes do CI.
+- **Um token com `write` para fixar o commit testado antes do deploy** (`PATCH /applications/{uuid}` com `git_commit_sha`): fecha a corrida da ponta, mas dá escrita no time inteiro, com a VPS e o proxy compartilhados.
+- **A imagem construída no CI, num registro (GHCR), para o Coolify puxar:** publica exatamente o testado, mas muda a pilha do staging. Fica para quando houver produção.
+- **A base só pelos deploys do ambiente `staging` no GitHub:** um job verde sem publicar, como o da ponta que andou ou um re-run, a envenenaria, e a migration passaria. Foi achado na revisão. Por isso a base vem do Coolify, que diz o que está no ar, e o registro `staging-conferido`, gravado pelo script depois da conferência, diz que aquilo passou pela guarda.
+- **A base só pelo Coolify:** aceitaria o commit que foi ao ar por fora, na corrida ou pelo painel, e o push seguinte publicaria verde sem a migration dele. Também foi achado na revisão.
+- **As regras de proteção do branch:** não seguram o webhook do Coolify.
+
+**O que este ADR substitui:**
+
+- No `DEPLOY_STAGING` §4, o "nunca deixe em `main` flutuante".
+- No §5, o "o recurso aponta para tag/commit, nunca para `main`".
+
+Os dois valiam para deploys manuais pelo painel. A publicação comum agora segue a `main` depois do CI, e as janelas fixam o commit enquanto duram.
+
+**As provas:**
+
+- **O ensaio no repositório** (`deploy/staging/ensaios/publicacao-pelo-ci.sh`):
+  - o script contra um Coolify simulado, em HTTPS local, com certificado próprio;
+  - um repositório git descartável, com um `origin` e o commit da corrida enviado depois do clone;
+  - um `gh` simulado para o registro.
+
+  São **39 cenários, cada um com a saída e a mensagem esperadas**:
+  - a publicação: o deploy que termina, nos dois formatos da lista de deploys, só com GET, e com a API instável;
+  - o Auto Deploy: desconhecido, só com o aviso, e ligado;
+  - o deploy: que falha, sem o commit publicado, e com o commit trocado, com e sem migration no meio;
+  - a janela: o recurso fixado, outro branch, os campos ausentes, um deploy em andamento;
+  - a base:
+    - sem base;
+    - a `STAGING_BASE` válida;
+    - a `STAGING_BASE` por nome;
+    - a base vinda do webhook;
+    - a origem desconhecida;
+    - a base igual ao testado;
+    - a base não conferida;
+    - o terceiro push depois da corrida;
+    - a base confirmada pela variável;
+    - a variável velha;
+    - o registro ilegível;
+    - o registro que falha, inclusive só no status;
+    - o registro `inactive`;
+  - o commit da corrida, buscado no `origin`, e o commit desconhecido;
+  - o recurso fora do formato;
+  - a migration nova;
+  - a saúde que não responde;
+  - a API caída;
+  - um erro com quebra de linha e um comando de workflow injetado;
+  - a ponta que andou;
+  - a falta do token do Coolify e do GitHub;
+  - o endereço `http://`.
+
+  Em nenhum cenário o token aparece na saída.
+
+- **Onze mutações nas guardas, mortas pelo ensaio:**
+  - a base igual aceita;
+  - o webhook aceito;
+  - a `STAGING_BASE` por nome;
+  - sem a guarda de migration;
+  - os campos ausentes aceitos;
+  - o recurso fixado aceito;
+  - a base não conferida aceita;
+  - sem o registro;
+  - qualquer `STAGING_BASE` como confirmação;
+  - a corrida sem a busca no `origin`;
+  - qualquer estado do registro aceito como conferido.
+
+- **Contra o real,** no primeiro run, que vem no push que traz este ADR:
+  - os quatro jobs;
+  - o `Staging`, com a base `df94fb5` confirmada pela `STAGING_BASE`, o commit publicado igual ao testado, a saúde e o registro.
+- **O segundo run** é o primeiro com a base vinda de um deploy do próprio job, pela API. Ele prova o registro e o `is_webhook` falso no Coolify real.

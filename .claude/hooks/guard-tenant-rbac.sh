@@ -5,6 +5,7 @@
 # Arquivos sensíveis: prisma.service, guards, decorators de permissão, WORKSPACE_MODELS, auth,
 # e desde o ADR-047 a composição de extensões (registro de modelos protegidos, catálogo
 # de permissões composto, restrição de conteúdo por contato) e o gateway da IA.
+# Desde o ADR-058, também o portão de deploy do staging (.github/workflows/ e .github/scripts/).
 set -uo pipefail
 
 input=$(cat)
@@ -12,7 +13,7 @@ tool=$(printf '%s' "$input" | jq -r '.tool_name // ""')
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // ""')
 file=$(printf '%s' "$input" | jq -r '.tool_input.file_path // ""')
 
-SENSITIVE_RE='(prisma\.service\.(ts|js)|workspace-models|jwt-auth\.guard|permissions\.guard|auth\.service|decorators\.(ts|js)|\.claude/hooks/|src/extensions/|src/composition\.(ts|tsx)|llm\.gateway|idempotency\.(interceptor|decorator)|replay-guards)'
+SENSITIVE_RE='(prisma\.service\.(ts|js)|workspace-models|jwt-auth\.guard|permissions\.guard|auth\.service|decorators\.(ts|js)|\.claude/hooks/|src/extensions/|src/composition\.(ts|tsx)|llm\.gateway|idempotency\.(interceptor|decorator)|replay-guards|\.github/workflows/|\.github/scripts/)'
 
 context() {
   jq -n --arg msg "$1" '{systemMessage:$msg,hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$msg}}'

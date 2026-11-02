@@ -6,9 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# No PR, o run novo cancela o anterior. Na `main`, cada push roda inteiro: um
+# run cancelado no meio do deploy deixaria o staging sem a conferência do commit
+# publicado (ADR-058); quem serializa os deploys é o job `Staging`.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.ref }}-${{ github.event_name == 'pull_request' && 'pr' || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Entrega 3: lint, typecheck/build, testes unit+integração (P0 de isolamento)
 # + check:fk, e E2E Playwright (banco próprio veyra_e2e). Build Docker entra
@@ -125,3 +128,64 @@ jobs:
       - run: pnpm --filter @veyra/api prisma:generate
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm test:e2e
+
+  # ADR-058: a entrega publicada vai ao staging DEPOIS dos quatro jobs verdes.
+  # O Auto Deploy do Coolify fica em "Manual deployments only"; quem publica é
+  # este job, pela API, com um token só de `read` e `deploy`, guardado nos
+  # secrets do ambiente `staging` (restrito à `main`). Com migration, variável
+  # exigida ou mudança na pilha, ele não publica (DEPLOY_STAGING §4.1).
+  # A ponta, fora do grupo dos deploys: só o commit que ainda é a ponta da `main`
+  # entra na fila de `staging-deploy`. Lá dentro, um job pendente substitui o
+  # anterior, e um run mais velho que chegasse depois cancelaria o da ponta.
+  staging-ponta:
+    name: Staging (ponta)
+    needs: [lint, build, test, e2e]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      publicar: ${{ steps.ponta.outputs.publicar }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: ponta
+        name: Confere se o commit ainda é a ponta da main
+        run: |
+          ponta=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ -n "$ponta" ] && [ "$ponta" = "$GITHUB_SHA" ]; then
+            echo "publicar=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::a main já está em ${ponta:-?}; o run do commit novo publica depois do CI dele"
+            echo "publicar=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  staging:
+    name: Staging
+    needs: [staging-ponta]
+    if: needs.staging-ponta.outputs.publicar == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    environment: staging
+    concurrency:
+      group: staging-deploy
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      # o registro das publicações conferidas (o ambiente `staging-conferido`)
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Publica o commit testado no staging
+        run: bash .github/scripts/staging-deploy.sh
+        env:
+          COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+          COOLIFY_APP_UUID: ${{ secrets.COOLIFY_APP_UUID }}
+          STAGING_URL: https://veyra-staging.malachdigital.com.br
+          SHA: ${{ github.sha }}
+          STAGING_BASE: ${{ vars.STAGING_BASE }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}

@@ -143,10 +143,207 @@ docker ps --format '{{.Names}}' | grep -i veyra
 
 ## 4. Deploy de atualização
 
+### 4.0 A publicação comum: o staging sobe depois do CI verde (ADR-058)
+
+**A regra (decisão do usuário, 2026-11-02):**
+
+- a publicação autorizada de uma entrega comum já inclui atualizar o staging,
+  sem outra autorização;
+- um CI com falha mantém a versão anterior no ar;
+- continuam pedindo uma janela específica (§4.1):
+  - a manutenção;
+  - a migration incompatível;
+  - a restauração;
+  - a alteração destrutiva;
+- produção, dados reais e envios reais ficam fora.
+
+**Como funciona.**
+
+- O push na `main` roda o CI: `Lint & format`, `Typecheck & build`, `Testes` e
+  `E2E`.
+- Com os quatro verdes, o job `Staging (ponta)` confere se o commit ainda é a
+  ponta da `main`. Só a ponta segue para o job `Staging`
+  (`.github/scripts/staging-deploy.sh`), em série com os outros deploys. Um
+  `Staging` pendente que aparece "cancelado" foi substituído por um mais novo,
+  e isso é o esperado. O job `Staging`:
+  1. confere de novo a ponta;
+  2. confere no Coolify que o Auto Deploy está desligado e que o recurso segue
+     a `main` em `HEAD`. Recurso fixado num commit é janela em curso, e nada
+     é publicado;
+  3. toma como base o commit do último deploy concluído no Coolify, inclusive
+     os feitos pelo painel, e só a aceita **conferida**:
+     - publicada por um `Staging` que conferiu o commit e a saúde (o registro no
+       ambiente `staging-conferido` do GitHub, gravado pelo script. O GitHub não
+       impede quem tem escrita no repositório de gravar ali);
+     - ou confirmada por quem opera, na `STAGING_BASE`.
+
+     Recusa a base que veio do webhook, a base igual ao commit testado (ele foi
+     ao ar por fora), a base não conferida e a falta de base;
+
+  4. recusa, sem deploy, se desde a base mudou o que não sobe sozinho:
+     - as migrations (`apps/api/prisma/migrations/`);
+     - as variáveis exigidas (`apps/api/src/common/env.ts`);
+     - a pilha: `deploy/staging/docker-compose.yml`, `deploy/staging/web/`,
+       `deploy/staging/backup/` e os dois `Dockerfile`. Os ensaios e roteiros
+       de `deploy/staging/` ficam de fora;
+  5. dispara o deploy pela API do Coolify e o acompanha até o fim;
+  6. confere que o commit publicado é o testado;
+  7. confere `/api/health` de fora. Ele não toca o banco: prova que a API
+     subiu, e a compatibilidade com o schema vem da guarda de migration;
+  8. registra a publicação conferida no `staging-conferido`.
+- **A versão no ar** é o commit do último deploy concluído no Coolify, na lista
+  de Deployments do recurso. O log do `Staging` que publicou diz
+  `staging no ar com <commit>`.
+- **Continuam manuais, fora do deploy:** o `seed-permissions` e a
+  `clinics sync-roles` (§7.1). A entrega que precisar deles diz isso no pedido
+  de push.
+- **Nunca clique em Deploy no painel fora de uma janela.** O deploy do painel
+  vira a base, e a guarda deixa de ver uma migration que ele tenha publicado
+  sem aplicar.
+- **O ensaio do job**, sem rede e sem credencial real:
+  `bash deploy/staging/ensaios/publicacao-pelo-ci.sh`. Rode-o depois de mudar
+  o script.
+
+**A configuração.** É feita uma vez, pelo usuário, e **antes do primeiro push
+com o ADR-058**. Com o Auto Deploy ligado, o próprio push publicaria antes do CI.
+
+1. **No Coolify, no recurso do staging,** na seção de produção (não em
+   "Preview deployments"):
+   - o Auto Deploy em "Manual deployments only". Apesar do nome, o deploy
+     continua automático e ninguém clica em nada: a opção desliga só o gatilho
+     do próprio Coolify, que publica no push sem esperar o CI. Quem dispara o
+     deploy é o job `Staging`, pela API, depois dos quatro jobs verdes;
+   - o commit em `HEAD`, seguindo a `main`.
+2. **No Coolify, em Keys & Tokens,** um token de API só com `read` e `deploy`.
+   Nunca `write`, `root` nem `read:sensitive`.
+   - Crie-o no time que só tem o Veyra, se houver: o token vale para o time
+     inteiro.
+   - Com `deploy`, quem tiver o token pode parar e reiniciar os recursos do
+     time e o proxy compartilhado. O job nunca faz isso, mas o token é
+     sensível.
+   - O endereço do painel precisa ser `https://`.
+   - Se a API do Coolify estiver desligada, ligue-a nas configurações. Se ela
+     for restrita por IP, o job do GitHub não alcança o Coolify.
+3. **No GitHub, em Settings → Environments,** crie o ambiente `staging`:
+   - em "Deployment branches and tags", só a `main` ("Selected branches", com a
+     regra `main`);
+   - se algum destes secrets já tiver sido criado no repositório, apague-o de
+     lá: só o ambiente os guarda;
+   - nele, três secrets de ambiente, não do repositório. O repositório é
+     público, e um secret de repositório chegaria a workflows de qualquer
+     branch:
+     - `COOLIFY_TOKEN`: o token;
+     - `COOLIFY_URL`: o endereço do painel, `https://`, sem a barra final;
+     - `COOLIFY_APP_UUID`: o uuid do recurso, que aparece no endereço da
+       página dele no painel.
+   - `STAGING_BASE`, uma variável do ambiente: o commit no ar **confirmado por
+     quem opera**. Ela é exigida no primeiro deploy e no fim de toda janela,
+     porque esses commits foram ao ar pelo painel, sem o registro:
+     - para o primeiro deploy, `df94fb5f1725357889a84f65e8247777e0a54b64`, o
+       commit no ar desde a E-4, com as migrations aplicadas (§14);
+     - ela leva o **SHA completo** (40 caracteres). Um nome (`HEAD`, `main`) é
+       recusado, e uma janela abortada não serve de base;
+     - só confirma o commit igual a ela. Apague-a depois do deploy que ela
+       destravou: se o Coolify deixar de informar o commit no ar, uma variável
+       velha viraria a base.
+   - O ambiente `staging-conferido` aparece sozinho, no primeiro registro. Não
+     ponha regra nele: o script grava ali.
+4. **No Coolify, os "Preview deployments" desligados:** o repositório é
+   público, e o preview construiria código de PR de fork na VPS.
+
+**Quando o `Staging` falha** (a mensagem diz qual):
+
+- **"falta …" ou "COOLIFY_URL precisa começar com https://":** a configuração
+  acima está incompleta.
+- **"o commit no ar … não foi publicado por um Staging conferido nem confirmado
+  pela STAGING_BASE":** ele foi ao ar por fora da guarda: pelo painel, pela
+  corrida ou no primeiro deploy. Confira no container da `api` que as
+  migrations dele estão aplicadas (`npx prisma migrate status`, sem
+  pendência), defina a `STAGING_BASE` com o SHA dele e rode de novo o job.
+- **"não consegui ler o registro" ou "não consegui registrar a conferência":**
+  a API do GitHub falhou. No segundo caso o staging já subiu: defina a
+  `STAGING_BASE` com o commit dito, para o próximo deploy.
+- **"a API do Coolify respondeu 401" (ou 403):** o token foi revogado, venceu
+  ou não tem `read` e `deploy`. Crie outro e troque o secret.
+- **"respondeu 000":** sem resposta: rede, DNS, TLS ou o prazo. Confira o
+  `COOLIFY_URL` e se a API está ligada.
+- **"algo que não é JSON":** a versão do Coolify responde em outro formato.
+  Nada foi publicado.
+- **"o Auto Deploy do Coolify está ligado":** o push já publicou sem esperar o
+  CI. Desligue-o e confira no painel o que está no ar.
+- **"a API do Coolify não informou o Auto Deploy"** (é um aviso, não uma
+  falha): confira no painel que está em "Manual deployments only".
+- **"o recurso está fixado em …", "segue o branch …" ou "não informou o commit
+  e o branch":** há janela em curso, ou o recurso ficou fixado depois dela.
+  Feche a janela (§4.1). Se a `main` andou além do commit da janela, rode de
+  novo o job do último push. Se não andou, não há nada a fazer: o próximo push
+  publica.
+- **Um Rollback pelo painel** para um commit registrado antes recusa no push
+  seguinte: só o último registro vale (o GitHub torna os anteriores
+  `inactive`). Confirme o commit na `STAGING_BASE`.
+- **Rode de novo só o job da ponta da `main`.** O re-run de um run antigo
+  reaproveita a conferência antiga e pode tirar o da ponta da fila. O script
+  confere a ponta de novo, mas a ponta não é publicada.
+- **"veio do webhook do Git":** o Auto Deploy publicou sem o CI. Desligue-o,
+  confira as migrations do commit no ar e siga o §4.1.
+- **"não informou o Auto Deploy nem a origem do último deploy":** sem saber se
+  o webhook publicou, nada foi publicado. Confira no painel.
+- **"o commit testado … já estava no ar antes deste job":** ele chegou ao ar
+  por fora do job, e a guarda nunca o conferiu. Confira as migrations dele e
+  siga o §4.1. Se quem o publicou foi uma janela com as migrations aplicadas,
+  ou um `Staging` verde deste mesmo commit (o re-run), não há nada a fazer.
+- **"há deploy em andamento no Coolify":** espere terminar e rode de novo o job.
+- **"o Coolify não informou o commit no ar":** defina a `STAGING_BASE` (acima)
+  e rode de novo o job. **"a STAGING_BASE precisa ser o SHA completo":** troque
+  o nome pelo SHA.
+- **"não consegui ler a ponta da main":** rode de novo o job.
+- **"a base … não está no histórico":** o histórico da `main` foi reescrito.
+  Confira o que está no ar antes de seguir.
+- **"há migration, variável exigida ou mudança na pilha":** nada foi
+  publicado. Siga o §4.1, com autorização própria, e não clique em Deploy no
+  painel. As migrations na subida, o `00ef0ba`, continuam sendo uma decisão
+  separada.
+- **"o Coolify respondeu … ao pedido de deploy" ou "não enfileirou o deploy":**
+  nada foi publicado. A mensagem do Coolify diz por quê.
+- **"terminou em failed", "não terminou em 30 min", "a API do Coolify falhou
+  … vezes seguidas", "não informou o commit publicado" ou "/api/health não
+  respondeu":** confira no painel o que está no ar. A correção é para frente,
+  por um commit novo (§5), nunca o Redeploy de um commit anterior. Se o commit
+  subiu e só a saúde ou o registro falharam, ele fica sem registro, e o push
+  seguinte pede a `STAGING_BASE` com ele, depois de conferir as migrations.
+- **"o Coolify publicou (outro commit)":** um push chegou antes de o deploy
+  sair da fila. O commit dito está no ar sem a conferência deste run, e a
+  mensagem diz se ele traz migration. **Se trouxer, fixe agora o recurso nesse
+  commit** (isso pausa a publicação) e siga o §4.1. O job dele, depois do CI,
+  recusa, porque ele já está no ar sem a guarda.
+
+### 4.1 Deploy com janela: migration, manutenção, restauração
+
+O que a §4.0 não publica sozinha passa por aqui, com autorização própria.
+
+**Toda janela, de qualquer tipo, começa e termina pelo painel.** Isso vale para
+a migration, a restauração (§6), a rotação de chave (`SECURITY.md` §8) e a
+manutenção.
+
+- **No começo,** fixe o recurso no **commit que está no ar** e, depois,
+  confira que não há job `Staging` em andamento nem na fila no GitHub. Fixar
+  pausa a publicação automática, porque o job recusa com o recurso fixado. Um
+  job que já tinha passado dessa conferência ainda publicaria, e por isso a
+  conferência vem depois.
+- **No fim,** só com a prova:
+  1. `npx prisma migrate status` no container da `api`, sem pendência;
+  2. a saúde conferida;
+  3. a `STAGING_BASE` do ambiente com o SHA completo do commit da janela;
+  4. o recurso devolvido a `HEAD`.
+
+  O próximo push volta a publicar sozinho. Uma janela abortada mantém o
+  recurso fixado.
+
+O Auto Deploy continua em "Manual deployments only" o tempo todo.
+
 1. **Backup antes**, se a atualização trouxer migration (§5).
-2. No painel, aponte o recurso para a tag/commit desejado — nunca deixe em
-   `main` flutuante: deploy que muda sozinho quando alguém empurra código não
-   é deploy, é surpresa.
+2. **Aponte o recurso para o commit novo só no passo do deploy.** A migration
+   que precisa vir antes do código (abaixo) roda antes disso.
 3. **Deploy**.
 4. Assim que o container `api` subir, rode a migration pelo terminal:
 
@@ -1083,7 +1280,9 @@ anterior às proteções novas faz o que a guarda passou a impedir:
 
 O Coolify guarda os deploys anteriores, mas o **Redeploy** de um commit anterior
 só vale para um commit que tenha **as mesmas proteções** e seja compatível com o
-schema aplicado. Por isso o recurso aponta para tag/commit, nunca para `main`.
+schema aplicado. A publicação comum segue a `main` depois do CI verde (§4.0,
+ADR-058). Voltar atrás é um commit novo, que passa pelo CI, e nunca o Redeploy
+de um commit antigo.
 
 **Em falha, permaneça em manutenção.** Desde o ADR-053, a manutenção é a
 barreira da própria API: `MAINTENANCE_MODE=true`, que barra toda requisição
@@ -1154,6 +1353,8 @@ cheio derruba também o banco vivo.
 
 No host, com os nomes reais que você anotou na §3.6:
 
+0. **A pausa da publicação automática:** o recurso fixado no commit no ar,
+   como em toda janela (§4.1).
 1. **A barreira:** a trava de manutenção ligada no banco e a API e o `web`
    parados, pelo bloco 1 (`deploy/staging/janela-e4/b1-barreira.sh`; ADR-053,
    adendo 1). No painel, `MAINTENANCE_MODE=true`, `DISABLE_JOBS=true` e o
@@ -1288,16 +1489,20 @@ docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
 docker compose -p veyra-staging -f deploy/staging/docker-compose.yml exec api node dist/cli/provision.js --help
 ```
 
-### 7.1 Veyra Clinics: fica DESATIVADO em staging
+### 7.1 Veyra Clinics: ativo só no `demo`, com dados fictícios
 
 A imagem já traz o vertical composto (ADR-047 adendo 3), mas ele só existe num
-workspace depois da CLI de ativação. **Não rode `enable` em staging.** Ativar
-lá, ou usar dados reais, segue bloqueado pelas hipóteses H1–H7 e pelos
-bloqueios B1–B4 do ADR-048. Os comandos ficam aqui para quando houver
-autorização explícita:
+workspace depois da CLI de ativação.
+
+- Ele está ativo **só no `demo`**, desde a demonstração da F4 (§14).
+- **Não rode `enable` em outro workspace** sem autorização registrada.
+- Dados reais seguem bloqueados pelas hipóteses H1–H7 e pelos bloqueios B1–B4
+  do ADR-048.
+
+Os comandos:
 
 ```bash
-# NÃO EXECUTAR em staging sem autorização registrada
+# enable e disable: NÃO EXECUTAR sem autorização registrada
 docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
   exec api node dist/verticals/clinics/cli/clinics.js enable  --slug <slug>
 docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
@@ -1309,6 +1514,11 @@ docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
   exec api node dist/verticals/clinics/cli/clinics.js sync-roles --slug <slug>
 ```
 
+**A sincronização no `demo`, autorizada pelo usuário em 2026-11-02:** para a
+entrega da F5.1b (ADR-056), rodar `sync-roles --slug demo` uma vez, depois do
+deploy dela. Ela cria o papel "Recepção e atendimento" e não altera o papel de
+nenhum usuário. A autorização não vale para outro workspace.
+
 O que `enable` faz, e não se desfaz sozinho:
 
 - todo contato do workspace passa a ser restrito para IA;
@@ -1319,14 +1529,14 @@ O que `enable` faz, e não se desfaz sozinho:
   nenhum comando. A restrição só deixa de existir com a exclusão do workspace
   (ADR-047 §4). Ativar "só para testar" é irreversível neste sentido.
 
-Para conferir que nenhum workspace foi ativado:
+Para conferir que só o `demo` foi ativado:
 
 ```bash
 docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
-  exec db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c 'SELECT count(*) FROM "ClinicsSettings"'
+  exec db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c 'SELECT w.slug, c.status FROM "ClinicsSettings" c JOIN "Workspace" w ON w.id = c."workspaceId"'
 ```
 
-O resultado esperado é `0`.
+O resultado esperado é uma linha só: `demo`, `active`.
 
 **Conferência do contador de sessões dos pacotes (ADR-048 adendo 7, F3.1).** O
 `CHECK` do banco garante só o intervalo das consumidas. A igualdade com os
@@ -1386,7 +1596,7 @@ $C run --rm --no-deps api npx prisma migrate deploy
 - **Não envia WhatsApp de verdade.** `META_TRANSPORT_MODE=fake` (depende do ADR
   proposto — enquanto ele não existir, staging fica sem credencial de canal e o
   envio falha com `no_credential`, que também não vaza nada para fora).
-- **Não tem o Veyra Clinics ativado** (§7.1).
+- **Não tem o Veyra Clinics ativado fora do `demo`** (§7.1).
 - **Não recebe dado real de paciente.** É regra de operação, não técnica: quem
   colar um export de produção aqui quebra a premissa do ambiente.
 - **Não é referência de desempenho.** Divide CPU e disco com os outros projetos.
@@ -1443,8 +1653,8 @@ decisão deve ficar registrada aqui quando você tomá-la.
   - o `web` ou a `api` parados ou reprovados no healthcheck (o `web` só sobe
     com a `api` saudável);
   - um deploy que tenha subido código novo sem as migrations, se o recurso
-    estiver na `main` com deploy automático (o §4 pede o recurso fixado num
-    commit);
+    estiver na `main` com deploy automático (o §4 pedia o recurso fixado num
+    commit, até o ADR-058);
   - falta de recurso na VPS compartilhada.
 - **Autorizado (decisão do usuário, 2026-10-26):** só diagnóstico de leitura —
   quais serviços estão parados, os erros e a versão implantada. **Não
@@ -1508,7 +1718,8 @@ decisão deve ficar registrada aqui quando você tomá-la.
   da F4 recriavam os containers e caíam na validação do ambiente, e os de
   `3b69160` e `2b6deb1` falharam em cerca de 15 s, antes de mexer nos
   containers. Desde a janela, o recurso está em "Manual deployments only",
-  fixado num commit: um push não reimplanta mais o staging.
+  fixado num commit: um push não reimplanta mais o staging (até o ADR-058, que
+  passou a publicar pelo CI, §4.0).
 - **Fechamento (2026-10-29, 21:35 UTC):** o staging voltou ao ar no `2b6deb1`,
   com o schema em dia, as chaves que faltavam criadas, o workspace `demo` da
   demonstração e o transporte simulado. O Owner entrou pelo navegador. O
@@ -1588,7 +1799,7 @@ Na ordem, cada passo com a própria autorização:
 | **Funcionalidades**                       | F4.1 a F4.4d e a experiência por produto (E-1 a E-3) publicadas e validadas, no ar no staging em `df94fb5` (a E-4, 2026-11-02) | nenhuma nova                                                     |
 | **Templates falsos**                      | os três `demo_*` cadastrados e revisados no `demo` (2026-10-29)                                                                | nada                                                             |
 | **Dados fictícios**                       | a carga no `demo` (2026-10-29): 3 serviços, 2 profissionais, 6 pacientes, 5 agendamentos e 1 retorno                           | os consentimentos, pela tela, no uso                             |
-| **Manutenção do deploy**                  | as janelas de 2026-10-29 e de 2026-11-02 (§14); o estado do Auto Deploy depois da E-4 está por confirmar no painel             | o backup externo (o destino do `restic` nunca foi configurado)   |
+| **Manutenção do deploy**                  | as janelas de 2026-10-29 e de 2026-11-02 (§14); desde 2026-11-02, a publicação comum sobe depois do CI verde (§4.0, ADR-058)   | o backup externo (o destino do `restic` nunca foi configurado)   |
 | **Diagnóstico do staging**                | INC-2026-10-26-01 fechado (§12)                                                                                                | apagar os logs e o dump da janela depois da validação do usuário |
 | **Ativação do workspace de demonstração** | o `demo`, com o Clinics ativo só nele e o canal fictício                                                                       | o uso pelo usuário (§14, etapa F)                                |
 
@@ -2349,7 +2560,7 @@ O usuário entra e troca para o workspace Demonstração. Depois:
 - **A decisão do usuário:** o vigia foi colado de novo e adotou a API (`BLOCO3_OK`). O ensaio na cópia (bloco 4) deu `ENSAIO_DA_JANELA_E4_OK`.
 - **A simplificação, a pedido do usuário:**
   - pelo terminal, de uma vez: as duas migrations aplicadas, o `demo` em `clinics` (com a trilha) e a trava desligada;
-  - depois, o Redeploy do `df94fb5` com `MAINTENANCE_MODE=false` e `DISABLE_JOBS=false` (15:57 às 16:00). A instrução incluía religar o Auto Deploy e seguir `HEAD`; o estado do painel está por confirmar;
+  - depois, o Redeploy do `df94fb5` com `MAINTENANCE_MODE=false` e `DISABLE_JOBS=false` (15:57 às 16:00). A instrução incluía religar o Auto Deploy e seguir `HEAD`. **O usuário confirmou no painel, em 2026-11-02, o Auto Deploy ligado e o commit em `HEAD`.** O ADR-058 substituiu essa instrução: o Auto Deploy fica em "Manual deployments only", e quem publica é o CI (§4.0);
   - às 16:08 UTC, `/api/health` deu 200 de fora.
 - **O que não rodou:** o bloco 5. As conferências equivalentes vieram do ensaio na cópia, com a mesma imagem e o mesmo dump, e das contagens iguais às do dump antes das migrations.
 - **Convites invalidados:** 0.
@@ -2359,4 +2570,4 @@ O usuário entra e troca para o workspace Demonstração. Depois:
   - os campos obrigatórios (não há nenhum);
   - os Envios com "Envio simulado";
   - nenhuma repetição contínua de 409 em abas novas.
-- **Depois:** um deploy automático do staging foi proposto à parte (a branch local `proposta/deploy-automatico`, com o ADR-053, adendo 2) e está em revisão separada. Enquanto isso, nada muda no staging sem autorização.
+- **Depois:** um deploy automático do staging foi proposto à parte (a branch local `proposta/deploy-automatico`, com o ADR-053, adendo 2), com as migrations na subida. **Em 2026-11-02, o usuário aprovou o ADR-058:** a publicação autorizada sobe pelo CI, depois dos quatro jobs verdes (§4.0). As migrations na subida continuam sendo uma decisão separada.

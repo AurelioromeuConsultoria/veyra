@@ -16,7 +16,7 @@ if printf '%s' "$cmd" | grep -qE 'push\b[^|;&]*(--force\b|--force-with-lease\b|[
   extra=" ATENÇÃO: push com force reescreve histórico remoto."
 fi
 
-reason="Antes do push, confirme o Definition of Done (CLAUDE.md §6): builds passam; testes relevantes verdes (incluindo isolamento P0 se tenancy/RBAC mudou); nenhum segredo staged; migration comitada junto do código; docs/ atualizado; e o usuário pediu este push explicitamente.${extra}"
+reason="Antes do push, confirme o Definition of Done (CLAUDE.md §6): builds passam; testes relevantes verdes (incluindo isolamento P0 se tenancy/RBAC mudou); nenhum segredo staged; migration comitada junto do código; docs/ atualizado; e o usuário pediu este push explicitamente. O push na main publica no staging depois do CI verde (ADR-058), salvo migration, env.ts, Dockerfile ou a pilha de deploy/staging (compose, web, backup), que pedem a janela do DEPLOY_STAGING §4.1.${extra}"
 
 jq -n --arg reason "$reason" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"ask",permissionDecisionReason:$reason}}'
 exit 0
