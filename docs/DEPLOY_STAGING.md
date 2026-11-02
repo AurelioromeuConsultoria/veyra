@@ -1967,12 +1967,16 @@ O usuário entra e troca para o workspace Demonstração. Depois:
 
 - **O que ela é:** o bloco 1 liga a trava (`ALTER DATABASE … SET veyra.manutencao = 'ligada'`) antes de parar a API antiga e antes de qualquer Deploy.
 - **O que ela garante:** toda API com o código desta entrega lê a trava antes de importar o `AppModule`, ou seja, antes de qualquer módulo, rota ou job. Ligada, ela sobe em manutenção qualquer que seja o `MAINTENANCE_MODE` do painel, sem terminal nem vigia. Sem o banco na subida, ela não sobe.
+- **Para quem ela vale** (os limites aceitos na aprovação, em 2026-11-02):
+  - só para a imagem que implementa a leitura da trava, e só no banco em que ela foi ligada. A trava ligada em outro banco não protege esta janela;
+  - ligar a trava não interrompe processos já iniciados, e desligá-la não abre uma API que já subiu em manutenção;
+  - o `2b6deb1` ignora a trava: a reabertura com ele é uma exceção, com condições próprias, e nunca é protegida por ela.
 - **Até quando:** a trava só é desligada na retomada (bloco 7).
 - **O vigia (bloco 3) é uma conferência ADICIONAL:**
   - ele só vê containers já iniciados;
   - ele não impede um evento do deploy depois de terminar;
   - parar depois não é a barreira.
-- **Falha de contenção:** um `docker stop` que falha é registrado como **FALHA DE CONTENÇÃO**, com o que continua rodando, e nenhum bloco afirma, nesse caso, que a manutenção está garantida.
+- **Falha de contenção:** um `docker stop` que falha é registrado como **FALHA DE CONTENÇÃO**, com o que continua rodando, e nenhum bloco afirma, nesse caso, que a manutenção está garantida. A mensagem do `PARE` traz o resultado de fato: "contidos" ou a falha.
 
 **Os blocos de comando** estão em `deploy/staging/janela-e4/` e são colados, inteiros, no terminal do **servidor** no Coolify. O Claude não tem acesso ao servidor.
 
@@ -1991,7 +1995,7 @@ O usuário entra e troca para o workspace Demonstração. Depois:
 
 - **O `PARE`:** quando uma conferência falha, o bloco imprime `PARE: <motivo>` e sai. Um `PARE` encerra a janela ali, e o próximo bloco não roda.
 - **A trava é a PRIMEIRA conferência** dos blocos 2 a 6: sem ela ligada, eles param.
-- **Depois vem a conferência adicional:** uma API rodando com `MAINTENANCE_MODE` diferente de `true` significa que o painel divergiu. Ela já está em manutenção pela trava, mas é contida mesmo assim, e a janela para até o painel ser corrigido.
+- **Depois vem a conferência adicional:** uma API rodando com `MAINTENANCE_MODE` diferente de `true` significa que o painel divergiu. Se a imagem implementa a trava, ela já está em manutenção por ela; uma imagem anterior ao adendo 1 estaria aberta. Ela é contida nos dois casos, e a janela para até o painel ser corrigido.
 - **As marcas:** os blocos 4, 5 e 6 exigem a marca do anterior em `/root/veyra-e4`: `bloco3-ok.txt`, `ensaio-ok.txt` e `migrations-ok.txt`.
   - A marca só existe quando aquele bloco chega ao fim.
   - O bloco 2 apaga as de uma tentativa anterior, e também o dump anterior, mas só antes das migrations: com o banco já migrado, ele recusa.
@@ -2026,16 +2030,19 @@ O usuário entra e troca para o workspace Demonstração. Depois:
 
 - **O ensaio dos blocos da janela:**
   - **A base:** a imagem da API foi construída pelo mesmo Dockerfile, com a trava, sobre um banco nas 56 migrations esperadas, com as etiquetas de projeto do compose.
-  - **Onde rodaram:** os blocos de `deploy/staging/janela-e4/`, os mesmos do commit, num container com bash 5.2 e GNU coreutils, grep e diffutils, como o host do servidor, falando com o Docker local pelo socket.
+  - **Onde rodaram:** os blocos de `deploy/staging/janela-e4/`, os mesmos do commit, num container com bash 5.2 e GNU coreutils, grep, sed e diffutils, como o host do servidor, falando com o Docker local pelo socket.
   - **Os caminhos:**
     1. **o caminho feliz:** o bloco A com a API de antes no ar, o bloco 1 e do bloco 2 ao 6, com o vigia parando o `web` que sobe depois da API.
        - **O VALOR ANTIGO DO PAINEL, sem vigia nem terminal:** uma API com `MAINTENANCE_MODE=false` e `DISABLE_JOBS=false` subiu em manutenção pela trava. A rede deu 503, os jobs ficaram desligados e nenhuma tabela foi tocada (a medida registra uma leitura de contraste). Depois, o bloco 4 a conteve como conferência adicional;
-       - **a FALHA DE CONTENÇÃO,** com o `docker stop` falhando de propósito: o bloco disse o que continuava rodando e não afirmou a manutenção;
+       - **a FALHA DE CONTENÇÃO,** com o `docker stop` falhando de propósito: o bloco disse o que continuava rodando, e o `PARE` trouxe a falha, sem afirmar a parada nem a manutenção;
        - colados de novo, os blocos 5 e 6 recusam, e o bloco 2 recusa o banco já migrado sem apagar o dump da janela;
        - o vigia colado com uma API já de pé: fora da manutenção no ambiente, ele a contém; em manutenção, ele a confere;
+       - **o banco de destino e a trava na subida:** antes de `VIGIA ATIVO`, o vigia confere que a API de antes aponta para o banco da trava. Depois, confere que a nova também aponta e que registrou a trava ligada nesta subida. No `registro.txt`, ele deixa a imagem aprovada e o banco;
     2. **a retomada:**
-       - **o bloco 8 com a trava ainda ligada:** recusa sem parar nada;
-       - **o bloco 7 desliga a trava.** Depois, o bloco 8 recusa sem parar nada se o ambiente ainda estiver em manutenção ou se o `DISABLE_JOBS` for diferente do de antes (o do primeiro bloco A; um bloco A colado no meio da janela não o muda);
+       - **o bloco 8 com a trava ainda ligada:** recusa sem parar nada, e diz que a API está em manutenção pela trava;
+       - **o bloco 7 desliga a trava.** A API que tinha subido antes dele continua em manutenção (503 de fora). O bloco 8 a reconhece pelo registro da trava nesta subida e pede o Redeploy, com o início do container, sem parar nada;
+       - **o MESMO container religado depois do bloco 7:** o log da subida anterior tem o registro da trava, mas o bloco 8 lê só o desta subida, e dá `RETOMADA_OK`;
+       - depois, o bloco 8 recusa sem parar nada se o ambiente ainda estiver em manutenção ou se o `DISABLE_JOBS` for diferente do de antes (o do primeiro bloco A; um bloco A colado no meio da janela não o muda);
        - **sem o transporte simulado:** o bloco 8 contém a API e o `web`;
        - **por fim, a retomada certa e a volta à barreira** (o bloco 1 de novo);
     3. **a volta do banco (bloco 9):**
@@ -2043,13 +2050,24 @@ O usuário entra e troca para o workspace Demonstração. Depois:
        - recusada com um dump já migrado, mesmo com as contagens dele;
        - com um dump truncado, o banco novo é descartado e o atual fica intacto;
        - **por fim, a volta certa:** 56 migrations, os convites pendentes de volta, a trava LIGADA no banco restaurado, e o anterior guardado. Uma API com o código novo e o valor antigo do painel sobe, em seguida, em manutenção;
-       - **depois da volta,** o bloco 7 recusa, porque o banco não tem migration da janela. A imagem nova, subindo por engano, fica em manutenção, e o bloco 8 a contém. A reabertura com a imagem do `2b6deb1`, construída do próprio commit, dá `RETOMADA_OK`, com a trava ainda ligada;
-    4. **o vigia sem a trava:** ele nem começa. Com ela, uma API fora da manutenção no ambiente é contida, e o bloco 4 recusa.
+       - **depois da volta:**
+         - o bloco 7 recusa, porque o banco não tem migration da janela;
+         - a imagem nova, subindo por engano, fica em manutenção (503 de fora), e o bloco 8 recusa, dizendo que ela está em manutenção pela trava;
+         - **o `2b6deb1` aberto fora do procedimento da exceção, SEM a saúde de fora** (a URL de fora não alcança nada, como sem os domínios do `web`): o bloco 8 o contém com o `web`, pelo estado do container, e diz "contidos". A trava fica;
+         - **o bloco 8 colado durante a subida do `2b6deb1`,** ainda sem saúde: contido;
+         - **o `2b6deb1` em manutenção só pelo ambiente:** o bloco 8 diz que não é pela trava e não o para;
+    4. **o vigia:**
+       - **sem a trava,** ele nem começa. Com ela, uma API fora da manutenção no ambiente é contida, e o bloco 4 recusa;
+       - **a API de antes apontando para OUTRO banco:** ele nem começa, sem `VIGIA ATIVO`;
+       - **a API nova apontando para outro banco:** contida;
+       - **uma imagem que não implementa a trava** (a do `2b6deb1`), em manutenção pelo ambiente e no banco certo: contida, porque não registrou a trava na subida;
+       - **o regex do destino,** no `sed` GNU: aceita só a forma do compose. Recusa `?host=`, um `@` escondido na query, senha com `/`, `?` ou `#` sem escape, banco vazio, fragmento e URL sem usuário. A captura nunca contém a senha;
+       - nos 73 logs de bloco da rodada, não aparece a senha, o destino lido nem um `DATABASE_URL`.
 
        **A janela interrompida antes do bloco 6:**
        - o bloco 7 recusa, e a trava fica;
-       - a imagem nova, subindo por engano, fica em manutenção, e o bloco 8 a contém;
-       - a reabertura com o `2b6deb1` dá `RETOMADA_OK`, com a trava ainda ligada;
+       - a imagem nova, subindo por engano, fica em manutenção (503 de fora), e o bloco 8 recusa;
+       - o `2b6deb1`, aberto fora do procedimento da exceção e sem a saúde de fora, é contido pelo bloco 8, e a trava fica;
 
     5. **o terminal fechado de verdade (pty):**
        - o vigia foi colado num bash interativo sob um pty, e o pty foi fechado à força na espera silenciosa pela saúde da API;
@@ -2114,12 +2132,21 @@ O usuário entra e troca para o workspace Demonstração. Depois:
    - **Como sobe:** com a trava ligada, o container `api` sobe em manutenção POR CONSTRUÇÃO, antes de qualquer módulo, qualquer que seja o valor do painel. Se o terminal fechar ou o vigia terminar com o build ainda em andamento, o container que o Coolify criar depois sobe protegido do mesmo jeito.
      - Ele não lê nem escreve tabela e não tem worker (ADR-053, PO-1), por isso sobe sobre o schema antigo.
      - O `web` estático pode subir (é o limite do ADR-053); toda chamada dele à API recebe 503.
+   - **ANTES de clicar Deploy, o commit e o banco de destino:**
+     - **o commit:** o usuário confere no painel que o commit fixado é o combinado, o commit final publicado com o CI verde, e o anota no registro da janela. Nenhum bloco lê o painel. Depois, o vigia acrescenta ao `registro.txt` a imagem aprovada e o `SOURCE_COMMIT`, se o Coolify o passar;
+     - **o banco:** a trava protege só a API que lê o banco em que ela foi ligada. O bloco 1 liga a trava no `POSTGRES_DB` do container `db` do projeto e o registra. O vigia, antes de dizer `VIGIA ATIVO`, relê esse mesmo `POSTGRES_DB` e confere que a API de antes aponta para ele.
+       - **A forma aceita:** só a que o compose monta, `db:5432/<POSTGRES_DB>`, sem query nem fragmento. Um `?host=` mudaria o destino real, e qualquer outra forma dá `PARE`.
+       - Do `DATABASE_URL` ele lê só o destino, sem imprimi-lo.
+       - Se ela apontar para outro banco, o vigia nem começa, e não há Deploy;
+     - **no painel, nenhuma variável `POSTGRES_*` muda durante a janela:** o compose monta o `DATABASE_URL` da API a partir delas.
    - **O vigia é colado ANTES de clicar Deploy,** num terminal numa aba ou janela PRÓPRIA do navegador. O Deploy é clicado em outra aba, e a do terminal não é tocada. O vigia:
      - recusa começar sem a trava ligada: o Deploy não é clicado sem ela;
      - espera a API nova, por até 30 minutos, com um sinal de vida a cada 30 segundos;
      - assim que ela aparece, confere no `docker inspect` `MAINTENANCE_MODE=true`, `META_TRANSPORT_MODE=fake` e `VEYRA_ENV=staging`. Faltando algum, o painel divergiu: ele contém a API e o `web`, e a janela para até o painel ser corrigido;
+     - confere que a API nova aponta para o banco da trava. Se não, ele a contém, e a janela para;
      - para o `web` sempre que ele aparecer. O compose sobe o `web` depois da API saudável;
      - confere o healthcheck, o loopback 200, a rede interna 503 e nenhuma rota do Traefik na API;
+     - **confere que a API nova registrou, na subida, a trava LIGADA** ("Trava de manutenção LIGADA no banco", no log desta subida do container). É a prova de que a imagem implementa a leitura da trava e a leu no banco dela. Sem o registro, a proteção desta janela não vale para essa imagem (outro commit, por exemplo): ele a contém, e a janela para;
      - mostra a imagem (o id, a data do build e o commit, se o Coolify o passa; senão, o log do deploy no painel), o ambiente não secreto e as chaves, só pelo nome.
    - **Os limites do vigia:**
      - ele só vê containers já iniciados, e não garante pegá-los antes de o Nest subir;
@@ -2209,10 +2236,19 @@ O usuário entra e troca para o workspace Demonstração. Depois:
       - todos os domínios do `web` devolvidos;
       - o **Redeploy** do MESMO commit.
    3. **O bloco 8, no host,** depois do Redeploy. Ele lê o banco e o container pelo `docker inspect`:
-      - **a trava ainda ligada:** o bloco 7 e o Redeploy. O bloco não para nada, porque a API está em manutenção;
+      - **a trava ainda ligada, ou ilegível:** nenhuma retomada passa por este bloco; o caminho é o bloco 7 e o Redeploy. O bloco confere o que está RODANDO, e não só o que responde de fora. Sem os domínios do `web` (G1), nada chega de fora. Para cada API:
+        - **com o registro da trava ligada nesta subida:** está em manutenção pela trava;
+        - **sem o registro, com `MAINTENANCE_MODE=true` no ambiente:** está em manutenção SÓ pelo ambiente, não pela trava. Um valor do painel a abriria. O bloco diz isso;
+        - **nem uma coisa nem outra, ou algo respondendo 2xx de fora ou pela rede interna:** é uma imagem que ignora a trava (anterior ao adendo 1, como o `2b6deb1`), de pé fora da exceção autorizada. Ele a contém, com o `web`, e diz o resultado da contenção. Uma API que ainda está subindo, sem o registro, também é contida; é a falha segura.
+
+        Nos dois primeiros casos, ele não para nada;
+
       - **ainda em manutenção no ambiente:** outro Redeploy e o bloco de novo. Na janela anterior, foi preciso um segundo. O bloco não para nada;
+      - **fora da manutenção no ambiente sem `META_TRANSPORT_MODE=fake` ou sem `VEYRA_ENV=staging`:** ele **contém a API e o `web` na hora**, antes da conferência seguinte;
+      - **a API subiu ANTES do bloco 7** (o Redeploy feito com a trava ainda ligada): ela continua em manutenção, porque decide na subida, e não muda sozinha.
+        - O log desta subida dela registra a trava ligada, e o bloco pede o Redeploy, agora depois do bloco 7, sem parar nada. Só o log desta subida conta: um container religado depois do bloco 7 não é confundido.
+        - A mensagem traz o início do container. Se ele não mudar depois do Redeploy, o container não foi recriado: a janela para aí, com o usuário, sem Restart;
       - **o `DISABLE_JOBS` diferente do de antes** (o do primeiro bloco A, o de antes da janela): o painel é corrigido e vem outro Redeploy;
-      - **fora da manutenção sem `META_TRANSPORT_MODE=fake` ou sem `VEYRA_ENV=staging`:** ele **contém a API e o `web` na hora**;
       - **tudo certo:** ele espera os containers saudáveis e confere `/api/health` 200 de fora. Se os containers não ficarem saudáveis ou essa saúde falhar, ele contém a API e o `web`.
 
       Sem `RETOMADA_OK`, o navegador não entra.
@@ -2230,7 +2266,8 @@ O usuário entra e troca para o workspace Demonstração. Depois:
       - Um novo Deploy só quando for preciso, sempre com a trava ligada e o vigia colado antes. O Deploy do mesmo commit pode só religar o container de antes, com o ambiente da retomada; esse container decide na subida e, com a trava ligada, sobe em manutenção.
       - Nunca Start, Restart nem Rollback.
    6. **O registro:**
-      - o início e o fim em UTC, e os horários da trava (`/root/veyra-e4/registro.txt`);
+      - o início e o fim em UTC, e os horários da trava e o banco dela (`/root/veyra-e4/registro.txt`);
+      - o commit fixado no Deploy;
       - o dump da janela;
       - as migrations aplicadas;
       - o número de convites invalidados;
@@ -2242,14 +2279,37 @@ O usuário entra e troca para o workspace Demonstração. Depois:
 **A janela interrompida antes do bloco 6** (um `PARE`, sem a volta do banco):
 
 - o bloco 7 recusa, e **a trava FICA ligada**;
-- se as migrations não rodaram, o schema não mudou, e a reabertura é com o `2b6deb1`, que ignora a trava. O recurso é fixado nele, e vem o Redeploy com `MAINTENANCE_MODE=false` e o bloco 8.
-  - O bloco 8 aceita a trava ligada sempre que o banco não tem migration da janela, e segue com ela ligada.
-  - Se a imagem nova subir por engano, ela sobe em manutenção, a saúde de fora dá 503, e o bloco a contém;
-- a trava ligada continua protegendo o banco de uma imagem nova até a próxima janela.
+- **os serviços ficam parados** (a API e o `web`, desde o bloco 1) **ou em manutenção.** Uma imagem com o código da trava, se subir por engano, sobe em manutenção, e o bloco 8 recusa sem abrir nada. Uma imagem que ignora a trava, de pé fora da manutenção, é contida por ele;
+- a reabertura com o `2b6deb1` não é o caminho padrão: é a exceção abaixo.
+
+**A reabertura com o `2b6deb1`: uma EXCEÇÃO deliberada, nunca automática** (precisão da aprovação, 2026-11-02):
+
+- **Por que é exceção:** o `2b6deb1` é anterior ao adendo 1 e ignora a trava. **Ele NÃO é protegido por ela.** A única barreira dele é o `MAINTENANCE_MODE=true` do ambiente (ADR-053), com o limite conhecido: um valor antigo do painel o abre.
+- **Nada a executa automaticamente:**
+  - o bloco 7 recusa sem a janela concluída;
+  - o bloco 8 recusa com a trava ligada, e contém toda API de pé fora da manutenção, pelo estado do container, e não só pelo que responde de fora;
+  - nenhum bloco desta janela fixa o recurso no `2b6deb1` nem faz Redeploy;
+  - **o vigia da janela (bloco 3) não serve de conferência da exceção:** por desenho, ele contém toda imagem sem o registro da trava, inclusive a do `2b6deb1`.
+- **As três condições, todas antes de abrir:**
+  1. **a autorização específica do usuário** para essa reabertura. Ela vem ANTES de qualquer Deploy do `2b6deb1`, mesmo em manutenção: subir o `2b6deb1` já faz parte da recuperação;
+  2. **a imagem exata:** a do `2b6deb1`, identificada pelo id.
+     - **As referências possíveis:** a imagem em uso antes da janela, que o bloco A registrou, se ela ainda existir no host; ou uma construída do commit `2b6deb1`, que terá outro id.
+     - **A conferência:** pelo commit (o log do deploy no painel ou o `SOURCE_COMMIT`) e pelo conteúdo. As migrations dela precisam ser iguais às aplicadas no banco, pelo nome e pelo checksum (`_prisma_migrations.checksum` contra o sha256 de cada `migration.sql`). Os nomes sozinhos não distinguem commits vizinhos.
+     - O conteúdo pode ser lido sem subir o serviço: pelo `docker image inspect` e por um container avulso sem rede, como no bloco 4;
+  3. **o banco compatível com o snapshot restaurado.** **A ausência das duas migrations da janela, sozinha, não comprova essa compatibilidade.** A conferência:
+     - o schema e as migrations aplicadas iguais aos do snapshot da janela, o dump do bloco 2, tirado do banco do `2b6deb1` com a escrita congelada;
+     - as contagens iguais às do dump;
+     - pelo próprio código do `2b6deb1`, o `migrate status` em dia e o `migrate diff` vazio.
+- **Até as três condições serem atendidas, os serviços ficam parados ou em manutenção:**
+  - a trava ligada;
+  - a API e o `web` parados;
+  - se, depois da autorização, uma conferência exigir o `2b6deb1` de pé, ele fica em manutenção pelo ambiente (`MAINTENANCE_MODE=true`). Essa barreira não é a trava, e a conferência dela é a do procedimento próprio, não a do vigia da janela.
+- **O procedimento com comandos dessa exceção não está nos blocos desta janela.** Se for preciso, ele é preparado, ensaiado e apresentado ao usuário, e só roda com a autorização.
 
 **Até quando a trava fica ligada** (depois da janela interrompida ou da volta do banco):
 
 - até uma janela da E-4 ser concluída, com o bloco 7. Até lá, qualquer API com o código da trava sobe em manutenção, inclusive um hotfix, e isso é intencional: o banco não tem o schema que esse código espera;
+- o `2b6deb1`, se reaberto pela exceção, não a lê;
 - desligá-la fora do bloco 7 (`ALTER DATABASE … RESET veyra.manutencao`) só com autorização do usuário.
 
 **A volta, com as duas coisas separadas:**
@@ -2263,10 +2323,10 @@ O usuário entra e troca para o workspace Demonstração. Depois:
 
   Num dump com falha, o banco novo é descartado e o atual não é tocado.
 
-  **Depois, a retomada com o código compatível:** o commit anterior, `2b6deb1`, **sem o bloco 7**. A sequência é o recurso fixado no `2b6deb1` com `MAINTENANCE_MODE=false`, o Redeploy e o bloco 8.
-  - **A trava FICA ligada.** O banco restaurado não tem migration da janela, e o bloco 7 recusa.
-  - **O `2b6deb1` NÃO conhece a trava,** e abre. Uma imagem nova, se o recurso não for trocado e o Redeploy a reconstruir, sobe em manutenção, e o bloco 8 a contém.
-  - Não há etapa em manutenção com o `2b6deb1`: ele só sobe na própria abertura.
+  **Depois da volta, a trava FICA ligada, e a API e o `web` ficam PARADOS.**
+  - O banco restaurado não tem migration da janela: o bloco 7 recusa, e o bloco 8 também.
+  - Uma imagem com o código da trava, se subir por engano, sobe em manutenção.
+  - **A reabertura com o código compatível, o `2b6deb1`, é a exceção acima,** com as três condições. As contagens do bloco 9 e a recusa do dump migrado fazem parte da conferência do banco, mas não a substituem.
   - É a exceção declarada ao "nada de commit anterior": o `2b6deb1` é posterior ao PO-1 e é o código do schema restaurado.
 
   É o único caminho que traz de volta os convites invalidados, e ele descarta tudo o que foi escrito depois do snapshot.

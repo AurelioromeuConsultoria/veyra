@@ -245,7 +245,8 @@ O webhook do WhatsApp é o **único caminho de escrita público e não autentica
    - **A leitura:** é uma conexão `pg` própria, de vida curta, fora do client protegido, com texto FIXO que lê só o catálogo do sistema. Não lê tabela de domínio, não tem parâmetro nem dado de tenant. O texto e a ordem no `main.ts` são fixados por teste estático (`common/trava-de-manutencao.spec.ts`). A mensagem de falha não leva a URL nem a senha.
    - **Os limites:**
      - a decisão é tomada na subida. Ligar a trava não fecha uma API já aberta (na janela, o bloco 1 liga e para); desligar não abre uma API em manutenção (só o Redeploy);
-     - uma imagem anterior ao adendo ignora a trava;
+     - ela vale só para a imagem que implementa a leitura e só no banco em que foi ligada. Na janela, o vigia confere que a API aponta para esse banco e registrou a trava ligada na subida;
+     - uma imagem anterior ao adendo ignora a trava. A reabertura com o `2b6deb1` é exceção, nunca protegida pela trava nem automática: autorização específica, a imagem exata e o banco compatível com o snapshot (DEPLOY_STAGING §14, etapa G);
      - o papel da aplicação no staging é o mesmo superusuário do `db` e, tecnicamente, poderia desligá-la. O código não o faz, e o teste estático impede outro arquivo com o texto.
 
 ## 8. Segredos e criptografia

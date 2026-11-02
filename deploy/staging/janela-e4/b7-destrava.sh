@@ -3,7 +3,9 @@
 # Redeploy com MAINTENANCE_MODE=false, DEPOIS deste bloco, abre. Depois do
 # Redeploy, o bloco 8. Só com a janela concluída (DEMO_CLINICS_OK) E as duas
 # migrations da janela no banco: fora disso (a janela interrompida, a volta do
-# banco), a trava FICA, e a reabertura é com o 2b6deb1, que a ignora.
+# banco), a trava FICA, e os serviços ficam parados ou em manutenção. A
+# reabertura com o 2b6deb1, que ignora a trava, é EXCEÇÃO: só com autorização
+# específica, a imagem exata conferida e o banco compatível com o snapshot.
 ( set -euo pipefail
   P="${E4_P:-umoaea9vz6qchhhh5wkg0bv9}"; D="${E4_D:-/root/veyra-e4}"; URL="${E4_URL:-https://veyra-staging.malachdigital.com.br}"; umask 077; mkdir -p "$D"; chmod 700 "$D"
   pare() { echo "PARE: $*"; exit 1; }
@@ -13,14 +15,17 @@
   # só o ambiente NÃO secreto vai para variável (o resto nunca passa por here-string)
   nao_secreto() { env_de "$1" | grep -E '^(MAINTENANCE_MODE|DISABLE_JOBS|META_TRANSPORT_MODE|VEYRA_ENV|NODE_ENV|SOURCE_COMMIT)=' || true; }
   parar() { if docker stop "$1" >/dev/null; then echo "parado agora: $1"; else echo "FALHA DE CONTENÇÃO: não foi possível parar $1"; fi; }
-  # a CONTENÇÃO: para a API e o web e diz o que sobrou. Parar depois não é a
-  # barreira (a trava é); o que continuar rodando é FALHA DE CONTENÇÃO
+  # a CONTENÇÃO: para a API e o web e diz o que sobrou (também em CONTENCAO, para
+  # a mensagem de quem a chama). Parar depois não é a barreira (a trava é); o que
+  # continuar rodando é FALHA DE CONTENÇÃO, e nada afirma a manutenção
   conter() {
     for s in api web; do for id in $(rodando "$s"); do parar "$id"; done; done
     r=$(rodando api; rodando web || true)
     if [ -n "$r" ]; then
+      CONTENCAO="FALHA DE CONTENÇÃO: a manutenção NÃO está garantida"
       echo "FALHA DE CONTENÇÃO: ainda rodando: $(printf '%s ' $r)— a manutenção NÃO está garantida; pare à mão (docker stop ou docker kill) e confira com docker ps"
     else
+      CONTENCAO="contidos: nenhuma API nem web rodando"
       echo "contido: nenhuma API nem web rodando"
     fi
   }
@@ -31,7 +36,7 @@
     t=$(trava) || t='(não lida)'
     [ "$t" = ligada ] || { conter; pare "a trava de manutenção no banco não está ligada ($t): rode o bloco 1"; }
     for id in $(rodando api); do
-      env_de "$id" | grep -x 'MAINTENANCE_MODE=true' >/dev/null || { conter; pare "uma API rodando com MAINTENANCE_MODE diferente de true ($(cut -c1-12 <<<"$id")): o painel divergiu. A trava a mantinha em manutenção; o bloco a parou mesmo assim, e a janela para até o painel ser corrigido"; }
+      env_de "$id" | grep -x 'MAINTENANCE_MODE=true' >/dev/null || { conter; pare "uma API rodando com MAINTENANCE_MODE diferente de true ($(cut -c1-12 <<<"$id")): o painel divergiu. Se a imagem implementa a trava, ela a mantinha em manutenção; uma imagem anterior ao adendo 1 estava ABERTA. O bloco tentou pará-la ($CONTENCAO), e a janela para até o painel ser corrigido"; }
     done
   }
   web_parado() { for id in $(rodando web); do echo "o web voltou a rodar:"; parar "$id"; done; }
@@ -42,7 +47,7 @@
   if [ -s "$D/demo-ok.txt" ] && [ "$ja" = 2 ]; then
     echo "a janela concluída (DEMO_CLINICS_OK) e as duas migrations da janela no banco"
   else
-    pare "a trava FICA ligada: destravar só com a janela concluída (DEMO_CLINICS_OK) e as duas migrations da janela no banco (aqui: $ja). Sem elas (a janela interrompida, a volta do banco), a reabertura é com o 2b6deb1, que ignora a trava"
+    pare "a trava FICA ligada: destravar só com a janela concluída (DEMO_CLINICS_OK) e as duas migrations da janela no banco (aqui: $ja). Sem elas (a janela interrompida, a volta do banco), os serviços ficam parados ou em manutenção; a reabertura com o 2b6deb1, que ignora a trava, é exceção, só com autorização específica"
   fi
   printf '%s\n' 'ALTER DATABASE :"banco" RESET veyra.manutencao;' \
     | docker exec -i "$DB" sh -c 'psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -q -v banco="$POSTGRES_DB"'
