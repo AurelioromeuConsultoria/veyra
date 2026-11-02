@@ -198,7 +198,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
 
   - **Normalização dos e-mails** (aprovada pelo usuário como entrega própria, **antes do piloto**): começa pelo diagnóstico das colisões e pelo desenho da migração, sem unir contas nem escolher vencedora automaticamente. Até lá vale o critério único da F5.1a (ADR-054 item 13).
   1. **F5.1 — Equipe e permissões 🚧** (a F5.1a acima)
-     - **F5.1b — D7, quem acumula funções:** a menor evolução para combinar recepção, atendimento e, quando preciso, o Inbox. O desenho é apresentado antes do código. **Desenho proposto em 2026-11-02 (ADR-056): papéis combinados do vertical, com um gatilho para vários papéis por membership; aguarda a decisão do usuário.** Owner ou Admin não servem de solução provisória, e nada de múltiplos papéis ou edição de permissões sem o desenho aprovado.
+     - **F5.1b — D7, quem acumula funções:** a menor evolução para combinar recepção, atendimento e, quando preciso, o Inbox. O desenho é apresentado antes do código. **Aprovado em 2026-11-02, com condições (ADR-056):** só "Recepção e atendimento", com a matriz padrão; "Recepção" só na apresentação do Clinics; a sincronização explícita por workspace. "Atendimento e conversas" fica proposto. Owner ou Admin não servem de solução provisória, e nada de múltiplos papéis ou edição de permissões sem o desenho aprovado.
   2. **F5.2 — Correção de um consumo de pacote registrado por engano.** Primeiro o plano, com as operações propostas e as permissões, antes do código:
      - preserva o atendimento e o lançamento original;
      - registra quem corrigiu e o motivo;

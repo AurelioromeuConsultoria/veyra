@@ -9359,3 +9359,86 @@ O que as revisões corrigiram:
   - sem sono.
 
   A integração, os unitários da API e o drift não foram repetidos: a API não mudou fora do teste. Um teste do web que lia o título neutro antes do efeito que o grava passou a esperar por ele.
+
+## ADR-056 — Quem acumula funções na clínica: papéis combinados do vertical (F5.1b, D7)
+
+**Status:** APROVADO pelo usuário em 2026-11-02, com as condições abaixo. Implementação em andamento, parando no commit local. · **Data:** 2026-11-02
+
+**Contexto.**
+
+- **Um papel por membership** (`Membership.roleId`). No Clinics, hoje (ADR-048 §5.2):
+  - **Member** é a recepção: o CRM, as conversas e a agenda, com escrita;
+  - **`Profissional`** é o atendimento: lê a agenda, registra atendimentos e cuida dos pacotes. Do Core, tem só `workspace:read`;
+  - **Owner e Admin** têm tudo.
+- **O problema (D7, ADR-048 §5.4):** na clínica pequena, a mesma pessoa agenda e atende. Nenhum papel cobre as duas funções.
+- **O que o usuário fixou** (ROADMAP, F5.1b):
+  - a menor evolução para combinar as funções;
+  - Owner ou Admin não servem de solução provisória;
+  - nada de vários papéis por membership nem de edição de permissões sem o desenho aprovado.
+- **O que a F5.1a já entregou (ADR-054):** a tela de equipe, com os papéis e as permissões descritas, o convite, a troca de papel com o efeito antes da confirmação, e a regra de que ninguém concede o que não tem.
+- **O Owner ou o Admin que também atende já está coberto:** ele tem todas as chaves, e a conta dele pode ser vinculada a um profissional do catálogo, um vínculo que não concede permissões (ADR-048 adendo 1).
+
+**As opções consideradas:**
+
+- **A. Papéis combinados do vertical:** papéis de sistema novos, criados pelo Clinics como o `Profissional`. Não muda o Core. **A escolhida.**
+- **B. Vários papéis por membership:** a união das permissões. Mexe na autenticação, no guard, na tela de equipe e nas regras do último Owner e do subconjunto, com teste P0.
+- **C. Edição de papéis** (`roles:manage`): uma tela nova, e o risco de uma configuração errada expor dado de atendimento.
+- **D. Permissão pelo vínculo com o profissional:** descartada. Quebra a regra aprovada de que o vínculo não muda o papel.
+
+**A decisão, com as condições do usuário (2026-11-02):**
+
+1. **Nesta entrega, só "Recepção e atendimento"** (`clinics:reception-care`), um papel de sistema criado pelo Clinics por `systemKey` (nunca por nome), não editável.
+   - **"Atendimento e conversas" fica proposto,** sem criação nem atribuição, até a necessidade e o alcance do acesso às conversas serem validados.
+   - **Uma necessidade adicional abre a revisão do modelo.** Ela não aprova automaticamente vários papéis por pessoa.
+2. **As permissões são a matriz PADRÃO documentada,** fixada no código e nos testes. Ela não é derivada dos papéis do workspace, que podem ter sido personalizados:
+   - **do Core:** as chaves do Member padrão (`SYSTEM_ROLE_TEMPLATES.Member`);
+   - **do Clinics:** a soma das concessões padrão do Member e do `Profissional`: `catalog:read`, `schedule:read`, `schedule:write`, `care:read` e `care:write`;
+   - **ficam de fora, e os testes fixam a ausência:**
+     - a administração de equipe e de papéis (`members:manage`, `roles:manage`);
+     - a liberação para IA (`clinics:restriction:manage`);
+     - a auditoria (`audit:read`).
+   - **O que a combinação significa:** ela amplia o acesso de uma mesma pessoa, que passa a ver o atendimento E o CRM e as conversas. Está aprovada para a função proposta. **Não resolve o B1** (texto clínico nas superfícies do Core) **nem a D8** (o profissional vê todos os atendimentos).
+3. **"Recepção" é só apresentação, na experiência do Clinics.**
+   - O papel persistido não é renomeado, e o identificador não muda.
+   - Na experiência do CRM, ele continua "Member", mesmo com o vertical ativo.
+   - **A regra:** o rótulo vem da composição por produto (o manifesto da experiência do Clinics, ADR-055) e vale só para o papel de sistema padrão: `isSystem`, `systemKey: 'member'` e o nome padrão, "Member".
+   - **Nomes personalizados são preservados.** Um papel personalizado nunca aparece como se fosse a recepção padrão.
+   - Para a apresentação reconhecer o papel padrão, o Core passa a expor o `systemKey` no `RoleDto`, sem nada do vertical.
+4. **A criação do papel.**
+   - **Na ativação,** a primeira e a reativação, o papel é criado se estiver ausente, como o `Profissional`.
+   - **Na reativação,** ele recebe de volta as chaves do Clinics que a desativação tirou, como os demais papéis da matriz.
+   - **Na desativação,** como hoje, todas as `clinics:*` saem de todos os papéis, e "Recepção e atendimento" fica equivalente ao Member.
+5. **A sincronização dos workspaces com o Clinics já ativo,** explícita por workspace, pela CLI `clinics sync-roles --slug <workspace>`, auditada e segura para repetir:
+   - cria o papel ausente, com a matriz padrão;
+   - não altera memberships nem atribui o papel novo;
+   - não sobrescreve permissões nem nomes personalizados;
+   - não desfaz, ao repetir, uma alteração posterior;
+   - informa as divergências para decisão, sem corrigi-las: as chaves a mais ou a menos, o nome diferente, e um papel personalizado com o mesmo nome.
+
+   **No staging, ela não roda por esta autorização.** Na demonstração, o comando é autorizado à parte. O vínculo com um profissional continua sem conceder permissões.
+
+6. **A atribuição é pela tela de equipe da F5.1a, sem tela nova:** o convite e a troca de papel, com as regras atuais (o subconjunto, o último Owner, o `tokenVersion` e a auditoria). Só quem tem todas as chaves do papel o atribui.
+7. **A publicação é separada.** O deploy automático do staging (o `00ef0ba`) fica numa branch própria, `proposta/deploy-automatico`, e não é ancestral desta entrega.
+
+**O que esta entrega não resolve:** o B1, a D8, a escrita de agenda do `Profissional`, a edição de papéis e os vários papéis por membership.
+
+**As provas, na implementação:**
+
+- **a matriz:** as chaves exatas, e a ausência das que ficam de fora;
+- **a ativação e a desativação:** o papel criado e as chaves tiradas e devolvidas;
+- **a sincronização:**
+  - criar o papel ausente sem tocar memberships;
+  - repetir sem mudar nada;
+  - não desfazer uma alteração posterior;
+  - informar as divergências sem corrigi-las;
+  - recusar o workspace sem o Clinics ativo;
+  - a trilha de auditoria;
+- **o convite e a troca de papel:** só quem tem todas as chaves; o acesso emitido antes cai;
+- **as recusas da API para o papel combinado:**
+  - a gestão de equipe, a liberação para IA e a auditoria dão 403;
+  - a agenda e o atendimento respondem;
+- **o isolamento (P0):** o papel de um workspace não vale em outro;
+- **o web:**
+  - os rótulos por experiência, com o nome personalizado preservado;
+  - o menu do Clinics para o papel combinado;
+- **as mutações** nas regras novas.
