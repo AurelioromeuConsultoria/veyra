@@ -9362,7 +9362,7 @@ O que as revisões corrigiram:
 
 ## ADR-056 — Quem acumula funções na clínica: papéis combinados do vertical (F5.1b, D7)
 
-**Status:** APROVADO pelo usuário em 2026-11-02, com as condições abaixo. **Implementado em commit local** (2026-11-02), revisado por `reviewer` e `security`; sem push, deploy nem sincronização no staging. · **Data:** 2026-11-02
+**Status:** APROVADO pelo usuário em 2026-11-02, com as condições abaixo. **Implementado em commit local** (2026-11-02), revisado por `reviewer` e `security`; sem push, deploy nem sincronização no staging. **A F5.1b fecha no escopo entregue** (decisão do usuário, 2026-11-02), com o adendo 1. Ela não resolve todo o problema de autoridade na ativação: a janela dos papéis do Core segue aberta, na proposta separada do ADR-057. · **Data:** 2026-11-02
 
 **Contexto.**
 
@@ -9464,7 +9464,7 @@ O que as revisões corrigiram:
 
 ### Adendo 1 (2026-11-02) — com o vertical desativado, nenhum papel dele é atribuído
 
-**Status:** a direção foi pedida pelo usuário em 2026-11-02: impedir, no servidor, as atribuições novas dos papéis do vertical enquanto ele estiver desativado. O desenho abaixo é a implementação, em commit local, revisada por `reviewer` e `security` e pendente da conferência do usuário. Não houve push nem deploy.
+**Status:** a direção foi pedida pelo usuário em 2026-11-02: impedir, no servidor, as atribuições novas dos papéis do vertical enquanto ele estiver desativado. O desenho abaixo é a implementação (`d74932c`), revisada por `reviewer` e `security`. **O fechamento foi aprovado pelo usuário em 2026-11-02**, com base nas evidências, com os dois limites registrados abaixo em "Os limites desta regra".
 
 O desenho decide três coisas de estrutura, pequenas:
 
@@ -9511,7 +9511,25 @@ O desenho decide três coisas de estrutura, pequenas:
    - os convites pendentes para os papéis do vertical continuam listados e revogáveis durante a desativação. O aceite deles é que fica recusado;
    - **o convite pendente que ninguém tentou aceitar durante a desativação** volta a ser aceitável depois da reativação, com a autoridade de quem o emitiu conferida de novo. O destino dele depende de alguém ter tentado no meio da janela: quem tentou o invalidou de vez. Na tela de equipe, ele aparece na lista durante a desativação, e quem gere a equipe decide revogá-lo.
 
-**Continua aberto, e não é aceito como resíduo. Fica para decisão do usuário:**
+**Os limites desta regra** (registrados por decisão do usuário, 2026-11-02):
+
+1. **A regra não consulta a disponibilidade do vertical.**
+   - Ela depende de uma convenção: a desativação tira todas as chaves da extensão de todos os papéis (ADR-047 item 4). Por isso não deve ser descrita como "o Core confere se o vertical está ativo".
+   - Uma extensão que deixasse chave dela em algum papel desativado teria esses papéis atribuíveis.
+   - **O que protege a convenção:**
+     - os testes estáticos garantem que ninguém mais escreve essas chaves: só o serviço de ativação as grava no vertical (`clinics-static.spec.ts`), e o Core só concede os templates do Core (`permission-grants.spec.ts`);
+     - os testes estáticos novos fixam as duas formas de que a regra depende (`members-assignment.spec.ts` e `clinics-static.spec.ts`);
+     - o teste de integração da desativação prova que nenhuma chave `clinics:*` resta no workspace (`clinics-activation.integration-spec.ts`).
+2. **A janela dos papéis do Core continua aberta e NÃO está aceita para uso real.**
+   - Ela precisa ser resolvida **antes do piloto com acessos reais**, e não só antes de existir uma tela de papéis.
+   - A resolução cobre:
+     - a atribuição;
+     - os convites, na criação, no aceite e na revogação;
+     - o rebaixamento;
+     - a remoção.
+   - O desenho mínimo, o cenário reproduzível e os caminhos afetados estão na proposta separada, o **ADR-057**. Ela não é implementada nesta entrega.
+
+**Continua aberto, e não é aceito como resíduo (o ADR-057):**
 
 - **Os papéis do Core que a ativação completa.** Owner, Admin e Member também recebem `clinics:*` na ativação e na reativação. Com o Clinics desativado, eles continuam atribuíveis, porque o workspace segue como CRM.
   - **A mesma janela existe para eles.** O subconjunto é conferido com as chaves do momento. Um papel personalizado com `members:manage`, sem as chaves do Clinics que o Admin ou o Member recebem, poderia:
@@ -9525,8 +9543,8 @@ O desenho decide três coisas de estrutura, pequenas:
     - A soma vale em toda conferência do subconjunto: o papel atribuído, o papel de quem atribui, o papel atual do alvo (na troca e na remoção), o papel do convite revogado, `authorityToInvite` no aceite e `revokeInvitesWithoutAuthority`.
     - A matriz somada pelo Core precisa ser a mesma fonte que a ativação concede (`grantMatrix`), para não divergirem.
     - Fica a decidir o escopo da soma: valer onde a extensão está composta, ou só onde ela já foi ativada. O Core não lê o status do vertical, e a segunda opção deixa aberto o workspace que nunca ativou.
-    - É um ponto de composição novo, então pede um ADR antes do código.
-  - **A recomendação:** fechá-lo antes de existir qualquer rota que crie ou edite papéis (`roles:manage`).
+    - É um ponto de composição novo: é o ADR-057, proposto.
+  - **O gatilho** (decisão do usuário, 2026-11-02): resolvê-lo antes do piloto com acessos reais, e não só antes de uma tela de papéis.
 - **Os limites que seguem documentados, sem mudança:**
   - a mudança futura no template do Member exige decisão explícita para o papel combinado;
   - os nomes personalizados parecidos são pendência de clareza da interface, não garantia de identidade.
@@ -9552,3 +9570,82 @@ O desenho decide três coisas de estrutura, pequenas:
   - sem a regra em cada caminho;
   - sem a trava na ativação e na desativação;
   - a forma do papel de extensão.
+
+## ADR-057 — Autoridade na ativação: o subconjunto pelas chaves que os papéis têm com a extensão ativa
+
+**Status:** PROPOSTO (2026-11-02), como proposta separada, por decisão do usuário. **Não implementar agora.** Bloqueia o piloto com acessos reais. · **Data:** 2026-11-02
+
+**Contexto.**
+
+- **A regra de autoridade (ADR-054, itens 6 e 12):** ninguém concede, toca ou revoga o que é de quem tem mais chaves do que si. Ela é conferida com as chaves **do momento**.
+- **A ativação muda as chaves dos papéis do Core, e a desativação as tira:**
+  - a ativação e a reativação de uma extensão somam chaves a papéis do Core: no Clinics, Owner e Admin recebem todas as `clinics:*`, e o Member, a agenda (`CLINICS_ROLE_GRANTS`);
+  - a desativação tira essas chaves.
+- **O resultado:** quem não tinha uma chave pode, com a extensão desativada ou antes da primeira ativação, mexer num papel que depois a recebe.
+- **O que o ADR-056 adendo 1 já fechou:** os papéis próprios do vertical, que não são atribuídos com ele desativado.
+- **O que segue aberto:** os papéis do Core. O usuário não aceitou essa janela para uso real.
+
+**A precondição.** Quem age precisa ter `members:manage` num papel que não recebe as chaves da extensão que o papel do alvo recebe.
+
+- Hoje, só um papel personalizado faz isso, e papel personalizado só nasce por escrita direta no banco.
+- Os papéis de sistema não fazem:
+  - Owner e Admin recebem todas as chaves da extensão;
+  - Member, Guest, `Profissional` e "Recepção e atendimento" não têm `members:manage`.
+
+**O cenário reproduzível.** Foi reproduzido em 2026-11-02, num teste de integração descartável, não comitado. O roteiro é este:
+
+1. **Prepare o workspace.** Ele tem um Owner, um Admin, um Member e um Guest.
+2. **Crie o papel personalizado P**, sem `systemKey` e sem nenhuma chave `clinics:*`, nas duas variantes:
+   - **"Gestor Member":** as chaves do Core do Member, mais `members:manage`;
+   - **"Gestor Admin":** as chaves do Core do Admin, mais `members:manage`.
+3. **Dê o papel P a uma membership G.**
+4. **Rode os casos** e confira os resultados:
+
+| Caso | Passos (G age pela API da equipe)                                                                      | Com o Clinics ativo | Desativado ou nunca ativado    | Depois da (re)ativação                                                                                                                                                         |
+| ---- | ------------------------------------------------------------------------------------------------------ | ------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| S1   | "Gestor Member" troca o Guest para Member                                                              | 403                 | 200                            | o alvo tem `clinics:catalog:read`, `schedule:read` e `schedule:write`                                                                                                          |
+| S2   | "Gestor Admin" troca o Guest para Admin                                                                | 403                 | 200                            | o alvo tem **todas** as `clinics:*`, inclusive `care:*` e `restriction:manage` (a liberação para IA)                                                                           |
+| S3   | "Gestor Member" troca o Guest para Member num workspace que **nunca** ativou o Clinics                 | —                   | 200                            | na primeira ativação, o alvo recebe a agenda                                                                                                                                   |
+| S4   | "Gestor Admin" rebaixa um Admin para Guest, remove outro Admin e revoga um convite pendente para Admin | 403, 403 e 403      | 200, 200 e 200                 | —                                                                                                                                                                              |
+| S5   | "Gestor Admin" convida para Admin, e o convite é aceito durante a desativação                          | 403 no convite      | 201 no convite e 201 no aceite | quem aceitou tem todas as `clinics:*`. O convite criado na desativação e aceito só depois da reativação é recusado (400): o aceite confere a autoridade com as chaves de então |
+
+**Os caminhos afetados.** Todos conferem o subconjunto com as chaves do momento:
+
+- **`MembersService.changeRole`:** o papel atual do alvo e o papel novo (S1, S2, S3 e o rebaixamento do S4);
+- **`MembersService.removeMember`:** o papel do alvo (a remoção do S4);
+- **`InvitesService.create`, por `withinActorAuthority`:** o papel do convite (S5);
+- **`InvitesService.revoke`, por `withinActorAuthority`:** o papel do convite revogado (a revogação do S4);
+- **`InvitesService.accept`, por `MembersService.authorityToInvite`:** a autoridade de quem emitiu, conferida no aceite (S5);
+- **`MembersService.revokeInvitesWithoutAuthority`, por `authorityToInvite`:** os convites de quem foi rebaixado ou removido;
+- **as chaves de quem age:** `managerPermissions` e `actorPermissions`.
+
+**O desenho mínimo proposto:**
+
+1. **Um ponto de composição novo, as concessões declaradas.** A extensão declara na composição as chaves que a ativação dela concede a cada papel, por `systemKey`: `roleGrants`.
+   - **A fonte é única:** no Clinics, é a mesma `CLINICS_ROLE_GRANTS` que a ativação aplica (`grantMatrix`). Um teste estático prende isso.
+   - **O boot recusa** chave fora do catálogo da extensão e `systemKey` que não seja do Core nem da própria extensão.
+2. **As chaves potenciais de um papel** são as atuais somadas às que as extensões compostas declaram para o `systemKey` dele. O papel personalizado (`systemKey` nulo) não soma nada.
+3. **Toda conferência do subconjunto listada acima** usa as chaves potenciais dos dois lados: de quem age e do papel conferido.
+4. **O escopo da soma.** **Recomendado:** toda extensão composta, ative ela ou não o workspace.
+   - **O que fecha:** os cinco casos, inclusive o S3, sem ler o estado de vertical nenhum.
+   - **A consequência:** num workspace que nunca ativou a extensão, um papel personalizado sem as chaves dela não atribui nem toca Owner, Admin e Member. Hoje não há efeito, porque nenhuma rota cria papéis. Uma futura `roles:manage` precisa considerar isso no ADR dela.
+   - **A alternativa,** se essa consequência não for aceitável: só onde a extensão já tem papel próprio no workspace. O papel do vertical é criado na primeira ativação e nunca é apagado, e o Core o lê na mesma transação. Ela deixa o S3 aberto.
+5. **A corrida.** Não há trava nova: a declaração é estática, e as leituras já correm sob a trava dos membros, que a ativação e a desativação pegam (ADR-056 adendo 1).
+6. **O adendo 1 do ADR-056 continua.** As chaves potenciais sozinhas não impediriam o Owner de atribuir o `Profissional` com o Clinics desativado.
+
+**As alternativas descartadas:**
+
+- **Bloquear a atribuição dos papéis do Core com a extensão desativada:** congela a gestão de equipe do CRM.
+- **Proibir papel personalizado com `members:manage`:** fecha o caso de hoje, mas a classe volta com a primeira rota que criar papéis.
+- **A ativação reconferir as atribuições feitas na desativação:** exigiria saber quem atribuiu cada papel, e a ativação julgaria memberships.
+- **A porta de disponibilidade do E2:** diz o que pode ser concedido agora, não o que o papel vai receber.
+
+**As provas, quando implementado:**
+
+- os casos S1 a S5 recusados com a extensão ativa, desativada e nunca ativada;
+- Owner e Admin continuam atribuindo, rebaixando, removendo e convidando como hoje;
+- o boot recusa a declaração inválida;
+- a fonte única com a ativação;
+- as mutações em cada caminho da lista.
+
+**O gatilho** (decisão do usuário, 2026-11-02): resolver antes do piloto com acessos reais, cobrindo a atribuição, os convites, o rebaixamento e a remoção. Não basta tratar quando surgir uma tela de papéis.

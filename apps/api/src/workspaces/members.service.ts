@@ -203,12 +203,15 @@ export class MembersService {
 
   /**
    * Um papel de EXTENSÃO (`<extensão>:<papel>`, ADR-047 E3) só é atribuível
-   * com a extensão ativa no workspace: a desativação tira dele todas as chaves
-   * da extensão, e a reativação as devolve. Atribuído no meio, ele ganharia na
-   * reativação o que quem atribuiu talvez nunca pudesse conceder (ADR-056
-   * adendo 1). O Core não lê o status de vertical nenhum: sem chave da própria
-   * extensão, o papel não é atribuível; o de extensão não composta, nunca. A
-   * regra não afeta o papel do Core nem o personalizado.
+   * enquanto tiver uma chave da própria extensão; o de extensão não composta,
+   * nunca. Atribuído com a extensão desativada, ele ganharia na reativação o
+   * que quem atribuiu talvez nunca pudesse conceder (ADR-056 adendo 1).
+   *
+   * NÃO é uma consulta à disponibilidade do vertical: o Core não lê status
+   * nenhum. A regra depende da convenção de que a desativação tira todas as
+   * chaves da extensão de todos os papéis (ADR-047 item 4), presa pelos testes
+   * estáticos (só a ativação grava essas chaves) e pelo da desativação. A
+   * regra não afeta o papel do Core nem o personalizado (ADR-057, proposto).
    *
    * Chamada sob a trava dos membros, que a ativação e a desativação também
    * pegam: a leitura não corre no meio delas.
