@@ -3,6 +3,8 @@ import type { InviteDto, MemberDto, RoleDto } from '@veyra/contracts';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
+import { crmExperience } from '../experiences/crm';
+import { ExperienceProvider, nomeDoPapel, type ExperienceManifest } from '../lib/experience';
 import { useSession } from '../lib/session';
 import { criarQueryClient } from '../lib/session-query';
 import { TeamPage, administra, diferenca, linkDoConvite } from './Team';
@@ -36,17 +38,36 @@ function mockApi(rotas: Record<string, Resposta>) {
   return chamadas;
 }
 
+/**
+ * Um produto FICTÍCIO que chama o Member padrão de "Recepção": o mecanismo é do
+ * Core, e o teste não importa vertical (ADR-047). O rótulo do Clinics em si é
+ * conferido no teste dele.
+ */
+const PRODUTO_QUE_ROTULA: ExperienceManifest = {
+  ...crmExperience,
+  key: 'produto-ficticio',
+  papeis: { member: 'Recepção' },
+};
+
 const DESC: Record<string, string> = {
   'members:read': 'Ver membros e equipes',
+  'extensao:atendimento:registrar': 'Registrar o atendimento (chave fictícia de uma extensão)',
   'members:manage': 'Convidar, remover e alterar membros e equipes',
   'contacts:read': 'Ver contatos e empresas',
   'billing:manage': 'Gerir plano, assinatura e limites',
 };
-const papel = (id: string, name: string, permissions: string[]): RoleDto => ({
+const papel = (
+  id: string,
+  name: string,
+  permissions: string[],
+  systemKey: string | null = name.toLowerCase(),
+  description: string | null = null,
+): RoleDto => ({
   id,
   name,
-  description: null,
-  isSystem: true,
+  description,
+  isSystem: systemKey !== null,
+  systemKey,
   permissions,
   permissionDescriptions: Object.fromEntries(permissions.map((p) => [p, DESC[p]])),
 });
@@ -75,6 +96,7 @@ const membro = (id: string, name: string, r: RoleDto): MemberDto => ({
   email: `${id}@clinica.test`,
   roleId: r.id,
   roleName: r.name,
+  roleSystemKey: r.systemKey,
   status: 'active',
   createdAt: '2030-11-01T12:00:00.000Z',
 });
@@ -87,6 +109,7 @@ const convite = (id: string, email: string, r: RoleDto, expiresAt: string): Invi
   email,
   roleId: r.id,
   roleName: r.name,
+  roleSystemKey: r.systemKey,
   expiresAt,
   acceptedAt: null,
   createdAt: '2030-11-01T12:00:00.000Z',
@@ -127,14 +150,19 @@ function SessaoCarregada() {
   return data ? <span data-testid="sessao-carregada" hidden /> : null;
 }
 
-function renderizar() {
+function renderizar(manifesto?: ExperienceManifest) {
   const client = criarQueryClient();
   client.setDefaultOptions({ queries: { retry: false, refetchOnWindowFocus: false } });
+  const tela = (
+    <>
+      <SessaoCarregada />
+      <TeamPage />
+    </>
+  );
   render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        <SessaoCarregada />
-        <TeamPage />
+        {manifesto ? <ExperienceProvider value={manifesto}>{tela}</ExperienceProvider> : tela}
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -373,5 +401,203 @@ describe('quem só lê a equipe', () => {
     expect(screen.getByText('Papéis e permissões')).toBeInTheDocument();
     await new Promise((r) => setTimeout(r, 20));
     expect(chamadas.some((c) => c.chave === 'GET /api/invites')).toBe(false);
+  });
+});
+
+describe('o nome do papel na linguagem do produto (ADR-056)', () => {
+  // um papel combinado de uma extensão FICTÍCIA: o teste do Core não conhece o vertical
+  const COMBINADO = papel(
+    '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5f05',
+    'Recepção e atendimento',
+    ['members:read', 'contacts:read', 'extensao:atendimento:registrar'],
+    'extensao:recepcao-e-atendimento',
+    'Agenda e registra atendimentos da clínica, com o CRM e as conversas da recepção.',
+  );
+
+  it('a regra: só o papel de sistema padrão, com o nome padrão, ganha o rótulo do produto', () => {
+    expect(nomeDoPapel({ name: 'Member', systemKey: 'member' }, PRODUTO_QUE_ROTULA)).toBe(
+      'Recepção',
+    );
+    // no CRM, e fora de um produto, o nome persistido
+    expect(nomeDoPapel({ name: 'Member', systemKey: 'member' }, crmExperience)).toBe('Member');
+    expect(nomeDoPapel({ name: 'Member', systemKey: 'member' }, null)).toBe('Member');
+    // o Member renomeado no workspace: o nome personalizado é preservado
+    expect(nomeDoPapel({ name: 'Atendentes', systemKey: 'member' }, PRODUTO_QUE_ROTULA)).toBe(
+      'Atendentes',
+    );
+    // um papel PERSONALIZADO chamado "Member" nunca é a recepção padrão
+    expect(nomeDoPapel({ name: 'Member', systemKey: null }, PRODUTO_QUE_ROTULA)).toBe('Member');
+    // um papel personalizado com o NOME do rótulo (em qualquer caixa ou forma
+    // Unicode) não se passa pela recepção padrão
+    expect(nomeDoPapel({ name: 'Recepção', systemKey: null }, PRODUTO_QUE_ROTULA)).toBe(
+      'Recepção (personalizado)',
+    );
+    expect(
+      nomeDoPapel({ name: 'RECEPÇÃO'.normalize('NFD'), systemKey: null }, PRODUTO_QUE_ROTULA),
+    ).toBe(`${'RECEPÇÃO'.normalize('NFD')} (personalizado)`);
+    // e o Member renomeado para o nome do rótulo também é dito personalizado
+    expect(nomeDoPapel({ name: 'Recepção', systemKey: 'member' }, PRODUTO_QUE_ROTULA)).toBe(
+      'Recepção (personalizado)',
+    );
+    // sem produto que rotule, nada muda
+    expect(nomeDoPapel({ name: 'Recepção', systemKey: null }, crmExperience)).toBe('Recepção');
+    // os outros papéis, com o nome deles
+    expect(nomeDoPapel({ name: 'Owner', systemKey: 'owner' }, PRODUTO_QUE_ROTULA)).toBe('Owner');
+    expect(
+      nomeDoPapel(
+        { name: 'Recepção e atendimento', systemKey: 'extensao:recepcao-e-atendimento' },
+        PRODUTO_QUE_ROTULA,
+      ),
+    ).toBe('Recepção e atendimento');
+  });
+
+  it('num produto que rotula o papel, o Member padrão aparece como "Recepção" nos membros, nos convites, nos papéis e no convite novo', async () => {
+    mockApi({
+      ...rotas(['members:read', 'members:manage', 'contacts:read']),
+      'GET /api/roles': { body: [...PAPEIS, COMBINADO] },
+    });
+    renderizar(PRODUTO_QUE_ROTULA);
+    expect(within(await linha('Carla Fictícia')).getByText('Recepção')).toBeInTheDocument();
+    expect(within(await linha('nova@clinica.test')).getByText('Recepção')).toBeInTheDocument();
+    const papeis = screen.getByRole('heading', { name: 'Papéis e permissões' }).closest('section');
+    const listaDePapeis = within((papeis ?? document.body) as HTMLElement);
+    expect(listaDePapeis.getByText('Recepção')).toBeInTheDocument();
+    expect(listaDePapeis.queryByText('Member')).toBeNull();
+    // o papel combinado aparece pelo nome dele, com a descrição
+    expect(listaDePapeis.getByText('Recepção e atendimento')).toBeInTheDocument();
+    expect(
+      listaDePapeis.getByText(
+        'Agenda e registra atendimentos da clínica, com o CRM e as conversas da recepção.',
+      ),
+    ).toBeInTheDocument();
+    // o convite novo oferece "Recepção" (e o papel persistido continua o mesmo id)
+    const campo = screen.getByLabelText('Papel do convite');
+    const opcao = within(campo).getByRole('option', { name: 'Recepção' });
+    expect((opcao as HTMLOptionElement).value).toBe(MEMBRO.id);
+  });
+
+  it('num produto que rotula o papel, as caixas de troca, remoção e revogação dizem "Recepção", e a troca diz o rótulo do papel novo', async () => {
+    mockApi({
+      ...rotas(['members:read', 'members:manage', 'contacts:read']),
+      'GET /api/members': { body: [EU, DONA, CARLA, membro('m4', 'Davi Fictício', CONVIDADO)] },
+      'GET /api/roles': { body: [...PAPEIS, COMBINADO] },
+      'PATCH /api/members/m4/role': { body: { ok: true } },
+    });
+    renderizar(PRODUTO_QUE_ROTULA);
+    const carla = await linha('Carla Fictícia');
+    fireEvent.click(
+      within(carla).getByRole('button', { name: 'Trocar o papel de Carla Fictícia' }),
+    );
+    const troca = await screen.findByRole('dialog');
+    expect(troca).toHaveTextContent('Carla Fictícia tem hoje o papel Recepção.');
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+
+    fireEvent.click(
+      within(await linha('Carla Fictícia')).getByRole('button', {
+        name: 'Remover o acesso de Carla Fictícia ao workspace',
+      }),
+    );
+    expect(await screen.findByRole('dialog')).toHaveTextContent(
+      'Remover o acesso de Carla Fictícia (Recepção) a este workspace',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+
+    fireEvent.click(
+      within(await linha('nova@clinica.test')).getByRole('button', {
+        name: 'Revogar o convite de nova@clinica.test',
+      }),
+    );
+    expect(await screen.findByRole('dialog')).toHaveTextContent(
+      'Revogar o convite de nova@clinica.test (Recepção)',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+
+    // a troca de quem é Guest oferece "Recepção", e a confirmação diz o rótulo
+    fireEvent.click(
+      within(await linha('Davi Fictício')).getByRole('button', {
+        name: 'Trocar o papel de Davi Fictício',
+      }),
+    );
+    const campo = within(await screen.findByRole('dialog')).getByLabelText('Novo papel');
+    const opcao = within(campo).getByRole('option', { name: 'Recepção' });
+    fireEvent.change(campo, { target: { value: (opcao as HTMLOptionElement).value } });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar a troca' }));
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      'Davi Fictício agora tem o papel Recepção.',
+    );
+  });
+
+  it('trocar a recepção para o papel combinado mostra a ampliação de acesso antes de confirmar', async () => {
+    mockApi({
+      ...rotas([
+        'members:read',
+        'members:manage',
+        'contacts:read',
+        'extensao:atendimento:registrar',
+      ]),
+      'GET /api/roles': { body: [...PAPEIS, COMBINADO] },
+    });
+    renderizar(PRODUTO_QUE_ROTULA);
+    fireEvent.click(
+      within(await linha('Carla Fictícia')).getByRole('button', {
+        name: 'Trocar o papel de Carla Fictícia',
+      }),
+    );
+    const campo = within(await screen.findByRole('dialog')).getByLabelText('Novo papel');
+    fireEvent.change(campo, { target: { value: COMBINADO.id } });
+    const efeito = await screen.findByTestId('efeito-da-troca');
+    expect(efeito).toHaveTextContent('Registrar o atendimento (chave fictícia de uma extensão)');
+  });
+
+  it('no CRM, o mesmo papel continua "Member"', async () => {
+    mockApi(rotas(['members:read', 'members:manage', 'contacts:read']));
+    renderizar(crmExperience);
+    expect(within(await linha('Carla Fictícia')).getByText('Member')).toBeInTheDocument();
+    expect(screen.queryByText('Recepção')).toBeNull();
+  });
+
+  it('num produto que rotula o papel, o nome personalizado é preservado e um papel personalizado não vira a recepção', async () => {
+    const RENOMEADO = papel(MEMBRO.id, 'Atendentes', MEMBRO.permissions, 'member');
+    const PERSONALIZADO = papel(
+      '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5f06',
+      'Member',
+      ['contacts:read'],
+      null,
+    );
+    const PARECE_A_RECEPCAO = papel(
+      '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5f07',
+      'Recepção',
+      ['contacts:read'],
+      null,
+    );
+    mockApi({
+      ...rotas(['members:read', 'members:manage', 'contacts:read']),
+      'GET /api/members': {
+        body: [
+          EU,
+          DONA,
+          membro('m3', 'Carla Fictícia', RENOMEADO),
+          membro('m4', 'Davi Fictício', PERSONALIZADO),
+          membro('m5', 'Eva Fictícia', PARECE_A_RECEPCAO),
+        ],
+      },
+      'GET /api/roles': {
+        body: [OWNER, ADMIN, RENOMEADO, CONVIDADO, PERSONALIZADO, PARECE_A_RECEPCAO],
+      },
+      'GET /api/invites': { body: [] },
+    });
+    renderizar(PRODUTO_QUE_ROTULA);
+    expect(within(await linha('Carla Fictícia')).getByText('Atendentes')).toBeInTheDocument();
+    expect(within(await linha('Davi Fictício')).getByText('Member')).toBeInTheDocument();
+    // o personalizado chamado "Recepção" não se passa pela recepção padrão, nem no seletor
+    expect(
+      within(await linha('Eva Fictícia')).getByText('Recepção (personalizado)'),
+    ).toBeInTheDocument();
+    expect(
+      within(screen.getByLabelText('Papel do convite')).getByRole('option', {
+        name: 'Recepção (personalizado)',
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Recepção')).toBeNull();
   });
 });

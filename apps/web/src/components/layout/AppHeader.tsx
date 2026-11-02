@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { ROTAS_DO_CORE } from '../../experiences/core-routes';
 import {
+  nomeDoPapel,
   secaoDeConfiguracao,
   secoesAlcancaveis,
   useExperience,
@@ -189,7 +190,15 @@ export function AppHeader({ manifestos }: { manifestos: readonly ExperienceManif
         <span className="hidden min-w-0 leading-tight md:block">
           <span className="block truncate text-data font-medium">{user?.name}</span>
           <span className="block truncate text-data-sm text-muted-fg">
-            {user?.activeMembership?.roleName}
+            {user?.activeMembership
+              ? nomeDoPapel(
+                  {
+                    name: user.activeMembership.roleName,
+                    systemKey: user.activeMembership.roleSystemKey,
+                  },
+                  experiencia,
+                )
+              : null}
           </span>
         </span>
         <button

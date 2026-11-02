@@ -1302,6 +1302,11 @@ docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
   exec api node dist/verticals/clinics/cli/clinics.js enable  --slug <slug>
 docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
   exec api node dist/verticals/clinics/cli/clinics.js disable --slug <slug>
+# ADR-056: num workspace com o Clinics JÁ ativo, cria o papel do vertical que
+# falta ("Recepção e atendimento"), com a matriz padrão, sem tocar memberships;
+# só INFORMA as divergências. No staging (o demo), só com autorização à parte
+docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
+  exec api node dist/verticals/clinics/cli/clinics.js sync-roles --slug <slug>
 ```
 
 O que `enable` faz, e não se desfaz sozinho:

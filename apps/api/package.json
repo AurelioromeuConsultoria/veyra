@@ -25,6 +25,7 @@
     "demo:carregar": "nest build && node dist/verticals/clinics/cli/demo-carregar.js",
     "clinics:enable": "nest build && node dist/verticals/clinics/cli/clinics.js enable",
     "clinics:disable": "nest build && node dist/verticals/clinics/cli/clinics.js disable",
+    "clinics:sync-roles": "nest build && node dist/verticals/clinics/cli/clinics.js sync-roles",
     "plan": "tsx scripts/set-plan.ts",
     "channel:whatsapp": "nest build && node dist/cli/channel-whatsapp.js",
     "redact:meta": "tsx scripts/redact-meta-error.ts"

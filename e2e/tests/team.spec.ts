@@ -28,8 +28,16 @@ test.describe('Equipe pela interface (ADR-054)', () => {
       profissional.getByText(CLINICS_PERMISSION_CATALOG['clinics:care:write']),
     ).toBeVisible();
 
+    // "Recepção e atendimento" (ADR-056): criado pela ativação, com a descrição dele
+    const combinado = page.locator('details', {
+      has: page.locator('summary', { hasText: 'Recepção e atendimento' }),
+    });
+    await combinado.locator('summary').click();
+    await expect(combinado.getByText(/Agenda e registra atendimentos da clínica/)).toBeVisible();
+
+    // na clínica, o Member padrão aparece como "Recepção" (só o nome na tela, ADR-056)
     await page.getByLabel('E-mail do convite').fill(EMAIL);
-    await page.getByLabel('Papel do convite').selectOption({ label: 'Member' });
+    await page.getByLabel('Papel do convite').selectOption({ label: 'Recepção' });
     await page.getByRole('button', { name: 'Criar convite' }).click();
     const painel = page.getByTestId('link-do-convite');
     await expect(painel).toContainText('/convite#');
@@ -52,7 +60,7 @@ test.describe('Equipe pela interface (ADR-054)', () => {
     await convidada.getByRole('button', { name: 'Aceitar e entrar' }).click();
     // o início do produto do workspace (a clínica, ADR-055): o menu dele
     await expect(convidada.getByRole('navigation', { name: 'Principal' })).toBeVisible();
-    // Member lê a equipe (nas Configurações da clínica)
+    // a recepção (o Member) lê a equipe (nas Configurações da clínica)
     await convidada
       .getByRole('navigation', { name: 'Principal' })
       .getByRole('link', { name: 'Configurações', exact: true })
@@ -62,7 +70,7 @@ test.describe('Equipe pela interface (ADR-054)', () => {
     // quem convidou vê a nova membro, e o convite saiu da lista
     await page.reload();
     const linha = page.getByRole('row', { name: /Convidada E2E/ });
-    await expect(linha).toContainText('Member');
+    await expect(linha).toContainText('Recepção');
     await expect(
       page.getByRole('row', { name: new RegExp(EMAIL) }).filter({ hasText: 'Aguardando aceite' }),
     ).toHaveCount(0);

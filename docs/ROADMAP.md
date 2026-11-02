@@ -198,7 +198,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
 
   - **Normalização dos e-mails** (aprovada pelo usuário como entrega própria, **antes do piloto**): começa pelo diagnóstico das colisões e pelo desenho da migração, sem unir contas nem escolher vencedora automaticamente. Até lá vale o critério único da F5.1a (ADR-054 item 13).
   1. **F5.1 — Equipe e permissões 🚧** (a F5.1a acima)
-     - **F5.1b — D7, quem acumula funções:** a menor evolução para combinar recepção, atendimento e, quando preciso, o Inbox. O desenho é apresentado antes do código. **Aprovado em 2026-11-02, com condições (ADR-056):** só "Recepção e atendimento", com a matriz padrão; "Recepção" só na apresentação do Clinics; a sincronização explícita por workspace. "Atendimento e conversas" fica proposto. Owner ou Admin não servem de solução provisória, e nada de múltiplos papéis ou edição de permissões sem o desenho aprovado.
+     - **F5.1b — D7, quem acumula funções:** a menor evolução para combinar recepção, atendimento e, quando preciso, o Inbox. O desenho é apresentado antes do código. **Aprovado em 2026-11-02, com condições (ADR-056):** só "Recepção e atendimento", com a matriz padrão; "Recepção" só na apresentação do Clinics; a sincronização explícita por workspace. "Atendimento e conversas" fica proposto. **Implementada em commit local (2026-11-02), sem push nem deploy:** o papel criado pela ativação, a sincronização `clinics sync-roles`, o rótulo por produto e os testes; no staging, nada roda sem autorização à parte. Owner ou Admin não servem de solução provisória, e nada de múltiplos papéis ou edição de permissões sem o desenho aprovado.
   2. **F5.2 — Correção de um consumo de pacote registrado por engano.** Primeiro o plano, com as operações propostas e as permissões, antes do código:
      - preserva o atendimento e o lançamento original;
      - registra quem corrigiu e o motivo;
@@ -233,7 +233,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
   - texto clínico digitado por pessoas nas superfícies do Core;
   - a regra "restrito por padrão" implementada e provada;
   - a decisão jurídica sobre exclusão e retenção;
-  - a gestão de equipe pela interface: **atendida em parte pela F5.1a** (ADR-054). A autoridade de quem convidou entrou na F5.1a (ADR-054 item 12). Seguem abertos a D7 (um papel por membro, F5.1b) e a normalização dos e-mails, entrega própria antes do piloto (ADR-054 item 13).
+  - a gestão de equipe pela interface: **atendida em parte pela F5.1a** (ADR-054). A autoridade de quem convidou entrou na F5.1a (ADR-054 item 12). A D7 está resolvida para a recepção que também atende ("Recepção e atendimento", F5.1b, ADR-056, em commit local); seguem abertos as outras combinações (como "Atendimento e conversas", proposto) e a normalização dos e-mails, entrega própria antes do piloto (ADR-054 item 13).
 
   O vazamento do cache da tela entre sessões na mesma aba, achado do `security` na F2.3, foi corrigido antes de qualquer publicação da F2.3 (ADR-050).
 
@@ -241,7 +241,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
 
 - **Equipe (B4 e D7), dependências explícitas para um piloto com equipe.** A criação do papel `Profissional` não as resolve:
   - convite, aceite, troca de papel e remoção de acesso passam a ser feitos pela interface com a F5.1a (ADR-054, commit local, ainda não publicado). Não existe edição de papéis;
-  - cada membro tem um só papel (D7, F5.1b, em aberto).
+  - cada membro tem um só papel. A D7 está resolvida para a recepção que também atende: o papel combinado "Recepção e atendimento" (F5.1b, ADR-056, em commit local). Outras combinações abrem a revisão do modelo.
 
   Para F1–F3, a premissa é que Member cobre a recepção e `Profissional` cobre a consulta à agenda e o atendimento. **D7 é reaberta antes da F4** se alguma função precisar combinar o Clinics com o CRM ou o Inbox do Core. A gestão de equipe é lacuna do Core e precisa de entrega própria antes do piloto. É a **F5.1** do próximo ciclo: a F5.1a é a tela (ADR-054), e a F5.1b, a D7.
 

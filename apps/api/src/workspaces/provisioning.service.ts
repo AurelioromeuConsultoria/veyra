@@ -1,5 +1,5 @@
 import { ConflictException, Injectable } from '@nestjs/common';
-import { PERMISSION_CATALOG, SYSTEM_ROLE_TEMPLATES } from '@veyra/contracts';
+import { PERMISSION_CATALOG, SYSTEM_ROLE_TEMPLATES, systemKeyDoTemplate } from '@veyra/contracts';
 import { generateOpaqueToken, sha256 } from '../auth/tokens';
 import { DEFAULT_STAGES } from '../pipelines/pipelines.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -99,7 +99,7 @@ export class ProvisioningService {
 
       let ownerRoleId = '';
       for (const [name, keys] of Object.entries(SYSTEM_ROLE_TEMPLATES)) {
-        const systemKey = name.toLowerCase();
+        const systemKey = systemKeyDoTemplate(name);
         const role = await tx.role.create({
           data: { workspaceId: workspace.id, name, isSystem: true, systemKey },
         });

@@ -5,7 +5,7 @@ import { Check, ChevronsUpDown } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, ApiError } from '../../lib/api';
-import { produtoDa, type ExperienceManifest } from '../../lib/experience';
+import { nomeDoPapel, produtoDa, type ExperienceManifest } from '../../lib/experience';
 import { useSession } from '../../lib/session';
 
 /**
@@ -78,7 +78,12 @@ export function WorkspaceSwitcher({
               <span className="min-w-0 flex-1">
                 <span className="block truncate font-medium">{m.workspaceName}</span>
                 <span className="block truncate text-data-sm text-muted-fg">
-                  {produtoDa(m.experience, manifestos)} · {m.roleName}
+                  {produtoDa(m.experience, manifestos)} ·{' '}
+                  {/* o papel na linguagem do produto DAQUELE workspace (ADR-056) */}
+                  {nomeDoPapel(
+                    { name: m.roleName, systemKey: m.roleSystemKey },
+                    manifestos.find((x) => x.key === m.experience),
+                  )}
                 </span>
               </span>
               {eAtual ? <Check size={14} aria-hidden className="shrink-0 text-accent" /> : null}

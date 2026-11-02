@@ -39,6 +39,7 @@ export class MembersService {
         name: role.name,
         description: role.description,
         isSystem: role.isSystem,
+        systemKey: role.systemKey,
         permissions,
         // chave fora do catálogo composto (não deveria existir: a checagem de
         // boot recusa) aparece pela própria chave, nunca some da lista
@@ -69,6 +70,7 @@ export class MembersService {
       email: byId.get(m.userId)?.email ?? '',
       roleId: m.roleId,
       roleName: (m as unknown as { role: { name: string } }).role.name,
+      roleSystemKey: (m as unknown as { role: { systemKey: string | null } }).role.systemKey,
       status: m.status,
       createdAt: m.createdAt.toISOString(),
     }));

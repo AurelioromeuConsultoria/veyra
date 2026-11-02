@@ -13,6 +13,7 @@ import { Drawer } from '../components/ui/drawer';
 import { Field, Input, Select } from '../components/ui/input';
 import { EmptyState, PageBody, PageHeader, Panel, PanelHeader } from '../components/ui/page';
 import { api, ApiError } from '../lib/api';
+import { useNomeDoPapel } from '../lib/experience';
 import { hasPermission, useSession } from '../lib/session';
 
 /**
@@ -72,6 +73,8 @@ export function TeamPage() {
   const podeGerir = hasPermission(user, 'members:manage');
   const minhas = useMemo(() => user?.permissions ?? [], [user]);
   const eu = user?.activeMembership?.membershipId ?? null;
+  // o nome do papel na linguagem do produto (ADR-056): "Recepção" no Clinics
+  const nomeDoPapel = useNomeDoPapel();
 
   const membros = useQuery({
     // a mesma chave de quem mais lê os membros (`Contacts.tsx`): uma lista só
@@ -171,7 +174,9 @@ export function TeamPage() {
                       {sou ? <span className="ml-2 text-data-sm text-muted-fg">(você)</span> : null}
                       <span className="block num text-data-sm text-muted-fg">{m.email}</span>
                     </td>
-                    <td className="px-4 py-2">{m.roleName}</td>
+                    <td className="px-4 py-2">
+                      {nomeDoPapel({ name: m.roleName, systemKey: m.roleSystemKey })}
+                    </td>
                     <td className="px-4 py-2 text-data">{ESTADO[m.status]}</td>
                     <td className="px-4 py-2 num text-data text-muted-fg">{data(m.createdAt)}</td>
                     <td className="px-4 py-2 text-right">
@@ -245,7 +250,9 @@ export function TeamPage() {
                     return (
                       <tr key={c.id} className="border-b border-border/60 last:border-b-0">
                         <td className="px-4 py-2 num text-data">{c.email}</td>
-                        <td className="px-4 py-2">{c.roleName}</td>
+                        <td className="px-4 py-2">
+                          {nomeDoPapel({ name: c.roleName, systemKey: c.roleSystemKey })}
+                        </td>
                         <td className="px-4 py-2 text-data text-muted-fg">
                           {c.issuedByProvisioning
                             ? 'Operação (provisionamento)'
@@ -342,6 +349,7 @@ function NovoConvite({
   const [email, setEmail] = useState('');
   const [roleId, setRoleId] = useState('');
   const [erro, setErro] = useState<string | null>(null);
+  const nomeDoPapel = useNomeDoPapel();
   /** O link aparece UMA vez: fica só no estado local, nunca é buscado de novo. */
   const [criado, setCriado] = useState<{ link: string; email: string; ate: string } | null>(null);
 
@@ -440,7 +448,7 @@ function NovoConvite({
               <option value="">Escolha o papel…</option>
               {concediveis.map((r) => (
                 <option key={r.id} value={r.id}>
-                  {r.name}
+                  {nomeDoPapel(r)}
                 </option>
               ))}
             </Select>
@@ -517,6 +525,7 @@ function TrocarPapel({
   aoCancelar: () => void;
 }) {
   const nome = membro.name || membro.email;
+  const nomeDoPapel = useNomeDoPapel();
   const opcoes = concediveis.filter((r) => r.id !== membro.roleId);
   const [roleId, setRoleId] = useState('');
   const novo = opcoes.find((r) => r.id === roleId) ?? null;
@@ -527,7 +536,7 @@ function TrocarPapel({
       api.patch<{ ok: true }>(`/api/members/${membro.membershipId}/role`, { roleId }),
     onSuccess: () =>
       aoConcluir(
-        `${nome} agora tem o papel ${novo?.name ?? ''}. O acesso emitido com o papel anterior deixou de valer.`,
+        `${nome} agora tem o papel ${novo ? nomeDoPapel(novo) : ''}. O acesso emitido com o papel anterior deixou de valer.`,
       ),
   });
 
@@ -535,7 +544,10 @@ function TrocarPapel({
     <div>
       <p className="text-body-sm">
         <span className="font-medium">{nome}</span> tem hoje o papel{' '}
-        <span className="font-medium">{membro.roleName}</span>.
+        <span className="font-medium">
+          {nomeDoPapel({ name: membro.roleName, systemKey: membro.roleSystemKey })}
+        </span>
+        .
       </p>
       <div className="mt-4">
         <Field label="Novo papel">
@@ -549,7 +561,7 @@ function TrocarPapel({
             <option value="">Escolha o papel…</option>
             {opcoes.map((r) => (
               <option key={r.id} value={r.id}>
-                {r.name}
+                {nomeDoPapel(r)}
               </option>
             ))}
           </Select>
@@ -615,6 +627,7 @@ function RemoverMembro({
   aoCancelar: () => void;
 }) {
   const nome = membro.name || membro.email;
+  const nomeDoPapel = useNomeDoPapel();
   const remover = useMutation({
     mutationFn: () => api.delete<{ ok: true }>(`/api/members/${membro.membershipId}`),
     onSuccess: () => aoConcluir(`${nome} não tem mais acesso a este workspace.`),
@@ -622,8 +635,8 @@ function RemoverMembro({
   return (
     <div data-testid="efeito-da-remocao">
       <p className="text-body-sm">
-        Remover o acesso de <span className="font-medium">{nome}</span> ({membro.roleName}) a este
-        workspace:
+        Remover o acesso de <span className="font-medium">{nome}</span> (
+        {nomeDoPapel({ name: membro.roleName, systemKey: membro.roleSystemKey })}) a este workspace:
       </p>
       <div className="mt-3">
         <Efeitos>
@@ -663,6 +676,7 @@ function RevogarConvite({
   aoConcluir: (texto: string) => void;
   aoCancelar: () => void;
 }) {
+  const nomeDoPapel = useNomeDoPapel();
   const revogar = useMutation({
     mutationFn: () => api.delete<{ ok: true }>(`/api/invites/${convite.id}`),
     onSuccess: () => aoConcluir(`O convite de ${convite.email} foi revogado.`),
@@ -671,7 +685,7 @@ function RevogarConvite({
     <div>
       <p className="text-body-sm">
         Revogar o convite de <span className="font-medium">{convite.email}</span> (
-        {convite.roleName}):
+        {nomeDoPapel({ name: convite.roleName, systemKey: convite.roleSystemKey })}):
       </p>
       <div className="mt-3">
         <Efeitos>
@@ -693,6 +707,7 @@ function RevogarConvite({
 }
 
 function Papeis({ papeis, membros }: { papeis: RoleDto[]; membros: MemberDto[] }) {
+  const nomeDoPapel = useNomeDoPapel();
   return (
     <Panel className="max-w-4xl">
       <PanelHeader title="Papéis e permissões" />
@@ -706,7 +721,7 @@ function Papeis({ papeis, membros }: { papeis: RoleDto[]; membros: MemberDto[] }
             <li key={r.id} className="px-4 py-2.5">
               <details>
                 <summary className="cursor-pointer text-body-sm">
-                  <span className="font-medium">{r.name}</span>
+                  <span className="font-medium">{nomeDoPapel(r)}</span>
                   <span className="ml-2 text-data-sm text-muted-fg">
                     {r.permissions.length} permissões · {quantos}{' '}
                     {quantos === 1 ? 'membro' : 'membros'}

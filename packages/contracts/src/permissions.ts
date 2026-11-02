@@ -79,3 +79,28 @@ export const SYSTEM_ROLE_TEMPLATES: Record<string, readonly PermissionKey[]> = {
     'files:read',
   ],
 };
+
+/**
+ * O `systemKey` de um papel de sistema do Core: o nome do template em
+ * minúsculas (o provisionamento o grava assim). A apresentação reconhece o
+ * papel PADRÃO pelo par chave + nome do template (ADR-056).
+ */
+export function systemKeyDoTemplate(nome: string): string {
+  return nome.toLowerCase();
+}
+
+/** O nome PADRÃO de cada papel de sistema do Core, pela chave. */
+export const NOME_PADRAO_DO_PAPEL_DE_SISTEMA: Readonly<Record<string, string>> = Object.freeze(
+  Object.fromEntries(
+    Object.keys(SYSTEM_ROLE_TEMPLATES).map((nome) => [systemKeyDoTemplate(nome), nome]),
+  ),
+);
+
+/**
+ * Um nome de papel como a pessoa o lê: sem diferença de maiúsculas, na mesma
+ * forma Unicode e sem espaço nas pontas. A unique do banco é exata; esta é a
+ * comparação de "é o mesmo nome" (ADR-056).
+ */
+export function nomeDePapelComoSeLe(nome: string): string {
+  return nome.normalize('NFC').toLocaleLowerCase('pt-BR').trim();
+}

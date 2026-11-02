@@ -4,6 +4,7 @@ import { SYSTEM_ROLE_TEMPLATES } from '@veyra/contracts';
 import {
   CLINICS_PERMISSION_KEYS,
   CLINICS_PROFESSIONAL_SYSTEM_KEY,
+  CLINICS_RECEPTION_CARE_SYSTEM_KEY,
 } from '@veyra/contracts/verticals/clinics';
 import { ClsService } from 'nestjs-cls';
 import { Client } from 'pg';
@@ -23,7 +24,13 @@ import {
 } from '../../../test/integration/fixtures';
 import { resetDb } from '../../../test/integration/harness';
 import { ClinicsActivationService } from './clinics-activation.service';
-import { CLINICS_PROFESSIONAL_CORE_KEYS, CLINICS_ROLE_GRANTS } from './clinics-permissions';
+import {
+  CLINICS_PROFESSIONAL_CORE_KEYS,
+  CLINICS_RECEPTION_CARE_CORE_KEYS,
+  CLINICS_ROLE_GRANTS,
+  CLINICS_VERTICAL_ROLES,
+  chavesPadraoDoPapel,
+} from './clinics-permissions';
 import { CLINICS_USAGE, parseClinicsArgs, runClinicsCommand } from './cli/clinics-command';
 
 const ORIGIN = process.env.WEB_ORIGIN ?? 'http://localhost:5175';
@@ -59,7 +66,7 @@ describe('Clinics — ativação pela CLI, isolamento e ciclo de vida (integraç
   const cli = async (...argv: string[]): Promise<string[]> => {
     const command = parseClinicsArgs(argv);
     if (!command) throw new Error(CLINICS_USAGE);
-    return runClinicsCommand(cliContext.get(ClinicsActivationService), command);
+    return (await runClinicsCommand(cliContext.get(ClinicsActivationService), command)).linhas;
   };
 
   const loginAs = async (email: string): Promise<Session> => {
@@ -340,6 +347,33 @@ describe('Clinics — ativação pela CLI, isolamento e ciclo de vida (integraç
           ...CLINICS_ROLE_GRANTS[CLINICS_PROFESSIONAL_SYSTEM_KEY],
         ].sort(),
       );
+      // "Recepção e atendimento" (ADR-056): criado pela ativação, com a matriz
+      // padrão, SEM nenhum membro
+      const combinado = await prisma.raw.role.findFirst({
+        where: { workspaceId: wsA.workspaceId, systemKey: CLINICS_RECEPTION_CARE_SYSTEM_KEY },
+        include: { permissions: { select: { permissionKey: true } } },
+      });
+      expect(combinado).toMatchObject({ name: 'Recepção e atendimento', isSystem: true });
+      expect(combinado!.permissions.map((p) => p.permissionKey).sort()).toEqual(
+        chavesPadraoDoPapel(
+          CLINICS_VERTICAL_ROLES.find((p) => p.systemKey === CLINICS_RECEPTION_CARE_SYSTEM_KEY)!,
+        ),
+      );
+      expect(await prisma.raw.membership.count({ where: { roleId: combinado!.id } })).toBe(0);
+      // a criação dos dois papéis do vertical fica na trilha, com as chaves com que nasceram
+      for (const papel of CLINICS_VERTICAL_ROLES) {
+        const r = await prisma.raw.role.findFirstOrThrow({
+          where: { workspaceId: wsA.workspaceId, systemKey: papel.systemKey },
+        });
+        const criacao = await prisma.raw.auditLog.findFirstOrThrow({
+          where: { workspaceId: wsA.workspaceId, action: 'role.created', entityId: r.id },
+        });
+        expect(criacao.after).toEqual({
+          name: papel.name,
+          description: papel.description,
+          permissionKeys: chavesPadraoDoPapel(papel),
+        });
+      }
       // Guest não recebe nada; o workspace B não é tocado
       expect((await clinicsGrants(wsA.workspaceId)).some((g) => g.startsWith('guest|'))).toBe(
         false,
@@ -420,6 +454,32 @@ describe('Clinics — ativação pela CLI, isolamento e ciclo de vida (integraç
       expect(await clinicsGrants(wsA.workspaceId)).not.toContain('member|clinics:schedule:write');
     });
 
+    it('"Recepção e atendimento" nasce da matriz PADRÃO, e não do Member do workspace, mesmo personalizado (ADR-056)', async () => {
+      await prisma.raw.rolePermission.deleteMany({
+        where: { roleId: wsA.roles.member, permissionKey: 'contacts:write' },
+      });
+      await prisma.raw.rolePermission.create({
+        data: {
+          workspaceId: wsA.workspaceId,
+          roleId: wsA.roles.member,
+          permissionKey: 'audit:read',
+        },
+      });
+      await cli('enable', '--slug', 'acme');
+      const combinado = await prisma.raw.role.findFirstOrThrow({
+        where: { workspaceId: wsA.workspaceId, systemKey: CLINICS_RECEPTION_CARE_SYSTEM_KEY },
+        include: { permissions: { select: { permissionKey: true } } },
+      });
+      const chaves = combinado.permissions.map((p) => p.permissionKey).sort();
+      expect(chaves).toEqual(
+        chavesPadraoDoPapel(
+          CLINICS_VERTICAL_ROLES.find((p) => p.systemKey === CLINICS_RECEPTION_CARE_SYSTEM_KEY)!,
+        ),
+      );
+      expect(chaves).toContain('contacts:write');
+      expect(chaves).not.toContain('audit:read');
+    });
+
     it('papel customizado chamado "Profissional": a ativação ABORTA e nada muda (nem catálogo, nem sessões)', async () => {
       const homonimo = await prisma.raw.role.create({
         data: { workspaceId: wsA.workspaceId, name: 'Profissional', isSystem: false },
@@ -447,6 +507,13 @@ describe('Clinics — ativação pela CLI, isolamento e ciclo de vida (integraç
         name: 'Profissional',
         systemKey: null,
       });
+
+      // em OUTRA caixa, o nome também é o do papel do vertical: aborta do mesmo jeito
+      await prisma.raw.role.updateMany({
+        where: { id: homonimo.id },
+        data: { name: 'PROFISSIONAL' },
+      });
+      await expect(cli('enable', '--slug', 'acme')).rejects.toThrow(/Já existe um papel chamado/);
 
       // renomeado o homônimo, a ativação segue — e o papel do vertical é OUTRO
       await prisma.raw.role.updateMany({
@@ -512,6 +579,13 @@ describe('Clinics — ativação pela CLI, isolamento e ciclo de vida (integraç
       expect(profissional!.permissions.map((p) => p.permissionKey)).toEqual([
         ...CLINICS_PROFESSIONAL_CORE_KEYS,
       ]);
+      const combinado = await prisma.raw.role.findFirst({
+        where: { workspaceId: wsA.workspaceId, systemKey: CLINICS_RECEPTION_CARE_SYSTEM_KEY },
+        include: { permissions: { select: { permissionKey: true } } },
+      });
+      expect(combinado!.permissions.map((p) => p.permissionKey).sort()).toEqual(
+        [...CLINICS_RECEPTION_CARE_CORE_KEYS].sort(),
+      );
       // nada de dado apagado; a linha de ativação fica, desativada
       expect(
         await prisma.raw.clinicsSettings.findFirst({ where: { workspaceId: wsA.workspaceId } }),
@@ -563,6 +637,23 @@ describe('Clinics — ativação pela CLI, isolamento e ciclo de vida (integraç
         ]);
         await expect(cli('disable', '--slug', 'acme')).rejects.toThrow(/em andamento/);
         expect(await clinicsGrants(wsA.workspaceId)).toEqual(expectedMatrix());
+        // a SINCRONIZAÇÃO usa a mesma trava (ADR-056): com outra em andamento, recusa sem criar
+        const combinado = await prisma.raw.role.findFirstOrThrow({
+          where: { workspaceId: wsA.workspaceId, systemKey: CLINICS_RECEPTION_CARE_SYSTEM_KEY },
+        });
+        await prisma.raw.rolePermission.deleteMany({ where: { roleId: combinado.id } });
+        await prisma.raw.role.deleteMany({ where: { id: combinado.id } });
+        await expect(cli('sync-roles', '--slug', 'acme')).rejects.toThrow(/em andamento/);
+        expect(
+          await prisma.raw.role.count({
+            where: { workspaceId: wsA.workspaceId, systemKey: CLINICS_RECEPTION_CARE_SYSTEM_KEY },
+          }),
+        ).toBe(0);
+        expect(
+          await prisma.raw.auditLog.count({
+            where: { workspaceId: wsA.workspaceId, action: 'clinics.roles_synced' },
+          }),
+        ).toBe(0);
       } finally {
         await trava.end();
       }
@@ -621,6 +712,306 @@ describe('Clinics — ativação pela CLI, isolamento e ciclo de vida (integraç
       });
       expect(vigente!.activatedAt.getTime()).toBeGreaterThan(primeira!.activatedAt.getTime());
       expect(vigente!.disabledAt).toBeNull();
+    });
+  });
+
+  describe('a sincronização dos papéis (ADR-056, item 5): explícita, auditada e segura para repetir', () => {
+    const PAPEL = CLINICS_VERTICAL_ROLES.find(
+      (p) => p.systemKey === CLINICS_RECEPTION_CARE_SYSTEM_KEY,
+    )!;
+    /** o workspace como estava antes desta entrega: o Clinics ativo, sem o papel combinado */
+    const ativoSemOCombinado = async () => {
+      await cli('enable', '--slug', 'acme');
+      const r = await prisma.raw.role.findFirstOrThrow({
+        where: { workspaceId: wsA.workspaceId, systemKey: CLINICS_RECEPTION_CARE_SYSTEM_KEY },
+      });
+      await prisma.raw.rolePermission.deleteMany({ where: { roleId: r.id } });
+      await prisma.raw.role.deleteMany({ where: { id: r.id } });
+    };
+    const papeisDoWorkspace = async (workspaceId: string) =>
+      (
+        await prisma.raw.role.findMany({
+          where: { workspaceId },
+          include: { permissions: { select: { permissionKey: true } } },
+          orderBy: { name: 'asc' },
+        })
+      ).map((r) => ({
+        id: r.id,
+        name: r.name,
+        systemKey: r.systemKey,
+        chaves: r.permissions.map((p) => p.permissionKey).sort(),
+      }));
+    /** o Member do workspace A personalizado: uma chave padrão a menos e uma de fora a mais */
+    const personalizarOMember = async () => {
+      await prisma.raw.rolePermission.deleteMany({
+        where: { roleId: wsA.roles.member, permissionKey: 'contacts:write' },
+      });
+      await prisma.raw.rolePermission.create({
+        data: {
+          workspaceId: wsA.workspaceId,
+          roleId: wsA.roles.member,
+          permissionKey: 'audit:read',
+        },
+      });
+    };
+    const memberships = async (workspaceId: string) =>
+      (
+        await prisma.raw.membership.findMany({
+          where: { workspaceId },
+          orderBy: { id: 'asc' },
+          select: { id: true, roleId: true, status: true, tokenVersion: true },
+        })
+      ).map((m) => JSON.stringify(m));
+
+    it('cria o papel AUSENTE com a matriz padrão, sem tocar memberships nem outro workspace; a trilha registra', async () => {
+      await ativoSemOCombinado();
+      // o Member do workspace PERSONALIZADO: a matriz do combinado não vem dele
+      await personalizarOMember();
+      const antes = await memberships(wsA.workspaceId);
+      const outro = await papeisDoWorkspace(wsB.workspaceId);
+
+      expect(await cli('sync-roles', '--slug', 'acme')).toEqual([
+        'Papel criado em acme: "Recepção e atendimento" (clinics:reception-care), com a matriz padrão e SEM nenhum membro. Atribuir é pela tela de Equipe.',
+        'Sem divergência com a matriz padrão.',
+      ]);
+      const criado = await prisma.raw.role.findFirstOrThrow({
+        where: { workspaceId: wsA.workspaceId, systemKey: CLINICS_RECEPTION_CARE_SYSTEM_KEY },
+        include: { permissions: { select: { permissionKey: true } } },
+      });
+      expect(criado).toMatchObject({
+        name: PAPEL.name,
+        description: PAPEL.description,
+        isSystem: true,
+      });
+      expect(criado.permissions.map((p) => p.permissionKey).sort()).toEqual(
+        chavesPadraoDoPapel(PAPEL),
+      );
+      expect(await memberships(wsA.workspaceId)).toEqual(antes);
+      expect(await papeisDoWorkspace(wsB.workspaceId)).toEqual(outro);
+
+      // as duas linhas nascem na MESMA transação, com o mesmo instante: sem ordem
+      const trilha = await prisma.raw.auditLog.findMany({
+        where: {
+          workspaceId: wsA.workspaceId,
+          OR: [{ action: 'role.created', entityId: criado.id }, { action: 'clinics.roles_synced' }],
+        },
+      });
+      expect(trilha).toHaveLength(2);
+      const criacao = trilha.find((t) => t.action === 'role.created');
+      const execucao = trilha.find((t) => t.action === 'clinics.roles_synced');
+      // a criação registra as chaves com que o papel nasceu: a matriz padrão
+      expect(criacao?.after).toEqual({
+        name: PAPEL.name,
+        description: PAPEL.description,
+        permissionKeys: chavesPadraoDoPapel(PAPEL),
+      });
+      expect(execucao?.after).toEqual({
+        rolesCreated: [CLINICS_RECEPTION_CARE_SYSTEM_KEY],
+        rolesDivergent: [],
+      });
+    });
+
+    it('repetida, não muda nada e é auditada de novo', async () => {
+      await ativoSemOCombinado();
+      await cli('sync-roles', '--slug', 'acme');
+      const fotografia = await papeisDoWorkspace(wsA.workspaceId);
+      const antes = await memberships(wsA.workspaceId);
+
+      expect(await cli('sync-roles', '--slug', 'acme')).toEqual([
+        'Nenhum papel do Clinics ausente em acme: nada foi criado.',
+        'Sem divergência com a matriz padrão.',
+      ]);
+      expect(await papeisDoWorkspace(wsA.workspaceId)).toEqual(fotografia);
+      expect(await memberships(wsA.workspaceId)).toEqual(antes);
+      expect(
+        await prisma.raw.auditLog.count({
+          where: { workspaceId: wsA.workspaceId, action: 'clinics.roles_synced' },
+        }),
+      ).toBe(2);
+      const r = await prisma.raw.role.findFirstOrThrow({
+        where: { workspaceId: wsA.workspaceId, systemKey: CLINICS_RECEPTION_CARE_SYSTEM_KEY },
+      });
+      expect(
+        await prisma.raw.auditLog.count({
+          where: { workspaceId: wsA.workspaceId, action: 'role.created', entityId: r.id },
+        }),
+      ).toBe(1);
+    });
+
+    it('não desfaz uma alteração posterior: o nome e as chaves mudados são INFORMADOS, e não corrigidos', async () => {
+      await ativoSemOCombinado();
+      await cli('sync-roles', '--slug', 'acme');
+      const r = await prisma.raw.role.findFirstOrThrow({
+        where: { workspaceId: wsA.workspaceId, systemKey: CLINICS_RECEPTION_CARE_SYSTEM_KEY },
+      });
+      // uma alteração posterior, por fora: o nome, uma chave a menos e uma a mais
+      await prisma.raw.role.updateMany({ where: { id: r.id }, data: { name: 'Balcão' } });
+      await prisma.raw.rolePermission.deleteMany({
+        where: { roleId: r.id, permissionKey: 'clinics:care:write' },
+      });
+      await prisma.raw.rolePermission.create({
+        data: { workspaceId: wsA.workspaceId, roleId: r.id, permissionKey: 'audit:read' },
+      });
+      const alterado = await papeisDoWorkspace(wsA.workspaceId);
+
+      const linhas = await cli('sync-roles', '--slug', 'acme');
+      expect(linhas).toEqual([
+        'Nenhum papel do Clinics ausente em acme: nada foi criado.',
+        'DIVERGÊNCIA (não corrigida, para decisão): o papel clinics:reception-care se chama "Balcão" (o padrão é "Recepção e atendimento").',
+        'DIVERGÊNCIA (não corrigida, para decisão): o papel clinics:reception-care ("Balcão") não tem, da matriz padrão: clinics:care:write.',
+        'DIVERGÊNCIA (não corrigida, para decisão): o papel clinics:reception-care ("Balcão") tem, fora da matriz padrão: audit:read.',
+      ]);
+      expect(await papeisDoWorkspace(wsA.workspaceId)).toEqual(alterado);
+      const ultima = await prisma.raw.auditLog.findFirstOrThrow({
+        where: { workspaceId: wsA.workspaceId, action: 'clinics.roles_synced' },
+        orderBy: { createdAt: 'desc' },
+      });
+      expect(ultima.after).toEqual({
+        rolesCreated: [],
+        rolesDivergent: [CLINICS_RECEPTION_CARE_SYSTEM_KEY],
+      });
+    });
+
+    it('com o nome tomado por um papel personalizado: informa e NÃO cria; o personalizado fica intacto', async () => {
+      await ativoSemOCombinado();
+      const personalizado = await prisma.raw.role.create({
+        data: { workspaceId: wsA.workspaceId, name: PAPEL.name, isSystem: false },
+      });
+      expect(await cli('sync-roles', '--slug', 'acme')).toEqual([
+        'Nenhum papel do Clinics ausente em acme: nada foi criado.',
+        'DIVERGÊNCIA (não corrigida, para decisão): o papel clinics:reception-care não existe, e o nome "Recepção e atendimento" já é de outro papel (personalizado). Nada foi criado.',
+      ]);
+      expect(
+        await prisma.raw.role.count({
+          where: { workspaceId: wsA.workspaceId, systemKey: CLINICS_RECEPTION_CARE_SYSTEM_KEY },
+        }),
+      ).toBe(0);
+      expect(await prisma.raw.role.findFirst({ where: { id: personalizado.id } })).toMatchObject({
+        name: PAPEL.name,
+        isSystem: false,
+        systemKey: null,
+      });
+    });
+
+    it('a REATIVAÇÃO cria o papel ausente (o workspace desativado antes desta entrega), com a matriz padrão, a trilha e sem membros', async () => {
+      await cli('enable', '--slug', 'acme');
+      const r = await prisma.raw.role.findFirstOrThrow({
+        where: { workspaceId: wsA.workspaceId, systemKey: CLINICS_RECEPTION_CARE_SYSTEM_KEY },
+      });
+      await prisma.raw.rolePermission.deleteMany({ where: { roleId: r.id } });
+      await prisma.raw.role.deleteMany({ where: { id: r.id } });
+      await cli('disable', '--slug', 'acme');
+      const antes = await memberships(wsA.workspaceId);
+
+      const linhas = await cli('enable', '--slug', 'acme');
+      expect(linhas[0]).toMatch(/REATIVADO em acme/);
+      expect(linhas).toContain(
+        'Papel criado na reativação: "Recepção e atendimento" (clinics:reception-care), com a matriz padrão e SEM nenhum membro.',
+      );
+      const recriado = await prisma.raw.role.findFirstOrThrow({
+        where: { workspaceId: wsA.workspaceId, systemKey: CLINICS_RECEPTION_CARE_SYSTEM_KEY },
+        include: { permissions: { select: { permissionKey: true } } },
+      });
+      expect(recriado.permissions.map((p) => p.permissionKey).sort()).toEqual(
+        chavesPadraoDoPapel(PAPEL),
+      );
+      expect(await prisma.raw.membership.count({ where: { roleId: recriado.id } })).toBe(0);
+      expect(
+        await prisma.raw.auditLog.count({
+          where: { workspaceId: wsA.workspaceId, action: 'role.created', entityId: recriado.id },
+        }),
+      ).toBe(1);
+      // as memberships não mudam de papel; só as sessões de quem ganhou chave caem
+      expect((await memberships(wsA.workspaceId)).map((m) => JSON.parse(m).roleId).sort()).toEqual(
+        antes.map((m) => JSON.parse(m).roleId).sort(),
+      );
+    });
+
+    it('um personalizado com o nome do combinado, em outra caixa, faz a ATIVAÇÃO abortar sem efeito', async () => {
+      await prisma.raw.role.create({
+        data: { workspaceId: wsA.workspaceId, name: 'RECEPÇÃO E ATENDIMENTO', isSystem: false },
+      });
+      await expect(cli('enable', '--slug', 'acme')).rejects.toThrow(
+        /Já existe um papel chamado "RECEPÇÃO E ATENDIMENTO"/,
+      );
+      expect(await clinicsGrants(wsA.workspaceId)).toEqual([]);
+      expect(
+        await prisma.raw.clinicsSettings.count({ where: { workspaceId: wsA.workspaceId } }),
+      ).toBe(0);
+      expect(
+        await prisma.raw.role.count({
+          where: {
+            workspaceId: wsA.workspaceId,
+            systemKey: { in: [CLINICS_RECEPTION_CARE_SYSTEM_KEY, CLINICS_PROFESSIONAL_SYSTEM_KEY] },
+          },
+        }),
+      ).toBe(0);
+    });
+
+    it('o homônimo que é um papel de sistema de OUTRA chave (o Member renomeado): informa a chave dele e não cria', async () => {
+      await ativoSemOCombinado();
+      await prisma.raw.role.updateMany({
+        where: { id: wsA.roles.member },
+        data: { name: PAPEL.name },
+      });
+      expect(await cli('sync-roles', '--slug', 'acme')).toEqual([
+        'Nenhum papel do Clinics ausente em acme: nada foi criado.',
+        'DIVERGÊNCIA (não corrigida, para decisão): o papel clinics:reception-care não existe, e o nome "Recepção e atendimento" já é de outro papel (member). Nada foi criado.',
+      ]);
+      expect(
+        await prisma.raw.role.count({
+          where: { workspaceId: wsA.workspaceId, systemKey: CLINICS_RECEPTION_CARE_SYSTEM_KEY },
+        }),
+      ).toBe(0);
+    });
+
+    it('o homônimo em OUTRA caixa e forma Unicode também é o nome do papel: informa e não cria', async () => {
+      await ativoSemOCombinado();
+      const parecido = 'RECEPÇÃO E ATENDIMENTO'.normalize('NFD');
+      await prisma.raw.role.create({
+        data: { workspaceId: wsA.workspaceId, name: parecido, isSystem: false },
+      });
+      expect(await cli('sync-roles', '--slug', 'acme')).toEqual([
+        'Nenhum papel do Clinics ausente em acme: nada foi criado.',
+        `DIVERGÊNCIA (não corrigida, para decisão): o papel clinics:reception-care não existe, e o nome "${parecido}" já é de outro papel (personalizado). Nada foi criado.`,
+      ]);
+      expect(
+        await prisma.raw.role.count({
+          where: { workspaceId: wsA.workspaceId, systemKey: CLINICS_RECEPTION_CARE_SYSTEM_KEY },
+        }),
+      ).toBe(0);
+    });
+
+    it('sem o Clinics ativo: recusa, sem criar papel nem auditar', async () => {
+      const resultado = await runClinicsCommand(cliContext.get(ClinicsActivationService), {
+        command: 'sync-roles',
+        slug: 'acme',
+      });
+      expect(resultado.recusado).toBe(true);
+      expect(await cli('sync-roles', '--slug', 'acme')).toEqual([
+        'O Clinics não está ativo em acme: nada foi criado. A sincronização só cria papéis de um vertical ativo.',
+      ]);
+      await cli('enable', '--slug', 'acme');
+      await cli('disable', '--slug', 'acme');
+      const fotografia = await papeisDoWorkspace(wsA.workspaceId);
+      expect((await cli('sync-roles', '--slug', 'acme'))[0]).toMatch(/não está ativo em acme/);
+      expect(await papeisDoWorkspace(wsA.workspaceId)).toEqual(fotografia);
+      expect(
+        await prisma.raw.auditLog.count({
+          where: { workspaceId: wsA.workspaceId, action: 'clinics.roles_synced' },
+        }),
+      ).toBe(0);
+    });
+
+    it('argumentos: sync-roles exige o --slug; slug inexistente falha sem efeito', async () => {
+      expect(parseClinicsArgs(['sync-roles'])).toBeNull();
+      expect(parseClinicsArgs(['sync-roles', '--slug', 'acme'])).toEqual({
+        command: 'sync-roles',
+        slug: 'acme',
+      });
+      await expect(cli('sync-roles', '--slug', 'nao-existe')).rejects.toThrow(
+        /Workspace não encontrado/,
+      );
     });
   });
 });

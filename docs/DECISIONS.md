@@ -9362,7 +9362,7 @@ O que as revisões corrigiram:
 
 ## ADR-056 — Quem acumula funções na clínica: papéis combinados do vertical (F5.1b, D7)
 
-**Status:** APROVADO pelo usuário em 2026-11-02, com as condições abaixo. Implementação em andamento, parando no commit local. · **Data:** 2026-11-02
+**Status:** APROVADO pelo usuário em 2026-11-02, com as condições abaixo. **Implementado em commit local** (2026-11-02), revisado por `reviewer` e `security`; sem push, deploy nem sincronização no staging. · **Data:** 2026-11-02
 
 **Contexto.**
 
@@ -9401,11 +9401,12 @@ O que as revisões corrigiram:
 3. **"Recepção" é só apresentação, na experiência do Clinics.**
    - O papel persistido não é renomeado, e o identificador não muda.
    - Na experiência do CRM, ele continua "Member", mesmo com o vertical ativo.
-   - **A regra:** o rótulo vem da composição por produto (o manifesto da experiência do Clinics, ADR-055) e vale só para o papel de sistema padrão: `isSystem`, `systemKey: 'member'` e o nome padrão, "Member".
-   - **Nomes personalizados são preservados.** Um papel personalizado nunca aparece como se fosse a recepção padrão.
+   - **A regra:** o rótulo vem da composição por produto (o manifesto da experiência do Clinics, ADR-055) e vale só para o papel de sistema padrão: `systemKey: 'member'` (só papéis de sistema têm `systemKey`) e o nome padrão, "Member".
+   - **Nomes personalizados são preservados.** Um papel personalizado nunca aparece como se fosse a recepção padrão. Se o nome dele se lê como um rótulo do produto (sem diferença de maiúsculas nem de forma Unicode), a tela acrescenta "(personalizado)", na lista e nos seletores.
    - Para a apresentação reconhecer o papel padrão, o Core passa a expor o `systemKey` no `RoleDto`, sem nada do vertical.
 4. **A criação do papel.**
-   - **Na ativação,** a primeira e a reativação, o papel é criado se estiver ausente, como o `Profissional`.
+   - **Na ativação,** a primeira e a reativação, o papel é criado se estiver ausente, como o `Profissional`, já com a matriz padrão inteira. A criação fica na trilha (`role.created`, com as chaves com que o papel nasceu), na ativação e na sincronização.
+   - **O homônimo** é procurado sem diferença de maiúsculas nem de forma Unicode: na ativação, ela aborta; na sincronização, a divergência é informada e nada é criado.
    - **Na reativação,** ele recebe de volta as chaves do Clinics que a desativação tirou, como os demais papéis da matriz.
    - **Na desativação,** como hoje, todas as `clinics:*` saem de todos os papéis, e "Recepção e atendimento" fica equivalente ao Member.
 5. **A sincronização dos workspaces com o Clinics já ativo,** explícita por workspace, pela CLI `clinics sync-roles --slug <workspace>`, auditada e segura para repetir:
@@ -9415,12 +9416,30 @@ O que as revisões corrigiram:
    - não desfaz, ao repetir, uma alteração posterior;
    - informa as divergências para decisão, sem corrigi-las: as chaves a mais ou a menos, o nome diferente, e um papel personalizado com o mesmo nome.
 
+   **Na operação:**
+   - a sincronização usa a mesma trava da ativação e da desativação: com outra em andamento, recusa sem efeito;
+   - num workspace sem o Clinics ativo, ela recusa e a CLI sai com código 1;
+   - na reativação, a CLI diz qual papel do vertical foi criado agora.
+
    **No staging, ela não roda por esta autorização.** Na demonstração, o comando é autorizado à parte. O vínculo com um profissional continua sem conceder permissões.
 
 6. **A atribuição é pela tela de equipe da F5.1a, sem tela nova:** o convite e a troca de papel, com as regras atuais (o subconjunto, o último Owner, o `tokenVersion` e a auditoria). Só quem tem todas as chaves do papel o atribui.
 7. **A publicação é separada.** O deploy automático do staging (o `00ef0ba`) fica numa branch própria, `proposta/deploy-automatico`, e não é ancestral desta entrega.
 
 **O que esta entrega não resolve:** o B1, a D8, a escrita de agenda do `Profissional`, a edição de papéis e os vários papéis por membership.
+
+**Resíduos declarados (revisão de `security`):**
+
+- **A janela da desativação.**
+  - Com o Clinics desativado, "Recepção e atendimento" fica igual ao Member.
+  - Quem tem `members:manage` e as chaves do Member pode trocar alguém para ele. Na reativação, a pessoa recebe o atendimento, que quem fez a troca nunca teve: a regra de não conceder o que não se tem é conferida só na hora da troca.
+  - Já existia com o `Profissional` e o Member. Só um papel personalizado com `members:manage` e sem as chaves do atendimento consegue usá-la, e nenhuma rota cria papéis hoje.
+- **O template do Member.** As chaves do Core do papel combinado são copiadas do template na criação. Uma mudança futura no template do Member, ou um backfill do Core para o `member`, não chega a ele.
+  - A sincronização informa a falta como divergência.
+  - O teste com a lista literal quebra quando o template mudar.
+  - **Regra:** a mudança do template exige uma decisão própria do vertical, um backfill do Clinics ou o aceite da diferença.
+- **Um personalizado parecido criado DEPOIS do papel padrão** (por exemplo, "Recepção e Atendimento") escapa dos dois controles: a sincronização só procura o homônimo quando o papel do vertical falta, e a marca "(personalizado)" do web só compara com os rótulos do manifesto. Nos seletores, os dois apareceriam quase iguais. O risco é baixo, porque só o operador cria papéis, direto no banco, e o painel mostra as chaves. A normalização também não junta espaços internos nem trata caracteres invisíveis ou de outro alfabeto. Fica para depois: informar o parecido na sincronização e marcar o personalizado que se lê como um papel de sistema.
+- **`systemKey` sem `isSystem`.** Nada no banco impede um papel com `systemKey` e sem `isSystem` (só o código os grava juntos). Um `CHECK ("systemKey" IS NULL OR "isSystem")` fica para uma migration futura.
 
 **As provas, na implementação:**
 

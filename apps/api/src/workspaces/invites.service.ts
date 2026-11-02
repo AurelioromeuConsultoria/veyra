@@ -95,7 +95,7 @@ export class InvitesService {
         return criado;
       },
     );
-    return { ...this.toDto(invite, role.name), token };
+    return { ...this.toDto(invite, role), token };
   }
 
   async list(): Promise<InviteDto[]> {
@@ -105,7 +105,10 @@ export class InvitesService {
       orderBy: { createdAt: 'desc' },
     });
     return invites.map((invite) =>
-      this.toDto(invite as never, (invite as unknown as { role: { name: string } }).role.name),
+      this.toDto(
+        invite as never,
+        (invite as unknown as { role: { name: string; systemKey: string | null } }).role,
+      ),
     );
   }
 
@@ -347,13 +350,14 @@ export class InvitesService {
       createdByMembershipId: string | null;
       issuedByProvisioning: boolean;
     },
-    roleName: string,
+    role: { name: string; systemKey: string | null },
   ): InviteDto {
     return {
       id: invite.id,
       email: invite.email,
       roleId: invite.roleId,
-      roleName,
+      roleName: role.name,
+      roleSystemKey: role.systemKey,
       expiresAt: invite.expiresAt.toISOString(),
       acceptedAt: invite.acceptedAt?.toISOString() ?? null,
       createdAt: invite.createdAt.toISOString(),

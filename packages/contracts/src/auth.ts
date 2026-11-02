@@ -34,6 +34,8 @@ export interface MembershipSummaryDto {
   workspaceName: string;
   workspaceSlug: string;
   roleName: string;
+  /** a chave do papel de sistema, ou `null` no personalizado: só para a apresentação (ADR-056) */
+  roleSystemKey: string | null;
   status: 'active' | 'suspended' | 'removed';
   /** a experiência do workspace (ADR-055): a chave, para o seletor de workspace */
   experience: string;

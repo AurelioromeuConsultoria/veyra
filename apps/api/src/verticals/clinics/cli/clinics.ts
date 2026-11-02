@@ -5,6 +5,11 @@
  * USO:
  *   pnpm --filter @veyra/api clinics:enable --slug acme
  *   pnpm --filter @veyra/api clinics:disable --slug acme
+ *   pnpm --filter @veyra/api clinics:sync-roles --slug acme
+ *
+ * `sync-roles` (ADR-056): num workspace com o Clinics JÁ ativo, cria o papel do
+ * vertical que falta, com a matriz padrão, e só INFORMA as divergências. Não
+ * mexe em memberships. No staging, só com autorização à parte.
  *
  * Reexecutar é seguro: o efeito depende do estado, não do número de execuções.
  * O corpo está em `clinics-command.ts`, exercitado pelo teste de integração;
@@ -26,9 +31,12 @@ async function main(): Promise<void> {
   }
   const app = await NestFactory.createApplicationContext(AppModule, { logger: false });
   try {
-    for (const line of await runClinicsCommand(app.get(ClinicsActivationService), command)) {
-      console.log(line);
-    }
+    const { linhas, recusado } = await runClinicsCommand(
+      app.get(ClinicsActivationService),
+      command,
+    );
+    for (const line of linhas) console.log(line);
+    if (recusado) process.exitCode = 1;
   } finally {
     await app.close();
   }
@@ -43,6 +51,6 @@ main().catch((error) => {
         ? error.name
         : error.message
       : 'erro desconhecido';
-  console.error('Ativação do Clinics falhou:', message);
+  console.error(`O comando ${process.argv[2] ?? ''} do Clinics falhou:`, message);
   process.exit(1);
 });

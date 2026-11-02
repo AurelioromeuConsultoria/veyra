@@ -1,4 +1,8 @@
-import type { AuthUserDto } from '@veyra/contracts';
+import {
+  NOME_PADRAO_DO_PAPEL_DE_SISTEMA,
+  nomeDePapelComoSeLe,
+  type AuthUserDto,
+} from '@veyra/contracts';
 import { createContext, useContext, type ComponentType } from 'react';
 import type { NavGroup, VerticalRoute } from './nav';
 import { alcanca } from './session';
@@ -70,6 +74,14 @@ export type ExperienceManifest = {
   busca: readonly SearchProvider[];
   /** os termos das telas compartilhadas que o produto chama do seu jeito */
   linguagem?: Partial<Linguagem>;
+  /**
+   * o nome de APRESENTAÇÃO de um papel de sistema padrão do CORE, pela chave
+   * dele (ADR-056): o Clinics chama o Member de "Recepção". Só apresentação: o
+   * papel persistido não muda, e um nome personalizado é preservado
+   * (`nomeDoPapel`). Só vale para as chaves dos templates do Core (`owner`,
+   * `admin`, `member`, `guest`): uma chave de vertical aqui não tem efeito
+   */
+  papeis?: Readonly<Record<string, string>>;
 };
 
 /**
@@ -113,6 +125,40 @@ export function useLinks(): LinkResolvers {
 /** Um termo das telas compartilhadas, na linguagem do produto ativo. */
 export function useTermo(termo: keyof Linguagem): string {
   return useContext(ExperienceContext)?.linguagem?.[termo] ?? LINGUAGEM_DO_CRM[termo];
+}
+
+/** O mínimo de um papel para a tela saber como chamá-lo. */
+export type PapelApresentavel = { name: string; systemKey: string | null };
+
+/**
+ * Como a tela chama um papel (ADR-056): o nome persistido, ou o rótulo do
+ * produto para o papel de sistema PADRÃO, com o nome padrão. Um papel
+ * personalizado (sem `systemKey`) ou renomeado no workspace nunca aparece como o
+ * padrão: se o nome dele se lê como um rótulo do produto ("Recepção"), ganha
+ * "(personalizado)". Fora de um produto que rotule, vale o nome persistido.
+ */
+export function nomeDoPapel(
+  papel: PapelApresentavel,
+  manifesto: Pick<ExperienceManifest, 'papeis'> | null | undefined,
+): string {
+  const rotulo = papel.systemKey ? manifesto?.papeis?.[papel.systemKey] : undefined;
+  if (
+    rotulo &&
+    papel.systemKey &&
+    papel.name === NOME_PADRAO_DO_PAPEL_DE_SISTEMA[papel.systemKey]
+  ) {
+    return rotulo;
+  }
+  const pareceORotulo = Object.values(manifesto?.papeis ?? {}).some(
+    (r) => nomeDePapelComoSeLe(r) === nomeDePapelComoSeLe(papel.name),
+  );
+  return pareceORotulo ? `${papel.name} (personalizado)` : papel.name;
+}
+
+/** `nomeDoPapel` na experiência ativa (sem experiência, o nome persistido). */
+export function useNomeDoPapel(): (papel: PapelApresentavel) => string {
+  const manifesto = useContext(ExperienceContext);
+  return (papel) => nomeDoPapel(papel, manifesto);
 }
 
 /** As seções de configuração ao alcance do papel (TODAS as chaves de cada uma). */

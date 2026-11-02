@@ -256,6 +256,7 @@ export class AuthService {
       workspaceName: m.workspace.name,
       workspaceSlug: m.workspace.slug,
       roleName: m.role.name,
+      roleSystemKey: m.role.systemKey,
       status: m.status,
       experience: m.workspace.experience,
     }));

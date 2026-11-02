@@ -1,8 +1,10 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { SYSTEM_ROLE_TEMPLATES } from '@veyra/contracts';
 import {
   CLINICS_PERMISSION_CATALOG,
   CLINICS_PROFESSIONAL_SYSTEM_KEY,
+  CLINICS_RECEPTION_CARE_SYSTEM_KEY,
   clinicsAiReleaseReasonSchema,
   clinicsAppointmentStatusSchema,
   clinicsCancelReasonSchema,
@@ -17,7 +19,12 @@ import {
   ClinicsReleaseConsumer,
   ClinicsReleaseReason,
 } from '../../generated/prisma/enums';
-import { CLINICS_ROLE_GRANTS } from './clinics-permissions';
+import {
+  CLINICS_RECEPTION_CARE_CORE_KEYS,
+  CLINICS_ROLE_GRANTS,
+  CLINICS_VERTICAL_ROLES,
+  chavesPadraoDoPapel,
+} from './clinics-permissions';
 import { CLINICS_MODELS, clinicsExtension } from './clinics.extension';
 
 const ROOT = __dirname;
@@ -171,13 +178,91 @@ describe('Clinics — garantias estáticas (ADR-047, ADR-048)', () => {
       for (const key of keys) expect(catalogo.has(key)).toBe(true);
     }
     expect(Object.keys(CLINICS_ROLE_GRANTS).sort()).toEqual(
-      ['admin', 'member', 'owner', CLINICS_PROFESSIONAL_SYSTEM_KEY].sort(),
+      [
+        'admin',
+        'member',
+        'owner',
+        CLINICS_PROFESSIONAL_SYSTEM_KEY,
+        CLINICS_RECEPTION_CARE_SYSTEM_KEY,
+      ].sort(),
     );
     // recepção (Member) sem atendimento; Profissional sem escrita de agenda
     expect(CLINICS_ROLE_GRANTS.member.some((k) => k.startsWith('clinics:care'))).toBe(false);
     expect(CLINICS_ROLE_GRANTS[CLINICS_PROFESSIONAL_SYSTEM_KEY]).not.toContain(
       'clinics:schedule:write',
     );
+  });
+
+  it('"Recepção e atendimento" (ADR-056): a matriz PADRÃO exata, fixada aqui, com as ausências exigidas', () => {
+    // a lista é LITERAL de propósito: mudar o Member padrão ou a matriz do
+    // vertical quebra este teste, e a mudança vira decisão explícita
+    const papel = CLINICS_VERTICAL_ROLES.find(
+      (p) => p.systemKey === CLINICS_RECEPTION_CARE_SYSTEM_KEY,
+    );
+    expect(papel).toMatchObject({ name: 'Recepção e atendimento' });
+    expect(chavesPadraoDoPapel(papel!)).toEqual(
+      [
+        'workspace:read',
+        'members:read',
+        'contacts:read',
+        'contacts:write',
+        'pipelines:read',
+        'deals:write',
+        'tasks:read',
+        'tasks:write',
+        'conversations:read',
+        'conversations:write',
+        'calendar:read',
+        'calendar:write',
+        'files:read',
+        'files:write',
+        'intelligence:use',
+        'consents:read',
+        'consents:manage',
+        'clinics:catalog:read',
+        'clinics:schedule:read',
+        'clinics:schedule:write',
+        'clinics:care:read',
+        'clinics:care:write',
+      ].sort(),
+    );
+    // a soma da recepção e do atendimento PADRÃO do vertical
+    expect([...CLINICS_ROLE_GRANTS[CLINICS_RECEPTION_CARE_SYSTEM_KEY]].sort()).toEqual(
+      [
+        ...new Set([
+          ...CLINICS_ROLE_GRANTS.member,
+          ...CLINICS_ROLE_GRANTS[CLINICS_PROFESSIONAL_SYSTEM_KEY],
+        ]),
+      ].sort(),
+    );
+    // sem a gestão de equipe e de papéis, sem a liberação para IA e sem a auditoria
+    for (const ausente of [
+      'members:manage',
+      'roles:manage',
+      'workspace:manage',
+      'audit:read',
+      'billing:manage',
+      'webhooks:manage',
+      'automations:manage',
+      'intelligence:approve',
+      'consents:unblock',
+      'templates:review',
+      'clinics:catalog:manage',
+      'clinics:restriction:manage',
+    ]) {
+      expect(chavesPadraoDoPapel(papel!)).not.toContain(ausente);
+    }
+    // as do Core são as do TEMPLATE documentado do Member, não as de um papel do workspace
+    expect([...CLINICS_RECEPTION_CARE_CORE_KEYS].sort()).toEqual(
+      [...SYSTEM_ROLE_TEMPLATES.Member].sort(),
+    );
+  });
+
+  it('"Atendimento e conversas" fica PROPOSTO (ADR-056): não é criado nem atribuível', () => {
+    expect(CLINICS_VERTICAL_ROLES.map((p) => p.systemKey).sort()).toEqual(
+      [CLINICS_PROFESSIONAL_SYSTEM_KEY, CLINICS_RECEPTION_CARE_SYSTEM_KEY].sort(),
+    );
+    expect(Object.keys(CLINICS_ROLE_GRANTS).some((k) => /convers/.test(k))).toBe(false);
   });
 
   it('na matriz, quem ESCREVE atendimento também o LÊ (care:write pressupõe care:read, ADR-048 adendo 7)', () => {

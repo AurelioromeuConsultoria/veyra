@@ -235,4 +235,6 @@ export const clinicsExperience: ExperienceManifest = {
   },
   busca: [buscaDePacientes, buscaDeInteressados],
   linguagem: { conversas: 'Conversas', funil: 'Funil de captação' },
+  // o Member padrão é a recepção da clínica (ADR-056): só o nome na tela
+  papeis: { member: 'Recepção' },
 };

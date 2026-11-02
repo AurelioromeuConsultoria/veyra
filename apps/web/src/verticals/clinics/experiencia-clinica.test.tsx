@@ -5,7 +5,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { vi } from 'vitest';
 import { AppShell } from '../../components/layout/AppShell';
 import { GlobalSearch } from '../../components/layout/GlobalSearch';
-import { ExperienceProvider } from '../../lib/experience';
+import { ExperienceProvider, nomeDoPapel } from '../../lib/experience';
 import { ME_KEY } from '../../lib/session';
 import { clinicsExperience } from './experience';
 import { ClinicsTodayPage } from './hoje/HojePage';
@@ -65,6 +65,7 @@ const usuario = (permissions: string[]) => ({
     workspaceName: 'Clínica',
     workspaceSlug: 'clinica',
     roleName: 'Member',
+    roleSystemKey: 'member',
     status: 'active',
   },
   permissions,
@@ -93,6 +94,31 @@ const PROFISSIONAL = [
   'clinics:care:write',
 ];
 const CONVIDADO = ['workspace:read', 'contacts:read', 'pipelines:read', 'conversations:read'];
+/** "Recepção e atendimento" (ADR-056): a matriz PADRÃO, literal */
+const RECEPCAO_E_ATENDIMENTO = [
+  'workspace:read',
+  'members:read',
+  'contacts:read',
+  'contacts:write',
+  'pipelines:read',
+  'deals:write',
+  'tasks:read',
+  'tasks:write',
+  'conversations:read',
+  'conversations:write',
+  'calendar:read',
+  'calendar:write',
+  'files:read',
+  'files:write',
+  'intelligence:use',
+  'consents:read',
+  'consents:manage',
+  'clinics:catalog:read',
+  'clinics:schedule:read',
+  'clinics:schedule:write',
+  'clinics:care:read',
+  'clinics:care:write',
+];
 
 function Local() {
   const l = useLocation();
@@ -1077,6 +1103,27 @@ describe('o menu de cada papel (as chaves de cada destino, TODAS)', () => {
     await lateral().findByRole('link', { name: 'Configurações' });
     expect(links()).toEqual(['Hoje', 'Agenda', 'Pacientes', 'Retornos', 'Configurações']);
     expect(grupos()).toEqual(['Indicadores']);
+  });
+
+  it('o manifesto da clínica chama o Member PADRÃO de "Recepção", e só ele (ADR-056)', () => {
+    expect(clinicsExperience.papeis).toEqual({ member: 'Recepção' });
+    expect(nomeDoPapel({ name: 'Member', systemKey: 'member' }, clinicsExperience)).toBe(
+      'Recepção',
+    );
+    expect(nomeDoPapel({ name: 'Atendentes', systemKey: 'member' }, clinicsExperience)).toBe(
+      'Atendentes',
+    );
+    expect(nomeDoPapel({ name: 'Member', systemKey: null }, clinicsExperience)).toBe('Member');
+    expect(
+      nomeDoPapel({ name: 'Profissional', systemKey: 'clinics:professional' }, clinicsExperience),
+    ).toBe('Profissional');
+  });
+
+  it('"Recepção e atendimento": o menu da recepção inteiro — o atendimento não tira nada nem pede outra entrada', async () => {
+    abrirMenu(RECEPCAO_E_ATENDIMENTO);
+    await lateral().findByRole('link', { name: 'Configurações' });
+    expect(links()).toEqual(['Hoje', 'Agenda', 'Pacientes', 'Conversas', 'Configurações']);
+    expect(grupos()).toEqual(['Captação', 'Acompanhamento', 'Indicadores']);
   });
 
   it('Guest: sem as chaves do Clinics — Conversas, o Funil direto e as Configurações dele', async () => {

@@ -27,7 +27,8 @@ export const AUDIT_FIELDS: Record<string, readonly string[]> = {
   workspace: ['experience'],
   invite: ['email', 'roleId'],
   // `permissionKey`: a chave que o preenchimento da F4.1b concedeu (ADR-052 item 5)
-  role: ['name', 'description', 'permissionKey'],
+  // `permissionKeys`: as chaves com que um papel de sistema nasce (ADR-056), só chaves do catálogo
+  role: ['name', 'description', 'permissionKey', 'permissionKeys'],
   customField: ['label', 'required', 'options'],
   pipeline: ['name', 'defaultMark'],
   stage: ['name', 'order', 'probability', 'type'],

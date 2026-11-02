@@ -22,6 +22,8 @@ export interface MemberDto {
   email: string;
   roleId: string;
   roleName: string;
+  /** a chave do papel de sistema, ou `null` no personalizado: só para a apresentação (ADR-056) */
+  roleSystemKey: string | null;
   status: 'active' | 'suspended' | 'removed';
   createdAt: string;
 }
@@ -31,6 +33,12 @@ export interface RoleDto {
   name: string;
   description: string | null;
   isSystem: boolean;
+  /**
+   * a chave do papel de sistema (`member`, `<extensão>:<papel>`…); `null` no
+   * personalizado. Só para a APRESENTAÇÃO reconhecer o papel padrão (ADR-056):
+   * o código autoriza por permissão, nunca por papel (ADR-017)
+   */
+  systemKey: string | null;
   permissions: string[];
   /** a descrição de cada chave de `permissions`, do catálogo composto (ADR-054 item 7) */
   permissionDescriptions: Record<string, string>;
@@ -41,6 +49,8 @@ export interface InviteDto {
   email: string;
   roleId: string;
   roleName: string;
+  /** a chave do papel de sistema, ou `null` no personalizado: só para a apresentação (ADR-056) */
+  roleSystemKey: string | null;
   expiresAt: string;
   acceptedAt: string | null;
   createdAt: string;

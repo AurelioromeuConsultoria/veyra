@@ -156,8 +156,9 @@ export const clinicsExtension: CoreExtension = {
   },
   permissionCatalog: CLINICS_PERMISSION_CATALOG,
   auditFields: {
-    // classe C: o status da ativação
-    clinicsSettings: ['status'],
+    // classe C: o status da ativação; e, na sincronização dos papéis (ADR-056),
+    // os `systemKey` criados e os divergentes — nunca nomes de pessoas
+    clinicsSettings: ['status', 'rolesCreated', 'rolesDivergent'],
     // classe P: o FATO e os ids (ADR-048 §6.1) — qual contato, consumidor e
     // motivo de lista fechada. Nunca dado do contato. Sem o id, a revogação (que
     // apaga a linha) ou a exclusão do contato deixariam a trilha sem titular

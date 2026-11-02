@@ -37,6 +37,9 @@ export const CLINICS_PERMISSION_KEYS = Object.freeze(
 /** `systemKey` do papel padrão do vertical (ADR-047 E3: prefixo do vertical). */
 export const CLINICS_PROFESSIONAL_SYSTEM_KEY = 'clinics:professional';
 
+/** `systemKey` do papel combinado "Recepção e atendimento" (ADR-056, D7). */
+export const CLINICS_RECEPTION_CARE_SYSTEM_KEY = 'clinics:reception-care';
+
 /**
  * Motivos, por LISTA FECHADA, para liberar um contato para IA (ADR-048 §6.4,
  * adendo 2 do ADR-047). Sem "outro" e sem texto livre.

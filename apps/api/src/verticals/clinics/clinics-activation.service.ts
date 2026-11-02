@@ -1,4 +1,5 @@
 import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { nomeDePapelComoSeLe } from '@veyra/contracts';
 import {
   CLINICS_PERMISSION_CATALOG,
   CLINICS_PROFESSIONAL_SYSTEM_KEY,
@@ -11,9 +12,10 @@ import type { Prisma } from '../../generated/prisma/client';
 import { IntelligenceService } from '../../intelligence/intelligence.service';
 import { PrismaService, type Db } from '../../prisma/prisma.service';
 import {
-  CLINICS_PROFESSIONAL_CORE_KEYS,
-  CLINICS_PROFESSIONAL_ROLE_NAME,
   CLINICS_ROLE_GRANTS,
+  CLINICS_VERTICAL_ROLES,
+  chavesPadraoDoPapel,
+  type PapelDoVertical,
 } from './clinics-permissions';
 
 type Tx = Prisma.TransactionClient;
@@ -28,6 +30,22 @@ export interface DeactivationReport {
   expiredContent: { results: number; proposals: number; replays: number } | null;
 }
 
+/** Uma diferença entre um papel do vertical e a matriz padrão: informada, NUNCA corrigida. */
+export type DivergenciaDePapel =
+  /** o papel do vertical não existe, e o nome dele é de OUTRO papel (`deChave`: o dele, ou null no personalizado) */
+  | { systemKey: string; tipo: 'nome_em_uso'; nome: string; deChave: string | null }
+  /** o papel existe com outro nome (personalizado) */
+  | { systemKey: string; tipo: 'nome_diferente'; nome: string; esperado: string }
+  | { systemKey: string; tipo: 'chaves_a_menos' | 'chaves_a_mais'; nome: string; chaves: string[] };
+
+export interface RolesSyncReport {
+  outcome: 'synced' | 'clinics_inactive';
+  workspaceId: string;
+  /** os papéis criados, pelo nome */
+  criados: { systemKey: string; nome: string }[];
+  divergencias: DivergenciaDePapel[];
+}
+
 export interface ActivationReport {
   outcome: ActivationOutcome;
   workspaceId: string;
@@ -35,9 +53,32 @@ export interface ActivationReport {
   activeWebhooks: number;
   /** conteúdo de IA anterior expirado; `null` = a limpeza falhou (a leitura já o oculta) */
   expiredContent: { results: number; proposals: number; replays: number } | null;
+  /** os papéis do vertical criados AGORA (na reativação, o que faltava; ADR-056) */
+  papeisCriados: { systemKey: string; nome: string }[];
 }
 
 const ACTOR = { type: 'system' as const, id: 'clinics-cli' };
+
+/**
+ * Um papel PERSONALIZADO (ou de outra chave) com o nome do papel do vertical,
+ * como a pessoa o lê: "RECEPÇÃO E ATENDIMENTO", ou com o "ç" decomposto, é o
+ * mesmo nome, e a unique do banco (exata) não o pega.
+ */
+async function homonimoDe(tx: Tx, workspaceId: string, papel: PapelDoVertical) {
+  // filtrado AQUI, e não no banco: `NOT (systemKey = x)` deixa de fora o
+  // personalizado, cujo `systemKey` é NULL — justamente o homônimo procurado
+  const papeis = await tx.role.findMany({
+    where: { workspaceId },
+    select: { id: true, name: true, systemKey: true },
+  });
+  return (
+    papeis.find(
+      (r) =>
+        r.systemKey !== papel.systemKey &&
+        nomeDePapelComoSeLe(r.name) === nomeDePapelComoSeLe(papel.name),
+    ) ?? null
+  );
+}
 
 /**
  * Ciclo de vida da ativação do Clinics (ADR-047 §4), usado pela CLI.
@@ -54,8 +95,9 @@ const ACTOR = { type: 'system' as const, id: 'clinics-cli' };
  * usos órfãos do workspace. Estourar a espera não muda nada e responde com uma
  * mensagem clara. Os dois expiram o conteúdo de IA depois do commit.
  *
- * É o ÚNICO escritor de `RolePermission` do vertical (teste de fronteira), e só
- * concede onde o vertical está sendo ativado.
+ * É o ÚNICO escritor de `RolePermission` do vertical (teste de fronteira). Só
+ * concede na ativação e, na sincronização dos papéis, onde o vertical JÁ está
+ * ativo (ADR-056).
  */
 @Injectable()
 export class ClinicsActivationService {
@@ -71,6 +113,7 @@ export class ClinicsActivationService {
 
   async enable(slug: string): Promise<ActivationReport> {
     const workspaceId = await this.workspaceIdOf(slug);
+    const papeisCriados: ActivationReport['papeisCriados'] = [];
     const outcome = await this.naMudanca(async (tx) => {
       await this.lock(tx, workspaceId);
       await this.restricao.doWorkspaceInteiro(tx as unknown as Db, workspaceId);
@@ -78,8 +121,17 @@ export class ClinicsActivationService {
       if (settings?.status === 'active') return 'already_active' as const;
 
       await this.registerCatalog(tx);
-      const professionalRoleId = await this.ensureProfessionalRole(tx, workspaceId);
-      const affectedRoles = await this.grantMatrix(tx, workspaceId, professionalRoleId);
+      const papeis = new Map<string, string>();
+      for (const papel of CLINICS_VERTICAL_ROLES) {
+        const { id, criado } = await this.ensureRole(tx, workspaceId, papel);
+        papeis.set(papel.systemKey, id);
+        if (criado) papeisCriados.push({ systemKey: papel.systemKey, nome: papel.name });
+      }
+      const affectedRoles = await this.grantMatrix(
+        tx,
+        workspaceId,
+        papeis.get(CLINICS_PROFESSIONAL_SYSTEM_KEY) as string,
+      );
       await this.bumpSessions(tx, workspaceId, affectedRoles);
 
       let settingsId: string;
@@ -114,9 +166,15 @@ export class ClinicsActivationService {
       where: { workspaceId, status: 'active' },
     });
     if (outcome === 'already_active') {
-      return { outcome, workspaceId, activeWebhooks, expiredContent: null };
+      return { outcome, workspaceId, activeWebhooks, expiredContent: null, papeisCriados: [] };
     }
-    return { outcome, workspaceId, activeWebhooks, expiredContent: await this.expire(workspaceId) };
+    return {
+      outcome,
+      workspaceId,
+      activeWebhooks,
+      expiredContent: await this.expire(workspaceId),
+      papeisCriados,
+    };
   }
 
   async disable(slug: string): Promise<DeactivationReport> {
@@ -163,6 +221,92 @@ export class ClinicsActivationService {
     return { outcome, workspaceId, expiredContent: await this.expire(workspaceId) };
   }
 
+  /**
+   * A SINCRONIZAÇÃO dos papéis do vertical num workspace com o Clinics JÁ ativo
+   * (ADR-056, item 5), explícita por workspace, pela CLI. A ativação só cria
+   * papéis na primeira vez; esta cria o papel AUSENTE, com a matriz padrão, e
+   * nada além disso:
+   * - não altera memberships nem atribui o papel novo;
+   * - não sobrescreve permissões nem nomes de um papel que já existe, e por
+   *   isso, repetida, não desfaz uma alteração feita depois;
+   * - informa as divergências com a matriz padrão, sem corrigi-las.
+   * Auditada: cada papel criado (`role.created`) e a própria execução.
+   */
+  async syncRoles(slug: string): Promise<RolesSyncReport> {
+    const workspaceId = await this.workspaceIdOf(slug);
+    return this.naMudanca(async (tx) => {
+      await this.lock(tx, workspaceId);
+      const settings = await tx.clinicsSettings.findFirst({ where: { workspaceId } });
+      if (settings?.status !== 'active') {
+        return { outcome: 'clinics_inactive', workspaceId, criados: [], divergencias: [] };
+      }
+      // a FK de `RolePermission` exige as chaves do vertical no catálogo global
+      await this.registerCatalog(tx);
+      const criados: RolesSyncReport['criados'] = [];
+      const divergencias: DivergenciaDePapel[] = [];
+      for (const papel of CLINICS_VERTICAL_ROLES) {
+        const padrao = chavesPadraoDoPapel(papel);
+        const existente = await tx.role.findFirst({
+          where: { workspaceId, systemKey: papel.systemKey },
+          include: { permissions: { select: { permissionKey: true } } },
+        });
+        if (!existente) {
+          const homonimo = await homonimoDe(tx, workspaceId, papel);
+          if (homonimo) {
+            divergencias.push({
+              systemKey: papel.systemKey,
+              tipo: 'nome_em_uso',
+              nome: homonimo.name,
+              deChave: homonimo.systemKey,
+            });
+            continue;
+          }
+          await this.createRole(tx, workspaceId, papel, padrao);
+          criados.push({ systemKey: papel.systemKey, nome: papel.name });
+          continue;
+        }
+        if (existente.name !== papel.name) {
+          divergencias.push({
+            systemKey: papel.systemKey,
+            tipo: 'nome_diferente',
+            nome: existente.name,
+            esperado: papel.name,
+          });
+        }
+        const atuais = new Set(existente.permissions.map((p) => p.permissionKey));
+        const aMenos = padrao.filter((k) => !atuais.has(k));
+        const aMais = [...atuais].filter((k) => !padrao.includes(k)).sort();
+        if (aMenos.length > 0) {
+          divergencias.push({
+            systemKey: papel.systemKey,
+            tipo: 'chaves_a_menos',
+            nome: existente.name,
+            chaves: aMenos,
+          });
+        }
+        if (aMais.length > 0) {
+          divergencias.push({
+            systemKey: papel.systemKey,
+            tipo: 'chaves_a_mais',
+            nome: existente.name,
+            chaves: aMais,
+          });
+        }
+      }
+      await this.audit.record(tx, workspaceId, 'clinics.roles_synced', {
+        entityType: 'clinicsSettings',
+        entityId: settings.id,
+        actor: ACTOR,
+        before: null,
+        after: {
+          rolesCreated: criados.map((c) => c.systemKey),
+          rolesDivergent: [...new Set(divergencias.map((d) => d.systemKey))],
+        },
+      });
+      return { outcome: 'synced', workspaceId, criados, divergencias };
+    });
+  }
+
   // ── Internos ──────────────────────────────────────────────────────────────
 
   /**
@@ -207,7 +351,7 @@ export class ClinicsActivationService {
     );
     if (!locked) {
       throw new ConflictException(
-        'Outra ativação ou desativação do Clinics neste workspace está em andamento. Tente de novo em instantes.',
+        'Outra ativação, desativação ou sincronização do Clinics neste workspace está em andamento. Tente de novo em instantes.',
       );
     }
   }
@@ -224,40 +368,64 @@ export class ClinicsActivationService {
   }
 
   /**
-   * Papel de sistema `Profissional`, localizado SEMPRE pelo `systemKey` — nunca
+   * Um papel de sistema do vertical, localizado SEMPRE pelo `systemKey` — nunca
    * pelo nome. Se o nome já pertence a outro papel, a ativação ABORTA (sem
-   * renomear em silêncio): o rollback desfaz tudo.
+   * renomear em silêncio): o rollback desfaz tudo. Nasce com a matriz PADRÃO
+   * inteira (a trilha registra qual); na reativação, a matriz devolve as do Clinics.
    */
-  private async ensureProfessionalRole(tx: Tx, workspaceId: string): Promise<string> {
+  private async ensureRole(
+    tx: Tx,
+    workspaceId: string,
+    papel: PapelDoVertical,
+  ): Promise<{ id: string; criado: boolean }> {
     const existing = await tx.role.findFirst({
-      where: { workspaceId, systemKey: CLINICS_PROFESSIONAL_SYSTEM_KEY },
+      where: { workspaceId, systemKey: papel.systemKey },
     });
-    if (existing) return existing.id;
-    const homonimo = await tx.role.findFirst({
-      where: { workspaceId, name: CLINICS_PROFESSIONAL_ROLE_NAME },
-    });
+    if (existing) return { id: existing.id, criado: false };
+    const homonimo = await homonimoDe(tx, workspaceId, papel);
     if (homonimo) {
       throw new Error(
-        `Já existe um papel chamado "${CLINICS_PROFESSIONAL_ROLE_NAME}" neste workspace, ` +
+        `Já existe um papel chamado "${homonimo.name}" neste workspace, ` +
           'que não é o papel do Clinics. Renomeie-o antes de ativar o vertical.',
       );
     }
+    return {
+      id: await this.createRole(tx, workspaceId, papel, chavesPadraoDoPapel(papel)),
+      criado: true,
+    };
+  }
+
+  private async createRole(
+    tx: Tx,
+    workspaceId: string,
+    papel: PapelDoVertical,
+    keys: readonly string[],
+  ): Promise<string> {
     const role = await tx.role.create({
       data: {
         workspaceId,
-        name: CLINICS_PROFESSIONAL_ROLE_NAME,
-        description: 'Consulta a agenda e registra atendimentos da clínica',
+        name: papel.name,
+        description: papel.description,
         isSystem: true,
-        systemKey: CLINICS_PROFESSIONAL_SYSTEM_KEY,
+        systemKey: papel.systemKey,
       },
     });
     await tx.rolePermission.createMany({
-      data: CLINICS_PROFESSIONAL_CORE_KEYS.map((permissionKey) => ({
-        workspaceId,
-        roleId: role.id,
-        permissionKey,
-      })),
+      data: keys.map((permissionKey) => ({ workspaceId, roleId: role.id, permissionKey })),
       skipDuplicates: true,
+    });
+    // a criação fica na trilha, pela ativação ou pela sincronização, com as
+    // chaves com que o papel nasceu
+    await this.audit.record(tx, workspaceId, 'role.created', {
+      entityType: 'role',
+      entityId: role.id,
+      actor: ACTOR,
+      before: null,
+      after: {
+        name: papel.name,
+        description: papel.description,
+        permissionKeys: [...keys].sort(),
+      },
     });
     return role.id;
   }

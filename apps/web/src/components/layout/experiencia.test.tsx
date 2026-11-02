@@ -34,6 +34,7 @@ const membership = (id: string, nome: string, experiencia: string): MembershipSu
   workspaceName: nome,
   workspaceSlug: id,
   roleName: 'Owner',
+  roleSystemKey: 'owner',
   status: 'active',
   experience: experiencia,
 });
@@ -402,6 +403,55 @@ describe('os estados da experiência nunca mostram o CRM', () => {
     expect(mes() - antes).toBe(1);
     // nenhuma recarga: a tela do produto continua
     expect(screen.getByRole('navigation', { name: 'Principal' })).toBeInTheDocument();
+  });
+});
+
+describe('o papel na linguagem de cada produto (ADR-056)', () => {
+  /** o item do seletor (o botão de abrir também leva o nome do workspace ativo) */
+  const item = (nome: RegExp) =>
+    screen.getAllByRole('button', { name: nome }).find((b) => b.textContent?.includes(' · '))!;
+  const comoRecepcao = (m: MembershipSummaryDto): MembershipSummaryDto => ({
+    ...m,
+    roleName: 'Member',
+    roleSystemKey: 'member',
+  });
+
+  it('o Member padrão é "Recepção" no Clinics — no cabeçalho e no seletor — e "Member" no CRM', async () => {
+    const crm = comoRecepcao(CRM);
+    const clinica = comoRecepcao(CLINICA);
+    subirServidor(pessoa(clinica, 'ready', [crm, clinica]));
+    abrir('/');
+    expect(await screen.findByRole('heading', { name: 'Hoje', level: 1 })).toBeInTheDocument();
+    expect(within(cabecalho()).getByText('Recepção')).toBeInTheDocument();
+    expect(within(cabecalho()).queryByText('Member')).toBeNull();
+    fireEvent.click(await screen.findByRole('button', { name: /Trocar de workspace/ }));
+    // cada workspace na linguagem do PRÓPRIO produto
+    await screen.findAllByRole('button', { name: /Empresa Fictícia/ });
+    expect(item(/Empresa Fictícia/)).toHaveTextContent(/Veyra · Member$/);
+    expect(item(/Clínica Fictícia/)).toHaveTextContent(/Veyra Clinics · Recepção$/);
+  });
+
+  it('no CRM, o cabeçalho diz "Member"; no Clinics, o nome personalizado e o papel personalizado ficam como são', async () => {
+    const crm = comoRecepcao(CRM);
+    const renomeado: MembershipSummaryDto = {
+      ...CLINICA,
+      roleName: 'Balcão',
+      roleSystemKey: 'member',
+    };
+    const personalizado: MembershipSummaryDto = {
+      ...membership('outra', 'Outra Clínica', 'clinics'),
+      roleName: 'Member',
+      roleSystemKey: null,
+    };
+    subirServidor(pessoa(crm, 'ready', [crm, renomeado, personalizado]));
+    abrir('/tags');
+    await lateral();
+    expect(within(cabecalho()).getByText('Member')).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: /Trocar de workspace/ }));
+    await screen.findAllByRole('button', { name: /Clínica Fictícia/ });
+    expect(item(/Clínica Fictícia/)).toHaveTextContent(/Veyra Clinics · Balcão$/);
+    expect(item(/Outra Clínica/)).toHaveTextContent(/Veyra Clinics · Member$/);
+    expect(screen.queryByText(/Recepção/)).toBeNull();
   });
 });
 
