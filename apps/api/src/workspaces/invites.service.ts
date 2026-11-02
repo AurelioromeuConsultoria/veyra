@@ -72,6 +72,8 @@ export class InvitesService {
         if (candidatos.some((m) => mesmoEmail(m.user.email, email))) {
           throw new ConflictException('Esta pessoa já é membro deste workspace');
         }
+        // o papel de uma extensão desativada não é atribuído (ADR-056 adendo 1)
+        await this.members.assertRoleAssignable(tx, workspaceId, roleId);
         const criado = await tx.invite.create({
           data: {
             workspaceId,
@@ -193,9 +195,11 @@ export class InvitesService {
         if (!workspace) throw new BadRequestException(INVALID_INVITE);
 
         // a autoridade de quem emitiu, AGORA: o convite da operação vale pela
-        // operação; o de um membro, só se ele ainda pode conceder ESTE papel. Sem
-        // ela, o convite é invalidado de vez — quem convidou voltar a ter o papel
-        // não o ressuscita
+        // operação; o de um membro, só se ele ainda pode conceder ESTE papel. E o
+        // papel, de qualquer convite, precisa ser atribuível agora: o de uma
+        // extensão desativada não é (ADR-056 adendo 1). Sem as duas coisas, o
+        // convite é invalidado de vez — quem convidou voltar a ter o papel, ou a
+        // extensão voltar, não o ressuscita
         const autorizado = invite.issuedByProvisioning
           ? invite.createdByMembershipId === null
           : invite.createdByMembershipId !== null &&
@@ -205,7 +209,10 @@ export class InvitesService {
               invite.createdByMembershipId,
               invite.roleId,
             ));
-        if (!autorizado) {
+        if (
+          !autorizado ||
+          !(await this.members.roleAssignable(tx, invite.workspaceId, invite.roleId))
+        ) {
           await this.invalidar(tx, invite);
           return { invalidado: true as const };
         }

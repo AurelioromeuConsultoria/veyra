@@ -998,7 +998,7 @@ Uma colisão de hash só causa espera a mais, nunca liberação indevida. A prim
 3. Travas de **entidade** que determinam a quem um conteúdo pertence (deal e tarefa, item 6), em ordem crescente de id.
 4. Linhas próprias da operação (proposta, dispatch, evento do outbox).
 
-Nenhum caminho pega um nível depois de um nível posterior. A trava tentada de ativação (`clinics_activation`) fica **antes** do nível 1, porque é exclusão mútua entre CLIs. _(Alterado pelo ADR-052, F4.1a: o **nível 0** é a trava da ingestão do WhatsApp, por (workspace, chave de coincidência), antes do nível 1, e quem a pega são a ingestão e os três atos de identificação. O nível 3 ganhou as famílias `conversation:<id>` e `address:<HMAC>`, numa única passada em ordem de chave com `deal:` e `task:`.)_
+Nenhum caminho pega um nível depois de um nível posterior. A trava tentada de ativação (`clinics_activation`) fica **antes** do nível 1, porque é exclusão mútua entre CLIs. _(Alterado pelo ADR-052, F4.1a: o **nível 0** é a trava da ingestão do WhatsApp, por (workspace, chave de coincidência), antes do nível 1, e quem a pega são a ingestão e os três atos de identificação. O nível 3 ganhou as famílias `conversation:<id>` e `address:<HMAC>`, numa única passada em ordem de chave com `deal:` e `task:`.)_ _(Alterado pelo ADR-056 adendo 1: a ativação e a desativação pegam a trava dos membros, `veyra_members`, depois do nível 1 e da marcação dos usos órfãos do workspace, e antes das linhas de papel, permissão, membership e configuração. Não há ciclo, porque os caminhos dos membros só pegam essa trava e as linhas de membership, convite, conta e trilha, nunca uma trava de restrição nem uma linha de uso, reserva, run ou proposta. Um teste estático prende isso.)_
 
 Os lotes que hoje travam contatos fora de ordem (`companies.service.ts`, remoção de empresa) passam a travar em ordem de id. Isso paga a dívida registrada.
 
@@ -9430,7 +9430,7 @@ O que as revisões corrigiram:
 
 **Resíduos declarados (revisão de `security`):**
 
-- **A janela da desativação.**
+- ~~**A janela da desativação.**~~ **Não aprovada como resíduo pelo usuário (2026-11-02), fechada pelo adendo 1** para os papéis do vertical. O texto original:
   - Com o Clinics desativado, "Recepção e atendimento" fica igual ao Member.
   - Quem tem `members:manage` e as chaves do Member pode trocar alguém para ele. Na reativação, a pessoa recebe o atendimento, que quem fez a troca nunca teve: a regra de não conceder o que não se tem é conferida só na hora da troca.
   - Já existia com o `Profissional` e o Member. Só um papel personalizado com `members:manage` e sem as chaves do atendimento consegue usá-la, e nenhuma rota cria papéis hoje.
@@ -9461,3 +9461,94 @@ O que as revisões corrigiram:
   - os rótulos por experiência, com o nome personalizado preservado;
   - o menu do Clinics para o papel combinado;
 - **as mutações** nas regras novas.
+
+### Adendo 1 (2026-11-02) — com o vertical desativado, nenhum papel dele é atribuído
+
+**Status:** a direção foi pedida pelo usuário em 2026-11-02: impedir, no servidor, as atribuições novas dos papéis do vertical enquanto ele estiver desativado. O desenho abaixo é a implementação, em commit local, revisada por `reviewer` e `security` e pendente da conferência do usuário. Não houve push nem deploy.
+
+O desenho decide três coisas de estrutura, pequenas:
+
+- a regra do Core pela forma do `systemKey`;
+- o vertical passa a pegar a trava dos membros do Core;
+- a invalidação definitiva do convite no aceite.
+
+**Contexto.** O usuário não aprovou como resíduo a "janela da desativação". Ninguém pode atribuir, durante a desativação, um papel que depois ganha permissões que essa pessoa nunca pôde conceder.
+
+**A regra, no Core e sem nenhum vertical:**
+
+1. **Papel de extensão** é o de `systemKey` na forma `<extensão>:<papel>` (ADR-047 E3). Ele só é atribuível enquanto tiver ao menos uma chave da própria extensão (`<extensão>:`).
+   - A desativação tira todas essas chaves, de todos os papéis (ADR-047 item 4), e a reativação as devolve. Por isso, com o vertical desativado, nenhum papel dele é atribuível.
+   - O Core não lê o status do vertical nem conhece nenhum valor de `systemKey` de extensão: só a forma.
+   - O papel de uma extensão que não está composta nunca é atribuível.
+   - **Por que não a porta de disponibilidade do E2,** que foi adiada (ADR-047 adendo 1, item 3): ela responderia quais chaves podem ser concedidas a um papel, e a pergunta aqui é outra: se o papel pode ser atribuído. O dado que a desativação já mantém responde, e é lido na mesma transação da atribuição. Uma porta seria avaliada fora da transação, como a da experiência, e precisaria de coordenação própria.
+   - **As duas convenções de que a regra depende,** presas por teste estático:
+     - nenhum papel de sistema do Core tem `:` no `systemKey`;
+     - todo papel do vertical tem ao menos uma chave do Clinics na matriz padrão.
+2. **Onde vale:**
+   - a criação do convite;
+   - o aceite de um convite já emitido, inclusive o da operação;
+   - a troca de papel, só para o papel NOVO.
+3. **Onde não vale:**
+   - a revogação de convite e a remoção de membro;
+   - a saída de alguém do papel: o papel atual do alvo, na troca, não passa pela regra.
+
+   Os vínculos atuais ficam como estão.
+
+4. **As respostas:**
+   - **na criação e na troca,** 409, com uma mensagem do Core que não nomeia o vertical: "Esta função não pode ser atribuída agora: o produto a que ela pertence está desativado neste workspace";
+   - **no aceite,** o convite é invalidado de vez pelo caminho do ADR-054 item 12 (`invite.invalidated`), com a mensagem única de convite inválido. A reativação não o ressuscita;
+   - **a ordem:** primeiro o subconjunto (403), depois a disponibilidade (409).
+5. **A corrida.** A ativação e a desativação pegam a trava dos membros (`veyra_members`), a mesma da troca de papel, da remoção e dos convites. Ela vem depois da trava do workspace, que é exclusiva, e da marcação dos usos órfãos, e antes das linhas de papel, permissão, membership e configuração. Ela não fica antes da trava do workspace: se ficasse, a gestão de equipe esperaria junto os até 90 s dos usos. Nenhuma atribuição corre no meio delas:
+   - a atribuição já em andamento termina antes, e a desativação a vê (o `tokenVersion` da membership cai);
+   - a que chega durante a desativação espera, e lê o papel já sem as chaves.
+
+   **Na ordem global das travas** (ADR-047 adendo 6 §3.2), a ativação a pega depois do nível 1 e da marcação dos órfãos, que já grava linhas do nível 4: usos, reservas, runs incertos e trilha.
+   - **Não há ciclo,** porque os caminhos dos membros só pegam a trava deles e as linhas de membership, convite, conta e trilha. Nunca tocam uso, reserva, run, proposta nem trava de restrição. Um teste estático prende isso: pôr sob a trava dos membros algo que toque essas linhas fecharia o ciclo.
+   - **A espera** conta no prazo da CLI (90 s por trava), e estourá-lo dá a mensagem de espera, que agora cita também as mudanças na equipe, sem efeito.
+
+6. **O que não muda:**
+   - a sincronização (`sync-roles`) só roda com o vertical ativo e não atribui papel, por isso não pega a trava;
+   - os convites pendentes para os papéis do vertical continuam listados e revogáveis durante a desativação. O aceite deles é que fica recusado;
+   - **o convite pendente que ninguém tentou aceitar durante a desativação** volta a ser aceitável depois da reativação, com a autoridade de quem o emitiu conferida de novo. O destino dele depende de alguém ter tentado no meio da janela: quem tentou o invalidou de vez. Na tela de equipe, ele aparece na lista durante a desativação, e quem gere a equipe decide revogá-lo.
+
+**Continua aberto, e não é aceito como resíduo. Fica para decisão do usuário:**
+
+- **Os papéis do Core que a ativação completa.** Owner, Admin e Member também recebem `clinics:*` na ativação e na reativação. Com o Clinics desativado, eles continuam atribuíveis, porque o workspace segue como CRM.
+  - **A mesma janela existe para eles.** O subconjunto é conferido com as chaves do momento. Um papel personalizado com `members:manage`, sem as chaves do Clinics que o Admin ou o Member recebem, poderia:
+    - **atribuí-los durante a desativação,** pela troca ou pelo convite, inclusive pelo aceite (`authorityToInvite`) de um convite para o Admin;
+    - **atribuí-los antes da primeira ativação,** num workspace que nunca ativou o Clinics;
+    - **rebaixar ou remover um Admin,** e revogar um convite para o Admin, durante a desativação. Com o Clinics ativo, receberia 403, porque o alvo tem mais chaves que ele.
+  - **O impacto é maior que o do caso deste adendo.** Na ativação, Owner e Admin recebem TODAS as chaves `clinics:*`: o atendimento e também a liberação para IA (`clinics:restriction:manage`). O Member recebe a agenda.
+  - **A precondição é a mesma do caso deste adendo:** um papel personalizado com `members:manage`, que nenhuma rota cria hoje.
+  - **O desenho mínimo para fechar:** conferir o subconjunto pelas chaves que o papel tem com a extensão ativa.
+    - A extensão declara na composição a matriz que a ativação concede, e o Core a soma.
+    - A soma vale em toda conferência do subconjunto: o papel atribuído, o papel de quem atribui, o papel atual do alvo (na troca e na remoção), o papel do convite revogado, `authorityToInvite` no aceite e `revokeInvitesWithoutAuthority`.
+    - A matriz somada pelo Core precisa ser a mesma fonte que a ativação concede (`grantMatrix`), para não divergirem.
+    - Fica a decidir o escopo da soma: valer onde a extensão está composta, ou só onde ela já foi ativada. O Core não lê o status do vertical, e a segunda opção deixa aberto o workspace que nunca ativou.
+    - É um ponto de composição novo, então pede um ADR antes do código.
+  - **A recomendação:** fechá-lo antes de existir qualquer rota que crie ou edite papéis (`roles:manage`).
+- **Os limites que seguem documentados, sem mudança:**
+  - a mudança futura no template do Member exige decisão explícita para o papel combinado;
+  - os nomes personalizados parecidos são pendência de clareza da interface, não garantia de identidade.
+
+**As provas:**
+
+- **o caso do ADR:** um operador com `members:manage` e as chaves do Member, sem o atendimento, com o Clinics desativado.
+  - O convite e a troca para "Recepção e atendimento" e para o `Profissional` dão 409, e nada é gravado.
+  - Depois da reativação, a pessoa continua no papel de antes, sem o atendimento, e a mesma tentativa dá 403.
+- **o convite criado antes da desativação, por quem podia, e aceito durante ela:** ele é invalidado, com a trilha. Depois da reativação, o mesmo token continua inválido.
+- **a saída:** os vínculos atuais ficam. Com o Clinics desativado, continuam funcionando:
+  - trocar alguém do papel do vertical para o Member;
+  - remover o membro;
+  - revogar o convite pendente.
+- **os papéis do Core** continuam atribuíveis com o vertical desativado.
+- **a corrida:**
+  - parada a desativação depois da trava dos membros, a troca, o convite e o aceite esperam, e recusam;
+  - no outro sentido: parada a troca já com a trava dos membros, a desativação espera. A troca termina, o vínculo fica e o `tokenVersion` cai duas vezes, uma pela troca e uma pela desativação;
+  - parada a reativação no mesmo ponto, a troca espera e lê o papel já com o atendimento.
+- **o caso do ADR, isolado:** depois da reativação, com as chaves da recepção devolvidas ao operador, ele atribui o Member e continua recusado (403) no papel combinado, só pela falta do atendimento.
+- **os testes estáticos:** as duas convenções da regra, e os caminhos dos membros sem trava de restrição nem linhas de uso.
+- **as mutações:**
+  - sem a regra em cada caminho;
+  - sem a trava na ativação e na desativação;
+  - a forma do papel de extensão.

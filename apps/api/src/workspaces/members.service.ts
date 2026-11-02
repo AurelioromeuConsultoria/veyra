@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
@@ -9,12 +10,23 @@ import type { MemberDto, RoleDto } from '@veyra/contracts';
 import { AuditService } from '../audit/audit.service';
 import { AuthContext } from '../common/decorators';
 import { CORE_REGISTRY, EXTENSION_REGISTRY, type ComposedRegistry } from '../extensions/registry';
+import { lockWorkspaceMembers } from './members-lock';
 import { mesmoEmail, preFiltroDoEmail } from './mesmo-email';
 import type { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 /** Cliente de transação raw (sem filtro de workspace — escopo manual explícito). */
 type Tx = Prisma.TransactionClient;
+
+/** A recusa do papel de extensão desativada: o Core não nomeia o vertical (ADR-056 adendo 1). */
+export const PAPEL_INDISPONIVEL =
+  'Esta função não pode ser atribuída agora: o produto a que ela pertence está desativado neste workspace';
+
+/** `<extensão>:<papel>` → `<extensão>`; o papel do Core e o personalizado → `null`. */
+function extensaoDoPapel(systemKey: string | null): string | null {
+  if (systemKey === null || !systemKey.includes(':')) return null;
+  return systemKey.slice(0, systemKey.indexOf(':'));
+}
 
 @Injectable()
 export class MembersService {
@@ -97,6 +109,9 @@ export class MembersService {
       // não se toca em quem é mais poderoso, nem se concede o que não se tem
       await this.assertRoleWithinActor(tx, workspaceId, actorPerms, target.roleId);
       await this.assertRoleWithinActor(tx, workspaceId, actorPerms, roleId);
+      // nem o papel de uma extensão desativada (ADR-056 adendo 1). Só o NOVO: a
+      // saída do papel atual continua livre
+      await this.assertRoleAssignable(tx, workspaceId, roleId);
 
       const targetRole = (target as unknown as { role: { systemKey: string | null } }).role;
       if (targetRole.systemKey === 'owner' && newRole.systemKey !== 'owner') {
@@ -183,11 +198,41 @@ export class MembersService {
    * essas operações confirmaram.
    */
   async lockMembers(tx: Tx, workspaceId: string): Promise<void> {
-    await tx.$executeRawUnsafe(
-      'SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',
-      'veyra_members',
-      workspaceId,
-    );
+    await lockWorkspaceMembers(tx, workspaceId);
+  }
+
+  /**
+   * Um papel de EXTENSÃO (`<extensão>:<papel>`, ADR-047 E3) só é atribuível
+   * com a extensão ativa no workspace: a desativação tira dele todas as chaves
+   * da extensão, e a reativação as devolve. Atribuído no meio, ele ganharia na
+   * reativação o que quem atribuiu talvez nunca pudesse conceder (ADR-056
+   * adendo 1). O Core não lê o status de vertical nenhum: sem chave da própria
+   * extensão, o papel não é atribuível; o de extensão não composta, nunca. A
+   * regra não afeta o papel do Core nem o personalizado.
+   *
+   * Chamada sob a trava dos membros, que a ativação e a desativação também
+   * pegam: a leitura não corre no meio delas.
+   */
+  async roleAssignable(tx: Tx, workspaceId: string, roleId: string): Promise<boolean> {
+    const role = await tx.role.findFirst({
+      where: { id: roleId, workspaceId },
+      select: { systemKey: true },
+    });
+    if (!role) return false;
+    const extensao = extensaoDoPapel(role.systemKey);
+    if (extensao === null) return true;
+    if (!this.registry.extensionNames.includes(extensao)) return false;
+    const daExtensao = await tx.rolePermission.count({
+      where: { workspaceId, roleId, permissionKey: { startsWith: `${extensao}:` } },
+    });
+    return daExtensao > 0;
+  }
+
+  /** A atribuição de um papel: a criação do convite e a troca (o aceite invalida, ver o convite). */
+  async assertRoleAssignable(tx: Tx, workspaceId: string, roleId: string): Promise<void> {
+    if (!(await this.roleAssignable(tx, workspaceId, roleId))) {
+      throw new ConflictException(PAPEL_INDISPONIVEL);
+    }
   }
 
   /**

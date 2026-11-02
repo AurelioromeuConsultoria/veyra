@@ -11,6 +11,7 @@ import { MudancasDeRestricao } from '../../content-use/restriction-changes';
 import type { Prisma } from '../../generated/prisma/client';
 import { IntelligenceService } from '../../intelligence/intelligence.service';
 import { PrismaService, type Db } from '../../prisma/prisma.service';
+import { lockWorkspaceMembers } from '../../workspaces/members-lock';
 import {
   CLINICS_ROLE_GRANTS,
   CLINICS_VERTICAL_ROLES,
@@ -95,6 +96,12 @@ async function homonimoDe(tx: Tx, workspaceId: string, papel: PapelDoVertical) {
  * usos órfãos do workspace. Estourar a espera não muda nada e responde com uma
  * mensagem clara. Os dois expiram o conteúdo de IA depois do commit.
  *
+ * Os dois pegam também a trava dos membros, depois da do workspace e da marcação
+ * dos órfãos, e antes das linhas de papel, permissão, membership e configuração
+ * (ADR-056 adendo 1): eles tiram e devolvem as chaves dos papéis
+ * do vertical, e nenhuma atribuição de papel corre no meio. A que chega durante
+ * a desativação espera e lê o papel já sem as chaves, que o Core não atribui.
+ *
  * É o ÚNICO escritor de `RolePermission` do vertical (teste de fronteira). Só
  * concede na ativação e, na sincronização dos papéis, onde o vertical JÁ está
  * ativo (ADR-056).
@@ -117,6 +124,7 @@ export class ClinicsActivationService {
     const outcome = await this.naMudanca(async (tx) => {
       await this.lock(tx, workspaceId);
       await this.restricao.doWorkspaceInteiro(tx as unknown as Db, workspaceId);
+      await lockWorkspaceMembers(tx, workspaceId);
       const settings = await tx.clinicsSettings.findFirst({ where: { workspaceId } });
       if (settings?.status === 'active') return 'already_active' as const;
 
@@ -182,6 +190,7 @@ export class ClinicsActivationService {
     const outcome = await this.naMudanca(async (tx) => {
       await this.lock(tx, workspaceId);
       await this.restricao.doWorkspaceInteiro(tx as unknown as Db, workspaceId);
+      await lockWorkspaceMembers(tx, workspaceId);
       const settings = await tx.clinicsSettings.findFirst({ where: { workspaceId } });
       if (!settings || settings.status !== 'active') return 'already_inactive' as const;
 
@@ -322,7 +331,7 @@ export class ClinicsActivationService {
       const codigo = postgresErrorCode(error) ?? (error as { code?: unknown } | null)?.code;
       if (codigo === '55P03' || codigo === 'P2028') {
         throw new ConflictException(
-          'Há usos de conteúdo em andamento neste workspace que não terminaram a tempo. ' +
+          'Há usos de conteúdo ou mudanças na equipe em andamento neste workspace que não terminaram a tempo. ' +
             'Nada mudou; tente de novo em instantes.',
         );
       }

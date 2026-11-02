@@ -265,6 +265,15 @@ describe('Clinics — garantias estáticas (ADR-047, ADR-048)', () => {
     expect(Object.keys(CLINICS_ROLE_GRANTS).some((k) => /convers/.test(k))).toBe(false);
   });
 
+  it('todo papel do vertical tem a forma `clinics:<papel>` e ao menos uma chave do Clinics na matriz: só assim o Core o atribui com o vertical ativo (ADR-056 adendo 1)', () => {
+    for (const papel of CLINICS_VERTICAL_ROLES) {
+      expect(papel.systemKey).toMatch(/^clinics:[a-z-]+$/);
+      expect(
+        (CLINICS_ROLE_GRANTS[papel.systemKey] ?? []).filter((k) => k.startsWith('clinics:')),
+      ).not.toHaveLength(0);
+    }
+  });
+
   it('na matriz, quem ESCREVE atendimento também o LÊ (care:write pressupõe care:read, ADR-048 adendo 7)', () => {
     for (const keys of Object.values(CLINICS_ROLE_GRANTS)) {
       if (keys.includes('clinics:care:write')) expect(keys).toContain('clinics:care:read');
