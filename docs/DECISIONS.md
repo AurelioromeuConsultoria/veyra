@@ -10099,7 +10099,13 @@ Os dois valiam para deploys manuais pelo painel. A publicação comum agora segu
   - **a b89, parcial depois do carimbo,** foi verde nos blocos afetados: unitários, build, drift, migrations do zero, `check:fk` e o e2e (57);
   - **a b87,** anterior às correções da revisão, teve uma falha intermitente fora da F5.2a (abaixo).
 
-**O procedimento de publicação (ajuste 5, direção aprovada pelo usuário em 2026-11-03, com ajustes).** Ele está no DEPLOY_STAGING §4.2 e usa peças que já existem e foram ensaiadas: os blocos A, 1 e 8 da E-4; o snapshot no host, que é o bloco 2 da E-4 com a conferência trocada pela migration desta janela (`deploy/staging/janela-f52a/b2-snapshot.sh`), porque o `restic` do staging nunca teve destino; as conferências do §4; e a destrava do bloco 7. A ordem:
+**O procedimento de publicação (ajuste 5, direção aprovada pelo usuário em 2026-11-03, com ajustes).**
+
+- **Sem fixar o recurso** (decisão do usuário): ele fica em `HEAD`, e o deploy segue pelo CI. A conferência dos caminhos guardados do job `Staging` recusa a migration antes do único pedido de publicação ao Coolify.
+- **Nenhum push durante a janela.**
+- **Os saldos dos pacotes** são anotados antes, conferidos iguais depois da migration e com exatamente uma sessão a mais depois do atendimento de teste (`deploy/staging/janela-f52a/saldos.sh`, ensaiado).
+
+O procedimento está no DEPLOY_STAGING §4.2 e usa peças que já existem e foram ensaiadas: os blocos A, 1 e 8 da E-4; o snapshot no host, que é o bloco 2 da E-4 com a conferência trocada pela migration desta janela (`deploy/staging/janela-f52a/b2-snapshot.sh`), porque o `restic` do staging nunca teve destino; as conferências do §4; e a destrava do bloco 7. A ordem:
 
 1. a pausa de uso confirmada;
 2. a barreira (a trava no banco, a API e os jobs parados), conferida;

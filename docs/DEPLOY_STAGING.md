@@ -319,7 +319,7 @@ com o ADR-058**. Com o Auto Deploy ligado, o próprio push publicaria antes do C
 
 ### 4.1 Deploy com janela: migration, manutenção, restauração
 
-O que a §4.0 não publica sozinha passa por aqui, com autorização própria.
+O que a §4.0 não publica sozinha passa por aqui, com autorização própria. A janela da F5.2a (§4.2) é uma exceção decidida pelo usuário: o recurso fica em `HEAD`, porque a guarda do job recusa a migration antes de pedir o deploy, e nenhum push sai durante ela.
 
 **Toda janela, de qualquer tipo, começa e termina pelo painel.** Isso vale para
 a migration, a restauração (§6), a rotação de chave (`SECURITY.md` §8) e a
@@ -1323,6 +1323,7 @@ Usa peças que já existem e foram ensaiadas:
 
 - os blocos A, 1 e 8 de `deploy/staging/janela-e4/`, sem mudança;
 - o snapshot da janela no host, que é o bloco 2 da E-4 com a conferência trocada pela migration desta janela: `deploy/staging/janela-f52a/b2-snapshot.sh`;
+- os saldos dos pacotes comparados com os anotados no snapshot: `deploy/staging/janela-f52a/saldos.sh`, com `ROTULO=migration` (todos iguais) ou `ROTULO=teste` (exatamente uma sessão a mais no pacote escolhido);
 - a migration e as conferências do §4;
 - a mesma instrução de destrava do bloco 7.
 
@@ -1339,11 +1340,17 @@ Usa peças que já existem e foram ensaiadas:
 - **No mesmo banco, depois:**
   - a migration sob a trava deu status em dia, inventário 41, contador 0 e nenhuma correção;
   - a destrava abaixo deixou a trava vazia.
+- **O bloco dos saldos:**
+  - deu `SALDOS_IGUAIS` depois da migration;
+  - recusou o teste sem atendimento;
+  - depois de um atendimento com pacote, deu `SALDO_DO_TESTE_OK`, com exatamente uma sessão a mais;
+  - recusou saldos mudados com `ROTULO=migration`, e a falta do rótulo.
 
 **Antes de começar:**
 
-- o push feito com o recurso fixado no commit no ar e sem deploy em andamento;
-- os quatro jobs verdes. O `Staging` recusa, pelo recurso fixado: é o esperado;
+- **o recurso fica em `HEAD`, sem fixar** (decisão do usuário, 2026-11-03), e o Auto Deploy em "Manual deployments only";
+- **o push do lote com a migration,** com os quatro jobs verdes. O `Staging` recusa pela migration: a conferência dos caminhos guardados para o job antes do único pedido de publicação ao Coolify (`.github/scripts/staging-deploy.sh`; o cenário `migration-nova` do ensaio). É o esperado, e a versão no ar continua;
+- **nenhum push durante a janela,** para não misturar versões. O job recusaria do mesmo jeito: até o Deploy do passo 3, a base é o commit no ar, e toda ponta traz a migration; depois, a base é o Deploy do painel, ainda sem conferência até a `STAGING_BASE` do passo 8;
 - a **pausa de uso** confirmada pelo usuário, com todas as abas do Veyra fechadas. A manutenção não começa com alguém navegando;
 - a janela não cruza o `BACKUP_AT` (03:15 UTC, por padrão).
 
@@ -1382,8 +1389,8 @@ Usa peças que já existem e foram ensaiadas:
      - termina em `DUMP_INTEIRO`.
    - **Sem `DUMP_INTEIRO`, a janela não segue** (a saída está abaixo).
 3. **A imagem nova, protegida.**
-   - No painel, o commit da F5.2a (o SHA completo) e o **Deploy**.
-   - No host, o container novo, só com os valores não secretos (`MAINTENANCE_MODE=true` e o `SOURCE_COMMIT`):
+   - No painel, com o recurso em `HEAD`, o **Deploy**: ele publica a ponta da `main`, que é o lote publicado (sem push depois dele).
+   - No host, o container novo, só com os valores não secretos (`MAINTENANCE_MODE=true` e o `SOURCE_COMMIT` igual ao SHA da ponta da `main`):
 
      ```bash
      docker inspect <container-api> --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^(MAINTENANCE_MODE|DISABLE_JOBS|SOURCE_COMMIT)='
@@ -1398,7 +1405,8 @@ Usa peças que já existem e foram ensaiadas:
    - o inventário da migration (§4): **41** linhas;
    - a conferência do contador (§7.1): **0**;
    - nenhuma correção ainda: `SELECT count(*) FROM "ClinicsPackageCorrection"` dá **0**;
-   - `node dist/cli/check-cross-tenant-fk.js`, sem achado.
+   - `node dist/cli/check-cross-tenant-fk.js`, sem achado;
+   - **os saldos:** `export ROTULO=migration` e o bloco `saldos.sh` até `SALDOS_IGUAIS`, todos iguais aos anotados no snapshot.
 5. **A destrava**, só com o passo 4 inteiro conferido. É a instrução do bloco 7, mais a conferência de que a trava saiu (o resultado vazio):
 
    ```bash
@@ -1418,12 +1426,13 @@ Usa peças que já existem e foram ensaiadas:
      - `npx --no-install prisma migrate status` está em dia.
    - **Pelo usuário, numa aba nova, no `demo`:**
      - na ficha de cada paciente com pacote, o "x de y" igual ao de `pacotes-antes.txt`;
-     - um atendimento fictício registrado com pacote, e o saldo dele caindo uma sessão.
-
-     Depois disso, no terminal, o contador continua em 0.
+     - um atendimento fictício registrado com pacote. Anote qual pacote foi escolhido.
+   - **Depois disso, no terminal:**
+     - `export ROTULO=teste` e o bloco `saldos.sh` até `SALDO_DO_TESTE_OK`, com exatamente uma sessão a mais, no pacote escolhido;
+     - o contador continua em 0.
 8. **O fechamento:**
-   - a `STAGING_BASE` do ambiente `staging` com o SHA completo da F5.2a;
-   - o recurso devolvido a `HEAD`;
+   - a `STAGING_BASE` do ambiente `staging` com o SHA completo da ponta publicada;
+   - o recurso continua em `HEAD`;
    - o uso liberado.
 
    O próximo push volta a publicar sozinho.
@@ -1433,8 +1442,11 @@ Usa peças que já existem e foram ensaiadas:
 - **A condição:** a contagem da `20261103120000_clinics_package_corrections` em `_prisma_migrations` dá 0.
 - **A volta,** ao código que estava no ar:
   1. a destrava (passo 5);
-  2. no painel, o commit no ar (o mesmo fixado), `MAINTENANCE_MODE=false` e o `DISABLE_JOBS` de antes, e o **Redeploy**;
+  2. no painel, o recurso fixado no `bba29b8` só para a volta (em `HEAD`, um Deploy subiria o código novo), `MAINTENANCE_MODE=false` e o `DISABLE_JOBS` de antes, e o **Deploy**;
   3. o bloco 8.
+
+  Fixado, o job `Staging` recusa todo push. O recurso volta a `HEAD` quando a janela for retomada.
+
 - **O banco não foi tocado.**
 - **Se a própria migration falhou,** vale o §4, "Falha de migration", com a barreira mantida. A migration é transacional: o inventário dá 0 antes do `resolve --rolled-back`.
 
@@ -1444,7 +1456,7 @@ Usa peças que já existem e foram ensaiadas:
   - **Como:**
     1. a barreira (bloco 1);
     2. **com ela de pé,** `SELECT count(*) FROM "ClinicsPackageCorrection"` dando 0. A condição só vale conferida assim;
-    3. o painel no `bba29b8`, com `MAINTENANCE_MODE=true`, e o **Deploy**;
+    3. o painel com o recurso fixado no `bba29b8` (em `HEAD`, um Deploy subiria o código novo), com `MAINTENANCE_MODE=true`, e o **Deploy**;
     4. a destrava (passo 5);
     5. `MAINTENANCE_MODE=false` e o **Redeploy**;
     6. o bloco 8.
