@@ -2788,7 +2788,7 @@ O usuário entra e troca para o workspace Demonstração. Depois:
 - **De fora,** às 14:31 UTC: `/api/health` 200 e a tela 200. A `STAGING_BASE` foi apagada logo depois.
 - **A sincronização no `demo`,** autorizada (§7.1) e rodada pelo usuário no terminal do container `api`: `Papel criado em demo: "Recepção e atendimento" (clinics:reception-care), com a matriz padrão e SEM nenhum membro` e `Sem divergência com a matriz padrão`.
 
-### A janela da F5.2a (2026-11-03): concluída, com a verificação do consumo PENDENTE
+### A janela da F5.2a (2026-11-03): concluída; a verificação do consumo, feita depois, pela F5.2b
 
 - **O roteiro:** o §4.2, sem fixar o recurso (decisão do usuário), executado pelo usuário no terminal do servidor e no painel, das 19:13 às ~19:40 UTC.
 - **O diagnóstico (bloco A):** a API no `bba29b8`, 58 migrations, o status em dia, a saúde 200, o Clinics ativo só no `demo` (6 contatos, 6 pacientes e 5 agendamentos), e o `restic` sem destino.
@@ -2799,3 +2799,10 @@ O usuário entra e troca para o workspace Demonstração. Depois:
 - **A retomada:** a trava desligada, o Deploy com `MAINTENANCE_MODE=false` e `DISABLE_JOBS=false`, e a saúde 200 de fora. A `STAGING_BASE` ficou com o `f860cc2`, gravada por Claude com o `gh`.
 - **A verificação funcional do consumo NÃO foi feita:** sem pacote no `demo`, o atendimento fictício de teste não aconteceu. Ela fica **pendente** no staging. A F5.2b traz as telas e o E2E do fluxo (pacote, registro, correção e saldo), que rodam no CI, não no staging.
 - **O que veio depois:** o usuário recusou repetir a operação manual. A automação da publicação com migrations (ADR-060) ficou preservada na branch `proposta/publicacao-automatica` (`6e38078`), sem publicar, para uma revisão de escopo posterior.
+- **A verificação funcional do consumo, feita em 2026-11-03 (~22:15 UTC),** depois de a F5.2b ir ao ar (`925546d`, pelo job `Staging` do run 41726494648, com a saúde 200). Foi feita uma vez, pela interface, no `demo`, com dados fictícios, pelo Owner:
+  - **o pacote:** a paciente "Gabriela Demonstração" ganhou um pacote de 5 sessões de "Limpeza de pele (demonstração)", criado em 03/11/2026 19:15 (hora local);
+  - **o atendimento:** hoje às 16:00, com a Dra. Ana Fictícia, registrado com o pacote. O saldo no servidor caiu de 5 para 4;
+  - **a correção:** "Corrigir consumo" na agenda, para avulso, com o motivo "Escolha errada no registro". A resposta foi "correção nº 1", e a releitura mostrou o consumo avulso e o pacote com 5;
+  - **a ficha:** "0 de 5" e 5 restantes. Em "Sessões", nenhuma sessão consumida, e a correção de 19:16, "de este pacote para avulso · Escolha errada no registro".
+
+  A pendência da janela está fechada.

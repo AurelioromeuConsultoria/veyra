@@ -10123,7 +10123,7 @@ O procedimento está no DEPLOY_STAGING §4.2 e usa peças que já existem e fora
 - **Uma interrupção antes de a migration entrar** volta ao código no ar, sem tocar o banco (§4.2).
 - **A verificação da janela não faz correção.**
 
-**A publicação (2026-11-03):** a janela do DEPLOY_STAGING §4.2 foi executada pelo usuário e terminou com o staging no `f860cc2`, a migration aplicada e a saúde 200. **A verificação funcional do consumo ficou PENDENTE:** o `demo` não tinha pacote, e o atendimento fictício de teste não aconteceu. A F5.2b traz as telas e o E2E do fluxo completo, que rodam no CI.
+**A publicação (2026-11-03):** a janela do DEPLOY_STAGING §4.2 foi executada pelo usuário e terminou com o staging no `f860cc2`, a migration aplicada e a saúde 200. **A verificação funcional do consumo ficou PENDENTE:** o `demo` não tinha pacote, e o atendimento fictício de teste não aconteceu. A F5.2b traz as telas e o E2E do fluxo completo, que rodam no CI. **Fechada no mesmo dia,** depois de a F5.2b ir ao ar (`925546d`): o fluxo, feito uma vez pela interface no `demo` com dados fictícios, registrou com o pacote (5 → 4), corrigiu para avulso (de volta a 5) e mostrou a correção nas sessões do pacote (DEPLOY_STAGING, "A janela da F5.2a").
 
 **Pontos que ficam registrados:**
 
