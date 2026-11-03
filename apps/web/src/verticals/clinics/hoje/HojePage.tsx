@@ -451,7 +451,11 @@ function LinhaDoHorario({
           Marcar falta
         </Button>
       ) : null}
-      {podeAtender && a.status === 'arrived' && ATENDIVEIS.includes(a.status) ? (
+      {podeAtender &&
+      a.status === 'arrived' &&
+      ATENDIVEIS.includes(a.status) &&
+      // D8 (ADR-061): só o horário no alcance clínico de quem atende
+      a.careInScope === true ? (
         <Button size="sm" variant="primary" onClick={() => setRegistrando(true)}>
           Registrar atendimento
         </Button>

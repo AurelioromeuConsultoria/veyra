@@ -3,6 +3,8 @@ import { nomeDePapelComoSeLe } from '@veyra/contracts';
 import {
   CLINICS_PERMISSION_CATALOG,
   CLINICS_PROFESSIONAL_SYSTEM_KEY,
+  CLINICS_RECEPTION_CARE_SYSTEM_KEY,
+  type ClinicsPermissionKey,
 } from '@veyra/contracts/verticals/clinics';
 import { ClsService } from 'nestjs-cls';
 import { AuditService } from '../../audit/audit.service';
@@ -45,6 +47,8 @@ export interface RolesSyncReport {
   /** os papéis criados, pelo nome */
   criados: { systemKey: string; nome: string }[];
   divergencias: DivergenciaDePapel[];
+  /** as chaves novas concedidas pelo livro (ADR-061), por papel */
+  preenchidas?: { roleId: string; chave: string }[];
 }
 
 export interface ActivationReport {
@@ -59,6 +63,26 @@ export interface ActivationReport {
 }
 
 const ACTOR = { type: 'system' as const, id: 'clinics-cli' };
+const ACTOR_DO_PREENCHIMENTO = { type: 'system' as const, id: 'clinics-backfill' };
+
+/**
+ * As chaves NOVAS que chegam aos papéis que já existiam (ADR-061, adendo 1,
+ * item 5), pelo livro do Core (`PermissionBackfill`, ADR-052 item 6): só os
+ * papéis de sistema listados, só os que já têm o pré-requisito, e só quando o
+ * livro ainda não registra a chave naquele papel. A chave revogada depois não
+ * volta; nada é removido nem reescrito.
+ */
+const PREENCHIMENTOS: readonly {
+  chave: ClinicsPermissionKey;
+  preRequisito: ClinicsPermissionKey;
+  papeis: readonly string[];
+}[] = [
+  {
+    chave: 'clinics:care:all',
+    preRequisito: 'clinics:care:read',
+    papeis: ['owner', 'admin', CLINICS_RECEPTION_CARE_SYSTEM_KEY],
+  },
+];
 
 /**
  * Um papel PERSONALIZADO (ou de outra chave) com o nome do papel do vertical,
@@ -141,6 +165,9 @@ export class ClinicsActivationService {
         papeis.get(CLINICS_PROFESSIONAL_SYSTEM_KEY) as string,
       );
       await this.bumpSessions(tx, workspaceId, affectedRoles);
+      // o livro registra também o que a matriz acabou de conceder: uma revogação
+      // posterior não é desfeita pelo preenchimento periódico
+      await this.preencher(tx, workspaceId, ACTOR);
 
       let settingsId: string;
       if (settings) {
@@ -302,6 +329,10 @@ export class ClinicsActivationService {
           });
         }
       }
+      // as chaves novas, pelo livro (ADR-061), DEPOIS de criar os papéis: o papel
+      // que nasceu agora entra no livro com o que a matriz lhe deu, e uma
+      // revogação posterior não é desfeita (revisão de security)
+      const preenchidas = await this.preencher(tx, workspaceId, ACTOR);
       await this.audit.record(tx, workspaceId, 'clinics.roles_synced', {
         entityType: 'clinicsSettings',
         entityId: settings.id,
@@ -312,11 +343,99 @@ export class ClinicsActivationService {
           rolesDivergent: [...new Set(divergencias.map((d) => d.systemKey))],
         },
       });
-      return { outcome: 'synced', workspaceId, criados, divergencias };
+      return { outcome: 'synced', workspaceId, criados, divergencias, preenchidas };
     });
   }
 
+  /**
+   * O PREENCHIMENTO das chaves novas em todos os workspaces com o Clinics
+   * ativo, sem comando manual (ADR-061, adendo 1, item 5): o trabalho do
+   * vertical no agendador do Core chama isto logo depois da subida e de hora em
+   * hora. Idempotente pelo livro. Um workspace com ativação ou sincronização
+   * em curso fica para a próxima passada. Devolve quantas chaves concedeu.
+   */
+  async preencherChavesNovas(): Promise<number> {
+    // `raw` justificado (CLAUDE.md §3.3): trabalho cross-workspace do vertical,
+    // só a lista dos workspaces com o Clinics ativo; o resto é por workspace
+    const ativos = await this.prisma.raw.clinicsSettings.findMany({
+      where: { status: 'active' },
+      select: { workspaceId: true },
+      orderBy: { workspaceId: 'asc' },
+    });
+    let total = 0;
+    for (const { workspaceId } of ativos) {
+      try {
+        total += await this.naMudanca(async (tx) => {
+          await this.lock(tx, workspaceId);
+          const settings = await tx.clinicsSettings.findFirst({ where: { workspaceId } });
+          if (settings?.status !== 'active') return 0;
+          await this.registerCatalog(tx);
+          return (await this.preencher(tx, workspaceId, ACTOR_DO_PREENCHIMENTO)).length;
+        });
+      } catch (erro) {
+        // a trava ocupada (outra ativação ou sincronização): a próxima passada.
+        // Outro erro num workspace não impede os demais (o log leva só o tipo)
+        if (!(erro instanceof ConflictException)) {
+          this.logger.warn(
+            `Preenchimento das chaves no workspace ${workspaceId} falhou (${(erro as Error)?.name ?? 'Error'}); a próxima passada tenta de novo`,
+          );
+        }
+      }
+    }
+    return total;
+  }
+
   // ── Internos ──────────────────────────────────────────────────────────────
+
+  /** O preenchimento num workspace, na transação de quem chama (sob a trava dele). */
+  private async preencher(
+    tx: Tx,
+    workspaceId: string,
+    actor: { type: 'system'; id: string },
+  ): Promise<{ roleId: string; chave: string }[]> {
+    const concedidas: { roleId: string; chave: string }[] = [];
+    for (const regra of PREENCHIMENTOS) {
+      const papeis = await tx.role.findMany({
+        where: { workspaceId, isSystem: true, systemKey: { in: [...regra.papeis] } },
+        select: { id: true },
+        orderBy: { id: 'asc' },
+      });
+      for (const papel of papeis) {
+        const noLivro = await tx.permissionBackfill.findFirst({
+          where: { workspaceId, roleId: papel.id, permissionKey: regra.chave },
+          select: { id: true },
+        });
+        if (noLivro) continue;
+        const tem = async (permissionKey: string) =>
+          (await tx.rolePermission.findFirst({
+            where: { workspaceId, roleId: papel.id, permissionKey },
+            select: { id: true },
+          })) !== null;
+        // a avaliação é UMA vez por papel, e definitiva: sem o pré-requisito
+        // AGORA, o livro registra que não houve concessão, e ganhar o
+        // pré-requisito depois não traz a chave sozinha (revisão de security)
+        if ((await tem(regra.preRequisito)) && !(await tem(regra.chave))) {
+          await tx.rolePermission.create({
+            data: { workspaceId, roleId: papel.id, permissionKey: regra.chave },
+          });
+          await this.audit.record(tx, workspaceId, 'role.permission_backfilled', {
+            entityType: 'role',
+            entityId: papel.id,
+            actor,
+            before: null,
+            after: { permissionKey: regra.chave },
+          });
+          concedidas.push({ roleId: papel.id, chave: regra.chave });
+        }
+        // o livro registra todo papel avaliado: o que recebeu, o que já tinha e o
+        // que não tinha o pré-requisito
+        await tx.permissionBackfill.create({
+          data: { workspaceId, roleId: papel.id, permissionKey: regra.chave },
+        });
+      }
+    }
+    return concedidas;
+  }
 
   /**
    * A transação da mudança, com o prazo da espera pelos usos (120 s). Estourar

@@ -23,6 +23,13 @@ import {
   type ExecutorDeTransacao,
 } from '../../../content-use/restriction-changes';
 import { PrismaService, type Db } from '../../../prisma/prisma.service';
+import {
+  AlcanceClinicoService,
+  DE_OUTRO_PROFISSIONAL,
+  alcanca,
+  exigirAlcance,
+  type AlcanceClinico,
+} from './clinics-care-scope';
 import { trilha, type PackageRow } from './clinics-packages.service';
 
 /** O client protegido, com o nível de isolamento da leitura das sessões. */
@@ -47,6 +54,7 @@ type CorrectionRow = {
 
 type ConsumoAtual = {
   id: string;
+  professionalId: string;
   currentPackageId: string | null;
   consumptionRevision: number;
   /** o instante do registro, pelo relógio do banco */
@@ -85,6 +93,7 @@ export class ClinicsPackageCorrectionsService {
     private readonly audit: AuditService,
     private readonly permissions: PermissionsService,
     private readonly transacao: MudancasDeRestricao,
+    private readonly alcanceClinico: AlcanceClinicoService,
   ) {}
 
   async correct(
@@ -99,6 +108,9 @@ export class ClinicsPackageCorrectionsService {
     if (!(await this.permissions.has(auth, careRead as PermissionKey))) {
       throw new ForbiddenException('Corrigir o consumo exige a leitura do atendimento');
     }
+    // D8 (ADR-061): só o atendimento no alcance; sem vínculo válido, nenhum
+    const alcance = await this.alcanceClinico.de(auth);
+    exigirAlcance(alcance);
     // em minúsculas, como o banco devolve os ids
     const novo = input.packageId === null ? null : input.packageId.toLowerCase();
     if (input.reason === 'package_registered_late' && novo === null) {
@@ -117,12 +129,18 @@ export class ClinicsPackageCorrectionsService {
             where: { appointmentId },
             select: {
               id: true,
+              professionalId: true,
               currentPackageId: true,
               consumptionRevision: true,
               recordedAt: true,
             },
           })) as unknown as ConsumoAtual | null;
           if (!atual) throw new NotFoundException('Atendimento não registrado');
+          // o dono é o do REGISTRO, imutável: o alheio é recusado antes de
+          // qualquer leitura de consumo ou pacote
+          if (!alcanca(alcance, atual.professionalId)) {
+            throw new ForbiddenException(DE_OUTRO_PROFISSIONAL);
+          }
           if (atual.consumptionRevision !== input.expectedRevision) {
             throw new ConflictException(CONSUMO_MUDOU);
           }
@@ -208,30 +226,46 @@ export class ClinicsPackageCorrectionsService {
    * do MESMO instante (REPEATABLE READ). As correções vêm das 100 mais
    * recentes; as sessões não passam do total do pacote (até 100).
    */
-  async sessions(packageId: string): Promise<ClinicsPackageSessionsDto> {
-    return (this.prisma.db as unknown as Leitor).$transaction((tx) => lerSessoes(tx, packageId), {
-      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
-    });
+  async sessions(auth: AuthContext, packageId: string): Promise<ClinicsPackageSessionsDto> {
+    // D8 (ADR-061): o alheio nem é lido (o filtro está na consulta)
+    const alcance = await this.alcanceClinico.de(auth);
+    exigirAlcance(alcance);
+    return (this.prisma.db as unknown as Leitor).$transaction(
+      (tx) => lerSessoes(tx, packageId, alcance),
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
   }
 
-  /** Uma correção deste workspace, para a guarda do replay. */
-  async exists(id: string): Promise<boolean> {
-    const row = await this.prisma.db.clinicsPackageCorrection.findFirst({
+  /**
+   * Uma correção deste workspace, para a guarda do replay, e se o atendimento
+   * dela está no alcance de quem repete AGORA (D8, ADR-061).
+   */
+  async noReplay(auth: AuthContext, id: string): Promise<'ausente' | 'fora' | 'ok'> {
+    const row = (await this.prisma.db.clinicsPackageCorrection.findFirst({
       where: { id },
-      select: { id: true },
-    });
-    return row !== null;
+      select: { attendance: { select: { professionalId: true } } },
+    } as never)) as unknown as { attendance: { professionalId: string } } | null;
+    if (!row) return 'ausente';
+    const alcance = await this.alcanceClinico.de(auth);
+    return alcanca(alcance, row.attendance.professionalId) ? 'ok' : 'fora';
   }
 }
 
-async function lerSessoes(db: Db, packageId: string): Promise<ClinicsPackageSessionsDto> {
+async function lerSessoes(
+  db: Db,
+  packageId: string,
+  alcance: AlcanceClinico,
+): Promise<ClinicsPackageSessionsDto> {
+  // só os do profissional vinculado, quando o alcance é "próprios": os alheios
+  // não são lidos, nem como linha nem como id (o saldo do pacote os reflete)
+  const proprio = alcance.tipo === 'proprios' ? { professionalId: alcance.professionalId } : {};
   const pacote = await db.clinicsPackage.findFirst({
     where: { id: packageId },
     select: { id: true },
   });
   if (!pacote) throw new NotFoundException('Pacote não encontrado');
   const sessoes = (await db.clinicsAttendance.findMany({
-    where: { currentPackageId: packageId },
+    where: { currentPackageId: packageId, ...proprio },
     select: {
       id: true,
       appointmentId: true,
@@ -248,7 +282,10 @@ async function lerSessoes(db: Db, packageId: string): Promise<ClinicsPackageSess
     consumptionRevision: number;
   }[];
   const correcoes = (await db.clinicsPackageCorrection.findMany({
-    where: { OR: [{ fromPackageId: packageId }, { toPackageId: packageId }] },
+    where: {
+      OR: [{ fromPackageId: packageId }, { toPackageId: packageId }],
+      ...(alcance.tipo === 'proprios' ? { attendance: proprio } : {}),
+    },
     orderBy: [{ createdAt: 'desc' }, { revision: 'desc' }, { id: 'asc' }],
     take: 100,
   } as never)) as unknown as CorrectionRow[];

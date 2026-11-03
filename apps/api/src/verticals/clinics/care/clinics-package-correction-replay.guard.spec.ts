@@ -15,7 +15,7 @@ describe('ClinicsPackageCorrectionReplayGuard', () => {
   const pedido = { auth } as unknown as Request & { auth?: AuthContext };
   const guardado = { status: 201, body: { id: 'c1', revision: 1 } };
 
-  const guarda = (chaves: string[], existe = true, falha = false) =>
+  const guarda = (chaves: string[], existe: boolean | 'fora' = true, falha = false) =>
     new ClinicsPackageCorrectionReplayGuard(
       {
         has: async (_a: AuthContext, k: string) => {
@@ -23,13 +23,21 @@ describe('ClinicsPackageCorrectionReplayGuard', () => {
           return chaves.includes(k);
         },
       } as unknown as PermissionsService,
-      { exists: async () => existe } as unknown as ClinicsPackageCorrectionsService,
+      {
+        noReplay: async () => (existe === 'fora' ? 'fora' : existe ? 'ok' : 'ausente'),
+      } as unknown as ClinicsPackageCorrectionsService,
     );
 
   it('devolve a correção a quem tem as duas permissões AGORA e a correção existe', async () => {
     expect(
       await guarda(['clinics:care:write', 'clinics:care:read']).verdict(pedido, guardado),
     ).toBe('replay');
+  });
+
+  it('o atendimento saiu do alcance de quem repete (D8, ADR-061): 403, sem o corpo', async () => {
+    expect(
+      await guarda(['clinics:care:write', 'clinics:care:read'], 'fora').verdict(pedido, guardado),
+    ).toEqual({ refuse: expect.any(ForbiddenException) });
   });
 
   it.each([[['clinics:care:write']], [['clinics:care:read']], [[]]])(

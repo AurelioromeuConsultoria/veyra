@@ -73,3 +73,28 @@ export function esperarConsentimento(page: Page): Promise<unknown> {
       r.url().endsWith('/api/intelligence/consent') && r.request().method() === 'GET' && r.ok(),
   );
 }
+
+/**
+ * D8 (ADR-061): o `Profissional` do e2e só alcança os atendimentos do
+ * profissional vinculado à conta dele. Cada cenário cria um profissional novo e
+ * passa o vínculo para ele (o vínculo é único por conta).
+ */
+export async function vincularProfissional(
+  db: Client,
+  ws: string,
+  email: string,
+  professionalId: string,
+): Promise<void> {
+  const membro = `(SELECT m."id" FROM "Membership" m JOIN "User" u ON u."id" = m."userId"
+                    WHERE u."email" = $2 AND m."workspaceId" = $1)`;
+  await db.query(
+    `UPDATE "ClinicsProfessional" SET "membershipId" = NULL
+      WHERE "workspaceId" = $1 AND "membershipId" = ${membro}`,
+    [ws, email],
+  );
+  await db.query(
+    `UPDATE "ClinicsProfessional" SET "membershipId" = ${membro}, "updatedAt" = now()
+      WHERE "workspaceId" = $1 AND "id" = $3`,
+    [ws, email, professionalId],
+  );
+}

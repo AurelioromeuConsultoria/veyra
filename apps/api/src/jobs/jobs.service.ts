@@ -170,8 +170,18 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     fila: string,
     cron: string,
     trabalho: () => Promise<unknown>,
+    opcoes: { tambemNaSubida?: boolean } = {},
   ): Promise<void> {
     if (!this.boss) return;
+    // uma vez logo depois da subida, sem bloquear o boot (como a reconciliação
+    // dos usos); a falha fica no log e o agendamento tenta de novo
+    if (opcoes.tambemNaSubida) {
+      void trabalho().catch((erro: unknown) => {
+        this.logger.warn(
+          `Trabalho ${fila} na subida falhou (${(erro as Error)?.name ?? 'Error'}); o agendamento tenta de novo`,
+        );
+      });
+    }
     await this.boss.createQueue(fila);
     await this.boss.work(fila, async () => {
       try {

@@ -5,6 +5,7 @@ import type { Request } from 'express';
 import { PermissionsService } from '../../../auth/permissions.service';
 import type { AuthContext } from '../../../common/decorators';
 import type { IdempotentReplayGuard, ReplayVerdict } from '../../../common/idempotency.decorator';
+import { DE_OUTRO_PROFISSIONAL } from './clinics-care-scope';
 import { ClinicsPackageCorrectionsService } from './clinics-package-corrections.service';
 
 const CORRIGIR: readonly ClinicsPermissionKey[] = ['clinics:care:write', 'clinics:care:read'];
@@ -17,7 +18,9 @@ const CORRIGIR: readonly ClinicsPermissionKey[] = ['clinics:care:write', 'clinic
  *
  * - as permissões da correção, lidas vivas no papel: sem elas, 403, e o corpo
  *   guardado não sai;
- * - a correção guardada ainda é deste workspace: senão, 404.
+ * - a correção guardada ainda é deste workspace: senão, 404;
+ * - o atendimento dela ainda está no alcance clínico de quem repete (D8,
+ *   ADR-061): senão, 403.
  *
  * Nunca descarta nem executa de novo: a correção já aconteceu, e repeti-la
  * seria uma operação nova. Falha ao ler: 503, sem apagar nada.
@@ -42,9 +45,13 @@ export class ClinicsPackageCorrectionReplayGuard implements IdempotentReplayGuar
         }
       }
       const id = (guardado.body as { id?: unknown } | null)?.id;
-      if (typeof id !== 'string' || !(await this.corrections.exists(id))) {
+      const estado = typeof id === 'string' ? await this.corrections.noReplay(auth, id) : 'ausente';
+      if (estado === 'ausente') {
         return { refuse: new NotFoundException('Correção não encontrada') };
       }
+      // D8 (ADR-061): o atendimento saiu do alcance de quem repete (o vínculo
+      // mudou, a chave saiu): o corpo guardado não sai
+      if (estado === 'fora') return { refuse: new ForbiddenException(DE_OUTRO_PROFISSIONAL) };
       return 'replay';
     } catch {
       return 'unavailable';

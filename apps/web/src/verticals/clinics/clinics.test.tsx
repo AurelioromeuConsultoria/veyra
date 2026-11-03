@@ -72,7 +72,13 @@ const usuario = (permissions: string[]) => ({
   memberships: [],
 });
 const LEITURA = ['clinics:catalog:read'];
-const GESTAO = ['clinics:catalog:read', 'clinics:catalog:manage', 'members:read'];
+// quem vincula conta precisa também do alcance de todos os atendimentos (D8, ADR-061)
+const GESTAO = [
+  'clinics:catalog:read',
+  'clinics:catalog:manage',
+  'members:read',
+  'clinics:care:all',
+];
 const doCatalogo = (chamadas: string[]) =>
   chamadas.filter((c) => /\/api\/(clinics\/(services|professionals|units)|members)/.test(c));
 
@@ -282,7 +288,10 @@ describe('drawer do profissional — limites de salvamento e o aviso do vínculo
     renderizar(<ProfessionalsTab />);
     fireEvent.click(await screen.findByRole('button', { name: 'Editar Ana' }));
     expect(await screen.findByText(ACCOUNT_LINK_NOTICE)).toBeInTheDocument();
-    expect(ACCOUNT_LINK_NOTICE).toMatch(/não muda o papel nem concede permissões/);
+    expect(ACCOUNT_LINK_NOTICE).toMatch(/não muda o papel/);
+    expect(ACCOUNT_LINK_NOTICE).toMatch(
+      /define quais atendimentos a pessoa lê, registra e corrige/,
+    );
     expect(screen.getByText(/nome, serviços e horários são salvos juntos/)).toBeInTheDocument();
     expect(screen.getByText(/Conta vinculada — salva à parte/)).toBeInTheDocument();
     expect(screen.getByRole('option', { name: /Bia/ })).toBeInTheDocument();

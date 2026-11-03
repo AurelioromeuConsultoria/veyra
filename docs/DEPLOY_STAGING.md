@@ -197,6 +197,13 @@ docker ps --format '{{.Names}}' | grep -i veyra
 - **Continuam manuais, fora do deploy:** o `seed-permissions` e a
   `clinics sync-roles` (§7.1). A entrega que precisar deles diz isso no pedido
   de push.
+- **As chaves novas do Clinics nos papéis que já existem** (desde a F5.3a,
+  ADR-061) não precisam de comando. A API as concede sozinha, pelo livro
+  `PermissionBackfill`: uma vez logo depois da subida e de hora em hora. O
+  catálogo global também é atualizado nessa passada. A conferência fica na
+  trilha de auditoria (`role.permission_backfilled`, ator
+  `clinics-backfill`). Entre a subida e a primeira passada, poucos segundos,
+  quem coordena vê só os próprios atendimentos ou nenhum: falha fechada.
 - **Nunca clique em Deploy no painel fora de uma janela.** O deploy do painel
   vira a base, e a guarda deixa de ver uma migration que ele tenha publicado
   sem aplicar.
@@ -1757,6 +1764,12 @@ SELECT count(*) FROM "ClinicsPackage" p
                                    AND a."currentPackageId" = p."id");
 -- antes dela (a coluna ainda não existe): troque "currentPackageId" por "packageId"
 ```
+
+**O alcance do `Profissional` (D8, ADR-061, F5.3a).**
+
+- **Sem a chave `clinics:care:all`,** quem atende só lê, registra e corrige os atendimentos do profissional vinculado à conta dele. O vínculo se faz no catálogo, em Profissionais → a conta. Sem vínculo, a pessoa não tem acesso clínico.
+- **Owner, Admin e "Recepção e atendimento"** recebem a chave pela API, sozinha, logo depois da subida da versão (acima, §4.0). O `demo` não tem conta de profissional vinculada: o Owner continua vendo tudo.
+- **Para cobrir uma colega,** a recepção troca o profissional na remarcação, antes do atendimento.
 
 ### 7.2 Outbox: nunca editar, reabrir nem copiar evento por SQL
 

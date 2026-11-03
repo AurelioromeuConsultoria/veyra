@@ -41,7 +41,10 @@ export class ClinicsPackageCorrectionsController {
 
   @RequireClinicsPermissions('clinics:care:read')
   @Get('packages/:id/sessions')
-  sessions(@Param('id', new ParseUUIDPipe()) id: string): Promise<ClinicsPackageSessionsDto> {
-    return this.corrections.sessions(id);
+  sessions(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<ClinicsPackageSessionsDto> {
+    return this.corrections.sessions(auth, id);
   }
 }

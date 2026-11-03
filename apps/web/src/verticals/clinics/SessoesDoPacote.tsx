@@ -70,6 +70,15 @@ export function SessoesDoPacote({
         <p className="eyebrow text-muted-fg">
           Consomem este pacote agora ({sessions.length} de {pacote.totalSessions})
         </p>
+        {/* D8 (ADR-061): o servidor devolve só as do próprio profissional; o
+            saldo do pacote inclui as dos outros, que não aparecem aqui */}
+        {pacote.consumedSessions > sessions.length ? (
+          <p className="text-data text-muted-fg">
+            O saldo inclui {pacote.consumedSessions - sessions.length}{' '}
+            {pacote.consumedSessions - sessions.length === 1 ? 'sessão' : 'sessões'} de outros
+            profissionais, que não aparecem aqui.
+          </p>
+        ) : null}
         {sessions.length === 0 ? (
           <p className="text-body-sm text-muted-fg">Nenhuma sessão consumida.</p>
         ) : (

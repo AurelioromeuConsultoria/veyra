@@ -36,6 +36,12 @@ import {
 } from '../../../content-use/restriction-changes';
 import { PrismaService, type Db } from '../../../prisma/prisma.service';
 import { agoraDoBanco } from '../../../prisma/relogio-do-banco';
+import {
+  AlcanceClinicoService,
+  DE_OUTRO_PROFISSIONAL,
+  alcanca,
+  exigirAlcance,
+} from '../care/clinics-care-scope';
 import { chaveDoRetorno } from '../outreach/clinics-outreach.precondition';
 import { ValidadeDosPedidos } from '../outreach/clinics-outreach.validity';
 
@@ -119,6 +125,7 @@ export class ClinicsReturnsService {
     private readonly permissions: PermissionsService,
     private readonly restricao: MudancasDeRestricao,
     private readonly validade: ValidadeDosPedidos,
+    private readonly alcanceClinico: AlcanceClinicoService,
   ) {}
 
   // ── leitura (clinics:schedule:read), projetada por permissão ─────────────
@@ -472,6 +479,11 @@ export class ClinicsReturnsService {
     input: CancelClinicsReturnInput,
   ): Promise<ClinicsReturnDto> {
     await this.exigirMotivo(auth, input.reason);
+    // a decisão CLÍNICA (D8, ADR-061) só sobre o retorno de atendimento no
+    // alcance; sem vínculo válido, nenhuma (a operacional segue livre)
+    const clinico = !MOTIVO_OPERACIONAL.has(input.reason);
+    const alcance = clinico ? await this.alcanceClinico.de(auth) : null;
+    if (alcance) exigirAlcance(alcance);
     const workspaceId = auth.workspaceId as string;
     await this.restricao.naTransacaoInterativa(this.mudancas(), async (tx) => {
       // o cancelamento encerra o retorno (F4.2): a `validity:` exclusiva dele
@@ -481,6 +493,15 @@ export class ClinicsReturnsService {
       // decide; o outro espera aqui e lê o estado que ficou
       await travarRetornoPendente(tx, id);
       const visto = await lerRetorno(tx, id);
+      if (alcance && visto.originAttendanceId !== null) {
+        const origem = (await tx.clinicsAttendance.findFirst({
+          where: { id: visto.originAttendanceId },
+          select: { professionalId: true },
+        })) as { professionalId: string } | null;
+        if (!origem || !alcanca(alcance, origem.professionalId)) {
+          throw new ForbiddenException(DE_OUTRO_PROFISSIONAL);
+        }
+      }
       if (mesmoPedido(visto, input.reason, auth)) return;
       if (visto.status !== 'pending') throw new ConflictException(ENCERRADO);
       if (input.reason === 'created_in_error' && visto.originAttendanceId !== null) {
@@ -577,6 +598,24 @@ export class ClinicsReturnsService {
   ): Promise<ClinicsReturnDto[]> {
     if (rows.length === 0) return [];
     const lerAtendimento = await this.permissions.has(auth, ATENDIMENTO_LER);
+    // D8 (ADR-061): a origem só sai quando o atendimento que gerou o retorno é
+    // do próprio alcance; o alheio não sai nem como id nem como "automático"
+    const alcance = lerAtendimento ? await this.alcanceClinico.de(auth) : null;
+    const donos = new Map<string, string>();
+    const origens = rows.map((r) => r.originAttendanceId).filter((x): x is string => x !== null);
+    if (alcance?.tipo === 'proprios' && origens.length > 0) {
+      const atendimentos = (await this.prisma.db.clinicsAttendance.findMany({
+        where: { id: { in: [...new Set(origens)] } },
+        select: { id: true, professionalId: true },
+      } as never)) as unknown as { id: string; professionalId: string }[];
+      for (const a of atendimentos) donos.set(a.id, a.professionalId);
+    }
+    const origemNoAlcance = (r: ReturnComNomes): boolean =>
+      alcance !== null &&
+      alcance.tipo !== 'nenhum' &&
+      (r.originAttendanceId === null ||
+        alcance.tipo === 'todos' ||
+        alcanca(alcance, donos.get(r.originAttendanceId) ?? ''));
     const responsaveis = await this.responsaveis(
       rows.map((r) => r.assigneeMembershipId).filter((m): m is string => m !== null),
     );
@@ -612,8 +651,9 @@ export class ClinicsReturnsService {
           : null,
         closedAt: r.closedAt ? r.closedAt.toISOString() : null,
       };
-      // autorização de CAMPO: origem, motivo e criação só com care:read
-      if (lerAtendimento) {
+      // autorização de CAMPO: origem, motivo e criação só com care:read, e só
+      // do retorno cuja origem está no alcance (D8)
+      if (lerAtendimento && origemNoAlcance(r)) {
         dto.origin = r.originAttendanceId ? 'automatic' : 'manual';
         dto.originAttendanceId = r.originAttendanceId;
         dto.cancelReason = r.cancelReason;

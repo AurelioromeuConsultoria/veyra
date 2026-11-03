@@ -224,17 +224,23 @@ describe('Clinics — garantias estáticas (ADR-047, ADR-048)', () => {
         'clinics:schedule:write',
         'clinics:care:read',
         'clinics:care:write',
+        // o alcance de todos os atendimentos (ADR-061, D8)
+        'clinics:care:all',
       ].sort(),
     );
-    // a soma da recepção e do atendimento PADRÃO do vertical
+    // a soma da recepção e do atendimento PADRÃO do vertical, mais o alcance "todos"
     expect([...CLINICS_ROLE_GRANTS[CLINICS_RECEPTION_CARE_SYSTEM_KEY]].sort()).toEqual(
       [
         ...new Set([
           ...CLINICS_ROLE_GRANTS.member,
           ...CLINICS_ROLE_GRANTS[CLINICS_PROFESSIONAL_SYSTEM_KEY],
+          'clinics:care:all',
         ]),
       ].sort(),
     );
+    // o Profissional e a recepção NÃO têm o alcance "todos" (D8)
+    expect(CLINICS_ROLE_GRANTS[CLINICS_PROFESSIONAL_SYSTEM_KEY]).not.toContain('clinics:care:all');
+    expect(CLINICS_ROLE_GRANTS.member).not.toContain('clinics:care:all');
     // sem a gestão de equipe e de papéis, sem a liberação para IA e sem a auditoria
     for (const ausente of [
       'members:manage',

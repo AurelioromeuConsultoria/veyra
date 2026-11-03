@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import type { Client } from 'pg';
 import { MEMBER_C, OWNER_A, OWNER_C, PROF_C } from '../env';
-import { login, openE2eDb } from './helpers';
+import { login, openE2eDb, vincularProfissional } from './helpers';
 
 /**
  * Agenda e atendimento do Veyra Clinics pela UI (F2.3, ADR-048 adendo 5), no
@@ -78,6 +78,8 @@ async function cenario(db: Client): Promise<Cenario> {
      VALUES (gen_random_uuid(), $1, $2, $3)`,
     [ws, profissionalId, servicoId],
   );
+  // D8 (ADR-061): o Profissional do e2e é este profissional
+  await vincularProfissional(db, ws, PROF_C, profissionalId);
   for (let semana = 1; semana <= 7; semana++) {
     await db.query(
       `INSERT INTO "ClinicsWorkingHours" ("id","workspaceId","professionalId","unitId","weekday","startMinute","endMinute")
@@ -200,6 +202,43 @@ test.describe('Clinics — agenda da clínica', () => {
       await expect(segundo.drawer.getByRole('alert')).toContainText(
         'Horário já ocupado para este profissional',
       );
+    } finally {
+      await db.end();
+    }
+  });
+
+  test('D8 (ADR-061): o `Profissional` vê a agenda de todos, mas só registra no horário dele', async ({
+    page,
+  }) => {
+    const db = await openE2eDb();
+    try {
+      const c = await cenario(db);
+      await agendamentoNoDia(db, c, '21:00', 'confirmed');
+      // outro profissional do mesmo serviço, sem vínculo com a conta
+      const outroNome = `Outro ${c.profissional}`;
+      const outro = (
+        await db.query<{ id: string }>(
+          `INSERT INTO "ClinicsProfessional" ("id","workspaceId","name","updatedAt")
+           VALUES (gen_random_uuid(), $1, $2, now()) RETURNING "id"`,
+          [c.ws, outroNome],
+        )
+      ).rows[0].id;
+      await db.query(
+        `INSERT INTO "ClinicsProfessionalService" ("id","workspaceId","professionalId","serviceId")
+         VALUES (gen_random_uuid(), $1, $2, $3)`,
+        [c.ws, outro, c.servicoId],
+      );
+      await agendamentoNoDia(db, { ...c, profissionalId: outro }, '21:30', 'confirmed');
+
+      await entrarNaClinica(page, PROF_C);
+      await irParaAgenda(page, c.dia);
+      const meu = cartao(page, '21:00', c);
+      await expect(
+        meu.getByRole('button', { name: `Registrar atendimento: ${quem('21:00', c)}` }),
+      ).toBeVisible();
+      const alheio = cartao(page, '21:30', { ...c, profissional: outroNome });
+      await expect(alheio).toBeVisible();
+      await expect(alheio.getByRole('button', { name: /^Registrar atendimento:/ })).toHaveCount(0);
     } finally {
       await db.end();
     }

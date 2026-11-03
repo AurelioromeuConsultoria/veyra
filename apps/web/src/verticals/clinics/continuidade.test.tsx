@@ -157,6 +157,8 @@ const agendamento = {
   localEnd: '10:00',
   status: 'confirmed',
   cancelReason: null,
+  // no alcance clínico de quem atende (D8, ADR-061): o servidor manda
+  careInScope: true,
 };
 
 const pacote = (id: string, extra: Record<string, unknown> = {}) => ({
@@ -826,6 +828,30 @@ describe('correção do consumo na agenda (F5.2b, ADR-059)', () => {
     expect(within(painel).getByRole('button', { name: 'Confirmar correção' })).toBeDisabled();
   });
 
+  it('D8: o horário fora do alcance (de outro profissional) não oferece registrar nem corrigir', async () => {
+    mockApi({
+      'GET /api/auth/me': { body: usuario(PROFISSIONAL) },
+      ...catalogo,
+      'GET /api/clinics/appointments': {
+        body: [
+          { ...agendamento, careInScope: false },
+          {
+            ...agendamento,
+            id: '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e99',
+            status: 'attended',
+            attendanceId: null,
+            careInScope: false,
+          },
+        ],
+      },
+      'GET /api/clinics/packages': { body: [] },
+    });
+    renderizar(<ClinicsAgendaPage />, `/clinics/agenda?dia=${DIA}`);
+    expect(await screen.findAllByText('Paciente Fictícia')).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: /^Registrar atendimento:/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Corrigir consumo:/ })).toBeNull();
+  });
+
   it.each([
     ['a recepção (sem care)', RECEPCAO, 'at1'],
     ['quem escreve sem ler pacotes', ESCREVE_SEM_LER, 'at1'],
@@ -891,7 +917,8 @@ describe('ficha do paciente', () => {
     ).toBeInTheDocument();
     falhar = true;
     recarregar();
-    expect(await screen.findByText('Não foi possível carregar os pacotes.')).toBeInTheDocument();
+    // a recusa (403) mostra o motivo do servidor (sem vínculo, D8); as linhas somem
+    expect(await screen.findByText('x')).toBeInTheDocument();
     expect(
       screen.queryByRole('row', {
         name: 'Pacote de 10 sessões de Limpeza, criado em 31/12/2029 21:00',
@@ -967,6 +994,25 @@ describe('ficha do paciente', () => {
     ).toBeInTheDocument();
     expect(within(painel).queryByText(/de este pacote|de o pacote/)).toBeNull();
     expect(within(painel).queryByText(/Mostrando as 100/)).toBeNull();
+  });
+
+  it('D8: as sessões de outros profissionais não aparecem, e a tela diz que o saldo as inclui', async () => {
+    ficha(PROFISSIONAL, {
+      'GET /api/clinics/packages': { body: [pacote(P1)] },
+      [`GET /api/clinics/packages/${P1}/sessions`]: {
+        body: { packageId: P1, sessions: [], corrections: [] },
+      },
+    });
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'Sessões: Pacote de 10 sessões de Limpeza, criado em 31/12/2029 21:00',
+      }),
+    );
+    const painel = await screen.findByRole('dialog', { name: 'Sessões do pacote' });
+    expect(
+      await within(painel).findByText(/O saldo inclui 3 sessões de outros profissionais/),
+    ).toBeInTheDocument();
   });
 
   it('com 100 correções, a tela diz que a lista pode estar cortada', async () => {

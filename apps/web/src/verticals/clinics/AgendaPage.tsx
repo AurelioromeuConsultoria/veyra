@@ -432,7 +432,10 @@ function CartaoDeAgendamento({
                 Cancelar
               </Button>
             ) : null}
-            {podeAtender && ATENDIVEIS.includes(agendamento.status) ? (
+            {podeAtender &&
+            ATENDIVEIS.includes(agendamento.status) &&
+            // D8 (ADR-061): só o horário no alcance clínico de quem atende
+            agendamento.careInScope === true ? (
               <Button
                 size="sm"
                 variant="secondary"
@@ -445,7 +448,7 @@ function CartaoDeAgendamento({
                 Registrar atendimento
               </Button>
             ) : null}
-            {podeCorrigir && agendamento.attendanceId ? (
+            {podeCorrigir && agendamento.attendanceId && agendamento.careInScope === true ? (
               <Button
                 size="sm"
                 variant="ghost"
@@ -626,6 +629,8 @@ function FormularioDeAgenda({
         ? api.post<ClinicsAppointmentDto>(`/api/clinics/appointments/${remarcando.id}/reschedule`, {
             ...quando,
             ...(serviceId !== remarcando.serviceId ? { serviceId } : {}),
+            // a cobertura de uma colega (ADR-061): outro profissional, só antes do atendimento
+            ...(professionalId !== remarcando.professionalId ? { professionalId } : {}),
           })
         : api.post<ClinicsAppointmentDto>('/api/clinics/appointments', {
             patientId: paciente!.id,
@@ -719,14 +724,26 @@ function FormularioDeAgenda({
           ))}
         </Select>
       </Field>
-      {remarcando ? null : (
-        <Field label="Profissional" hint="Só quem está habilitado para o serviço.">
+      {
+        <Field
+          label="Profissional"
+          hint={
+            remarcando
+              ? 'Para cobrir uma colega, troque o profissional antes do atendimento.'
+              : 'Só quem está habilitado para o serviço.'
+          }
+        >
           <Select
             full
             value={professionalId}
             onChange={(e) => {
               setProfessionalId(e.target.value);
               setHorario('');
+              // remarcando, os serviços seguem o profissional escolhido
+              const outro = profissionais.find((p) => p.id === e.target.value);
+              if (remarcando && serviceId && !outro?.serviceIds.includes(serviceId)) {
+                setServiceId('');
+              }
             }}
           >
             <option value="" disabled>
@@ -739,7 +756,7 @@ function FormularioDeAgenda({
             ))}
           </Select>
         </Field>
-      )}
+      }
       <Field label="Data" hint="Na hora local da unidade.">
         <Input
           type="date"

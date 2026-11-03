@@ -575,6 +575,12 @@ describe('Clinics — agenda e atendimento (integração, F2.2)', () => {
 
     it('`Profissional` lê a agenda e registra atendimento, mas não marca, remarca nem muda estado, e não lê o CRM', async () => {
       const id = (await agendar().expect(201)).body.id;
+      // D8 (ADR-061): o Profissional é a Ana — só os atendimentos dela
+      await put(`/api/clinics/professionals/${ana}/account`, owner, {
+        membershipId: (await prisma.raw.membership.findFirst({
+          where: { user: { email: 'prof-a@veyra.test' } },
+        }))!.id,
+      }).expect(200);
       const prof = await loginAs('prof-a@veyra.test');
       expect((await dia(SEGUNDA, prof)).body[0]).toMatchObject({
         id,

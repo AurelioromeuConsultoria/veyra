@@ -186,6 +186,8 @@ const horario = (
   localStart: startsAt.slice(11, 16),
   localEnd: startsAt.slice(11, 16),
   status,
+  // no alcance clínico de quem lê (D8, ADR-061): o servidor manda
+  careInScope: true,
   cancelReason: null,
 });
 

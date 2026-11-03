@@ -22,6 +22,13 @@ import {
   type ExecutorDeTransacao,
 } from '../../../content-use/restriction-changes';
 import { PrismaService, type Db } from '../../../prisma/prisma.service';
+import {
+  AlcanceClinicoService,
+  DE_OUTRO_PROFISSIONAL,
+  alcanca,
+  exigirAlcance,
+  type AlcanceClinico,
+} from '../care/clinics-care-scope';
 import { trilha, type PackageRow } from '../care/clinics-packages.service';
 import { ROTULO } from './clinics-appointments.service';
 import { chaveDoAgendamento } from '../outreach/clinics-outreach.precondition';
@@ -64,6 +71,7 @@ export class ClinicsAttendanceService {
     private readonly permissions: PermissionsService,
     private readonly restricao: MudancasDeRestricao,
     private readonly validade: ValidadeDosPedidos,
+    private readonly alcanceClinico: AlcanceClinicoService,
   ) {}
 
   async record(
@@ -91,6 +99,9 @@ export class ClinicsAttendanceService {
     if (escolha && !leAtendimento) {
       throw new ForbiddenException('Consumir pacote exige a leitura do atendimento');
     }
+    // D8 (ADR-061): só os atendimentos no alcance; sem vínculo válido, nenhum
+    const alcance = await this.alcanceClinico.de(auth);
+    exigirAlcance(alcance);
     try {
       const row = await this.restricao.naTransacaoInterativa(
         this.prisma.db as unknown as ExecutorDeTransacao,
@@ -101,7 +112,7 @@ export class ClinicsAttendanceService {
           // a repetição é consultada ANTES de qualquer consumo: o mesmo pedido
           // funciona mesmo com o pacote já concluído ou cancelado
           const existente = await registroDe(tx, appointmentId);
-          if (existente) return repeticao(existente, escolha);
+          if (existente) return repeticao(noAlcance(existente, alcance), escolha);
           // a transição TRAVA a linha: uma chamada concorrente espera aqui e,
           // depois do commit desta, não acha mais o estado de origem
           const { count } = await tx.clinicsAppointment.updateMany({
@@ -110,7 +121,7 @@ export class ClinicsAttendanceService {
           } as never);
           if (count === 0) {
             const vencedor = await registroDe(tx, appointmentId);
-            if (vencedor) return repeticao(vencedor, escolha);
+            if (vencedor) return repeticao(noAlcance(vencedor, alcance), escolha);
             const agendamento = (await tx.clinicsAppointment.findFirst({
               where: { id: appointmentId },
               select: { status: true },
@@ -129,6 +140,13 @@ export class ClinicsAttendanceService {
             serviceId: string;
             unitId: string;
           };
+          // o profissional é conferido AQUI, com a linha do agendamento travada
+          // pela transição acima: uma troca concorrente (a remarcação, sob a
+          // mesma trava) já se resolveu, e quem deixou de ser o profissional é
+          // recusado — a transição volta junto, sem efeito
+          if (!alcanca(alcance, agendamento.professionalId)) {
+            throw new ForbiddenException(DE_OUTRO_PROFISSIONAL);
+          }
           const consumido = escolha ? await consumir(tx, escolha, agendamento) : null;
           const criado = (await tx.clinicsAttendance.create({
             data: {
@@ -178,18 +196,29 @@ export class ClinicsAttendanceService {
       // não pegou — vale o registro que existe, com a MESMA escolha
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
         const vencedor = await registroDe(this.prisma.db, appointmentId);
-        if (vencedor) return toDto(repeticao(vencedor, escolha), leAtendimento);
+        if (vencedor) {
+          return toDto(repeticao(noAlcance(vencedor, alcance), escolha), leAtendimento);
+        }
       }
       throw error;
     }
   }
 
-  async get(appointmentId: string): Promise<ClinicsAttendanceDto> {
+  async get(auth: AuthContext, appointmentId: string): Promise<ClinicsAttendanceDto> {
+    // D8 (ADR-061): sem vínculo válido, nada; o alheio, 403 sem nenhum dado
+    const alcance = await this.alcanceClinico.de(auth);
+    exigirAlcance(alcance);
     const row = await registroDe(this.prisma.db, appointmentId);
     if (!row) throw new NotFoundException('Atendimento não registrado');
     // a rota exige `clinics:care:read`
-    return toDto(row, true);
+    return toDto(noAlcance(row, alcance), true);
   }
+}
+
+/** O atendimento (pelo dono do REGISTRO) no alcance; senão, 403 sem nenhum dado dele. */
+function noAlcance(row: AttendanceRow, alcance: AlcanceClinico): AttendanceRow {
+  if (!alcanca(alcance, row.professionalId)) throw new ForbiddenException(DE_OUTRO_PROFISSIONAL);
+  return row;
 }
 
 async function registroDe(db: Db, appointmentId: string): Promise<AttendanceRow | null> {

@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import type { Client } from 'pg';
 import { E2E_PASSWORD_HASH, E2E_WEB_ORIGIN, MEMBER_C, OWNER_A, OWNER_C, PROF_C } from '../env';
-import { login, openE2eDb } from './helpers';
+import { login, openE2eDb, vincularProfissional } from './helpers';
 
 /**
  * Continuidade do Veyra Clinics pela UI (F3.3b; ADR-048 adendo 7 e as
@@ -65,6 +65,8 @@ async function cenario(db: Client, intervalo: number | null = null): Promise<Cen
      VALUES (gen_random_uuid(), $1, $2, $3)`,
     [ws, profissionalId, servicoId],
   );
+  // D8 (ADR-061): o Profissional do e2e é este profissional
+  await vincularProfissional(db, ws, PROF_C, profissionalId);
   for (let semana = 1; semana <= 7; semana++) {
     await db.query(
       `INSERT INTO "ClinicsWorkingHours" ("id","workspaceId","professionalId","unitId","weekday","startMinute","endMinute")

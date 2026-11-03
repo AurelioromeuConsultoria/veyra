@@ -187,7 +187,9 @@ export class ClinicsProfessionalsService {
   /**
    * Vincula (ou desvincula, com `null`) uma conta. Só conta ATIVA deste
    * workspace; no máximo um profissional por conta (o unique do banco cobre a
-   * corrida, com 409). Vincular NÃO muda papel nenhum (ADR-048 §3).
+   * corrida, com 409). Vincular NÃO muda papel nenhum (ADR-048 §3), mas define
+   * de quem são os atendimentos que a conta alcança sem `clinics:care:all` (D8,
+   * ADR-061): por isso a rota exige essa chave.
    */
   async setAccount(
     auth: AuthContext,

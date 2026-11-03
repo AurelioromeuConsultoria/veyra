@@ -185,7 +185,11 @@ export class ClinicsCatalogController {
   }
 
   /** Vincular conta exige também `members:read`: escolhe-se entre membros. */
-  @RequireClinicsPermissions('clinics:catalog:manage', 'members:read')
+  // o vínculo é a fronteira do alcance clínico (D8, ADR-061): quem vincula
+  // decide de quem é o histórico que a conta lê, e por isso precisa do alcance
+  // "todos" — senão, desvincular-se e vincular-se a outro profissional daria a
+  // um papel personalizado o efeito de `clinics:care:all` (revisão de security)
+  @RequireClinicsPermissions('clinics:catalog:manage', 'members:read', 'clinics:care:all')
   @Put('professionals/:id/account')
   setProfessionalAccount(
     @CurrentAuth() auth: AuthContext,

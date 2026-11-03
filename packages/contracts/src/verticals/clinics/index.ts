@@ -25,6 +25,8 @@ export const CLINICS_PERMISSION_CATALOG = {
   'clinics:care:read': 'Ver registros de atendimento, pacotes, saldo e histórico de retornos',
   'clinics:care:write':
     'Registrar atendimento realizado, consumir sessão, criar e encerrar pacote, gerar retorno',
+  'clinics:care:all':
+    'Ver, registrar e corrigir os atendimentos de TODOS os profissionais; sem ela, só os do profissional vinculado à conta (soma-se a care:read e care:write, sem conceder nada sozinha)',
   'clinics:restriction:manage':
     'Liberar um contato para uso de IA como sem relação com o Clinics, ou desfazer a liberação',
 } as const;
@@ -465,6 +467,11 @@ export const rescheduleClinicsAppointmentSchema = z
     time: localTime,
     utcOffset: utcOffset.optional(),
     serviceId: z.uuid().optional(),
+    /**
+     * outro profissional para o horário (a cobertura de uma colega, ADR-061
+     * adendo 1): só ANTES do atendimento, como toda remarcação
+     */
+    professionalId: z.uuid().optional(),
   })
   .strict();
 export type RescheduleClinicsAppointmentInput = z.infer<typeof rescheduleClinicsAppointmentSchema>;
@@ -511,8 +518,17 @@ export interface ClinicsAppointmentDto {
   localEnd: string;
   status: ClinicsAppointmentStatus;
   cancelReason: ClinicsCancelReason | null;
-  /** omitido no servidor para quem não tem `clinics:care:read` (autorização de campo) */
+  /**
+   * omitido no servidor para quem não tem `clinics:care:read` (autorização de
+   * campo); `null` também quando o atendimento é de outro profissional e quem
+   * lê só alcança os próprios (D8, ADR-061)
+   */
   attendanceId?: string | null;
+  /**
+   * o atendimento deste horário está no alcance clínico de quem lê (D8): pode
+   * registrá-lo e corrigi-lo. Omitido para quem não tem permissão de atendimento
+   */
+  careInScope?: boolean;
 }
 
 export interface ClinicsAttendanceDto {

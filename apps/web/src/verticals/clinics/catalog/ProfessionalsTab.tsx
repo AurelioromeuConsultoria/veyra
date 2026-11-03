@@ -28,9 +28,13 @@ const PROFESSIONALS_KEY = ['clinics', 'catalog', 'professionals'] as const;
 /** a mesma chave da aba Serviços sem arquivados: um cache só */
 const ACTIVE_SERVICES_KEY = [...SERVICES_KEY, false] as const;
 
-/** Aviso exigido pela aprovação da entrega 2 (ADR-048 adendo 1, item 22). */
+/**
+ * Aviso exigido pela aprovação da entrega 2 (ADR-048 adendo 1, item 22),
+ * atualizado pela D8 (ADR-061): o vínculo não muda o papel, mas define de quem
+ * são os atendimentos que a conta lê, registra e corrige.
+ */
 export const ACCOUNT_LINK_NOTICE =
-  'Vincular uma conta não muda o papel nem concede permissões. O que a pessoa pode fazer continua definido pelo papel dela, na gestão de membros.';
+  'Vincular uma conta não muda o papel dela. Para quem atende sem acesso a todos os atendimentos, o vínculo define quais atendimentos a pessoa lê, registra e corrige: os deste profissional, inclusive os anteriores.';
 
 const erroDe = (error: unknown) =>
   error instanceof ApiError ? error.message : 'Tente de novo em instantes.';
@@ -46,6 +50,8 @@ export function ProfessionalsTab() {
   const { data: user } = useSession();
   const canManage = hasPermission(user, 'clinics:catalog:manage');
   const canReadMembers = hasPermission(user, 'members:read');
+  // o vínculo é a fronteira do alcance clínico (D8, ADR-061): exige o alcance "todos"
+  const canSeeAllCare = hasPermission(user, 'clinics:care:all');
   const queryClient = useQueryClient();
   const [showArchived, setShowArchived] = useState(false);
   const [editing, setEditing] = useState<ClinicsProfessionalDto | 'new' | null>(null);
@@ -213,7 +219,7 @@ export function ProfessionalsTab() {
             key={sessao}
             professional={editing === 'new' ? null : editing}
             members={listaDeMembros}
-            canLinkAccount={canReadMembers}
+            canLinkAccount={canReadMembers && canSeeAllCare}
             onSaved={(saved) => {
               setEditing(saved);
               void queryClient.invalidateQueries({ queryKey: ['clinics', 'catalog'] });
@@ -548,7 +554,8 @@ function AccountLink({
       <p className="text-data text-muted-fg">{ACCOUNT_LINK_NOTICE}</p>
       {!canLink ? (
         <p className="text-data text-muted-fg">
-          Vincular uma conta exige também permissão para ver os membros do workspace.
+          Vincular uma conta exige também permissão para ver os membros do workspace e acesso a
+          todos os atendimentos.
         </p>
       ) : (
         <>

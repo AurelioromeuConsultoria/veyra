@@ -29,6 +29,7 @@ import {
   type ExecutorDeTransacao,
 } from '../../../content-use/restriction-changes';
 import { PrismaService, type Db } from '../../../prisma/prisma.service';
+import { alcanca, type AlcanceClinico } from '../care/clinics-care-scope';
 import { chaveDoAgendamento } from '../outreach/clinics-outreach.precondition';
 import { ValidadeDosPedidos } from '../outreach/clinics-outreach.validity';
 
@@ -47,7 +48,15 @@ type AppointmentRow = {
   patient?: { contact?: { name: string } | null } | null;
   professional?: { name: string } | null;
   service?: { name: string } | null;
-  attendance?: { id: string } | null;
+  attendance?: { id: string; professionalId: string } | null;
+};
+
+/** O que a agenda mostra do atendimento a quem pede (autorização de campo e D8). */
+export type VisaoClinica = {
+  /** `clinics:care:read`: o id do atendimento (só do que está no alcance) */
+  leAtendimento: boolean;
+  /** o alcance de quem tem o atendimento (ler ou registrar); `null` sem ele */
+  alcance: AlcanceClinico | null;
 };
 
 type Unidade = { id: string; timezone: string };
@@ -102,7 +111,7 @@ export class ClinicsAppointmentsService {
   /** O dia LOCAL de uma unidade. O vínculo com atendimento só para quem lê atendimento. */
   async list(
     query: ListClinicsAppointmentsInput,
-    comAtendimento: boolean,
+    visao: VisaoClinica,
   ): Promise<ClinicsAppointmentDto[]> {
     const unidade = await this.unidade(this.prisma.db, query.unitId);
     // janela JUSTA ao dia local (folga de 3 h para mudança de horário) e
@@ -120,7 +129,7 @@ export class ClinicsAppointmentsService {
       },
       include: {
         ...COM_NOMES,
-        ...(comAtendimento ? { attendance: { select: { id: true } } } : {}),
+        ...(visao.alcance ? { attendance: { select: { id: true, professionalId: true } } } : {}),
       },
       orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
       take: TETO_DO_DIA + 1,
@@ -133,7 +142,7 @@ export class ClinicsAppointmentsService {
     }
     return rows
       .filter((row) => horaLocal(row.startsAt, unidade.timezone).data === query.date)
-      .map((row) => toDto(row, unidade.timezone, comAtendimento));
+      .map((row) => toDto(row, unidade.timezone, visao));
   }
 
   async create(
@@ -227,17 +236,28 @@ export class ClinicsAppointmentsService {
           where: { id },
         })) as unknown as AppointmentRow;
         const serviceId = input.serviceId ?? atual.serviceId;
-        const duracaoDoServico = await this.catalogo(tx, atual.professionalId, serviceId);
+        // a troca do profissional (a cobertura, ADR-061 adendo 1) acontece SÓ
+        // aqui, ANTES do atendimento (REMARCAVEIS), sob a trava do agendamento:
+        // o registro concorrente confere o profissional sob a mesma trava
+        const professionalId = input.professionalId?.toLowerCase() ?? atual.professionalId;
+        const duracaoDoServico = await this.catalogo(tx, professionalId, serviceId);
         const duracao =
           serviceId === atual.serviceId
             ? (atual.endsAt.getTime() - atual.startsAt.getTime()) / 60_000
             : duracaoDoServico;
         const startsAt = inicio(input, unidade.timezone);
         const endsAt = new Date(startsAt.getTime() + duracao * 60_000);
-        await this.expediente(tx, atual.professionalId, unidade, startsAt, endsAt);
+        await this.expediente(tx, professionalId, unidade, startsAt, endsAt);
         await tx.clinicsAppointment.updateMany({
           where: { id },
-          data: { startsAt, endsAt, serviceId, status: 'scheduled', cancelReason: null },
+          data: {
+            startsAt,
+            endsAt,
+            serviceId,
+            professionalId,
+            status: 'scheduled',
+            cancelReason: null,
+          },
         } as never);
         await this.audit.record(tx, workspaceId, 'clinics.appointment.rescheduled', {
           entityType: 'clinicsAppointment',
@@ -245,18 +265,27 @@ export class ClinicsAppointmentsService {
           actor: this.audit.actorFrom(auth),
           before: {
             serviceId: atual.serviceId,
+            professionalId: atual.professionalId,
             startsAt: atual.startsAt.toISOString(),
             endsAt: atual.endsAt.toISOString(),
             status: atual.status,
           },
           after: {
             serviceId,
+            professionalId,
             startsAt: startsAt.toISOString(),
             endsAt: endsAt.toISOString(),
             status: 'scheduled',
           },
         });
-        await this.validade.invalidar(tx, auth, { appointmentId: id, exceto: startsAt });
+        // outro profissional muda o pedido de confirmação: nenhum fica valendo
+        await this.validade.invalidar(
+          tx,
+          auth,
+          professionalId === atual.professionalId
+            ? { appointmentId: id, exceto: startsAt }
+            : { appointmentId: id },
+        );
         return unidade.timezone;
       }),
     );
@@ -329,7 +358,7 @@ export class ClinicsAppointmentsService {
       where: { id },
       include: COM_NOMES,
     } as never)) as unknown as AppointmentRow;
-    return toDto(row, timezone, false);
+    return toDto(row, timezone, SEM_VISAO_CLINICA);
   }
 
   /** A unidade pedida, ou a ÚNICA ativa (MVP: uma por workspace). */
@@ -479,12 +508,13 @@ function inicio(input: { date: string; time: string; utcOffset?: string }, timez
   throw new BadRequestException('utcOffset não corresponde a esse horário nesse fuso');
 }
 
-function toDto(
-  row: AppointmentRow,
-  timezone: string,
-  comAtendimento: boolean,
-): ClinicsAppointmentDto {
+const SEM_VISAO_CLINICA: VisaoClinica = { leAtendimento: false, alcance: null };
+
+function toDto(row: AppointmentRow, timezone: string, visao: VisaoClinica): ClinicsAppointmentDto {
   const inicioLocal = horaLocal(row.startsAt, timezone);
+  // o dono de um atendimento é o do REGISTRO; sem registro, o do horário
+  const dono = row.attendance?.professionalId ?? row.professionalId;
+  const noAlcance = visao.alcance !== null && alcanca(visao.alcance, dono);
   return {
     id: row.id,
     patientId: row.patientId,
@@ -501,6 +531,10 @@ function toDto(
     localEnd: horaLocal(row.endsAt, timezone).hora,
     status: row.status,
     cancelReason: row.cancelReason,
-    ...(comAtendimento ? { attendanceId: row.attendance?.id ?? null } : {}),
+    // o atendimento ALHEIO não sai nem como id (D8, ADR-061)
+    ...(visao.leAtendimento
+      ? { attendanceId: noAlcance ? (row.attendance?.id ?? null) : null }
+      : {}),
+    ...(visao.alcance ? { careInScope: noAlcance } : {}),
   };
 }

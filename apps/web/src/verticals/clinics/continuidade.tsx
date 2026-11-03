@@ -47,8 +47,9 @@ export const ROTULO_DO_MOTIVO_DA_CORRECAO: Record<ClinicsPackageCorrectionReason
 /**
  * Os motivos que ESTA pessoa pode usar neste retorno. Os operacionais são de
  * quem age sobre retornos (a agenda ou o atendimento); os clínicos, só do
- * atendimento. "Criado por engano" só aparece no retorno que se sabe manual
- * (a origem só vem para quem tem `care:read`). O servidor decide de novo.
+ * atendimento, e só no retorno cuja origem vem (`care:read` e, pela D8, origem
+ * no alcance). "Criado por engano" só aparece no retorno que se sabe manual. O
+ * servidor decide de novo.
  */
 export function motivosPermitidos(
   podeAgenda: boolean,
@@ -57,7 +58,9 @@ export function motivosPermitidos(
 ): ClinicsReturnCancelReason[] {
   const motivos: ClinicsReturnCancelReason[] = [];
   if (podeAgenda || podeAtendimento) motivos.push('patient_declined', 'patient_unreachable');
-  if (podeAtendimento) {
+  // a decisão clínica só sobre o retorno cuja origem a pessoa vê: sem a origem
+  // (sem `care:read`, ou de um atendimento de outro profissional, D8), não
+  if (podeAtendimento && origem !== undefined) {
     motivos.push('not_needed');
     if (origem === 'manual') motivos.push('created_in_error');
   }

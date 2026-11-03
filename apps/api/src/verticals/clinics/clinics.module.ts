@@ -1,3 +1,5 @@
+import { PreenchimentoDoAlcance } from './care/clinics-care-scope.backfill';
+import { AlcanceClinicoService } from './care/clinics-care-scope';
 import { MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/common';
 import { AuthModule } from '../../auth/auth.module';
 import { BusinessOutboundModule } from '../../business-outbound/business-outbound.module';
@@ -67,6 +69,8 @@ import { ClinicsReturnsService } from './schedule/clinics-returns.service';
     ClinicsLeadsService,
     ClinicsAppointmentsService,
     ClinicsAttendanceService,
+    AlcanceClinicoService,
+    PreenchimentoDoAlcance,
     ClinicsPackagesService,
     ClinicsPackageCorrectionsService,
     ClinicsPackageCorrectionReplayGuard,

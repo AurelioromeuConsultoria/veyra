@@ -331,6 +331,12 @@ describe('Clinics — retornos (integração, F3.2)', () => {
         endMinute: 1320,
       })),
     }).expect(200);
+    // D8 (ADR-061): o Profissional dos testes é a Ana — só os atendimentos dela
+    await put(`/api/clinics/professionals/${ana}/account`, owner, {
+      membershipId: (await prisma.raw.membership.findFirst({
+        where: { user: { email: 'prof-a@veyra.test' } },
+      }))!.id,
+    }).expect(200);
     paciente = await novoPaciente('Paciente Fictícia');
     outroPaciente = await novoPaciente('Outra Paciente Fictícia');
   });

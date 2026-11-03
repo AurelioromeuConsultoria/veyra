@@ -41,8 +41,12 @@ export const CLINICS_ROLE_GRANTS: Readonly<Record<string, readonly ClinicsPermis
   member: RECEPCAO,
   [CLINICS_PROFESSIONAL_SYSTEM_KEY]: ATENDIMENTO,
   // a SOMA das concessões padrão da recepção e do atendimento (ADR-056): sem a
-  // liberação para IA, que é só de Owner e Admin
-  [CLINICS_RECEPTION_CARE_SYSTEM_KEY]: [...new Set([...RECEPCAO, ...ATENDIMENTO])],
+  // liberação para IA, que é só de Owner e Admin. Com o alcance de TODOS os
+  // atendimentos (ADR-061, D8): quem coordena a agenda vê a clínica inteira; o
+  // `Profissional`, só os próprios
+  [CLINICS_RECEPTION_CARE_SYSTEM_KEY]: [
+    ...new Set([...RECEPCAO, ...ATENDIMENTO, 'clinics:care:all' as const]),
+  ],
 };
 
 /**

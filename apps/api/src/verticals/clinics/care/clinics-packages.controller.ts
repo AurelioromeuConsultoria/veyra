@@ -19,6 +19,7 @@ import { AuthContext, CurrentAuth } from '../../../common/decorators';
 import { ZodPipe } from '../../../common/zod.pipe';
 import { ClinicsActiveGuard } from '../clinics-active.guard';
 import { RequireClinicsPermissions } from '../clinics-permissions';
+import { AlcanceClinicoService, exigirAlcance } from './clinics-care-scope';
 import { ClinicsPackagesService } from './clinics-packages.service';
 
 /**
@@ -28,39 +29,59 @@ import { ClinicsPackagesService } from './clinics-packages.service';
 @Controller('clinics')
 @UseGuards(ClinicsActiveGuard)
 export class ClinicsPackagesController {
-  constructor(private readonly packages: ClinicsPackagesService) {}
+  constructor(
+    private readonly packages: ClinicsPackagesService,
+    private readonly alcance: AlcanceClinicoService,
+  ) {}
+
+  /**
+   * D8 (ADR-061): o pacote é do PACIENTE, e quem alcança só os próprios
+   * atendimentos o vê (para escolher no próprio registro, com o saldo que
+   * reflete os consumos de todos). Sem vínculo válido, nenhum dado clínico.
+   */
+  private async comAlcance(auth: AuthContext): Promise<void> {
+    exigirAlcance(await this.alcance.de(auth));
+  }
 
   // a resposta é o pacote: quem o cria também precisa lê-lo (care:write
   // pressupõe care:read, ADR-048 adendo 7)
   @RequireClinicsPermissions('clinics:care:write', 'clinics:care:read', 'clinics:schedule:read')
   @Post('packages')
-  create(
+  async create(
     @CurrentAuth() auth: AuthContext,
     @Body(new ZodPipe(createClinicsPackageSchema)) body: CreateClinicsPackageInput,
   ): Promise<ClinicsPackageDto> {
+    await this.comAlcance(auth);
     return this.packages.create(auth, body);
   }
 
   @RequireClinicsPermissions('clinics:care:read')
   @Get('packages')
-  list(
+  async list(
+    @CurrentAuth() auth: AuthContext,
     @Query(new ZodPipe(listClinicsPackagesSchema)) query: ListClinicsPackagesInput,
   ): Promise<ClinicsPackageDto[]> {
+    await this.comAlcance(auth);
     return this.packages.listByPatient(query.patientId);
   }
 
   @RequireClinicsPermissions('clinics:care:read')
   @Get('packages/:id')
-  get(@Param('id', new ParseUUIDPipe()) id: string): Promise<ClinicsPackageDto> {
+  async get(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<ClinicsPackageDto> {
+    await this.comAlcance(auth);
     return this.packages.get(id);
   }
 
   @RequireClinicsPermissions('clinics:care:write', 'clinics:care:read')
   @Post('packages/:id/cancel')
-  cancel(
+  async cancel(
     @CurrentAuth() auth: AuthContext,
     @Param('id', new ParseUUIDPipe()) id: string,
   ): Promise<ClinicsPackageDto> {
+    await this.comAlcance(auth);
     return this.packages.cancel(auth, id);
   }
 }

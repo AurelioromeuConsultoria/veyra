@@ -103,7 +103,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
 - **F1 — Fundação do vertical ✅ (concluída em 2026-10-19, CI verde)** Dividida em três entregas, cada uma com revisão própria. Só o item que depende de paciente (a liberação de IA que perde efeito) passa para a F2.
   - **F1.a — pontos de extensão no Core ✅ (publicada):** E1, E2 (checagem de boot e teste de concessão), E4 e E6, com o schema em `prisma/schema/`, a barreira de lint e o teste de fronteira, sem vertical composto. Decisões de implementação no adendo 1 do ADR-047; a pendência sobre o lado oposto da relação no schema do Core foi decidida no adendo 2, item 1.
   - **F1.b — esqueleto do vertical ✅ (publicada, CI verde):** fotografia dos contatos no outbox; schema do vertical; CLI de ativação e desativação; papel `Profissional`; porta real do E6; API de status e de liberação para IA; estados terminais do outbox definitivos no banco. Decisões nos adendos 2 e 3 do ADR-047. O vertical está composto e **desativado em todo workspace, inclusive em staging**.
-  - **F1.c — catálogo da clínica ✅ (publicada, CI verde):** serviços, profissionais com vínculo opcional a uma conta, serviços habilitados, horários semanais sem sobreposição garantida pelo banco (`EXCLUDE`) e edição da unidade; navegação (E5) e tela do catálogo. A entrada "Clínica" só aparece com o status confirmado como ativo e a permissão; o perfil do profissional é salvo numa transação só, e o vínculo de conta, à parte, avisa que não muda papel nem permissões. Decisões no adendo 1 do ADR-048 e no adendo 4 do ADR-047.
+  - **F1.c — catálogo da clínica ✅ (publicada, CI verde):** serviços, profissionais com vínculo opcional a uma conta (desde a F5.3a, o vínculo define o alcance clínico de quem não tem `clinics:care:all`), serviços habilitados, horários semanais sem sobreposição garantida pelo banco (`EXCLUDE`) e edição da unidade; navegação (E5) e tela do catálogo. A entrada "Clínica" só aparece com o status confirmado como ativo e a permissão; o perfil do profissional é salvo numa transação só, e o vínculo de conta, à parte, avisa que não muda papel nem permissões. Decisões no adendo 1 do ADR-048 e no adendo 4 do ADR-047.
 
   Escopo e critérios da F1 como um todo: Os seis pontos de extensão do Core (ADR-047), incluindo a **restrição de conteúdo por contato (E6)** com a regra "restrito por padrão"; a barreira de dependência; a CLI de ativação e desativação com o ciclo de vida do ADR-047 §4, criando o papel `Profissional`; as sete permissões; a liberação de contato pela API; unidade, serviço, profissional e horários. Sala só se D2 for decidida a favor.
   **Pronto quando:**
@@ -213,7 +213,14 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
 - **Na ficha:** "Sessões" em cada pacote, com quem o consome e as correções.
 - **Os testes:** os de interface e o E2E do fluxo completo.
 
-  3. **F5.3 — Privacidade e acesso clínico (B1 e D8).** Uma proposta concreta, com as decisões de operação, as jurídicas e o trabalho técnico separados:
+  3. **F5.3 — Privacidade e acesso clínico (B1 e D8).** **ADR-061: a direção foi aprovada em 2026-11-03, com ajustes.** A **F5.3a (D8)** está em commit local:
+     - o `Profissional` lê, registra e corrige só os próprios atendimentos;
+     - o pacote é do paciente, e o saldo é compartilhado;
+     - sem vínculo, não há acesso clínico;
+     - a chave `clinics:care:all` chega aos papéis pelo livro, sem comando;
+     - a cobertura é a troca do profissional na remarcação.
+
+     A F5.3b, a F5.3c e a F5.3d esperam as precisões do adendo 1. Uma proposta concreta, com as decisões de operação, as jurídicas e o trabalho técnico separados:
      - quem vê conversas, notas, arquivos, metadados e atendimentos;
      - o que a recepção precisa consultar;
      - se o profissional vê todos os atendimentos ou só os próprios;

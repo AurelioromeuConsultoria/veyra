@@ -166,7 +166,10 @@ function PacotesDoPaciente({ pacienteId }: { pacienteId: string }) {
       </div>
       {pacotes.isError ? (
         <p role="alert" className="text-data text-negative">
-          Não foi possível carregar os pacotes.
+          {/* sem vínculo com um profissional (D8, ADR-061): o motivo do servidor */}
+          {pacotes.error instanceof ApiError && pacotes.error.status === 403
+            ? pacotes.error.message
+            : 'Não foi possível carregar os pacotes.'}
         </p>
       ) : servicos.isError ? (
         <p role="alert" className="text-data text-negative">

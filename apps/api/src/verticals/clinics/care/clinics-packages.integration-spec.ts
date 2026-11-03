@@ -239,6 +239,12 @@ describe('Clinics — pacote de sessões e consumo no atendimento (integração,
         endMinute: 1320,
       })),
     }).expect(200);
+    // D8 (ADR-061): o Profissional dos testes é a Ana — só os atendimentos dela
+    await put(`/api/clinics/professionals/${ana}/account`, owner, {
+      membershipId: (await prisma.raw.membership.findFirst({
+        where: { user: { email: 'prof-a@veyra.test' } },
+      }))!.id,
+    }).expect(200);
     paciente = await novoPaciente('Paciente Fictícia');
     outroPaciente = await novoPaciente('Outra Paciente Fictícia');
   });
@@ -919,9 +925,17 @@ describe('Clinics — pacote de sessões e consumo no atendimento (integração,
         data: { workspaceId: wsA.workspaceId, name: 'Escreve sem ler (fictício)' },
       });
       await prisma.raw.rolePermission.createMany({
-        data: ['clinics:care:write', 'clinics:schedule:read', 'clinics:catalog:read'].map(
-          (permissionKey) => ({ workspaceId: wsA.workspaceId, roleId: papel.id, permissionKey }),
-        ),
+        // com o alcance "todos" (ADR-061): o teste é da LEITURA, não do vínculo
+        data: [
+          'clinics:care:write',
+          'clinics:care:all',
+          'clinics:schedule:read',
+          'clinics:catalog:read',
+        ].map((permissionKey) => ({
+          workspaceId: wsA.workspaceId,
+          roleId: papel.id,
+          permissionKey,
+        })),
       });
       const user = await createUserFixture(prisma, 'sem-leitura-a@veyra.test');
       await createMembershipFixture(prisma, wsA.workspaceId, user, papel.id);

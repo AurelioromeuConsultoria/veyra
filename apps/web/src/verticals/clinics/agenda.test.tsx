@@ -142,6 +142,8 @@ const agendamento = (extra: Record<string, unknown> = {}) => ({
   localEnd: '10:00',
   status: 'scheduled',
   cancelReason: null,
+  // no alcance clínico de quem atende (D8, ADR-061): o servidor manda
+  careInScope: true,
   ...extra,
 });
 
@@ -424,6 +426,59 @@ describe('Agenda da clínica (F2.3)', () => {
       expect(
         chamadas.find((c) => c.chave === `POST /api/clinics/appointments/${AG}/reschedule`)?.corpo,
       ).toEqual({ date: DIA, time: '10:00' }),
+    );
+  });
+
+  it('remarcar para outra profissional (a cobertura, ADR-061): só quem faz o serviço; envia `professionalId`', async () => {
+    const chamadas = mockApi({
+      'GET /api/auth/me': { body: usuario(RECEPCAO) },
+      ...catalogo,
+      'GET /api/clinics/professionals': {
+        body: [
+          {
+            id: ANA,
+            name: 'Ana Fictícia',
+            account: null,
+            serviceIds: [S1],
+            workingHours: comercial,
+            archivedAt: null,
+          },
+          {
+            id: BIA,
+            name: 'Bia Fictícia',
+            account: null,
+            serviceIds: [S1],
+            workingHours: comercial,
+            archivedAt: null,
+          },
+        ],
+      },
+      'GET /api/clinics/appointments': { body: [agendamento()] },
+      [`POST /api/clinics/appointments/${AG}/reschedule`]: {
+        body: agendamento({ professionalId: BIA }),
+      },
+    });
+    renderizar(<ClinicsAgendaPage />);
+    fireEvent.click(await screen.findByRole('button', { name: `Remarcar: ${QUEM}` }));
+    const dialogo = await screen.findByRole('dialog', { name: 'Remarcar' });
+    const profissional = within(dialogo).getByLabelText(/^Profissional/);
+    expect(profissional).toHaveValue(ANA);
+    expect(within(dialogo).getByText(/Para cobrir uma colega/)).toBeInTheDocument();
+    fireEvent.change(profissional, { target: { value: BIA } });
+    const horario = within(dialogo).getByLabelText(/^Horário/);
+    await waitFor(() =>
+      expect(
+        within(horario)
+          .getAllByRole('option')
+          .map((o) => o.textContent),
+      ).toContain('10:00'),
+    );
+    fireEvent.change(horario, { target: { value: '10:00|' } });
+    fireEvent.click(within(dialogo).getByRole('button', { name: 'Remarcar' }));
+    await waitFor(() =>
+      expect(
+        chamadas.find((c) => c.chave === `POST /api/clinics/appointments/${AG}/reschedule`)?.corpo,
+      ).toEqual({ date: DIA, time: '10:00', professionalId: BIA }),
     );
   });
 

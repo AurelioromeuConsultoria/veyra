@@ -10133,7 +10133,7 @@ O procedimento está no DEPLOY_STAGING §4.2 e usa peças que já existem e fora
 
 ## ADR-061 — F5.3: privacidade e acesso clínico (B1 e D8)
 
-**Status:** PROPOSTO (2026-11-03). Aguarda as decisões do usuário abaixo; nada é implementado antes da aprovação. O número 060 é o da automação da publicação, preservada na branch `proposta/publicacao-automatica`.
+**Status:** direção APROVADA pelo usuário em 2026-11-03, com os ajustes do adendo 1. A F5.3a está autorizada até o commit local. A F5.3b, a F5.3c e a F5.3d precisam das precisões do adendo antes do código. O número 060 é o da automação da publicação, preservada na branch `proposta/publicacao-automatica`.
 
 **Contexto.**
 
@@ -10146,13 +10146,14 @@ O procedimento está no DEPLOY_STAGING §4.2 e usa peças que já existem e fora
 
 **Quem vê o quê (recomendação).**
 
-| Dado do paciente                                                           | Owner / Admin | Recepção e atendimento | Recepção (Member)           | Profissional                          |
-| -------------------------------------------------------------------------- | ------------- | ---------------------- | --------------------------- | ------------------------------------- |
-| Agenda (quem, serviço, quando, estado)                                     | sim           | sim                    | sim                         | sim, de todos os profissionais        |
-| Atendimentos, pacotes, consumo e correções                                 | sim           | sim                    | não (como hoje)             | **só dos próprios agendamentos** (D8) |
-| Conversas do WhatsApp do paciente                                          | sim           | sim                    | **sim** (confirma horários) | não (como hoje)                       |
-| Notas, tarefas, anexos, campos livres e título da oportunidade do paciente | sim           | sim                    | **não** (B1)                | não                                   |
-| Metadados na auditoria (nome de arquivo, id de conversa RAI)               | sim           | sem `audit:read`       | sem `audit:read`            | sem `audit:read`                      |
+| Dado do paciente                                                           | Owner / Admin | Recepção e atendimento | Recepção (Member)           | Profissional                                                            |
+| -------------------------------------------------------------------------- | ------------- | ---------------------- | --------------------------- | ----------------------------------------------------------------------- |
+| Agenda (quem, serviço, quando, estado)                                     | sim           | sim                    | sim                         | sim, de todos os profissionais                                          |
+| Pacotes do paciente e o saldo (compartilhado)                              | sim           | sim                    | não (como hoje)             | sim, para registrar o próprio atendimento                               |
+| Atendimentos, consumo e correções (o histórico)                            | sim           | sim                    | não (como hoje)             | **só os próprios** (D8): os alheios não saem nem como linha nem como id |
+| Conversas do WhatsApp do paciente                                          | sim           | sim                    | **sim** (confirma horários) | não (como hoje)                                                         |
+| Notas, tarefas, anexos, campos livres e título da oportunidade do paciente | sim           | sim                    | **não** (B1)                | não                                                                     |
+| Metadados na auditoria (nome de arquivo, id de conversa RAI)               | sim           | sem `audit:read`       | sem `audit:read`            | sem `audit:read`                                                        |
 
 **As decisões pedidas ao usuário:**
 
@@ -10184,7 +10185,7 @@ O procedimento está no DEPLOY_STAGING §4.2 e usa peças que já existem e fora
 
 - **D8:**
   - na Agenda, o `Profissional` vê os horários de todos, mas "Registrar atendimento" e "Corrigir consumo" só aparecem nos próprios;
-  - na ficha, os pacotes aparecem, e as sessões e correções de outros profissionais aparecem como "de outro profissional", sem o atendimento.
+  - na ficha, os pacotes aparecem com o saldo compartilhado. As sessões e correções de outros profissionais não saem; a tela só diz quantas sessões são de outros _(substituído pelo adendo 1, item 3)_.
 - **B1:**
   - no contato e na ficha, quem não tem a permissão vê "Conteúdo restrito" no lugar de notas, tarefas, anexos e campos;
   - no Funil, o título genérico;
@@ -10192,7 +10193,7 @@ O procedimento está no DEPLOY_STAGING §4.2 e usa peças que já existem e fora
 
 **A divisão em entregas pequenas, cada uma visível e com os testes da garantia:**
 
-1. **F5.3a, D8:** o escopo do `Profissional` no servidor (atendimento, consumo, correção e sessões), pelo vínculo conta↔profissional, mais as telas. Não tem migration. A chave nova (o alcance "todos") chega aos papéis do vertical pela sincronização da F5.1b; o catálogo de permissões precisa do `seed-permissions` no staging.
+1. **F5.3a, D8:** o escopo do `Profissional` no servidor (atendimento, consumo, correção e sessões), pelo vínculo conta↔profissional, mais as telas. Não tem migration. _(Substituído pelo adendo 1, item 5: a chave chega pelo livro, sem comando nem `seed-permissions`.)_
 2. **F5.3b, B1 nas notas e tarefas:** a permissão nova do Core, a restrição de leitura e o "Conteúdo restrito" nas telas.
 3. **F5.3c, B1 nos anexos, campos e título da oportunidade.**
 4. **F5.3d, busca, exportação e auditoria:** o mascaramento e o fechamento das pendências de metadados.
@@ -10205,4 +10206,87 @@ O B1 só se considera levantado depois da F5.3d, com o `reviewer` e o `security`
 
 - **A "Recepção" perde acesso** a notas e tarefas de paciente que hoje lê. Isso é intencional e precisa ser comunicado à clínica.
 - **O Core ganha uma permissão e um ponto de restrição de leitura.** É uma extensão do E6 (ADR-047), sem conhecer o vertical.
-- **A chave nova nos papéis padrão do Core,** em workspaces já ativos, esbarra no ADR-057, que está aberto. A proposta concede só a Owner e Admin, que já recebem tudo, e aos papéis do vertical, pela sincronização.
+- **A chave nova nos papéis padrão do Core,** em workspaces já ativos, esbarra no ADR-057, que está aberto. A proposta concede só a Owner e Admin, que já recebem tudo, e aos papéis do vertical _(o mecanismo é o livro, adendo 1, item 5)_.
+
+**Adendo 1 — a aprovação com ajustes (2026-11-03), antes do código da F5.3a.**
+
+1. **A D8, aprovada: o `Profissional` acessa os próprios atendimentos.**
+   - **A agenda operacional:** ele continua vendo a de todos (`clinics:schedule:read`).
+   - **O clínico:** ele só lê, registra e corrige os atendimentos em que é o profissional.
+   - **Quem é o profissional:** o vínculo da conta com um profissional NÃO arquivado (`ClinicsProfessional.membershipId`, único por conta).
+   - **Sem vínculo válido:** nenhum acesso clínico. Valem a agenda e mais nada.
+   - **O alcance "todos":** é uma chave nova, `clinics:care:all`, que se SOMA a `clinics:care:read` e `clinics:care:write` e nunca concede nada sozinha.
+2. **O dono do histórico é fixado no registro.**
+   - O dono é o `ClinicsAttendance.professionalId`, gravado no registro e imutável. Nunca é o profissional do agendamento visto depois.
+   - **Antes do atendimento,** a recepção pode trocar o profissional do horário. Isso já é só para "marcado" ou "confirmado".
+   - **No registro,** o profissional é conferido sob a trava do agendamento, na mesma transação. Uma troca concorrente faz o registro de quem deixou de ser o profissional ser recusado, sem efeito.
+   - **Depois do registro,** a troca é recusada pelo estado, e o histórico não muda de dono.
+   - "Recepção e atendimento" não é atalho de cobertura: o papel concede também CRM e conversas.
+3. **O pacote e o histórico ficam separados.**
+   - **O pacote é do paciente:** quem tem o alcance "próprios" vê os pacotes e o saldo, que reflete os consumos de todos, para escolher no próprio registro.
+   - **As sessões do pacote e as correções:** o servidor devolve só as do próprio profissional. Os alheios não saem nem como linha, nem como id, nem como detalhe. A tela diz que o saldo inclui sessões de outros profissionais.
+   - **Os retornos:** o id do atendimento de origem e o do que cumpriu só saem quando o atendimento é do próprio profissional.
+   - A tabela acima foi corrigida nesse sentido.
+4. **Os caminhos protegidos pela F5.3a,** todos pelo servidor, com o mesmo alcance:
+   - a agenda (o id do atendimento e a marca `careInScope` por horário);
+   - a leitura do atendimento;
+   - o registro, com a trava;
+   - a correção e o replay dela pela `Idempotency-Key`;
+   - as sessões do pacote;
+   - os pacotes (sem vínculo, 403);
+   - os ids de atendimento nos retornos.
+
+   A ficha e a agenda só refletem. Os indicadores agregados (faltas) e a trilha de auditoria (de quem tem `audit:read`) ficam como estão.
+
+5. **A chave nova nos papéis que já existem, sem comando manual.**
+   - **Na ativação:** Owner e Admin recebem todas as chaves do Clinics, e "Recepção e atendimento" recebe `clinics:care:all`. O `Profissional` não recebe.
+   - **Nos workspaces já ativos,** o preenchimento usa o livro do Core (`PermissionBackfill`, ADR-052 item 6) e a mesma regra:
+     - só os papéis de sistema `owner`, `admin` e `clinics:reception-care`;
+     - só os que já têm `clinics:care:read` (o pré-requisito);
+     - só quando o livro ainda não registra a chave naquele papel.
+
+     O resultado é a concessão, a linha no livro e a auditoria (`role.permission_backfilled`). Uma chave revogada depois não volta, porque o livro já a registra. Nada é removido nem reescrito, e as personalizações ficam.
+
+   - **Quem executa:** a API, sozinha. É um trabalho do vertical no agendador do Core: uma vez logo depois da subida e de hora em hora. A sincronização (`sync-roles`) e a ativação usam a mesma rotina.
+   - **Sem migration e sem comando:** o catálogo global ganha a chave pelo mesmo `upsert` da ativação.
+   - **Em manutenção,** os jobs não rodam e nada é escrito.
+   - **A janela:** entre a subida da versão nova e a primeira execução (segundos), os papéis sem a chave ficam com o alcance "próprios" ou nenhum. Isso falha fechado e está declarado.
+6. **B1, a precisão para a F5.3b:** o escopo é o conteúdo do PACIENTE (o contato com perfil de paciente), declarado pelo vertical numa porta do Core.
+   - **Não é a restrição da E6,** que é a da IA: liberar para IA não libera leitura clínica, e não estar liberado não esconde o CRM de um interessado.
+   - **A chave nova se soma** à permissão de cada recurso (`notes:read`, `tasks:read`…) e nunca concede acesso sozinha.
+7. **A mídia recebida pelo WhatsApp:** a decisão vem antes da F5.3c. Hoje "conversas permitidas" e "anexos proibidos" deixam esse caso indefinido. Nada disso libera dados reais.
+8. **Cada entrega protege todos os caminhos do recurso que muda,** inclusive a busca, as notificações, as prévias e o acesso direto. Nenhuma leitura alternativa fica aberta até a F5.3d. A F5.3d faz a revisão transversal e o fechamento, sem criar exportações que não existem.
+
+**Resultados da F5.3a (2026-11-03, commit local).**
+
+- **O servidor:**
+  - o alcance (`AlcanceClinicoService`), numa regra única, nos caminhos do item 4;
+  - a remarcação aceita `professionalId`, só antes do atendimento, com a habilitação e o expediente do profissional novo, a trilha antes/depois e todos os pedidos de confirmação invalidados;
+  - o preenchimento pelo livro: na ativação (que registra no livro o que concede), na sincronização e num trabalho do vertical no agendador do Core (`agendarPeriodico` ganhou "também na subida").
+- **O web:**
+  - "Registrar atendimento" e "Corrigir consumo" só no horário com `careInScope`, na Agenda e no Hoje;
+  - a remarcação mostra o profissional, com a dica da cobertura;
+  - a ficha mostra o motivo do servidor sem vínculo, e as sessões do pacote dizem quantas são de outros profissionais.
+- **Os testes:**
+  - **integração (`clinics-care-scope`, 10 cenários):** a agenda, o acesso direto e o sem vínculo, a correção e o replay, as sessões, os retornos, as duas ordens da troca concorrente forçadas pela trava, a troca na remarcação, e o livro (os papéis certos, uma vez só, a revogação respeitada, o pré-requisito);
+  - **os specs anteriores do Clinics:** passaram a vincular o `Profissional` à Ana, e os papéis personalizados "escreve sem ler" receberam o alcance `todos`, que não dá leitura;
+  - **web:** a ação escondida no horário alheio, a troca na remarcação e o aviso das sessões de outros profissionais;
+  - **E2E:** o `Profissional` registra só no horário dele, e o vínculo do `PROF_C` passa ao profissional de cada cenário.
+- **Sem mutações e sem bateria completa local** (decisão do usuário): o CI faz a verificação geral.
+
+**A revisão da F5.3a (`reviewer` e `security`, uma rodada) e os ajustes.** A revisão não teve P0 nem P1.
+
+- **O livro avalia cada papel uma vez, e a avaliação é definitiva** (`security`). O papel sem o pré-requisito também é registrado. Ganhar `care:read` depois não traz `care:all` sozinho.
+- **A sincronização preenche DEPOIS de criar os papéis** (`security`). O papel criado por ela entra no livro, e a revogação posterior não é desfeita.
+- **Vincular uma conta a um profissional exige `clinics:care:all`** (`security`). O vínculo é a fronteira do alcance: quem só gere o catálogo não pode se vincular a outro profissional e ler o histórico dele.
+  - A tela de profissionais só oferece o vínculo com a chave.
+  - O aviso diz que o vínculo define os atendimentos alcançados, inclusive os anteriores.
+  - Passar o vínculo de um profissional para outra conta entrega à conta nova o histórico daquele profissional. Isso é intencional e está dito.
+- **A decisão clínica sobre um retorno** ("não é necessário") exige o alcance sobre o atendimento de origem (`reviewer`). Sem vínculo, ela é negada. A tela só a oferece quando a origem vem.
+- **Uma falha num workspace não interrompe o preenchimento dos demais.** O log leva o id do workspace e o tipo do erro.
+- **Os resíduos declarados:**
+  - **o vínculo é lido fora da transação do registro e da correção:** desvincular durante um pedido em voo deixa o pedido concluir com o alcance de milissegundos antes. A troca do profissional DO HORÁRIO, essa sim, é conferida sob a trava;
+  - **a ausência de `origin` num retorno:** quem alcança só os próprios vê o retorno manual como "manual" e o automático alheio sem origem. A ausência indica que ele veio de um atendimento, o que a agenda já mostra ("Atendido"). Os ids não saem. O item 3 do adendo 1 fica nesse sentido.
+- **Em aberto, para decisão do usuário: a cobertura DEPOIS da chegada.**
+  - **O caso:** a remarcação, e portanto a troca do profissional, só vale para "marcado" e "confirmado". Se o paciente já chegou, a profissional prevista falta e outra atende, a recepção não consegue trocar o profissional. A que atendeu não registra (fora do alcance), e só quem tem `care:all` registra, com o histórico em nome da prevista.
+  - **O desenho mínimo:** permitir à recepção trocar só o profissional de um horário "chegou", sem mudar o estado nem o horário, com a mesma trava, a habilitação e a trilha.

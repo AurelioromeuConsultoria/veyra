@@ -32,6 +32,7 @@ import { PermissionsService } from '../../../auth/permissions.service';
 import { corpoVazioProvado } from '../../../common/corpo-opcional.middleware';
 import { AuthContext, CurrentAuth } from '../../../common/decorators';
 import { ZodPipe } from '../../../common/zod.pipe';
+import { AlcanceClinicoService } from '../care/clinics-care-scope';
 import { ClinicsActiveGuard } from '../clinics-active.guard';
 import { RequireClinicsPermissions } from '../clinics-permissions';
 import { ClinicsAppointmentsService } from './clinics-appointments.service';
@@ -50,6 +51,7 @@ export class ClinicsAppointmentsController {
     private readonly appointments: ClinicsAppointmentsService,
     private readonly attendance: ClinicsAttendanceService,
     private readonly permissions: PermissionsService,
+    private readonly alcance: AlcanceClinicoService,
   ) {}
 
   /** O vínculo com o atendimento sai SÓ para quem lê atendimento (autorização de campo). */
@@ -62,8 +64,12 @@ export class ClinicsAppointmentsController {
     // chave do vertical: o catálogo é COMPOSTO, a checagem é a mesma do guard;
     // o `satisfies` faz o TypeScript conferir a grafia contra o catálogo
     const careRead = 'clinics:care:read' satisfies ClinicsPermissionKey;
+    const careWrite = 'clinics:care:write' satisfies ClinicsPermissionKey;
     const leAtendimento = await this.permissions.has(auth, careRead as PermissionKey);
-    return this.appointments.list(query, leAtendimento);
+    const registra = await this.permissions.has(auth, careWrite as PermissionKey);
+    // o alcance clínico (D8, ADR-061) só para quem tem o atendimento
+    const alcance = leAtendimento || registra ? await this.alcance.de(auth) : null;
+    return this.appointments.list(query, { leAtendimento, alcance });
   }
 
   @RequireClinicsPermissions('clinics:schedule:write')
@@ -124,7 +130,10 @@ export class ClinicsAppointmentsController {
 
   @RequireClinicsPermissions('clinics:care:read')
   @Get('appointments/:id/attendance')
-  getAttendance(@Param('id', new ParseUUIDPipe()) id: string): Promise<ClinicsAttendanceDto> {
-    return this.attendance.get(id);
+  getAttendance(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<ClinicsAttendanceDto> {
+    return this.attendance.get(auth, id);
   }
 }
