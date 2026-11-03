@@ -482,6 +482,66 @@ describe('Agenda da clínica (F2.3)', () => {
     );
   });
 
+  it('a cobertura depois da chegada (ADR-061): a recepção troca só o profissional do horário "chegou"; o Profissional não', async () => {
+    const profissionais = {
+      body: [
+        {
+          id: ANA,
+          name: 'Ana Fictícia',
+          account: null,
+          serviceIds: [S1],
+          workingHours: comercial,
+          archivedAt: null,
+        },
+        {
+          id: BIA,
+          name: 'Bia Fictícia',
+          account: null,
+          serviceIds: [S1],
+          workingHours: comercial,
+          archivedAt: null,
+        },
+      ],
+    };
+    const chamadas = mockApi({
+      'GET /api/auth/me': { body: usuario(RECEPCAO) },
+      ...catalogo,
+      'GET /api/clinics/professionals': profissionais,
+      'GET /api/clinics/appointments': { body: [agendamento({ status: 'arrived' })] },
+      [`POST /api/clinics/appointments/${AG}/professional`]: {
+        status: 201,
+        body: agendamento({ status: 'arrived', professionalId: BIA }),
+      },
+    });
+    renderizar(<ClinicsAgendaPage />);
+    fireEvent.click(await screen.findByRole('button', { name: `Trocar profissional: ${QUEM}` }));
+    const escolha = screen.getByRole('combobox', { name: `Quem vai atender: ${QUEM}` });
+    // só quem faz o serviço, menos a atual
+    expect(within(escolha).queryByRole('option', { name: 'Ana Fictícia' })).toBeNull();
+    const confirmar = screen.getByRole('button', { name: `Confirmar troca: ${QUEM}` });
+    expect(confirmar).toBeDisabled();
+    fireEvent.change(escolha, { target: { value: BIA } });
+    fireEvent.click(confirmar);
+    await waitFor(() =>
+      expect(chamadas).toContainEqual({
+        chave: `POST /api/clinics/appointments/${AG}/professional`,
+        corpo: { professionalId: BIA },
+      }),
+    );
+  });
+
+  it('a cobertura depois da chegada: o Profissional não vê a troca', async () => {
+    mockApi({
+      'GET /api/auth/me': { body: usuario(PROFISSIONAL) },
+      ...catalogo,
+      'GET /api/clinics/appointments': { body: [agendamento({ status: 'arrived' })] },
+      'GET /api/clinics/packages': { body: [] },
+    });
+    renderizar(<ClinicsAgendaPage />);
+    expect(await screen.findByText('Paciente Fictícia')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Trocar profissional:/ })).toBeNull();
+  });
+
   it('remarcar com o serviço original ARQUIVADO: explica e obriga a escolher outro', async () => {
     const S2 = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e08';
     const chamadas = mockApi({

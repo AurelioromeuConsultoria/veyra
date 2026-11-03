@@ -476,6 +476,19 @@ export const rescheduleClinicsAppointmentSchema = z
   .strict();
 export type RescheduleClinicsAppointmentInput = z.infer<typeof rescheduleClinicsAppointmentSchema>;
 
+/**
+ * A troca do profissional de um horário em que o paciente JÁ CHEGOU (a
+ * cobertura depois da chegada, ADR-061): só o profissional muda — o estado, o
+ * horário, o serviço, o paciente e a duração ficam. Depois do registro do
+ * atendimento, é recusada.
+ */
+export const changeClinicsAppointmentProfessionalSchema = z
+  .object({ professionalId: z.uuid() })
+  .strict();
+export type ChangeClinicsAppointmentProfessionalInput = z.infer<
+  typeof changeClinicsAppointmentProfessionalSchema
+>;
+
 /** `attended` NÃO está aqui: só o registro de atendimento chega lá. */
 export const changeClinicsAppointmentStatusSchema = z
   .object({

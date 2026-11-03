@@ -14,11 +14,13 @@ import {
 import type { PermissionKey } from '@veyra/contracts';
 import type { ClinicsPermissionKey } from '@veyra/contracts/verticals/clinics';
 import {
+  changeClinicsAppointmentProfessionalSchema,
   changeClinicsAppointmentStatusSchema,
   createClinicsAppointmentSchema,
   listClinicsAppointmentsSchema,
   recordClinicsAttendanceSchema,
   rescheduleClinicsAppointmentSchema,
+  type ChangeClinicsAppointmentProfessionalInput,
   type ChangeClinicsAppointmentStatusInput,
   type ClinicsAppointmentDto,
   type ClinicsAttendanceDto,
@@ -100,6 +102,18 @@ export class ClinicsAppointmentsController {
     body: ChangeClinicsAppointmentStatusInput,
   ): Promise<ClinicsAppointmentDto> {
     return this.appointments.changeStatus(auth, id, body);
+  }
+
+  /** A cobertura depois da chegada (ADR-061): quem gere a agenda troca o profissional. */
+  @RequireClinicsPermissions('clinics:schedule:write')
+  @Post('appointments/:id/professional')
+  changeProfessional(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body(new ZodPipe(changeClinicsAppointmentProfessionalSchema))
+    body: ChangeClinicsAppointmentProfessionalInput,
+  ): Promise<ClinicsAppointmentDto> {
+    return this.appointments.changeProfessional(auth, id, body);
   }
 
   @RequireClinicsPermissions('clinics:care:write', 'clinics:schedule:read')

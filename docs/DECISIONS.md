@@ -10285,8 +10285,15 @@ O B1 só se considera levantado depois da F5.3d, com o `reviewer` e o `security`
 - **A decisão clínica sobre um retorno** ("não é necessário") exige o alcance sobre o atendimento de origem (`reviewer`). Sem vínculo, ela é negada. A tela só a oferece quando a origem vem.
 - **Uma falha num workspace não interrompe o preenchimento dos demais.** O log leva o id do workspace e o tipo do erro.
 - **Os resíduos declarados:**
-  - **o vínculo é lido fora da transação do registro e da correção:** desvincular durante um pedido em voo deixa o pedido concluir com o alcance de milissegundos antes. A troca do profissional DO HORÁRIO, essa sim, é conferida sob a trava;
+  - **o vínculo é lido fora da transação do registro, da correção e do cancelamento clínico de retorno:** um pedido que já obteve o alcance pode concluir depois da desvinculação. Não há limite garantido para essa janela. A troca do profissional DO HORÁRIO, essa sim, é conferida sob a trava. **O usuário aceitou o limite só para a demonstração com dados fictícios. Ele é pendência explícita antes do uso real** (decisão de 2026-11-03);
   - **a ausência de `origin` num retorno:** quem alcança só os próprios vê o retorno manual como "manual" e o automático alheio sem origem. A ausência indica que ele veio de um atendimento, o que a agenda já mostra ("Atendido"). Os ids não saem. O item 3 do adendo 1 fica nesse sentido.
-- **Em aberto, para decisão do usuário: a cobertura DEPOIS da chegada.**
-  - **O caso:** a remarcação, e portanto a troca do profissional, só vale para "marcado" e "confirmado". Se o paciente já chegou, a profissional prevista falta e outra atende, a recepção não consegue trocar o profissional. A que atendeu não registra (fora do alcance), e só quem tem `care:all` registra, com o histórico em nome da prevista.
-  - **O desenho mínimo:** permitir à recepção trocar só o profissional de um horário "chegou", sem mudar o estado nem o horário, com a mesma trava, a habilitação e a trilha.
+- **A cobertura DEPOIS da chegada: aprovada pelo usuário em 2026-11-03 e implementada em commit próprio.**
+  - **O caso:** a remarcação só vale para "marcado" e "confirmado". Se o paciente já chegou e a profissional prevista falta, outra atende.
+  - **A troca:** `POST /clinics/appointments/:id/professional`, para quem gere a agenda (`clinics:schedule:write`). Ela troca SÓ o profissional de um horário "chegou". O estado, o horário, o serviço, o paciente e a duração ficam.
+  - **As verificações:** as da agenda: o profissional ativo e habilitado para o serviço, o expediente e a ausência de sobreposição (o banco).
+  - **A coordenação:** a mesma do registro de atendimento: a `validity:` do agendamento e a trava da linha.
+    - **O registro veio antes:** o estado já é "atendido", e a troca é recusada (409).
+    - **A troca veio antes:** o registro de quem deixou de ser o profissional é recusado (403), e o registro de quem atendeu fica em nome dela.
+  - **A trilha:** `clinics.appointment.professional_changed`, com o anterior, o novo e quem trocou.
+  - **A tela:** "Trocar profissional" no cartão do horário "Chegou", na Agenda, com a escolha entre quem faz o serviço.
+  - **Os testes:** as duas ordens, forçadas pela trava, as verificações, e a tela (a recepção troca; o Profissional não vê).

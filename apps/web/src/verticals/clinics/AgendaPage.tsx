@@ -300,6 +300,7 @@ function AgendaReady() {
                       // profissional arquivado: o drawer não teria serviços nem horários
                       podeRemarcar={podeMarcar && coluna.profissional !== null}
                       onRemarcar={() => setDrawer({ kind: 'remarcar', agendamento })}
+                      profissionais={ativos}
                     />
                   ))}
                 </section>
@@ -345,6 +346,7 @@ function CartaoDeAgendamento({
   fuso,
   podeRemarcar,
   onRemarcar,
+  profissionais,
 }: {
   agendamento: ClinicsAppointmentDto;
   podeMarcar: boolean;
@@ -354,14 +356,33 @@ function CartaoDeAgendamento({
   fuso: string | null;
   podeRemarcar: boolean;
   onRemarcar: () => void;
+  /** os ativos: a cobertura depois da chegada escolhe entre os habilitados */
+  profissionais: ClinicsProfessionalDto[];
 }) {
   const queryClient = useQueryClient();
   const [cancelando, setCancelando] = useState(false);
   const [registrando, setRegistrando] = useState(false);
   const [corrigindo, setCorrigindo] = useState(false);
+  const recarregar = () => void queryClient.invalidateQueries({ queryKey: AGENDA_KEY });
+  const [trocando, setTrocando] = useState(false);
+  const [novoProfissional, setNovoProfissional] = useState('');
+  // a cobertura depois da chegada (ADR-061): só quem faz o serviço, menos o atual
+  const cobrem = profissionais.filter(
+    (p) => p.id !== agendamento.professionalId && p.serviceIds.includes(agendamento.serviceId),
+  );
+  const trocar = useMutation({
+    mutationFn: (professionalId: string) =>
+      api.post<ClinicsAppointmentDto>(`/api/clinics/appointments/${agendamento.id}/professional`, {
+        professionalId,
+      }),
+    onSuccess: () => {
+      setTrocando(false);
+      setNovoProfissional('');
+    },
+    onSettled: recarregar,
+  });
   const [oportunidade, setOportunidade] = useState(false);
   const [motivo, setMotivo] = useState<ClinicsCancelReason | ''>('');
-  const recarregar = () => void queryClient.invalidateQueries({ queryKey: AGENDA_KEY });
   const mudar = useMutation({
     mutationFn: (corpo: { to: string; cancelReason?: ClinicsCancelReason }) =>
       api.post<ClinicsAppointmentDto>(`/api/clinics/appointments/${agendamento.id}/status`, corpo),
@@ -371,7 +392,7 @@ function CartaoDeAgendamento({
     },
     onSettled: recarregar,
   });
-  const erro = mudar.error;
+  const erro = mudar.error ?? trocar.error;
   // único por cartão: hora, paciente e profissional
   const quem = `${agendamento.localStart} ${agendamento.patientName} (${agendamento.professionalName})`;
   const transicoes = TRANSICOES[agendamento.status];
@@ -470,6 +491,62 @@ function CartaoDeAgendamento({
             ) : null}
           </div>
         )}
+        {podeMarcar && agendamento.status === 'arrived' && !cancelando ? (
+          trocando ? (
+            <div className="flex flex-wrap items-end gap-2">
+              <Field label="Quem vai atender">
+                <Select
+                  size="sm"
+                  aria-label={`Quem vai atender: ${quem}`}
+                  value={novoProfissional}
+                  onChange={(e) => setNovoProfissional(e.target.value)}
+                >
+                  <option value="" disabled>
+                    {cobrem.length === 0
+                      ? 'Ninguém mais faz este serviço'
+                      : 'Escolha o profissional'}
+                  </option>
+                  {cobrem.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Button
+                size="sm"
+                variant="primary"
+                aria-label={`Confirmar troca: ${quem}`}
+                disabled={!novoProfissional || trocar.isPending}
+                onClick={() => trocar.mutate(novoProfissional)}
+              >
+                Confirmar troca
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setTrocando(false);
+                  setNovoProfissional('');
+                }}
+              >
+                Voltar
+              </Button>
+            </div>
+          ) : (
+            <Button
+              size="sm"
+              variant="ghost"
+              aria-label={`Trocar profissional: ${quem}`}
+              onClick={() => {
+                trocar.reset();
+                setTrocando(true);
+              }}
+            >
+              Trocar profissional
+            </Button>
+          )
+        ) : null}
         {cancelando ? (
           <div className="flex flex-wrap items-end gap-2">
             <Field label="Motivo do cancelamento">

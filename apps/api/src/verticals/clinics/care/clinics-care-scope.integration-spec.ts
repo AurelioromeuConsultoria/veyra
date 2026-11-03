@@ -499,6 +499,96 @@ describe('Clinics — o alcance clínico do profissional (integração, F5.3a)',
     });
   });
 
+  describe('a cobertura DEPOIS da chegada: trocar só o profissional de um horário "chegou"', () => {
+    const chegou = async (professionalId: string) => {
+      const ag = await agendar(professionalId);
+      // a chegada parte de "confirmado"
+      await post(`/api/clinics/appointments/${ag}/status`, owner, { to: 'confirmed' }).expect(201);
+      await post(`/api/clinics/appointments/${ag}/status`, owner, { to: 'arrived' }).expect(201);
+      return ag;
+    };
+    const trocar = (ag: string, professionalId: string, s: Session = owner) =>
+      post(`/api/clinics/appointments/${ag}/professional`, s, { professionalId });
+
+    it('a troca vence: o registro de Ana, que esperava, é recusado; Bia registra e o histórico é dela; só o profissional mudou', async () => {
+      const ag = await chegou(ana);
+      const antes = await prisma.raw.clinicsAppointment.findFirst({ where: { id: ag } });
+      const pausa = pausarNaAuditoria('clinics.appointment.professional_changed');
+      const troca = disparar(trocar(ag, bia));
+      await pausa.chegou.aberto;
+      const registro = disparar(atender(ag, profAna));
+      await alguemEspera();
+      pausa.segue.abrir();
+      expect((await troca).status).toBe(201);
+      const r = await registro;
+      expect(r.status).toBe(403);
+      expect(r.body.message).toMatch(OUTRO);
+      const depois = await prisma.raw.clinicsAppointment.findFirst({ where: { id: ag } });
+      // só o profissional mudou: estado, horário, serviço e paciente ficam
+      expect(depois).toMatchObject({
+        professionalId: bia,
+        status: 'arrived',
+        startsAt: antes!.startsAt,
+        endsAt: antes!.endsAt,
+        serviceId: antes!.serviceId,
+        patientId: antes!.patientId,
+      });
+      expect(await prisma.raw.clinicsAttendance.count({ where: { appointmentId: ag } })).toBe(0);
+      // quem efetivamente atendeu registra, e o histórico é dela
+      await atender(ag, profBia).expect(201);
+      expect(
+        await prisma.raw.clinicsAttendance.findFirst({ where: { appointmentId: ag } }),
+      ).toMatchObject({ professionalId: bia });
+      // a trilha: o anterior, o novo e quem trocou
+      const trilha = await prisma.raw.auditLog.findFirst({
+        where: { action: 'clinics.appointment.professional_changed', entityId: ag },
+      });
+      expect(trilha?.before).toMatchObject({ professionalId: ana, status: 'arrived' });
+      expect(trilha?.after).toMatchObject({ professionalId: bia, status: 'arrived' });
+      expect(trilha).toMatchObject({
+        actorType: 'user',
+        actorMembershipId: await membro('owner@veyra.test'),
+      });
+    });
+
+    it('o registro vence: a troca, que esperava, é recusada, e o histórico continua de Ana', async () => {
+      const ag = await chegou(ana);
+      const pausa = pausarNaAuditoria('clinics.attendance.recorded');
+      const registro = disparar(atender(ag, profAna));
+      await pausa.chegou.aberto;
+      const troca = disparar(trocar(ag, bia));
+      await alguemEspera();
+      pausa.segue.abrir();
+      expect((await registro).status).toBe(201);
+      const t = await troca;
+      expect(t.status).toBe(409);
+      expect(t.body.message).toMatch(/já foi registrado/);
+      expect(
+        await prisma.raw.clinicsAttendance.findFirst({ where: { appointmentId: ag } }),
+      ).toMatchObject({ professionalId: ana });
+      expect(await prisma.raw.clinicsAppointment.findFirst({ where: { id: ag } })).toMatchObject({
+        professionalId: ana,
+        status: 'attended',
+      });
+    });
+
+    it('as verificações: só "chegou"; o mesmo profissional; o não habilitado; e só quem gere a agenda', async () => {
+      const marcado = await agendar(ana);
+      expect((await trocar(marcado, bia).expect(409)).body.message).toMatch(/use a remarcação/);
+      const ag = await chegou(ana);
+      await trocar(ag, ana).expect(400);
+      const carla = (
+        await post('/api/clinics/professionals', owner, { name: 'Carla Fictícia' }).expect(201)
+      ).body.id;
+      await trocar(ag, carla).expect(400);
+      // o Profissional não gere a agenda
+      await trocar(ag, bia, profAna).expect(403);
+      expect(await prisma.raw.clinicsAppointment.findFirst({ where: { id: ag } })).toMatchObject({
+        professionalId: ana,
+      });
+    });
+  });
+
   describe('a chave `clinics:care:all` nos papéis que já existiam, pelo livro', () => {
     const papelDe = async (systemKey: string) =>
       (await prisma.raw.role.findFirst({ where: { workspaceId: ws.workspaceId, systemKey } }))!.id;

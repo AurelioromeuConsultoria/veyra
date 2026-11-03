@@ -6,6 +6,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import type {
+  ChangeClinicsAppointmentProfessionalInput,
   ChangeClinicsAppointmentStatusInput,
   ClinicsAppointmentDto,
   ClinicsAppointmentStatus,
@@ -286,6 +287,73 @@ export class ClinicsAppointmentsService {
             ? { appointmentId: id, exceto: startsAt }
             : { appointmentId: id },
         );
+        return unidade.timezone;
+      }),
+    );
+    return this.ler(id, timezone);
+  }
+
+  /**
+   * A COBERTURA depois da chegada (ADR-061): troca SÓ o profissional de um
+   * horário "chegou" — o estado, o horário, o serviço, o paciente e a duração
+   * ficam. Mesma coordenação do registro de atendimento: a `validity:` do
+   * agendamento e a trava da linha. Se o registro veio antes, o estado já é
+   * "atendido" e a troca é recusada; se a troca veio antes, o registro de quem
+   * deixou de ser o profissional é recusado (o alcance é conferido sob a mesma
+   * trava). As verificações são as da agenda: o profissional ativo e
+   * habilitado, o expediente e a ausência de sobreposição (o banco).
+   */
+  async changeProfessional(
+    auth: AuthContext,
+    id: string,
+    input: ChangeClinicsAppointmentProfessionalInput,
+  ): Promise<ClinicsAppointmentDto> {
+    const workspaceId = auth.workspaceId as string;
+    const novo = input.professionalId.toLowerCase();
+    const timezone = await this.semSobreposicao(() =>
+      this.restricao.naTransacaoInterativa(this.mudancas(), async (tx) => {
+        await this.validade.travar(tx, workspaceId, [chaveDoAgendamento(id)]);
+        const visto = await tx.clinicsAppointment.findFirst({
+          where: { id },
+          select: { unitId: true },
+        });
+        if (!visto) throw new NotFoundException('Agendamento não encontrado');
+        // ordem das travas da remarcação: unidade → agendamento
+        const unidade = await travarUnidade(tx, (visto as { unitId: string }).unitId);
+        const { count } = await tx.clinicsAppointment.updateMany({
+          where: { id, status: 'arrived' },
+          data: { updatedAt: new Date() },
+        } as never);
+        if (count === 0) {
+          const agora = (await tx.clinicsAppointment.findFirst({
+            where: { id },
+            select: { status: true },
+          })) as unknown as { status: ClinicsAppointmentStatus };
+          throw new ConflictException(
+            agora.status === 'attended'
+              ? 'O atendimento já foi registrado: o profissional não muda mais'
+              : 'Só o horário em que o paciente chegou troca o profissional assim; antes, use a remarcação',
+          );
+        }
+        const atual = (await tx.clinicsAppointment.findFirst({
+          where: { id },
+        })) as unknown as AppointmentRow;
+        if (atual.professionalId === novo) {
+          throw new BadRequestException('Este já é o profissional do horário');
+        }
+        await this.catalogo(tx, novo, atual.serviceId);
+        await this.expediente(tx, novo, unidade, atual.startsAt, atual.endsAt);
+        await tx.clinicsAppointment.updateMany({
+          where: { id },
+          data: { professionalId: novo },
+        } as never);
+        await this.audit.record(tx, workspaceId, 'clinics.appointment.professional_changed', {
+          entityType: 'clinicsAppointment',
+          entityId: id,
+          actor: this.audit.actorFrom(auth),
+          before: { professionalId: atual.professionalId, status: atual.status },
+          after: { professionalId: novo, status: atual.status },
+        });
         return unidade.timezone;
       }),
     );
