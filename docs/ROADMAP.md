@@ -208,7 +208,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
 
      Ajuste de sessões não é estorno financeiro (ADR-048 adendo 7, item 9).
 
-     **A proposta é o ADR-059 (PROPOSTO, 2026-11-03),** sem código: o lançamento próprio de correção, com o original imutável; a igualdade do contador conferida pelo banco no `COMMIT`; as permissões do registro, sem chave nova; e a divisão em F5.2a (migration e API) e F5.2b (telas). A F5.2a traz migration: a publicação dela pede janela, ou a decisão sobre o `00ef0ba`.
+     **ADR-059 aprovado em 2026-11-03, com ajustes** (revisão do consumo, `Idempotency-Key` obrigatória, a transição provada antes de dizer "compatível"); a F5.2a autorizada até o commit local. A proposta: o lançamento próprio de correção, com o original imutável; a igualdade do contador conferida pelo banco no `COMMIT`; as permissões do registro, sem chave nova; e a divisão em F5.2a (migration e API) e F5.2b (telas). A F5.2a traz migration: a publicação dela pede janela, ou a decisão sobre o `00ef0ba`.
 
   3. **F5.3 — Privacidade e acesso clínico (B1 e D8).** Uma proposta concreta, com as decisões de operação, as jurídicas e o trabalho técnico separados:
      - quem vê conversas, notas, arquivos, metadados e atendimentos;

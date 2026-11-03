@@ -9837,7 +9837,7 @@ Os dois valiam para deploys manuais pelo painel. A publicação comum agora segu
 
 ## ADR-059 — Correção de um consumo de pacote registrado por engano (F5.2)
 
-**Status:** PROPOSTO (2026-11-03). Nenhum código autorizado: o plano, as operações e as permissões vão à revisão do usuário antes (ROADMAP, F5.2). · **Data:** 2026-11-03
+**Status:** APROVADO pelo usuário em 2026-11-03, em duas entregas, com os ajustes do fim deste ADR ("Aprovação com ajustes"), que prevalecem sobre o texto proposto. A F5.2a está autorizada até o commit local. · **Data:** 2026-11-03
 
 **Contexto.**
 
@@ -9982,3 +9982,33 @@ Os dois valiam para deploys manuais pelo painel. A publicação comum agora segu
 5. os dois motivos, e a decisão comercial fora (item 5);
 6. as permissões do registro, sem chave nova até o ADR-057 (item 6);
 7. a divisão em F5.2a e F5.2b, e a janela ou o `00ef0ba` para publicar a F5.2a.
+
+**Aprovação com ajustes (decisão do usuário, 2026-11-03).** A F5.2 está aprovada em duas entregas. Os ajustes abaixo valem como parte da decisão e **prevalecem** sobre o texto proposto acima onde divergem.
+
+1. **Modelo e estados: aprovados.**
+   - A escolha original fica, as correções são imutáveis, e o consumo vigente fica separado.
+   - Estão aprovadas a igualdade do contador conferida pelo banco, a reabertura do pacote concluído que recebe uma sessão de volta e a manutenção do cancelamento.
+   - Atendimento, retornos, faltas, preço e efeitos financeiros ficam fora da correção.
+   - **Tudo junto ou nada:** a devolução, o novo consumo, os estados, a correção e a auditoria confirmam ou desfazem juntos, numa transação só.
+2. **Repetição: substitui o item 4 nos pontos abaixo.** A identidade do pedido não é o `expectedPackageId` nem a semelhança com a última correção.
+   - **Uma revisão do consumo,** que avança a cada correção, é o "esperado" do pedido. Ela detecta também o caminho A → B → A, que o pacote vigente sozinho não distingue.
+   - **`Idempotency-Key` obrigatória,** pelo mecanismo existente, vinculada à membership autenticada e ao conteúdo do pedido.
+   - **Uma repetição válida** devolve a correção original, sem executar de novo, mesmo que outra correção tenha vindo depois.
+   - **O replay reconfere o acesso de agora** e não devolve dados que a pessoa deixou de poder ler.
+   - **Uma chave nova com revisão antiga** recebe 409, sem efeito.
+   - **Testes:** esses casos e dois atores com pedidos iguais. A deduplicação nunca confunde a autoria: cada correção tem o autor que a executou, e ninguém recebe como sua a correção de outra pessoa.
+3. **Motivos e permissões: aprovados, com precisão de texto.**
+   - Estão aprovados os dois motivos e `clinics:care:write` com `clinics:care:read`, sem chave nova nesta entrega.
+   - **Corrigindo o item 6:** a frase "a correção não dá poder novo" está retirada. Alterar um consumo histórico, inclusive registrado por outra pessoa, amplia a capacidade operacional. O usuário aprova esse alcance no modelo atual, com auditoria. Isso não resolve a D8 nem autoriza uso real.
+   - **O motivo `wrong_choice`** cobre também corrigir uma correção anterior. O rótulo passa a ser "escolha errada", sem dizer que todo erro aconteceu no registro original.
+4. **Transição e banco.**
+   - **Antes de classificar a migration como compatível,** a entrega prova:
+     - como o código anterior registra atendimentos sobre o schema novo;
+     - como o código novo lê os registros existentes.
+   - **A mudança do significado de `packageId` no DTO** tem os consumidores conferidos. A repetição do registro continua vinculada à escolha original, como proposto.
+   - **Concorrência:** entram as correções cruzadas entre dois pacotes, além dos cenários do item 4.
+   - **A ausência de deadlock não vale só pela ordem descrita.** O caminho dos gatilhos também precisa respeitá-la, e isso é conferido.
+5. **Publicação e próximos passos.**
+   - O `bba29b8` foi publicado pelo fluxo do ADR-058, com autorização.
+   - A F5.2a está autorizada, com revisão e validação proporcionais, e para no commit local.
+   - **O `00ef0ba` continua separado** e não é aprovado por esta decisão. No fechamento da F5.2a, o procedimento de publicação é apresentado conforme a compatibilidade demonstrada, sem transformar esta funcionalidade numa reformulação do deploy.
