@@ -909,6 +909,56 @@ muda o registro da migration e não desfaz nenhum objeto.
      página" numa divergência repetida, sem reinício sem fim; isso não corrige
      um cliente antigo já carregado.
 
+   Para a `20261103120000_clinics_package_corrections` (F5.2a, ADR-059), com
+   **41 objetos**: o enum do motivo, a tabela `ClinicsPackageCorrection` com
+   os índices, as restrições e as FKs dela, as duas colunas de
+   `ClinicsAttendance` (o consumo vigente e a revisão) com o índice e a FK, o
+   índice único `ClinicsPackage_correction_key`, nove funções e oito
+   gatilhos (entre eles, o carimbo da criação do pacote pelo banco). Ela também **altera** duas funções existentes
+   (`clinics_package_guard` e `clinics_attendance_package_is_final`), que o
+   inventário não conta: a falha forçada do ensaio provou que elas voltam à
+   definição anterior. Ela **para sozinha** se algum pacote já tiver o
+   contador divergente (a consulta do §7.1); nesse caso, nada fica, e a
+   divergência é incidente a investigar antes de repetir.
+
+   ```sql
+   -- inventário da 20261103120000_clinics_package_corrections: 0 linhas = nada
+   -- ficou; 41 = inteira; qualquer outro número = estado parcial
+   SELECT 'tipo' AS k, t.typname::text AS nome FROM pg_type t
+     WHERE t.typname = 'ClinicsPackageCorrectionReason'
+   UNION ALL SELECT 'tabela', c.relname::text FROM pg_class c
+     WHERE c.relname = 'ClinicsPackageCorrection' AND c.relkind = 'r'
+   UNION ALL SELECT 'coluna', 'ClinicsAttendance.' || a.attname FROM pg_attribute a
+     JOIN pg_class c ON c.oid = a.attrelid
+     WHERE c.relname = 'ClinicsAttendance' AND NOT a.attisdropped
+       AND a.attname IN ('currentPackageId', 'consumptionRevision')
+   UNION ALL SELECT 'indice', c.relname::text FROM pg_class c
+     WHERE c.relkind = 'i' AND (c.relname LIKE 'ClinicsPackageCorrection\_%'
+       OR c.relname IN ('ClinicsAttendance_workspaceId_currentPackageId_idx', 'ClinicsPackage_correction_key'))
+   UNION ALL SELECT 'restricao', co.conname::text FROM pg_constraint co
+     WHERE (co.conname LIKE 'ClinicsPackageCorrection\_%'
+         OR co.conname = 'ClinicsAttendance_workspaceId_currentPackageId_fkey')
+       AND co.contype NOT IN ('n', 't')  -- sem os NOT NULL (Postgres 18); os gatilhos de restrição contam em 'gatilho'
+   UNION ALL SELECT 'funcao', p.proname::text FROM pg_proc p
+     WHERE p.proname IN ('clinics_attendance_consumption_init', 'clinics_attendance_is_kept',
+       'clinics_package_correction_apply', 'clinics_package_correction_stamp',
+       'clinics_package_correction_is_final', 'clinics_package_counter_matches',
+       'clinics_package_counter_on_package', 'clinics_package_counter_on_attendance',
+       'clinics_package_created_at')
+   UNION ALL SELECT 'gatilho', tg.tgname::text FROM pg_trigger tg
+     WHERE tg.tgname IN ('ClinicsAttendance_consumption_init', 'ClinicsAttendance_is_kept',
+       'ClinicsPackageCorrection_apply', 'ClinicsPackageCorrection_stamp',
+       'ClinicsPackageCorrection_is_final', 'ClinicsPackage_counter_matches',
+       'ClinicsAttendance_counter_matches', 'ClinicsPackage_created_stamp')
+   ORDER BY 1, 2;
+   ```
+
+   **O inventário da `clinics_packages` depois desta migration:** os padrões
+   `ClinicsPackage\_%` dele passam a pegar também o índice
+   `ClinicsPackage_correction_key` e a restrição do gatilho
+   `ClinicsPackage_counter_matches`. Com a `clinics_package_corrections`
+   aplicada, ele dá 25, e não 23.
+
    Para outra migration, monte o inventário do mesmo jeito, a partir das
    instruções do arquivo: cada `CREATE` e cada `ADD CONSTRAINT`.
 
@@ -1267,6 +1317,146 @@ O preenchimento lhes dá a origem de IA, mas não a fotografia da aprovação. N
 os trate como conferidos com ela; a verificação de transição da G4 os conta à
 parte.
 
+### 4.2 A janela da F5.2a: a migration `20261103120000_clinics_package_corrections` (ADR-059)
+
+Usa peças que já existem e foram ensaiadas:
+
+- os blocos A, 1 e 8 de `deploy/staging/janela-e4/`, sem mudança;
+- o snapshot da janela no host, que é o bloco 2 da E-4 com a conferência trocada pela migration desta janela: `deploy/staging/janela-f52a/b2-snapshot.sh`;
+- a migration e as conferências do §4;
+- a mesma instrução de destrava do bloco 7.
+
+**Por que o snapshot é no host, e não o C2 do §14:** o `restic` do staging nunca teve destino (`RESTIC_REPOSITORY` vazio; dívida técnica). As duas janelas anteriores também usaram dump no host.
+
+**O ensaio** (2026-11-03): o bloco do snapshot rodou num shell Linux com bash 5 e o Docker local (a imagem do ensaio da E-4), contra um Postgres 17 com as etiquetas do compose, o schema real até a migration anterior e dados fictícios.
+
+- **Recusou com `PARE`:**
+  - a trava desligada;
+  - a API rodando;
+  - a migration desta janela já no banco;
+  - um contador divergente.
+- **No caminho certo, deu `DUMP_INTEIRO`,** com as contagens e o "x de y" de cada pacote.
+- **No mesmo banco, depois:**
+  - a migration sob a trava deu status em dia, inventário 41, contador 0 e nenhuma correção;
+  - a destrava abaixo deixou a trava vazia.
+
+**Antes de começar:**
+
+- o push feito com o recurso fixado no commit no ar e sem deploy em andamento;
+- os quatro jobs verdes. O `Staging` recusa, pelo recurso fixado: é o esperado;
+- a **pausa de uso** confirmada pelo usuário, com todas as abas do Veyra fechadas. A manutenção não começa com alguém navegando;
+- a janela não cruza o `BACKUP_AT` (03:15 UTC, por padrão).
+
+**No terminal do servidor** no Coolify, rode `export E4_D=/root/veyra-f52a`, para que os registros desta janela fiquem numa pasta própria.
+
+- **Antes de colar cada bloco,** confira com `echo "$E4_D"`. Se o terminal reconectar, o `export` se perde, e os blocos A, 1 e 8 voltariam à pasta da E-4.
+- O bloco do snapshot já usa `/root/veyra-f52a` por padrão.
+- O projeto e a URL são os de sempre.
+
+1. **A barreira, antes do snapshot.**
+   - **O bloco A (diagnóstico),** lido sem parada.
+     - **O que importa nesta janela:**
+       - o `DISABLE_JOBS` de antes, que o bloco 8 confere;
+       - nenhuma migration em andamento ou falhada;
+       - o `BACKUP_AT`;
+       - a saúde.
+     - **O que ignorar:** as linhas da E-4 (a coluna `experience`, os convites e o dump daquela janela).
+   - **O bloco 1,** até `BARREIRA_OK`:
+     - a trava de manutenção ligada no banco;
+     - a API e o `web` parados;
+     - nada responde 2xx de fora.
+
+     Daqui em diante, nada escreve no banco.
+
+   - **No painel:** `MAINTENANCE_MODE=true` e `DISABLE_JOBS=true`, para o deploy do passo 3. Nada de Start, Restart ou Rollback do recurso.
+   - **O domínio do `web` fica.** A API nova sobe em manutenção pela trava e responde 503 a tudo. O `web` é só estático, e a pausa de uso está combinada. Por isso o bloco 8 pode exigir 200 de fora sem um passo a mais.
+2. **O snapshot da janela, conferido:** cole `deploy/staging/janela-f52a/b2-snapshot.sh` inteiro.
+   - **Ele recusa:**
+     - sem a trava ligada;
+     - com a API ou o `web` rodando;
+     - com a migration desta janela já no banco;
+     - com um contador divergente, que faria a migration parar.
+   - **No caminho certo:**
+     - grava o dump em `$E4_D` e o lê por inteiro;
+     - anota as contagens de todas as tabelas e o "x de y" de cada pacote (`pacotes-antes.txt`);
+     - termina em `DUMP_INTEIRO`.
+   - **Sem `DUMP_INTEIRO`, a janela não segue** (a saída está abaixo).
+3. **A imagem nova, protegida.**
+   - No painel, o commit da F5.2a (o SHA completo) e o **Deploy**.
+   - No host, o container novo, só com os valores não secretos (`MAINTENANCE_MODE=true` e o `SOURCE_COMMIT`):
+
+     ```bash
+     docker inspect <container-api> --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^(MAINTENANCE_MODE|DISABLE_JOBS|SOURCE_COMMIT)='
+     ```
+
+   - O log da subida tem "Trava de manutenção LIGADA no banco".
+   - De fora, `/api/health` não dá 2xx.
+4. **A migration e as conferências**, no container da `api` e no do `db`:
+   - `npx --no-install prisma migrate deploy`, sem erro. Se falhar, siga o §4, "Falha de migration", com a barreira mantida;
+   - `npx --no-install prisma migrate status`, em dia;
+   - `npx --no-install prisma migrate diff --from-config-datasource --to-schema prisma/schema --exit-code`, vazio;
+   - o inventário da migration (§4): **41** linhas;
+   - a conferência do contador (§7.1): **0**;
+   - nenhuma correção ainda: `SELECT count(*) FROM "ClinicsPackageCorrection"` dá **0**;
+   - `node dist/cli/check-cross-tenant-fk.js`, sem achado.
+5. **A destrava**, só com o passo 4 inteiro conferido. É a instrução do bloco 7, mais a conferência de que a trava saiu (o resultado vazio):
+
+   ```bash
+   printf '%s\n' 'ALTER DATABASE :"banco" RESET veyra.manutencao;' \
+     | docker exec -i <container-db> sh -c 'psql -U "$POSTGRES_USER" -d postgres -v ON_ERROR_STOP=1 -q -v banco="$POSTGRES_DB"'
+   docker exec <container-db> sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -c "SELECT coalesce(current_setting('"'"'veyra.manutencao'"'"', true), '"'"''"'"')"'
+   ```
+
+6. **A retomada:**
+   - no painel, `MAINTENANCE_MODE=false` e o `DISABLE_JOBS` de antes (`false`), e o **Redeploy**;
+   - depois, o bloco 8 até `RETOMADA_OK`: a API fora da manutenção, o transporte simulado, o `DISABLE_JOBS` igual ao de antes e 200 de fora.
+7. **A verificação funcional, antes de liberar o uso, SEM nenhuma correção.** Saúde 200 sozinha não basta.
+   - **No terminal, pelo container do `db`:**
+     - a conferência do contador (§7.1) dá 0;
+     - `SELECT count(*) FROM "ClinicsAttendance" WHERE "currentPackageId" IS DISTINCT FROM "packageId"` dá 0: os atendimentos existentes foram lidos e consomem o que consumiam;
+     - as correções continuam em 0;
+     - `npx --no-install prisma migrate status` está em dia.
+   - **Pelo usuário, numa aba nova, no `demo`:**
+     - na ficha de cada paciente com pacote, o "x de y" igual ao de `pacotes-antes.txt`;
+     - um atendimento fictício registrado com pacote, e o saldo dele caindo uma sessão.
+
+     Depois disso, no terminal, o contador continua em 0.
+8. **O fechamento:**
+   - a `STAGING_BASE` do ambiente `staging` com o SHA completo da F5.2a;
+   - o recurso devolvido a `HEAD`;
+   - o uso liberado.
+
+   O próximo push volta a publicar sozinho.
+
+**Uma interrupção nos passos 2 a 4, antes de a migration entrar.**
+
+- **A condição:** a contagem da `20261103120000_clinics_package_corrections` em `_prisma_migrations` dá 0.
+- **A volta,** ao código que estava no ar:
+  1. a destrava (passo 5);
+  2. no painel, o commit no ar (o mesmo fixado), `MAINTENANCE_MODE=false` e o `DISABLE_JOBS` de antes, e o **Redeploy**;
+  3. o bloco 8.
+- **O banco não foi tocado.**
+- **Se a própria migration falhou,** vale o §4, "Falha de migration", com a barreira mantida. A migration é transacional: o inventário dá 0 antes do `resolve --rolled-back`.
+
+**O retorno depois da migration: o que a compatibilidade demonstrada permite, e o que não.**
+
+- **Antes de existir qualquer correção,** o código anterior pode voltar. O ensaio rodou as 20 suítes do Clinics do `bba29b8` sobre o schema com a migration final e passou em 413 de 415. As 2 falhas são testes de SQL cru que fazem `+1` no pacote sem atendimento, recusados pela garantia nova.
+  - **Como:**
+    1. a barreira (bloco 1);
+    2. **com ela de pé,** `SELECT count(*) FROM "ClinicsPackageCorrection"` dando 0. A condição só vale conferida assim;
+    3. o painel no `bba29b8`, com `MAINTENANCE_MODE=true`, e o **Deploy**;
+    4. a destrava (passo 5);
+    5. `MAINTENANCE_MODE=false` e o **Redeploy**;
+    6. o bloco 8.
+  - **O banco fica como está:** a migration não é desfeita.
+- **Depois de existir uma correção, o código anterior NÃO volta.**
+  - Ele lê `packageId`, que passou a ser a escolha original, e mostraria o consumo errado de todo atendimento corrigido. O contador do pacote continuaria certo, porque o banco o confere.
+  - Nesse caso, fica a barreira (bloco 1), e a correção é para a frente, salvo um procedimento específico demonstrado antes.
+- **O dump da janela nunca é restaurado automaticamente:** restaurar apaga tudo o que veio depois dele.
+  - **Não há procedimento ensaiado para restaurar a partir deste dump no host.** O bloco 9 é da E-4, e o §6 depende do `restic`.
+  - Uma volta do banco só acontece com autorização específica e um procedimento demonstrado antes.
+- **A verificação do passo 7 não faz correção** justamente para manter o retorno possível até a versão ser aceita. A primeira correção vem depois da aceitação; daí em diante, só para a frente.
+
 ## 5. Rollback
 
 **Voltar a um commit anterior não é rollback seguro desde a guarda de uso
@@ -1328,7 +1518,9 @@ Pelo terminal do Coolify, no container `backup`:
 ```
 
 **A restauração do banco é sempre num banco NOVO, trocado pelo nome**
-(ADR-046 adendo 1). O `restore.sh` nunca restaura sobre o banco vivo: recusa o
+(ADR-046 adendo 1). Ela é sempre COMPLETA: num restore só de dados
+(`--data-only`), os gatilhos ligados recarimbariam a criação dos pacotes e
+recusariam o consumo vigente (ADR-059). Isso não é suportado. O `restore.sh` nunca restaura sobre o banco vivo: recusa o
 nome dele e o de qualquer banco que já exista, cria o banco novo e restaura
 numa transação só. O motivo é evitar conflitos, objetos que o dump não
 conhece e a alteração parcial do banco existente. No cenário ensaiado na
@@ -1538,16 +1730,20 @@ docker compose -p veyra-staging -f deploy/staging/docker-compose.yml \
 
 O resultado esperado é uma linha só: `demo`, `active`.
 
-**Conferência do contador de sessões dos pacotes (ADR-048 adendo 7, F3.1).** O
-`CHECK` do banco garante só o intervalo das consumidas. A igualdade com os
-atendimentos vinculados vem do caminho único de escrita e dos triggers. Esta
-consulta precisa dar 0; outro valor é incidente:
+**Conferência do contador de sessões dos pacotes (ADR-048 adendo 7, F3.1;
+ADR-059).** O `CHECK` do banco garante só o intervalo das consumidas. Desde a
+`20261103120000_clinics_package_corrections`, o banco também confere no
+`COMMIT` a igualdade com os atendimentos que consomem o pacote **agora** (o
+consumo vigente, que a correção muda). Esta consulta precisa dar 0; outro valor
+é incidente. A migration a roda antes de tudo e para se der outro valor:
 
 ```sql
+-- com a clinics_package_corrections aplicada: o consumo VIGENTE
 SELECT count(*) FROM "ClinicsPackage" p
  WHERE p."consumedSessions" <> (SELECT count(*) FROM "ClinicsAttendance" a
                                  WHERE a."workspaceId" = p."workspaceId"
-                                   AND a."packageId" = p."id");
+                                   AND a."currentPackageId" = p."id");
+-- antes dela (a coluna ainda não existe): troque "currentPackageId" por "packageId"
 ```
 
 ### 7.2 Outbox: nunca editar, reabrir nem copiar evento por SQL

@@ -23,7 +23,9 @@ export type ReplayVerdict = 'replay' | 'discard' | 'unavailable' | { refuse: Htt
  * ainda pode ser devolvida. Existe para rotas cujo corpo pode deixar de ser
  * entregável depois de gravado — a capacidade de IA sobre um contato que ficou
  * restrito (ADR-047 E6, ADR-048 §6.3), ou o registro pela conversa cuja
- * projeção depende do acesso de quem pede (F4.1b). Recebe o corpo guardado.
+ * projeção depende do acesso de quem pede (F4.1b), ou a correção de consumo do
+ * Clinics, que reconfere as permissões de agora (ADR-059). Recebe o corpo
+ * guardado.
  */
 export interface IdempotentReplayGuard {
   verdict(
@@ -41,8 +43,9 @@ export interface IdempotentReplayGuard {
  * REGRA: nunca marque rota cuja resposta contenha segredo, token ou material
  * de sessão. Rota cuja resposta pode deixar de ser entregável declara uma
  * `replayGuard`. Rota de REGISTRO com recibo (o consentimento e o pedido de
- * parar, F4.1b) declara `required`: sem a chave, 400 — a repetição de um envio
- * perdido nunca vira um segundo registro.
+ * parar, F4.1b; a correção de consumo do Clinics, ADR-059) declara `required`:
+ * sem a chave, 400 — a repetição de um envio perdido nunca vira um segundo
+ * registro.
  */
 export const Idempotent = (
   options: { replayGuard?: Type<IdempotentReplayGuard>; required?: boolean } = {},

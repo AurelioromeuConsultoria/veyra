@@ -5,6 +5,9 @@ import { CorpoOpcionalMiddleware } from '../../common/corpo-opcional.middleware'
 import { ContactsModule } from '../../contacts/contacts.module';
 import { IntelligenceModule } from '../../intelligence/intelligence.module';
 import { JobsModule } from '../../jobs/jobs.module';
+import { ClinicsPackageCorrectionReplayGuard } from './care/clinics-package-correction-replay.guard';
+import { ClinicsPackageCorrectionsController } from './care/clinics-package-corrections.controller';
+import { ClinicsPackageCorrectionsService } from './care/clinics-package-corrections.service';
 import { ClinicsPackagesController } from './care/clinics-packages.controller';
 import { ClinicsPackagesService } from './care/clinics-packages.service';
 import { ClinicsCatalogController } from './catalog/clinics-catalog.controller';
@@ -47,6 +50,7 @@ import { ClinicsReturnsService } from './schedule/clinics-returns.service';
     ClinicsPatientsController,
     ClinicsAppointmentsController,
     ClinicsPackagesController,
+    ClinicsPackageCorrectionsController,
     ClinicsReturnsController,
     ClinicsNoShowController,
     ClinicsOutreachController,
@@ -64,6 +68,8 @@ import { ClinicsReturnsService } from './schedule/clinics-returns.service';
     ClinicsAppointmentsService,
     ClinicsAttendanceService,
     ClinicsPackagesService,
+    ClinicsPackageCorrectionsService,
+    ClinicsPackageCorrectionReplayGuard,
     ClinicsReturnsService,
     ClinicsNoShowService,
     ClinicsOutreachService,

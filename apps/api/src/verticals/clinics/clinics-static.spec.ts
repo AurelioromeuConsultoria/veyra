@@ -280,7 +280,7 @@ describe('Clinics — garantias estáticas (ADR-047, ADR-048)', () => {
     }
   });
 
-  it('o CONTADOR do pacote só tem os dois escritores: o registro de atendimento (consumo e vínculo) e o serviço de pacotes (criação e cancelamento)', () => {
+  it('o CONTADOR do pacote só tem três escritores: o registro de atendimento (consumo e vínculo), o serviço de pacotes (criação e cancelamento) e a correção de consumo (ADR-059); o atendimento, só o registro', () => {
     // escritas no pacote e no atendimento (o vínculo nasce com o atendimento)
     const ESCREVE_PACOTE = [
       /clinicsPackage\s*\.\s*(create|createMany|createManyAndReturn|update|updateMany|upsert|delete|deleteMany)\b/,
@@ -296,10 +296,31 @@ describe('Clinics — garantias estáticas (ADR-047, ADR-048)', () => {
         .map((file) => relative(ROOT, file))
         .sort();
     expect(quem(ESCREVE_PACOTE)).toEqual([
+      'care/clinics-package-corrections.service.ts',
       'care/clinics-packages.service.ts',
       'schedule/clinics-attendance.service.ts',
     ]);
+    // o consumo vigente e a revisão mudam pelo GATILHO da correção, nunca pelo
+    // código: a correção não escreve no atendimento
     expect(quem(ESCREVE_ATENDIMENTO)).toEqual(['schedule/clinics-attendance.service.ts']);
+  });
+
+  it('a CORREÇÃO de consumo só tem um escritor, e só cria uma a uma: nenhuma criação em lote, alteração nem exclusão em lugar nenhum (ADR-059)', () => {
+    const CRIA = /clinicsPackageCorrection\s*\.\s*create\b/;
+    const ALTERA = [
+      /clinicsPackageCorrection\s*\.\s*(createMany|createManyAndReturn|update|updateMany|upsert|delete|deleteMany)\b/,
+      /(UPDATE|DELETE\s+FROM)\s+"?ClinicsPackageCorrection"?/i,
+    ];
+    const arquivos = walk(ROOT);
+    expect(
+      arquivos
+        .filter((file) => CRIA.test(readFileSync(file, 'utf8')))
+        .map((file) => relative(ROOT, file))
+        .sort(),
+    ).toEqual(['care/clinics-package-corrections.service.ts']);
+    expect(
+      arquivos.filter((file) => ALTERA.some((p) => p.test(readFileSync(file, 'utf8')))),
+    ).toEqual([]);
   });
 
   it('o RETORNO só tem um arquivo escritor: o serviço de retornos (o registro de atendimento chama as funções dele, na sua transação) — F3.2', () => {

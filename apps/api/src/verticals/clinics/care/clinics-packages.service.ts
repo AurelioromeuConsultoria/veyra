@@ -26,11 +26,14 @@ export type PackageRow = {
 /**
  * Pacote de sessões (ADR-048 adendo 7, F3.1). Classe S.
  *
- * O contador de sessões tem DOIS donos de escrita, e só dois: o registro de
- * atendimento (o consumo, `ClinicsAttendanceService`) e o cancelamento, aqui.
- * O banco guarda o resto: o CHECK mantém o intervalo, e o trigger recusa mudar
- * paciente, serviço, total, preço e moeda, recusa consumo que não seja `+1` com
- * o pacote ativo e passa a `completed` na última sessão, na mesma instrução.
+ * O contador de sessões tem TRÊS donos de escrita, e só três: o registro de
+ * atendimento (o consumo, `ClinicsAttendanceService`), o cancelamento, aqui, e
+ * a correção de consumo (a devolução e o novo consumo,
+ * `ClinicsPackageCorrectionsService`, ADR-059). O banco guarda o resto: o CHECK
+ * mantém o intervalo; o trigger recusa mudar paciente, serviço, total, preço e
+ * moeda, recusa mudança das consumidas que não seja de uma em uma, passa a
+ * `completed` na última sessão e volta a `active` o concluído que recebe uma
+ * sessão de volta; e a igualdade com os atendimentos é conferida no COMMIT.
  */
 @Injectable()
 export class ClinicsPackagesService {

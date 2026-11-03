@@ -520,8 +520,17 @@ export interface ClinicsAttendanceDto {
   appointmentId: string;
   professionalId: string;
   completedAt: string;
-  /** o pacote consumido por ESTE atendimento; `null` = avulso (ADR-048 adendo 7) */
-  packageId: string | null;
+  /**
+   * o pacote que este atendimento consome AGORA; `null` = avulso (ADR-048
+   * adendo 7). Depois de uma correção (ADR-059), é o consumo corrigido.
+   * Os três campos do consumo são OMITIDOS no servidor para quem não tem
+   * `clinics:care:read` (autorização de campo, como o `attendanceId` da agenda)
+   */
+  packageId?: string | null;
+  /** a escolha feita no registro, que nunca muda (ADR-059) */
+  originalPackageId?: string | null;
+  /** a revisão do consumo: 0 no registro, +1 a cada correção (ADR-059) */
+  consumptionRevision?: number;
 }
 
 /**
@@ -575,6 +584,73 @@ export interface ClinicsPackageDto {
   status: ClinicsPackageStatus;
   createdAt: string;
   closedAt: string | null;
+}
+
+// ── Correção de consumo (ADR-059, F5.2) ───────────────────────────────────
+
+/**
+ * O motivo de uma correção, por lista fechada (sem texto livre, H7):
+ * - `wrong_choice`: escolha errada — o pacote errado, o avulso por esquecimento,
+ *   o pacote por engano, ou uma correção anterior errada;
+ * - `package_registered_late`: o pacote foi cadastrado depois do atendimento.
+ *   Só de avulso para pacote, e só para pacote criado depois do atendimento.
+ */
+export const CLINICS_PACKAGE_CORRECTION_REASONS = [
+  'wrong_choice',
+  'package_registered_late',
+] as const;
+export type ClinicsPackageCorrectionReason = (typeof CLINICS_PACKAGE_CORRECTION_REASONS)[number];
+
+/**
+ * Correção do consumo de um atendimento registrado (ADR-059). Exige
+ * `Idempotency-Key`. `expectedRevision` é a revisão do consumo que a pessoa viu:
+ * se ela mudou, 409, sem efeito. `packageId` é o consumo NOVO (`null` = avulso).
+ * O atendimento, os retornos, as faltas e o preço não mudam.
+ */
+export const correctClinicsPackageConsumptionSchema = z
+  .object({
+    expectedRevision: z.number().int().min(0).max(1_000_000),
+    packageId: z.uuid().nullable(),
+    reason: z.enum(CLINICS_PACKAGE_CORRECTION_REASONS),
+  })
+  .strict();
+export type CorrectClinicsPackageConsumptionInput = z.infer<
+  typeof correctClinicsPackageConsumptionSchema
+>;
+
+/** Uma correção registrada: só ids, a revisão, o motivo e o instante. */
+export interface ClinicsPackageCorrectionDto {
+  id: string;
+  attendanceId: string;
+  appointmentId: string;
+  /** o consumo antes; `null` = avulso */
+  fromPackageId: string | null;
+  /** o consumo depois; `null` = avulso */
+  toPackageId: string | null;
+  /** a revisão do consumo que esta correção criou */
+  revision: number;
+  reason: ClinicsPackageCorrectionReason;
+  correctedByMembershipId: string;
+  createdAt: string;
+}
+
+/** As sessões de um pacote: quem o consome agora e as correções que o tocaram. */
+export interface ClinicsPackageSessionsDto {
+  packageId: string;
+  /** os atendimentos que consomem o pacote AGORA, do mais antigo ao mais novo */
+  sessions: {
+    attendanceId: string;
+    appointmentId: string;
+    professionalId: string;
+    completedAt: string;
+    consumptionRevision: number;
+  }[];
+  /**
+   * as correções que tiraram ou puseram uma sessão neste pacote, da mais nova à
+   * mais antiga, LIMITADAS às 100 mais recentes: com 100, a lista pode estar
+   * cortada e não é o histórico inteiro (a trilha de auditoria é)
+   */
+  corrections: ClinicsPackageCorrectionDto[];
 }
 
 // ── Retornos (ADR-048 adendo 7, F3.2) ─────────────────────────────────────

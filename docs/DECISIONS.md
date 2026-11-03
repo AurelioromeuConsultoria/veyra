@@ -2342,6 +2342,8 @@ _Liberação e falha_
 | c) Manter a recusa (o provisório do §9.1)                                                                                                                               | Preserva tudo                                                                      | Contraria o ADR-022 de forma permanente e não atende ao pedido de exclusão do titular                                                         |
 | d) Retenção restrita com base legal (LGPD art. 16, I)                                                                                                                   | Guarda o mínimo exigido, com acesso restrito, e exclui o resto                     | Exige mecanismo novo de retenção e um fluxo de exclusão que o Core hoje não tem                                                               |
 
+_(Nota, ADR-059: desde a F5.2a, gatilhos recusam apagar `ClinicsAttendance` e `ClinicsPackageCorrection` fora da cascata do workspace. Isso é coerente com a recusa provisória (c), mas qualquer política que escolha outra opção precisa revisitar os dois gatilhos.)_
+
 **Perguntas para o jurídico:**
 
 1. O registro de que um procedimento estético foi realizado (quem, quando, qual serviço) constitui prontuário ou documento de guarda obrigatória? Isso depende de quem executa (profissional de saúde regulamentado ou não) e do conselho aplicável.
@@ -9912,7 +9914,7 @@ Os dois valiam para deploys manuais pelo painel. A publicação comum agora segu
 
 5. **O motivo: lista fechada, sem texto livre (H7).**
    - **`wrong_choice`, "escolha errada no registro":** o pacote errado, o avulso por esquecimento ou o pacote por engano.
-   - **`package_registered_late`, "pacote cadastrado depois do atendimento":** o paciente já tinha contratado o pacote, mas ele só entrou no sistema depois. Vale só de avulso para pacote, e só para um pacote criado depois do registro do atendimento, pelo relógio do banco nos dois lados (ADR-049); o servidor confere.
+   - **`package_registered_late`, "pacote cadastrado depois do atendimento":** o paciente já tinha contratado o pacote, mas ele só entrou no sistema depois. Vale só de avulso para pacote, e só para um pacote criado depois do registro do atendimento, pelo relógio do banco nos dois lados (ADR-049); o servidor confere. _(Na implementação, a criação do pacote passou a ser carimbada pelo banco, porque o Prisma a manda pelo relógio do Node; ver os resultados da F5.2a.)_
    - **O que o motivo não cobre:** uma decisão comercial posterior, como uma cortesia ou um pacote contratado depois para absorver uma sessão anterior. Isso não é engano e fica para a F6. O sistema não distingue "cadastrado depois" de "contratado depois": quem corrige declara o motivo e responde por ele na trilha.
 
 6. **Permissões: as mesmas do consumo no registro, sem chave nova.**
@@ -10012,3 +10014,111 @@ Os dois valiam para deploys manuais pelo painel. A publicação comum agora segu
    - O `bba29b8` foi publicado pelo fluxo do ADR-058, com autorização.
    - A F5.2a está autorizada, com revisão e validação proporcionais, e para no commit local.
    - **O `00ef0ba` continua separado** e não é aprovado por esta decisão. No fechamento da F5.2a, o procedimento de publicação é apresentado conforme a compatibilidade demonstrada, sem transformar esta funcionalidade numa reformulação do deploy.
+
+**Resultados da F5.2a (2026-11-03, commit local).**
+
+**O que entrou:**
+
+- **A migration `20261103120000_clinics_package_corrections`:**
+  - o enum do motivo e a tabela `ClinicsPackageCorrection`;
+  - em `ClinicsAttendance`, o consumo vigente (`currentPackageId`) e a revisão (`consumptionRevision`), preenchidos com a escolha do registro e a revisão 0;
+  - a conferência que para a migration se algum contador já estiver divergente;
+  - os gatilhos: a correção move o vigente; o guarda do atendimento; o atendimento que não se apaga; a devolução no guarda do pacote; o carimbo do instante; a igualdade adiada para o `COMMIT`.
+- **A API:**
+  - `POST /api/clinics/appointments/:id/attendance/package-correction`, com `Idempotency-Key` obrigatória e guarda de replay;
+  - `GET /api/clinics/packages/:id/sessions`.
+- **O DTO do atendimento:** `packageId` passa a ser o consumo vigente, e entram `originalPackageId` e `consumptionRevision`. Os três são omitidos para quem não tem `clinics:care:read`.
+- **Os registros:** o modelo no vertical (E1), nos alvos das relações, na allowlist da auditoria e na presença da porta E6.
+
+**Decisões tomadas no caminho:**
+
+1. **O consumo vigente só muda por uma correção inserida, conferido de duas formas:**
+   - **o gatilho da correção roda DEPOIS da inserção.** Assim, uma inserção descartada por `ON CONFLICT DO NOTHING` não move nada. Esse caminho foi achado pelo `security`: com o gatilho antes da inserção, a sessão voltava sem correção registrada;
+   - **o guarda do atendimento exige a linha da correção correspondente** (a revisão nova, o "de" e o "para"), além do nível 2 de gatilhos (`pg_trigger_depth`). Uma marca de sessão foi descartada, porque qualquer SQL a forjaria.
+2. **O atendimento não é apagado,** salvo na cascata do workspace. Sem isso, apagar um atendimento escapava da igualdade, porque ela não vê exclusão (`reviewer` e `security`).
+3. **A igualdade é conferida numa instrução só.** No atendimento, ela roda só na inserção e quando o vigente muda, nas duas pontas.
+4. **A correção usa a transação interativa do registro:** espera de trava e prazo limitados, e o prazo vencido é 409. As travas seguem a mesma ordem: o agendamento, depois os pacotes por id, depois o atendimento (`FOR NO KEY UPDATE`), pelo gatilho.
+5. **O "antes" da trilha sai do "depois", lido sob a trava.** É exato porque o `CHECK` amarra o estado à contagem.
+6. **O motivo "pacote cadastrado depois" compara dois instantes do BANCO,** como a regra aprovada diz:
+   - **a criação do pacote,** que um gatilho novo (`ClinicsPackage_created_stamp`) carimba com o relógio do banco, em UTC;
+   - **o registro do atendimento** (`recordedAt`), que já era do banco desde a F3.2.
+
+   **A evidência que levou a isso** (2026-11-03, pedida pelo usuário): com `log_statement = 'all'` no banco de teste, os `INSERT` reais do Prisma em `ClinicsPackage` e em `ClinicsAttendance` levam o `createdAt` como parâmetro. O `DEFAULT CURRENT_TIMESTAMP` da coluna nunca é usado nesse caminho, e o valor enviado (`17:13:27.44`) veio depois do instante em que o Postgres registrou a instrução (`17:13:27.439`): é o relógio do Node.
+
+   **O desvio, apresentado e corrigido antes do push:** a primeira implementação comparava os dois `createdAt`, do Node, e não cumpria a regra aprovada ("pelo relógio do banco nos dois lados").
+
+   **O limite que fica:** os pacotes criados antes desta migration guardam o `createdAt` do Node, porque o instante do banco deles não existe. Só os do staging, com dados fictícios, e o efeito só aparece na fronteira de milissegundos entre a criação do pacote e o registro do atendimento. Do outro lado, os atendimentos registrados antes da F3.2 têm o `recordedAt` preenchido pela migration dela, depois do registro real: para eles, o motivo recusa um pacote criado entre o registro real e aquela migration. O erro é para o lado seguro, e a pessoa ainda tem "escolha errada" (`security`).
+
+7. **Sem `clinics:care:read`, o registro de atendimento omite o consumo da resposta.** Sem isso, quem escreve sem ler veria, ao repetir o próprio avulso, o pacote de uma correção feita por outra pessoa (`reviewer` e `security`).
+8. **As sessões do pacote são lidas num instante só** (`REPEATABLE READ`), com as 100 correções mais recentes. Elas devolvem ids (o profissional e quem corrigiu); os nomes ficam para a F5.2b decidir. O DTO não indica o corte: a tela da F5.2b não apresenta essa lista como o histórico inteiro (um indicador de corte, ou um aviso quando vierem 100). A trilha de auditoria continua completa.
+9. **A imutabilidade da correção tem uma regra única:** só o `DELETE` da cascata do workspace passa. A primeira versão era redundante, e a mutação provou isso.
+
+**Os consumidores do `packageId` do DTO, conferidos:**
+
+- a tela não lê o campo da resposta: o registro usa a escolha que enviou;
+- o e2e lê o vínculo original por SQL, que coincide com o vigente enquanto não há correção, e o e2e não corrige nada;
+- a trilha `clinics.attendance.recorded` guarda a escolha do registro, o que está correto;
+- a carga da demonstração não toca atendimento nem pacote, e a IA não lê o Clinics;
+- as suítes de integração foram ajustadas.
+
+**A transição (ajuste 4 da aprovação):**
+
+- **O código anterior sobre o schema novo:** as 20 suítes de integração do Clinics do `bba29b8`, o código no ar, rodaram contra um banco com a migration FINAL aplicada (2026-11-03, 14:21–14:23, depois da última mudança dela, às 14:16: o carimbo da criação do pacote e o atendimento que não se apaga incluídos). Passaram 413 de 415.
+  - As 2 falhas são testes antigos de SQL cru que fazem `+1` no pacote sem atendimento. Quem os recusa é a garantia nova.
+  - O registro com e sem pacote, o cancelamento, a agenda, os retornos, a restrição e os envios passaram.
+  - O `migrate deploy` antigo não reclama da migration a mais.
+- **O código novo sobre os registros existentes:**
+  - a migration preenche o vigente com a escolha e a revisão 0. O ensaio com dados deu 4 de 4, e os contadores ficaram iguais;
+  - a igualdade é conferida antes de tudo;
+  - um teste mostra um atendimento escrito à moda antiga sendo corrigido pelo código novo.
+- **A conclusão: a migration é compatível para trás** (expansão) nos cenários ensaiados. O código anterior roda sobre ela, mas não interpreta certo um atendimento corrigido (ele lê `packageId`, a escolha original): o retorno só vale antes da primeira correção (abaixo). O código novo exige a migration aplicada antes dele.
+
+**As provas:**
+
+- **Os testes:**
+  - 40 de integração da correção;
+  - 6 unitários da guarda de replay;
+  - as regras estáticas: os escritores e o relógio.
+- **As suítes de pacotes e de restrição foram ajustadas.** Os testes de SQL cru do guarda do pacote passaram a rodar numa transação desfeita, ou pelo registro, e a fábrica da presença ganhou a correção.
+- **As mutações: 34, todas mortas por teste que falha.**
+  - Na primeira rodada, duas sobreviveram e levaram a correções:
+    - o teste das correções cruzadas pausava a primeira depois dos dois pacotes. Agora pausa entre eles, e a ordem errada morre por `40P01 deadlock detected`;
+    - a imutabilidade era redundante.
+  - A terceira rodada, depois das revisões, cobriu as 24 anteriores e 7 novas.
+- **O ensaio do ADR-051:**
+  - a falha forçada deixou o schema idêntico, o inventário em 0 e os dados intactos;
+  - a aplicação limpa deu inventário 41, os dados esperados e o `migrate diff` vazio;
+  - a diferença de definições foi só a declarada, inclusive as duas funções existentes alteradas.
+
+- **A revisão:** `reviewer` e `security`, com três revisões do delta.
+  - Os achados P1 e P2 foram corrigidos dentro desta migration, antes do primeiro commit: a correção descartada, a exclusão de atendimento e o consumo mostrado a quem não lê.
+  - Depois vieram o relógio do banco no "pacote cadastrado depois" e o roteiro da janela. O `reviewer` achou que o snapshot dependia do `restic`, que nunca teve destino no staging, e o passo virou o dump no host, ensaiado.
+  - Os dois aprovaram o código, sem bloqueio.
+- **As baterias:**
+  - **a b88** foi toda verde: 1300 testes de integração, 456 unitários, 282 do web e 57 do e2e, mais o drift, as migrations do zero, o `check:fk` e o ensaio do schema antigo, sem sono;
+  - **a b89, parcial depois do carimbo,** foi verde nos blocos afetados: unitários, build, drift, migrations do zero, `check:fk` e o e2e (57);
+  - **a b87,** anterior às correções da revisão, teve uma falha intermitente fora da F5.2a (abaixo).
+
+**O procedimento de publicação (ajuste 5, direção aprovada pelo usuário em 2026-11-03, com ajustes).** Ele está no DEPLOY_STAGING §4.2 e usa peças que já existem e foram ensaiadas: os blocos A, 1 e 8 da E-4; o snapshot no host, que é o bloco 2 da E-4 com a conferência trocada pela migration desta janela (`deploy/staging/janela-f52a/b2-snapshot.sh`), porque o `restic` do staging nunca teve destino; as conferências do §4; e a destrava do bloco 7. A ordem:
+
+1. a pausa de uso confirmada;
+2. a barreira (a trava no banco, a API e os jobs parados), conferida;
+3. o snapshot da janela no host, conferido até `DUMP_INTEIRO`;
+4. a imagem nova em manutenção, a migration e as conferências;
+5. a retomada;
+6. a verificação funcional;
+7. só então o uso liberado.
+
+**O retorno tem limite** (ajuste do usuário):
+
+- **Antes de qualquer correção,** o código anterior pode voltar, conforme o ensaio.
+- **Depois de uma correção,** fica a manutenção, e a correção é para a frente: o código anterior lê `packageId`, que passou a ser a escolha original.
+- **O snapshot nunca é restaurado automaticamente,** e não há procedimento ensaiado para restaurá-lo fora da E-4: uma volta do banco só com autorização específica e um procedimento demonstrado antes.
+- **Uma interrupção antes de a migration entrar** volta ao código no ar, sem tocar o banco (§4.2).
+- **A verificação da janela não faz correção.**
+
+**Pontos que ficam registrados:**
+
+- **LGPD (ADR-048 §9.2, D5 e B3):** `ClinicsAttendance_is_kept` e `ClinicsPackageCorrection_is_final` recusam apagar atendimento e correção fora da cascata do workspace. Isso é coerente com a recusa provisória do §9.1, mas a política definitiva de exclusão, quando decidida, precisa revisitar os dois gatilhos.
+- **A mensagem do prazo vencido** da transação interativa fala de "contato". Ela é a mesma do registro de atendimento e fica para quando a mensagem for generalizada.
+- **A falha intermitente da b87** (`business-outbound`, "prazo vencido", fora da F5.2a): passou isolada. O próprio teste calcula o vencido pelo relógio do Node, e o servidor compara pelo do banco; a causa fica em hipótese.

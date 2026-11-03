@@ -665,6 +665,54 @@ describe('Clinics — restrição de conteúdo com a porta real e API de libera�
           },
         });
       },
+      // a correção de consumo passa pelo atendimento avulso de um agendamento
+      // real e por um pacote do mesmo paciente e serviço: o pacote ganha a
+      // sessão na MESMA transação, como a igualdade no COMMIT exige (ADR-059)
+      ClinicsPackageCorrection: async () => {
+        const ag = await agendamentoComPais();
+        const workspaceId = wsA.workspaceId;
+        const atendimento = await prisma.raw.clinicsAttendance.create({
+          data: {
+            workspaceId,
+            appointmentId: ag.id,
+            professionalId: ag.professionalId,
+            completedAt: new Date(),
+            recordedByMembershipId: ag.createdByMembershipId,
+          },
+        });
+        const pacote = await prisma.raw.clinicsPackage.create({
+          data: {
+            workspaceId,
+            patientId: ag.patientId,
+            serviceId: ag.serviceId,
+            totalSessions: 3,
+            currency: 'BRL',
+            createdByMembershipId: ag.createdByMembershipId,
+          },
+        });
+        const [, correcao] = await prisma.raw.$transaction([
+          prisma.raw.clinicsPackage.updateMany({
+            where: { id: pacote.id },
+            data: { consumedSessions: { increment: 1 } },
+          }),
+          prisma.raw.clinicsPackageCorrection.create({
+            data: {
+              workspaceId,
+              attendanceId: atendimento.id,
+              appointmentId: ag.id,
+              patientId: ag.patientId,
+              serviceId: ag.serviceId,
+              unitId: ag.unitId,
+              fromPackageId: null,
+              toPackageId: pacote.id,
+              revision: 1,
+              reason: 'wrong_choice',
+              correctedByMembershipId: ag.createdByMembershipId,
+            },
+          }),
+        ]);
+        return correcao;
+      },
       // o pedido de envio passa pelo agendamento real, que vem junto (F4.2)
       ClinicsOutreachRequest: async () => {
         const ag = await agendamentoComPais();

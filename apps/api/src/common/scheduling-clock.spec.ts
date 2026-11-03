@@ -18,6 +18,11 @@ const DO_BANCO: Record<string, string> = {
   clinicsReturn: 'createdAt',
   // e a conclusão compara a prova (o registro de atendimento) com a criação
   clinicsAttendance: 'recordedAt',
+  // o instante da correção de consumo é do banco (ADR-059)
+  clinicsPackageCorrection: 'createdAt',
+  // e a criação do pacote, que o motivo "pacote cadastrado depois" compara com
+  // o registro do atendimento (ADR-059)
+  clinicsPackage: 'createdAt',
   // o consentimento e o pedido de parar (F4.1b): os instantes são do banco, e o
   // do pedido é o `tb` da regra temporal ainda proposta (ADR-052 item 4). A
   // revogação e o desbloqueio, o gatilho grava, e o client nem aceita o campo

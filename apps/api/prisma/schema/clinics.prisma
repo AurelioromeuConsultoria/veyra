@@ -249,16 +249,18 @@ model ClinicsAppointment {
   createdAt             DateTime                 @default(now())
   updatedAt             DateTime                 @updatedAt
 
-  workspace    Workspace                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  patient      ClinicsPatient           @relation(fields: [workspaceId, patientId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  professional ClinicsProfessional      @relation(fields: [workspaceId, professionalId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  service      ClinicsService           @relation(fields: [workspaceId, serviceId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  unit         ClinicsUnit              @relation(fields: [workspaceId, unitId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  createdBy    Membership               @relation("ClinicsAppointmentCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  attendance   ClinicsAttendance?
-  returns      ClinicsReturn[]
-  outreach     ClinicsOutreachRequest[]
-  dealLink     ClinicsAppointmentDeal?
+  workspace          Workspace                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  patient            ClinicsPatient             @relation(fields: [workspaceId, patientId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  professional       ClinicsProfessional        @relation(fields: [workspaceId, professionalId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  service            ClinicsService             @relation(fields: [workspaceId, serviceId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  unit               ClinicsUnit                @relation(fields: [workspaceId, unitId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  createdBy          Membership                 @relation("ClinicsAppointmentCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  attendance         ClinicsAttendance?
+  returns            ClinicsReturn[]
+  outreach           ClinicsOutreachRequest[]
+  dealLink           ClinicsAppointmentDeal?
+  /// as correções de consumo do atendimento deste agendamento (ADR-059, F5.2)
+  packageCorrections ClinicsPackageCorrection[]
 
   @@unique([workspaceId, id])
   /// apoio da FK do vínculo do retorno: mesmo paciente, serviço e unidade (F3.2)
@@ -280,9 +282,17 @@ model ClinicsAttendance {
   professionalId         String   @db.Uuid
   completedAt            DateTime @db.Timestamptz(3)
   recordedByMembershipId String   @db.Uuid
-  /// o pacote consumido por este atendimento (ADR-048 adendo 7, F3.1); `null` =
-  /// avulso. IMUTÁVEL depois de criado: um trigger do banco recusa a troca
+  /// a ESCOLHA feita no registro (ADR-048 adendo 7, F3.1); `null` = avulso.
+  /// IMUTÁVEL depois de criado: um trigger do banco recusa a troca. O consumo
+  /// que vale é o `currentPackageId` (ADR-059)
   packageId              String?  @db.Uuid
+  /// o consumo VIGENTE (ADR-059, F5.2): nasce igual ao `packageId` e só muda
+  /// pela inserção de uma `ClinicsPackageCorrection`, pelo gatilho dela. Nunca
+  /// escrito pelo Prisma
+  currentPackageId       String?  @db.Uuid
+  /// a revisão do consumo: 0 no registro, e +1 a cada correção. É o "esperado"
+  /// do pedido de correção. Nunca escrita pelo Prisma
+  consumptionRevision    Int      @default(0)
   createdAt              DateTime @default(now())
   /// o instante do registro pelo RELÓGIO DO BANCO: a conclusão de um retorno
   /// exige uma prova registrada DEPOIS da criação dele (F3.2). É a exceção ao
@@ -290,13 +300,15 @@ model ClinicsAttendance {
   /// pode esperar a trava do agendamento. Nunca escrito pelo Prisma
   recordedAt             DateTime @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(3)
 
-  workspace         Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  appointment       ClinicsAppointment  @relation(fields: [workspaceId, appointmentId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  professional      ClinicsProfessional @relation(fields: [workspaceId, professionalId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  recordedBy        Membership          @relation("ClinicsAttendanceRecordedBy", fields: [workspaceId, recordedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  package           ClinicsPackage?     @relation(fields: [workspaceId, packageId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  returnsOriginated ClinicsReturn[]     @relation("ClinicsReturnOrigin")
-  returnsFulfilled  ClinicsReturn[]     @relation("ClinicsReturnFulfilledBy")
+  workspace          Workspace                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  appointment        ClinicsAppointment         @relation(fields: [workspaceId, appointmentId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  professional       ClinicsProfessional        @relation(fields: [workspaceId, professionalId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  recordedBy         Membership                 @relation("ClinicsAttendanceRecordedBy", fields: [workspaceId, recordedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  package            ClinicsPackage?            @relation("ClinicsAttendancePackage", fields: [workspaceId, packageId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  currentPackage     ClinicsPackage?            @relation("ClinicsAttendanceCurrentPackage", fields: [workspaceId, currentPackageId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  returnsOriginated  ClinicsReturn[]            @relation("ClinicsReturnOrigin")
+  returnsFulfilled   ClinicsReturn[]            @relation("ClinicsReturnFulfilledBy")
+  packageCorrections ClinicsPackageCorrection[]
 
   @@unique([workspaceId, appointmentId])
   @@unique([workspaceId, id])
@@ -305,6 +317,8 @@ model ClinicsAttendance {
   @@index([workspaceId, professionalId])
   @@index([workspaceId, recordedByMembershipId])
   @@index([workspaceId, packageId])
+  /// a contagem do consumo vigente, conferida no COMMIT (ADR-059)
+  @@index([workspaceId, currentPackageId])
 }
 
 /// Estado do pacote (ADR-048 adendo 7, F3.1). `completed` só pela ÚLTIMA sessão
@@ -318,9 +332,8 @@ enum ClinicsPackageStatus {
 /// Pacote de sessões (ADR-048 §4 e adendo 7, F3.1). Classe S: liga o paciente a
 /// um serviço contratado. Nasce com zero consumidas; paciente, serviço, total,
 /// preço e moeda são IMUTÁVEIS (trigger do banco). O CHECK mantém as consumidas
-/// no intervalo; a igualdade "consumidas = atendimentos vinculados" vem do
-/// caminho ÚNICO de escrita (o registro de atendimento, numa transação) e dos
-/// triggers que recusam qualquer outra mudança. Sem texto livre (H7).
+/// no intervalo; a igualdade "consumidas = atendimentos com o consumo VIGENTE
+/// neste pacote" é conferida pelo banco no COMMIT (ADR-059). Sem texto livre (H7).
 model ClinicsPackage {
   id                    String               @id @default(uuid()) @db.Uuid
   workspaceId           String               @db.Uuid
@@ -333,20 +346,80 @@ model ClinicsPackage {
   currency              String
   status                ClinicsPackageStatus @default(active)
   createdByMembershipId String               @db.Uuid
+  /// carimbado pelo BANCO na inserção (gatilho, ADR-059): o valor que o Prisma
+  /// manda é trocado pelo relógio do banco, em UTC
   createdAt             DateTime             @default(now())
   /// escrito pelo BANCO (trigger), na conclusão ou no cancelamento (ADR-049)
   closedAt              DateTime?            @db.Timestamptz(3)
 
-  workspace   Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  patient     ClinicsPatient      @relation(fields: [workspaceId, patientId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  service     ClinicsService      @relation(fields: [workspaceId, serviceId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  createdBy   Membership          @relation("ClinicsPackageCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
-  attendances ClinicsAttendance[]
+  workspace          Workspace                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  patient            ClinicsPatient             @relation(fields: [workspaceId, patientId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  service            ClinicsService             @relation(fields: [workspaceId, serviceId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  createdBy          Membership                 @relation("ClinicsPackageCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  /// os atendimentos que ESCOLHERAM este pacote no registro
+  attendances        ClinicsAttendance[]        @relation("ClinicsAttendancePackage")
+  /// os atendimentos que o consomem AGORA (o contador conta estes)
+  currentAttendances ClinicsAttendance[]        @relation("ClinicsAttendanceCurrentPackage")
+  correctionsFrom    ClinicsPackageCorrection[] @relation("ClinicsPackageCorrectionFrom")
+  correctionsTo      ClinicsPackageCorrection[] @relation("ClinicsPackageCorrectionTo")
 
   @@unique([workspaceId, id])
+  /// apoio das FKs da correção: o pacote é do MESMO paciente e serviço (ADR-059)
+  @@unique([workspaceId, id, patientId, serviceId], map: "ClinicsPackage_correction_key")
   @@index([workspaceId, patientId])
   @@index([workspaceId, serviceId])
   @@index([workspaceId, createdByMembershipId])
+}
+
+/// O motivo de uma correção de consumo (ADR-059, F5.2): lista fechada, sem
+/// texto livre (H7).
+/// - `wrong_choice`: escolha errada — o pacote errado, o avulso por
+///   esquecimento, o pacote por engano, ou uma correção anterior errada;
+/// - `package_registered_late`: o pacote foi cadastrado depois do atendimento.
+///   Só de avulso para pacote, e só para pacote criado depois do atendimento.
+enum ClinicsPackageCorrectionReason {
+  wrong_choice
+  package_registered_late
+}
+
+/// Correção do consumo de um atendimento (ADR-059, F5.2). Classe S, só de
+/// acréscimo: o gatilho da inserção confere a revisão e o consumo vigente e
+/// os avança no atendimento; nenhuma linha muda depois. O paciente, o serviço
+/// e a unidade são os do agendamento (FK composta), e cada pacote referido é do
+/// mesmo paciente e serviço. Sem texto livre (H7).
+model ClinicsPackageCorrection {
+  id                      String                         @id @default(uuid()) @db.Uuid
+  workspaceId             String                         @db.Uuid
+  attendanceId            String                         @db.Uuid
+  appointmentId           String                         @db.Uuid
+  patientId               String                         @db.Uuid
+  serviceId               String                         @db.Uuid
+  unitId                  String                         @db.Uuid
+  /// o consumo ANTES; `null` = avulso
+  fromPackageId           String?                        @db.Uuid
+  /// o consumo DEPOIS; `null` = avulso
+  toPackageId             String?                        @db.Uuid
+  /// a revisão do consumo que esta correção cria (a anterior + 1)
+  revision                Int
+  reason                  ClinicsPackageCorrectionReason
+  correctedByMembershipId String                         @db.Uuid
+  /// pelo relógio do banco (ADR-049); nunca escrito pelo Prisma
+  createdAt               DateTime                       @default(dbgenerated("transaction_timestamp()")) @db.Timestamptz(3)
+
+  workspace   Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  attendance  ClinicsAttendance  @relation(fields: [workspaceId, appointmentId, attendanceId], references: [workspaceId, appointmentId, id], onDelete: NoAction, onUpdate: NoAction)
+  appointment ClinicsAppointment @relation(fields: [workspaceId, appointmentId, patientId, serviceId, unitId], references: [workspaceId, id, patientId, serviceId, unitId], onDelete: NoAction, onUpdate: NoAction)
+  fromPackage ClinicsPackage?    @relation("ClinicsPackageCorrectionFrom", fields: [workspaceId, fromPackageId, patientId, serviceId], references: [workspaceId, id, patientId, serviceId], onDelete: NoAction, onUpdate: NoAction)
+  toPackage   ClinicsPackage?    @relation("ClinicsPackageCorrectionTo", fields: [workspaceId, toPackageId, patientId, serviceId], references: [workspaceId, id, patientId, serviceId], onDelete: NoAction, onUpdate: NoAction)
+  correctedBy Membership         @relation("ClinicsPackageCorrectedBy", fields: [workspaceId, correctedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([workspaceId, id])
+  /// uma correção por revisão: a corrida perdida falha fechada
+  @@unique([workspaceId, attendanceId, revision])
+  @@index([workspaceId, appointmentId, patientId, serviceId, unitId])
+  @@index([workspaceId, fromPackageId])
+  @@index([workspaceId, toPackageId])
+  @@index([workspaceId, correctedByMembershipId])
 }
 
 /// Retorno (ADR-048 adendo 7, F3.2). Classe S. Concluir é COMPROVAR um

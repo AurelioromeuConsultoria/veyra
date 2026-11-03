@@ -19,6 +19,7 @@ export const CLINICS_MODELS = [
   'ClinicsAppointment',
   'ClinicsAttendance',
   'ClinicsPackage',
+  'ClinicsPackageCorrection',
   'ClinicsReturn',
   'ClinicsOutreachRequest',
   'ClinicsAppointmentDeal',
@@ -84,6 +85,7 @@ export const clinicsExtension: CoreExtension = {
         returns: 'ClinicsReturn',
         outreach: 'ClinicsOutreachRequest',
         dealLink: 'ClinicsAppointmentDeal',
+        packageCorrections: 'ClinicsPackageCorrection',
       },
       ClinicsAttendance: {
         workspace: 'Workspace',
@@ -91,8 +93,10 @@ export const clinicsExtension: CoreExtension = {
         professional: 'ClinicsProfessional',
         recordedBy: 'Membership',
         package: 'ClinicsPackage',
+        currentPackage: 'ClinicsPackage',
         returnsOriginated: 'ClinicsReturn',
         returnsFulfilled: 'ClinicsReturn',
+        packageCorrections: 'ClinicsPackageCorrection',
       },
       ClinicsPackage: {
         workspace: 'Workspace',
@@ -100,6 +104,17 @@ export const clinicsExtension: CoreExtension = {
         service: 'ClinicsService',
         createdBy: 'Membership',
         attendances: 'ClinicsAttendance',
+        currentAttendances: 'ClinicsAttendance',
+        correctionsFrom: 'ClinicsPackageCorrection',
+        correctionsTo: 'ClinicsPackageCorrection',
+      },
+      ClinicsPackageCorrection: {
+        workspace: 'Workspace',
+        attendance: 'ClinicsAttendance',
+        appointment: 'ClinicsAppointment',
+        fromPackage: 'ClinicsPackage',
+        toPackage: 'ClinicsPackage',
+        correctedBy: 'Membership',
       },
       ClinicsReturn: {
         workspace: 'Workspace',
@@ -143,6 +158,7 @@ export const clinicsExtension: CoreExtension = {
         clinicsAppointmentsCreated: 'ClinicsAppointment',
         clinicsAttendancesRecorded: 'ClinicsAttendance',
         clinicsPackagesCreated: 'ClinicsPackage',
+        clinicsPackageCorrections: 'ClinicsPackageCorrection',
         clinicsReturnsAssigned: 'ClinicsReturn',
         clinicsReturnsCreated: 'ClinicsReturn',
         clinicsReturnsClosed: 'ClinicsReturn',
@@ -210,6 +226,18 @@ export const clinicsExtension: CoreExtension = {
       'consumedSessions',
       'status',
       'hasPrice',
+    ],
+    // classe S (ADR-059, F5.2): o atendimento, o consumo antes e depois, o
+    // motivo de lista fechada, a revisão e, de cada pacote, as consumidas e o
+    // estado antes e depois. Nada clínico existe na correção
+    clinicsPackageCorrection: [
+      'attendanceId',
+      'fromPackageId',
+      'toPackageId',
+      'reason',
+      'revision',
+      'fromPackage',
+      'toPackage',
     ],
     // classe S (ADR-048 adendo 7, F3.2): ids, vencimento, estado, origem e
     // motivo de lista fechada. Nada clínico existe no retorno

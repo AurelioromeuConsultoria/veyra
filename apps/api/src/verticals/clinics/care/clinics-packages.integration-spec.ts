@@ -161,13 +161,13 @@ describe('Clinics — pacote de sessões e consumo no atendimento (integração,
   const pacote = (id: string) => prisma.raw.clinicsPackage.findFirst({ where: { id } });
   const estadoDo = async (agendamento: string) =>
     (await prisma.raw.clinicsAppointment.findFirst({ where: { id: agendamento } }))?.status;
-  /** A igualdade que o caminho único de escrita sustenta: consumidas = atendimentos vinculados. */
+  /** A igualdade, conferida também pelo banco no COMMIT (ADR-059): consumidas = atendimentos com o consumo vigente no pacote. */
   const igualdadeVale = async () => {
     const { rows } = await observador.query<{ n: string }>(
       `SELECT count(*)::text AS n FROM "ClinicsPackage" p
         WHERE p."consumedSessions" <> (SELECT count(*) FROM "ClinicsAttendance" a
                                          WHERE a."workspaceId" = p."workspaceId"
-                                           AND a."packageId" = p."id")`,
+                                           AND a."currentPackageId" = p."id")`,
     );
     return Number(rows[0].n) === 0;
   };
@@ -784,14 +784,16 @@ describe('Clinics — pacote de sessões e consumo no atendimento (integração,
         [p.id],
       );
       await recusa(`UPDATE "ClinicsPackage" SET "status" = 'completed' WHERE "id" = $1`, [p.id]);
-      await observador.query(
-        `UPDATE "ClinicsPackage" SET "consumedSessions" = "consumedSessions" + 1 WHERE "id" = $1`,
-        [p.id],
-      );
-      await recusa(
-        `UPDATE "ClinicsPackage" SET "consumedSessions" = "consumedSessions" - 1 WHERE "id" = $1`,
-        [p.id],
-      );
+      // uma sessão de verdade, pelo registro: desde o ADR-059, o `+1` solto (sem o
+      // atendimento) cai na igualdade conferida no COMMIT
+      await atender(await agendar(), p.id).expect(201);
+      // voltar o contador sem uma correção registrada: a igualdade recusa no COMMIT
+      await expect(
+        observador.query(
+          `UPDATE "ClinicsPackage" SET "consumedSessions" = "consumedSessions" - 1 WHERE "id" = $1`,
+          [p.id],
+        ),
+      ).rejects.toThrow(/não batem com os atendimentos que o consomem/);
       await observador.query(`UPDATE "ClinicsPackage" SET "status" = 'canceled' WHERE "id" = $1`, [
         p.id,
       ]);
@@ -811,17 +813,40 @@ describe('Clinics — pacote de sessões e consumo no atendimento (integração,
 
     it('permite os dois caminhos legítimos: a última sessão passa a `completed` NA MESMA instrução, e o cancelamento sem incremento', async () => {
       const ultima = await criarPacote({ totalSessions: 1 });
-      const { rowCount } = await observador.query(
-        `UPDATE "ClinicsPackage" SET "consumedSessions" = "consumedSessions" + 1 WHERE "id" = $1`,
-        [ultima.id],
-      );
-      expect(rowCount).toBe(1);
-      const concluido = await pacote(ultima.id);
-      expect([concluido?.status, concluido?.consumedSessions, concluido?.closedAt]).toEqual([
-        'completed',
-        1,
-        expect.any(Date),
-      ]);
+      // o gatilho, dentro de uma transação que é desfeita: sem o atendimento, a
+      // igualdade do COMMIT (ADR-059) recusaria — o caminho inteiro é o do
+      // registro, coberto na seção do consumo
+      await observador.query('BEGIN');
+      try {
+        const { rowCount } = await observador.query(
+          `UPDATE "ClinicsPackage" SET "consumedSessions" = "consumedSessions" + 1 WHERE "id" = $1`,
+          [ultima.id],
+        );
+        expect(rowCount).toBe(1);
+        const { rows } = await observador.query<{
+          status: string;
+          consumedSessions: number;
+          closedAt: Date | null;
+        }>(
+          `SELECT "status", "consumedSessions", "closedAt" FROM "ClinicsPackage" WHERE "id" = $1`,
+          [ultima.id],
+        );
+        expect([rows[0].status, rows[0].consumedSessions, rows[0].closedAt]).toEqual([
+          'completed',
+          1,
+          expect.any(Date),
+        ]);
+      } finally {
+        await observador.query('ROLLBACK');
+      }
+      // o mesmo `+1` sozinho, confirmado: a igualdade recusa no COMMIT, e nada muda
+      await expect(
+        observador.query(
+          `UPDATE "ClinicsPackage" SET "consumedSessions" = "consumedSessions" + 1 WHERE "id" = $1`,
+          [ultima.id],
+        ),
+      ).rejects.toThrow(/não batem com os atendimentos que o consomem/);
+      expect((await pacote(ultima.id))?.status).toBe('active');
       const cancelado = await criarPacote();
       await observador.query(`UPDATE "ClinicsPackage" SET "status" = 'canceled' WHERE "id" = $1`, [
         cancelado.id,
@@ -911,7 +936,11 @@ describe('Clinics — pacote de sessões e consumo no atendimento (integração,
         totalSessions: 2,
       }).expect(403);
       await post(`/api/clinics/packages/${p.id}/cancel`, semLeitura).expect(403);
-      expect((await atender(ag, null, semLeitura).expect(201)).body.packageId).toBeNull();
+      // sem a leitura do atendimento, a resposta omite o consumo (ADR-059)
+      const registro = (await atender(ag, null, semLeitura).expect(201)).body;
+      expect(
+        ['packageId', 'originalPackageId', 'consumptionRevision'].some((k) => k in registro),
+      ).toBe(false);
       expect((await pacote(p.id))?.consumedSessions).toBe(0);
     });
 

@@ -35,7 +35,11 @@ type AttendanceRow = {
   completedAt: Date;
   /** do relógio do BANCO, forçado pelo gatilho e devolvido pelo INSERT */
   recordedAt: Date;
+  /** a escolha do registro, imutável */
   packageId: string | null;
+  /** o consumo vigente e a revisão dele (ADR-059): o banco os escreve */
+  currentPackageId: string | null;
+  consumptionRevision: number;
 };
 
 /** De onde o atendimento pode ser registrado (H1: chegada não é obrigatória). */
@@ -79,12 +83,13 @@ export class ClinicsAttendanceService {
     const escolha = input.packageId === null ? null : input.packageId.toLowerCase();
     // consumir pacote revela o estado dele (as recusas dizem por quê): quem
     // escolhe pacote precisa poder lê-lo. A regra mora AQUI, e não na rota,
-    // para valer a qualquer chamador futuro (ADR-048 adendo 7)
-    if (escolha) {
-      const careRead = 'clinics:care:read' satisfies ClinicsPermissionKey;
-      if (!(await this.permissions.has(auth, careRead as PermissionKey))) {
-        throw new ForbiddenException('Consumir pacote exige a leitura do atendimento');
-      }
+    // para valer a qualquer chamador futuro (ADR-048 adendo 7). Sem a leitura,
+    // a resposta também omite o consumo: depois de uma correção (ADR-059), a
+    // repetição de um registro avulso revelaria o pacote vigente
+    const careRead = 'clinics:care:read' satisfies ClinicsPermissionKey;
+    const leAtendimento = await this.permissions.has(auth, careRead as PermissionKey);
+    if (escolha && !leAtendimento) {
+      throw new ForbiddenException('Consumir pacote exige a leitura do atendimento');
     }
     try {
       const row = await this.restricao.naTransacaoInterativa(
@@ -167,13 +172,13 @@ export class ClinicsAttendanceService {
           return criado;
         },
       );
-      return toDto(row);
+      return toDto(row, leAtendimento);
     } catch (error) {
       // última linha: o unique por agendamento venceu uma corrida que a trava
       // não pegou — vale o registro que existe, com a MESMA escolha
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
         const vencedor = await registroDe(this.prisma.db, appointmentId);
-        if (vencedor) return toDto(repeticao(vencedor, escolha));
+        if (vencedor) return toDto(repeticao(vencedor, escolha), leAtendimento);
       }
       throw error;
     }
@@ -182,7 +187,8 @@ export class ClinicsAttendanceService {
   async get(appointmentId: string): Promise<ClinicsAttendanceDto> {
     const row = await registroDe(this.prisma.db, appointmentId);
     if (!row) throw new NotFoundException('Atendimento não registrado');
-    return toDto(row);
+    // a rota exige `clinics:care:read`
+    return toDto(row, true);
   }
 }
 
@@ -192,13 +198,21 @@ async function registroDe(db: Db, appointmentId: string): Promise<AttendanceRow 
   })) as unknown as AttendanceRow | null;
 }
 
-function toDto(row: AttendanceRow): ClinicsAttendanceDto {
-  return {
+/** O consumo (pacote vigente, escolha original e revisão) só com `clinics:care:read`. */
+function toDto(row: AttendanceRow, leAtendimento: boolean): ClinicsAttendanceDto {
+  const base = {
     id: row.id,
     appointmentId: row.appointmentId,
     professionalId: row.professionalId,
     completedAt: row.completedAt.toISOString(),
-    packageId: row.packageId,
+  };
+  if (!leAtendimento) return base;
+  return {
+    ...base,
+    // o consumo VIGENTE: depois de uma correção, o corrigido (ADR-059)
+    packageId: row.currentPackageId,
+    originalPackageId: row.packageId,
+    consumptionRevision: row.consumptionRevision,
   };
 }
 
@@ -206,7 +220,8 @@ function toDto(row: AttendanceRow): ClinicsAttendanceDto {
  * A repetição: o MESMO pedido (mesma escolha de pacote, ou avulso) devolve o
  * registro existente, sem novo consumo. Uma escolha DIFERENTE — outro pacote,
  * avulso no lugar de pacote ou o contrário — é 409: o servidor não finge que
- * aplicou a nova escolha.
+ * aplicou a nova escolha. A comparação é com a escolha ORIGINAL do registro,
+ * mesmo depois de uma correção (ADR-059): o pedido repetido é o de antes.
  */
 function repeticao(existente: AttendanceRow, escolha: string | null): AttendanceRow {
   if ((existente.packageId ?? null) === escolha) return existente;
