@@ -40,9 +40,12 @@ export function SessoesDoPacote({
     profissionais.data?.find((p) => p.id === id)?.name ?? 'Profissional';
   const quando = (iso: string) => quandoLocal(iso, fuso);
   const sentido = (c: ClinicsPackageCorrectionDto) => {
-    const lado = (id: string | null) =>
-      id === null ? 'avulso' : id === pacote.id ? 'este pacote' : 'outro pacote';
-    return `de ${lado(c.fromPackageId)} para ${lado(c.toPackageId)}`;
+    // com as contrações do português: "deste pacote", não "de este pacote"
+    const origem = (id: string | null) =>
+      id === null ? 'de avulso' : id === pacote.id ? 'deste pacote' : 'de outro pacote';
+    const destino = (id: string | null) =>
+      id === null ? 'para avulso' : id === pacote.id ? 'para este pacote' : 'para outro pacote';
+    return `${origem(c.fromPackageId)} ${destino(c.toPackageId)}`;
   };
 
   if (sessoes.isError) {

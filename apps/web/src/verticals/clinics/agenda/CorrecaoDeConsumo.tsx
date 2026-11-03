@@ -11,7 +11,12 @@ import { Button } from '../../../components/ui/button';
 import { Field, Select } from '../../../components/ui/input';
 import { api } from '../../../lib/api';
 import { useRegistroIdempotente } from '../../../lib/registro-idempotente';
-import { PACKAGES_KEY, ROTULO_DO_MOTIVO_DA_CORRECAO, quandoLocal } from '../continuidade';
+import {
+  PACKAGES_KEY,
+  ROTULO_DO_MOTIVO_DA_CORRECAO,
+  dataCurta,
+  quandoLocal,
+} from '../continuidade';
 
 /** A escolha: `undefined` = nada escolhido; `null` = avulso; texto = o pacote. */
 type Escolha = string | null | undefined;
@@ -105,8 +110,9 @@ export function CorrecaoDeConsumo({
   };
   const confirmar = () => {
     if (!podeConfirmar || !atendimento.data) return;
-    const de = atual === null ? 'avulso' : 'o pacote';
-    const para = escolha === null ? 'avulso' : 'o pacote escolhido';
+    // com as contrações do português: "do pacote", não "de o pacote"
+    const de = atual === null ? 'de avulso' : 'do pacote';
+    const para = escolha === null ? 'para avulso' : 'para o pacote escolhido';
     correcao.registrar({
       caminho: `/api/clinics/appointments/${agendamento.id}/attendance/package-correction`,
       corpo: {
@@ -116,14 +122,14 @@ export function CorrecaoDeConsumo({
       },
       rotulo: 'Correção do consumo',
       sucesso: (r) =>
-        `Consumo corrigido: de ${de} para ${para} (correção nº ${(r as ClinicsPackageCorrectionDto).revision}).`,
+        `Consumo corrigido: ${de} ${para} (correção nº ${(r as ClinicsPackageCorrectionDto).revision}).`,
     });
   };
 
   return (
     <div className="space-y-3 p-5">
       <p className="text-body-sm">
-        {agendamento.localDate} {agendamento.localStart} · {agendamento.patientName} ·{' '}
+        {dataCurta(agendamento.localDate)} {agendamento.localStart} · {agendamento.patientName} ·{' '}
         {agendamento.serviceName}
       </p>
       {correcao.feito ? (

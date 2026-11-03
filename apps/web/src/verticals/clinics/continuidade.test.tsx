@@ -688,6 +688,10 @@ describe('correção do consumo na agenda (F5.2b, ADR-059)', () => {
     });
     renderizar(<ClinicsAgendaPage />, `/clinics/agenda?dia=${DIA}`);
     const painel = await abrirCorrecao();
+    // a data no padrão brasileiro, o dia da unidade (o `localDate`), sem conversão de fuso
+    expect(
+      await within(painel).findByText('04/11/2030 09:00 · Paciente Fictícia · Limpeza'),
+    ).toBeInTheDocument();
     expect(
       await within(painel).findByText(
         'Uma sessão do pacote de 10 sessões, criado em 31/12/2029 21:00: restam 7.',
@@ -719,9 +723,7 @@ describe('correção do consumo na agenda (F5.2b, ADR-059)', () => {
       .mock.calls.find(([url, i]) => `${i?.method} ${String(url)}` === CORRIGIR)!;
     expect((init?.headers as Record<string, string>)['Idempotency-Key']).toMatch(/^[0-9a-f-]{36}$/);
     expect(
-      await within(painel).findByText(
-        'Consumo corrigido: de o pacote para avulso (correção nº 1).',
-      ),
+      await within(painel).findByText('Consumo corrigido: do pacote para avulso (correção nº 1).'),
     ).toBeInTheDocument();
   });
 
@@ -914,6 +916,17 @@ describe('ficha do paciente', () => {
           ],
           corrections: [
             {
+              id: 'c2',
+              attendanceId: 'a2',
+              appointmentId: AG,
+              fromPackageId: P1,
+              toPackageId: null,
+              revision: 1,
+              reason: 'wrong_choice',
+              correctedByMembershipId: 'm1',
+              createdAt: '2030-11-06T12:00:00.000Z',
+            },
+            {
               id: 'c1',
               attendanceId: 'a1',
               appointmentId: AG,
@@ -946,6 +959,13 @@ describe('ficha do paciente', () => {
         /05\/11\/2030 09:00 · de avulso para este pacote · Pacote cadastrado depois do atendimento/,
       ),
     ).toBeInTheDocument();
+    // as contrações: "deste pacote", nunca "de este pacote"
+    expect(
+      within(painel).getByText(
+        /06\/11\/2030 09:00 · deste pacote para avulso · Escolha errada no registro/,
+      ),
+    ).toBeInTheDocument();
+    expect(within(painel).queryByText(/de este pacote|de o pacote/)).toBeNull();
     expect(within(painel).queryByText(/Mostrando as 100/)).toBeNull();
   });
 

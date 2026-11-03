@@ -266,7 +266,7 @@ test.describe('Clinics — continuidade (pacotes, retornos e faltas)', () => {
       await painel.getByLabel('Motivo da correção').selectOption('wrong_choice');
       await confirmar.click();
       await expect(painel.getByRole('status')).toHaveText(
-        'Consumo corrigido: de o pacote para avulso (correção nº 1).',
+        'Consumo corrigido: do pacote para avulso (correção nº 1).',
       );
 
       // no banco: a sessão voltou, o vigente é avulso, o original não mudou, uma correção
@@ -299,9 +299,7 @@ test.describe('Clinics — continuidade (pacotes, retornos e faltas)', () => {
       const sessoes = page.getByRole('dialog', { name: 'Sessões do pacote' });
       await expect(sessoes).toContainText('Consomem este pacote agora (0 de 10)');
       await expect(sessoes).toContainText('Nenhuma sessão consumida.');
-      await expect(sessoes).toContainText(
-        'de este pacote para avulso · Escolha errada no registro',
-      );
+      await expect(sessoes).toContainText('deste pacote para avulso · Escolha errada no registro');
     } finally {
       await db.end();
     }
