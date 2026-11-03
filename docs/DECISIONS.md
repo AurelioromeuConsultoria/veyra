@@ -10130,3 +10130,79 @@ O procedimento está no DEPLOY_STAGING §4.2 e usa peças que já existem e fora
 - **LGPD (ADR-048 §9.2, D5 e B3):** `ClinicsAttendance_is_kept` e `ClinicsPackageCorrection_is_final` recusam apagar atendimento e correção fora da cascata do workspace. Isso é coerente com a recusa provisória do §9.1, mas a política definitiva de exclusão, quando decidida, precisa revisitar os dois gatilhos.
 - **A mensagem do prazo vencido** da transação interativa fala de "contato". Ela é a mesma do registro de atendimento e fica para quando a mensagem for generalizada.
 - **A falha intermitente da b87** (`business-outbound`, "prazo vencido", fora da F5.2a): passou isolada. O próprio teste calcula o vencido pelo relógio do Node, e o servidor compara pelo do banco; a causa fica em hipótese.
+
+## ADR-061 — F5.3: privacidade e acesso clínico (B1 e D8)
+
+**Status:** PROPOSTO (2026-11-03). Aguarda as decisões do usuário abaixo; nada é implementado antes da aprovação. O número 060 é o da automação da publicação, preservada na branch `proposta/publicacao-automatica`.
+
+**Contexto.**
+
+- **B1 (ADR-048 §6.7, §10):** num workspace com o Clinics, o texto que a equipe escreve nas telas do Core sobre um paciente fica legível com as permissões do Core. É o caso das notas, das tarefas, dos anexos, dos campos personalizados, do título da oportunidade e das conversas. Hoje a "Recepção" é o Member do Core mais a agenda, então lê tudo isso. Bloqueia o uso de dados reais.
+- **D8 (ADR-048 §5.3):** o `Profissional` vê e registra o atendimento de qualquer profissional. "Minha agenda" é só um filtro. É uma decisão operacional pendente.
+- **As pendências de metadados ligadas ao B1:**
+  - o nome do arquivo na trilha (`file.quarantined`, `file.deleted`);
+  - os ids de conversa RAI, visíveis a quem tem `audit:read`.
+- **Fora daqui:** B3 (a decisão jurídica de exclusão e retenção), B4, a normalização dos e-mails e o ADR-057. Levantar o B1 não libera, sozinho, dados reais.
+
+**Quem vê o quê (recomendação).**
+
+| Dado do paciente                                                           | Owner / Admin | Recepção e atendimento | Recepção (Member)           | Profissional                          |
+| -------------------------------------------------------------------------- | ------------- | ---------------------- | --------------------------- | ------------------------------------- |
+| Agenda (quem, serviço, quando, estado)                                     | sim           | sim                    | sim                         | sim, de todos os profissionais        |
+| Atendimentos, pacotes, consumo e correções                                 | sim           | sim                    | não (como hoje)             | **só dos próprios agendamentos** (D8) |
+| Conversas do WhatsApp do paciente                                          | sim           | sim                    | **sim** (confirma horários) | não (como hoje)                       |
+| Notas, tarefas, anexos, campos livres e título da oportunidade do paciente | sim           | sim                    | **não** (B1)                | não                                   |
+| Metadados na auditoria (nome de arquivo, id de conversa RAI)               | sim           | sem `audit:read`       | sem `audit:read`            | sem `audit:read`                      |
+
+**As decisões pedidas ao usuário:**
+
+1. **D8, recomendação: "próprios agendamentos" para o `Profissional`.**
+   - Ele vê e registra atendimento, consumo e correção só nos horários em que é o profissional vinculado à conta dele.
+   - Owner, Admin e "Recepção e atendimento" veem todos.
+   - **Cobrir uma colega** é trocar o profissional do horário, o que é tarefa da recepção, ou dar à pessoa "Recepção e atendimento".
+   - **A alternativa:** manter "vê todos" e registrar como decisão, sem código. Ela é mais simples para a clínica pequena e pior para a minimização (LGPD).
+2. **B1, recomendação: restrição de leitura por contato no Core.**
+   - Em contato restrito (todo contato de workspace com o Clinics, ADR-048 §6.4), notas, tarefas, anexos, campos personalizados de texto e o título da oportunidade exigem uma permissão nova do Core: "ler o conteúdo de contato restrito".
+   - Ela é dada a Owner, Admin e "Recepção e atendimento". A "Recepção" perde essa leitura.
+   - É genérica: o Core já conhece "restrito" (E6) e continua sem conhecer o vertical.
+   - **A alternativa:** uma anotação própria do vertical. Fica fora: o MVP não tem texto clínico livre (ADR-048 §7).
+3. **As conversas, recomendação: a "Recepção" continua lendo.** Ela confirma horários pelo WhatsApp, e o paciente pode escrever conteúdo de saúde ali. A decisão é aceitar isso explicitamente para esse papel, e não esconder as conversas da recepção.
+4. **A tarefa da recepção sobre paciente** ("ligar para…"): com o B1, quem não tem a permissão não lê tarefas de paciente. **Recomendação:** a "Recepção" usa a agenda e as conversas, não tarefas, para o paciente. A alternativa é dar à recepção só o título das tarefas, um meio-termo mais difícil de garantir.
+
+**Como busca, exportação, auditoria e vínculos deixam de revelar conteúdo oculto:**
+
+- **A busca (⌘K e as listas):** sem a permissão, nunca procura dentro de notas, tarefas ou campos do contato restrito e nunca mostra trecho deles. O paciente aparece pelo nome.
+- **A exportação:** sem a permissão, sai sem o conteúdo. A exportação do titular (LGPD) segue com quem a tem hoje.
+- **A auditoria:** o nome de arquivo e o id de conversa RAI saem mascarados para quem não tem a permissão nova. Isso fecha as duas pendências de metadados.
+- **Os vínculos:**
+  - a oportunidade de paciente mostra um título genérico a quem não tem a permissão;
+  - o contador ("3 notas") não aparece;
+  - a ausência é dita como "conteúdo restrito", nunca como "nenhuma nota".
+- **Toda decisão é do servidor.** A tela só reflete.
+
+**O que muda nas telas:**
+
+- **D8:**
+  - na Agenda, o `Profissional` vê os horários de todos, mas "Registrar atendimento" e "Corrigir consumo" só aparecem nos próprios;
+  - na ficha, os pacotes aparecem, e as sessões e correções de outros profissionais aparecem como "de outro profissional", sem o atendimento.
+- **B1:**
+  - no contato e na ficha, quem não tem a permissão vê "Conteúdo restrito" no lugar de notas, tarefas, anexos e campos;
+  - no Funil, o título genérico;
+  - na Equipe, a permissão aparece no papel.
+
+**A divisão em entregas pequenas, cada uma visível e com os testes da garantia:**
+
+1. **F5.3a, D8:** o escopo do `Profissional` no servidor (atendimento, consumo, correção e sessões), pelo vínculo conta↔profissional, mais as telas. Não tem migration. A chave nova (o alcance "todos") chega aos papéis do vertical pela sincronização da F5.1b; o catálogo de permissões precisa do `seed-permissions` no staging.
+2. **F5.3b, B1 nas notas e tarefas:** a permissão nova do Core, a restrição de leitura e o "Conteúdo restrito" nas telas.
+3. **F5.3c, B1 nos anexos, campos e título da oportunidade.**
+4. **F5.3d, busca, exportação e auditoria:** o mascaramento e o fechamento das pendências de metadados.
+
+O B1 só se considera levantado depois da F5.3d, com o `reviewer` e o `security`. Os testes de isolamento da permissão nova entram em cada entrega.
+
+**Alternativas consideradas:** registradas em cada decisão acima.
+
+**Consequências:**
+
+- **A "Recepção" perde acesso** a notas e tarefas de paciente que hoje lê. Isso é intencional e precisa ser comunicado à clínica.
+- **O Core ganha uma permissão e um ponto de restrição de leitura.** É uma extensão do E6 (ADR-047), sem conhecer o vertical.
+- **A chave nova nos papéis padrão do Core,** em workspaces já ativos, esbarra no ADR-057, que está aberto. A proposta concede só a Owner e Admin, que já recebem tudo, e aos papéis do vertical, pela sincronização.
