@@ -26,6 +26,7 @@ import {
 import { reaisToCents } from './format';
 import { CLINICS_PATIENTS_PATH } from './nav';
 import { ListaDeRetornos } from './retornos/ListaDeRetornos';
+import { SessoesDoPacote } from './SessoesDoPacote';
 import { ContatoDaPessoa } from './pessoa/ContatoDaPessoa';
 
 const mensagem = (erro: unknown) =>
@@ -119,6 +120,7 @@ function PacotesDoPaciente({ pacienteId }: { pacienteId: string }) {
   const queryClient = useQueryClient();
   const [criando, setCriando] = useState(false);
   const [cancelando, setCancelando] = useState<ClinicsPackageDto | null>(null);
+  const [vendoSessoes, setVendoSessoes] = useState<ClinicsPackageDto | null>(null);
   const servicos = useQuery({
     queryKey: ['clinics', 'catalog', 'services', true],
     queryFn: () => api.get<ClinicsServiceDto[]>('/api/clinics/services?includeArchived=true'),
@@ -201,6 +203,14 @@ function PacotesDoPaciente({ pacienteId }: { pacienteId: string }) {
                 </td>
                 <td className="px-4 py-2">{ROTULO_DO_PACOTE[p.status]}</td>
                 <td className="px-4 py-2">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    aria-label={`Sessões: ${descricao(p)}`}
+                    onClick={() => setVendoSessoes(p)}
+                  >
+                    Sessões
+                  </Button>
                   {podeCancelar && p.status === 'active' ? (
                     <Button
                       size="sm"
@@ -228,6 +238,13 @@ function PacotesDoPaciente({ pacienteId }: { pacienteId: string }) {
           </tbody>
         </table>
       </Panel>
+      <Drawer
+        open={vendoSessoes !== null}
+        onOpenChange={(aberto) => !aberto && setVendoSessoes(null)}
+        title="Sessões do pacote"
+      >
+        {vendoSessoes ? <SessoesDoPacote pacote={vendoSessoes} fuso={fuso} /> : null}
+      </Drawer>
       <Drawer open={criando} onOpenChange={setCriando} title="Novo pacote">
         {criando ? <NovoPacote pacienteId={pacienteId} onDone={() => setCriando(false)} /> : null}
       </Drawer>

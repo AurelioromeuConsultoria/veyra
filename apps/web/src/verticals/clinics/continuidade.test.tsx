@@ -642,6 +642,210 @@ describe('registro de atendimento: a escolha EXPLÍCITA entre avulso e pacote', 
   });
 });
 
+describe('correção do consumo na agenda (F5.2b, ADR-059)', () => {
+  const atendido = { ...agendamento, status: 'attended', attendanceId: 'at1' };
+  const atendimento = (extra: Record<string, unknown> = {}) => ({
+    id: 'at1',
+    appointmentId: AG,
+    professionalId: ANA,
+    completedAt: '2030-11-04T13:00:00.000Z',
+    packageId: P1,
+    originalPackageId: P1,
+    consumptionRevision: 0,
+    ...extra,
+  });
+  const P2_MESMO = pacote(P2, {
+    createdAt: '2030-02-01T00:00:00.000Z',
+    consumedSessions: 6,
+    remainingSessions: 4,
+  });
+  const CORRIGIR = `POST /api/clinics/appointments/${AG}/attendance/package-correction`;
+  const correcao = (extra: Record<string, unknown> = {}) => ({
+    id: 'c1',
+    attendanceId: 'at1',
+    appointmentId: AG,
+    fromPackageId: P1,
+    toPackageId: null,
+    revision: 1,
+    reason: 'wrong_choice',
+    correctedByMembershipId: 'm1',
+    createdAt: '2030-11-05T12:00:00.000Z',
+    ...extra,
+  });
+  async function abrirCorrecao() {
+    fireEvent.click(await screen.findByRole('button', { name: `Corrigir consumo: ${QUEM}` }));
+    return screen.findByRole('dialog', { name: 'Corrigir consumo' });
+  }
+
+  it('do pacote para avulso: o consumo atual, nada marcado, os saldos antes e depois, o motivo; envia a revisão vista com Idempotency-Key', async () => {
+    const chamadas = mockApi({
+      'GET /api/auth/me': { body: usuario(PROFISSIONAL) },
+      ...catalogo,
+      'GET /api/clinics/appointments': { body: [atendido] },
+      [`GET /api/clinics/appointments/${AG}/attendance`]: { body: atendimento() },
+      'GET /api/clinics/packages': { body: [pacote(P1), P2_MESMO] },
+      [CORRIGIR]: { status: 201, body: correcao() },
+    });
+    renderizar(<ClinicsAgendaPage />, `/clinics/agenda?dia=${DIA}`);
+    const painel = await abrirCorrecao();
+    expect(
+      await within(painel).findByText(
+        'Uma sessão do pacote de 10 sessões, criado em 31/12/2029 21:00: restam 7.',
+      ),
+    ).toBeInTheDocument();
+    // as opções: o outro pacote do serviço e avulso; o atual não; nada marcado
+    expect(within(painel).getAllByRole('radio')).toHaveLength(2);
+    for (const r of within(painel).getAllByRole('radio')) expect(r).not.toBeChecked();
+    const confirmar = within(painel).getByRole('button', { name: 'Confirmar correção' });
+    expect(confirmar).toBeDisabled();
+    fireEvent.click(within(painel).getByLabelText('Avulso (sem pacote)'));
+    expect(within(painel).getByText(/recebe a sessão de volta: restam 7 → 8/)).toBeInTheDocument();
+    // sem motivo, nada se confirma; "cadastrado depois" não vale saindo de um pacote
+    expect(confirmar).toBeDisabled();
+    const motivo = within(painel).getByRole('combobox', { name: 'Motivo da correção' });
+    expect(
+      within(motivo).queryByRole('option', { name: 'Pacote cadastrado depois do atendimento' }),
+    ).toBeNull();
+    fireEvent.change(motivo, { target: { value: 'wrong_choice' } });
+    fireEvent.click(confirmar);
+    await waitFor(() =>
+      expect(chamadas).toContainEqual({
+        chave: CORRIGIR,
+        corpo: { expectedRevision: 0, packageId: null, reason: 'wrong_choice' },
+      }),
+    );
+    const [, init] = vi
+      .mocked(fetch)
+      .mock.calls.find(([url, i]) => `${i?.method} ${String(url)}` === CORRIGIR)!;
+    expect((init?.headers as Record<string, string>)['Idempotency-Key']).toMatch(/^[0-9a-f-]{36}$/);
+    expect(
+      await within(painel).findByText(
+        'Consumo corrigido: de o pacote para avulso (correção nº 1).',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('de avulso para um pacote: só pacotes ativos do serviço com saldo; "cadastrado depois" aparece; envia a revisão que a pessoa viu', async () => {
+    const chamadas = mockApi({
+      'GET /api/auth/me': { body: usuario(PROFISSIONAL) },
+      ...catalogo,
+      'GET /api/clinics/appointments': { body: [atendido] },
+      [`GET /api/clinics/appointments/${AG}/attendance`]: {
+        body: atendimento({ packageId: null, originalPackageId: P1, consumptionRevision: 2 }),
+      },
+      'GET /api/clinics/packages': {
+        body: [
+          pacote(P1),
+          pacote(P2, { serviceId: S2 }),
+          pacote('0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e13', {
+            status: 'completed',
+            remainingSessions: 0,
+          }),
+        ],
+      },
+      [CORRIGIR]: { status: 201, body: correcao({ fromPackageId: null, toPackageId: P1 }) },
+    });
+    renderizar(<ClinicsAgendaPage />, `/clinics/agenda?dia=${DIA}`);
+    const painel = await abrirCorrecao();
+    expect(await within(painel).findByText('Avulso (sem pacote).')).toBeInTheDocument();
+    expect(within(painel).getByText('Este consumo já foi corrigido 2 vezes.')).toBeInTheDocument();
+    // avulso não é opção (já é o atual); outro serviço e o concluído também não
+    expect(within(painel).getAllByRole('radio')).toHaveLength(1);
+    fireEvent.click(
+      within(painel).getByLabelText(
+        'Pacote de 10 sessões, criado em 31/12/2029 21:00: restam 7, ficam 6',
+      ),
+    );
+    expect(
+      within(painel).getByText(/passa a consumir esta sessão: restam 7 → 6/),
+    ).toBeInTheDocument();
+    fireEvent.change(within(painel).getByRole('combobox', { name: 'Motivo da correção' }), {
+      target: { value: 'package_registered_late' },
+    });
+    fireEvent.click(within(painel).getByRole('button', { name: 'Confirmar correção' }));
+    await waitFor(() =>
+      expect(chamadas).toContainEqual({
+        chave: CORRIGIR,
+        corpo: { expectedRevision: 2, packageId: P1, reason: 'package_registered_late' },
+      }),
+    );
+  });
+
+  it('a falha ao carregar os pacotes NÃO vira avulso: o alerta, nenhuma opção, nada confirmável', async () => {
+    const chamadas = mockApi({
+      'GET /api/auth/me': { body: usuario(PROFISSIONAL) },
+      ...catalogo,
+      'GET /api/clinics/appointments': { body: [atendido] },
+      [`GET /api/clinics/appointments/${AG}/attendance`]: { body: atendimento() },
+      'GET /api/clinics/packages': { status: 500, body: { message: 'x' } },
+    });
+    renderizar(<ClinicsAgendaPage />, `/clinics/agenda?dia=${DIA}`);
+    const painel = await abrirCorrecao();
+    expect(
+      await within(painel).findByText(
+        'Não foi possível carregar o consumo atual e os pacotes. Sem eles, nada é corrigido.',
+      ),
+    ).toBeInTheDocument();
+    expect(within(painel).queryAllByRole('radio')).toHaveLength(0);
+    expect(within(painel).getByRole('button', { name: 'Confirmar correção' })).toBeDisabled();
+    expect(chamadas.some((c) => c.chave === CORRIGIR)).toBe(false);
+  });
+
+  it('a recusa (outra pessoa corrigiu antes, 409): a mensagem do servidor, tudo relido e a escolha desfeita', async () => {
+    let leituras = 0;
+    mockApi({
+      'GET /api/auth/me': { body: usuario(PROFISSIONAL) },
+      ...catalogo,
+      'GET /api/clinics/appointments': { body: [atendido] },
+      [`GET /api/clinics/appointments/${AG}/attendance`]: () => {
+        leituras += 1;
+        return { body: atendimento() };
+      },
+      'GET /api/clinics/packages': { body: [pacote(P1), P2_MESMO] },
+      [CORRIGIR]: {
+        status: 409,
+        body: { message: 'O consumo deste atendimento mudou; recarregue.' },
+      },
+    });
+    renderizar(<ClinicsAgendaPage />, `/clinics/agenda?dia=${DIA}`);
+    const painel = await abrirCorrecao();
+    fireEvent.click(await within(painel).findByLabelText('Avulso (sem pacote)'));
+    fireEvent.change(within(painel).getByRole('combobox', { name: 'Motivo da correção' }), {
+      target: { value: 'wrong_choice' },
+    });
+    fireEvent.click(within(painel).getByRole('button', { name: 'Confirmar correção' }));
+    expect(
+      await within(painel).findByText('O consumo deste atendimento mudou; recarregue.'),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(leituras).toBeGreaterThanOrEqual(2));
+    await waitFor(() => {
+      for (const r of within(painel).getAllByRole('radio')) expect(r).not.toBeChecked();
+    });
+    expect(within(painel).getByRole('button', { name: 'Confirmar correção' })).toBeDisabled();
+  });
+
+  it.each([
+    ['a recepção (sem care)', RECEPCAO, 'at1'],
+    ['quem escreve sem ler pacotes', ESCREVE_SEM_LER, 'at1'],
+    ['o atendimento ainda não registrado', PROFISSIONAL, null],
+  ] as [string, string[], string | null][])(
+    '%s: nenhuma ação de corrigir',
+    async (_c, perms, attendanceId) => {
+      mockApi({
+        'GET /api/auth/me': { body: usuario(perms) },
+        ...catalogo,
+        'GET /api/clinics/appointments': {
+          body: [{ ...agendamento, status: 'attended', attendanceId }],
+        },
+        'GET /api/clinics/packages': { body: [] },
+      });
+      renderizar(<ClinicsAgendaPage />, `/clinics/agenda?dia=${DIA}`);
+      expect(await screen.findByText('Paciente Fictícia')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^Corrigir consumo:/ })).toBeNull();
+    },
+  );
+});
+
 describe('ficha do paciente', () => {
   const ficha = (permissoes: string[], extra: Record<string, Rota> = {}) =>
     mockApi({
@@ -691,6 +895,88 @@ describe('ficha do paciente', () => {
         name: 'Pacote de 10 sessões de Limpeza, criado em 31/12/2029 21:00',
       }),
     ).toBeNull();
+  });
+
+  it('as sessões do pacote: quem consome agora, com o profissional, e as correções com o sentido e o motivo', async () => {
+    ficha(PROFISSIONAL, {
+      'GET /api/clinics/packages': { body: [pacote(P1)] },
+      [`GET /api/clinics/packages/${P1}/sessions`]: {
+        body: {
+          packageId: P1,
+          sessions: [
+            {
+              attendanceId: 'a1',
+              appointmentId: AG,
+              professionalId: ANA,
+              completedAt: '2030-11-04T13:00:00.000Z',
+              consumptionRevision: 1,
+            },
+          ],
+          corrections: [
+            {
+              id: 'c1',
+              attendanceId: 'a1',
+              appointmentId: AG,
+              fromPackageId: null,
+              toPackageId: P1,
+              revision: 1,
+              reason: 'package_registered_late',
+              correctedByMembershipId: 'm1',
+              createdAt: '2030-11-05T12:00:00.000Z',
+            },
+          ],
+        },
+      },
+    });
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'Sessões: Pacote de 10 sessões de Limpeza, criado em 31/12/2029 21:00',
+      }),
+    );
+    const painel = await screen.findByRole('dialog', { name: 'Sessões do pacote' });
+    expect(
+      await within(painel).findByText(/Consomem este pacote agora \(1 de 10\)/),
+    ).toBeInTheDocument();
+    expect(
+      await within(painel).findByText(/04\/11\/2030 10:00 · Ana Fictícia · consumo corrigido/),
+    ).toBeInTheDocument();
+    expect(
+      within(painel).getByText(
+        /05\/11\/2030 09:00 · de avulso para este pacote · Pacote cadastrado depois do atendimento/,
+      ),
+    ).toBeInTheDocument();
+    expect(within(painel).queryByText(/Mostrando as 100/)).toBeNull();
+  });
+
+  it('com 100 correções, a tela diz que a lista pode estar cortada', async () => {
+    const cem = Array.from({ length: 100 }, (_, i) => ({
+      id: `c${i}`,
+      attendanceId: 'a1',
+      appointmentId: AG,
+      fromPackageId: i % 2 ? P1 : null,
+      toPackageId: i % 2 ? null : P1,
+      revision: 100 - i,
+      reason: 'wrong_choice',
+      correctedByMembershipId: 'm1',
+      createdAt: '2030-11-05T12:00:00.000Z',
+    }));
+    ficha(PROFISSIONAL, {
+      'GET /api/clinics/packages': { body: [pacote(P1)] },
+      [`GET /api/clinics/packages/${P1}/sessions`]: {
+        body: { packageId: P1, sessions: [], corrections: cem },
+      },
+    });
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: 'Sessões: Pacote de 10 sessões de Limpeza, criado em 31/12/2029 21:00',
+      }),
+    );
+    const painel = await screen.findByRole('dialog', { name: 'Sessões do pacote' });
+    expect(
+      await within(painel).findByText(/Mostrando as 100 correções mais recentes/),
+    ).toBeInTheDocument();
   });
 
   it('novo pacote: a confirmação mostra o que fica congelado e que o preço não é pagamento; envia centavos inteiros', async () => {

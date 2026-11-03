@@ -2787,3 +2787,15 @@ O usuário entra e troca para o workspace Demonstração. Depois:
 - **O run 41651171010:** os quatro jobs verdes; o `Staging` confirmou a base `df94fb5` pela `STAGING_BASE`, publicou o `8db9851` (deploy `qmfvgsgywuvtlqwf7e8gvank`, 14:26 às 14:31 UTC), conferiu o commit no ar e a saúde, e registrou a publicação.
 - **De fora,** às 14:31 UTC: `/api/health` 200 e a tela 200. A `STAGING_BASE` foi apagada logo depois.
 - **A sincronização no `demo`,** autorizada (§7.1) e rodada pelo usuário no terminal do container `api`: `Papel criado em demo: "Recepção e atendimento" (clinics:reception-care), com a matriz padrão e SEM nenhum membro` e `Sem divergência com a matriz padrão`.
+
+### A janela da F5.2a (2026-11-03): concluída, com a verificação do consumo PENDENTE
+
+- **O roteiro:** o §4.2, sem fixar o recurso (decisão do usuário), executado pelo usuário no terminal do servidor e no painel, das 19:13 às ~19:40 UTC.
+- **O diagnóstico (bloco A):** a API no `bba29b8`, 58 migrations, o status em dia, a saúde 200, o Clinics ativo só no `demo` (6 contatos, 6 pacientes e 5 agendamentos), e o `restic` sem destino.
+- **A barreira (bloco 1):** a trava ligada no banco `veyra` às 19:17:31 UTC, a API e o `web` parados, e 502 de fora.
+- **O snapshot:** `/root/veyra-f52a/janela-20261103T192000Z.dump` (3,4 MB), lido por inteiro, com 74 tabelas contadas. **O `demo` não tem nenhum pacote.**
+- **A imagem nova, em manutenção:** o Deploy pelo painel, com o `SOURCE_COMMIT` `f860cc2` e `MAINTENANCE_MODE=true`.
+- **A migration:** aplicada; o status em dia; nenhum pacote, nenhuma correção e nenhum atendimento com o consumo mudado.
+- **A retomada:** a trava desligada, o Deploy com `MAINTENANCE_MODE=false` e `DISABLE_JOBS=false`, e a saúde 200 de fora. A `STAGING_BASE` ficou com o `f860cc2`, gravada por Claude com o `gh`.
+- **A verificação funcional do consumo NÃO foi feita:** sem pacote no `demo`, o atendimento fictício de teste não aconteceu. Ela fica **pendente** no staging. A F5.2b traz as telas e o E2E do fluxo (pacote, registro, correção e saldo), que rodam no CI, não no staging.
+- **O que veio depois:** o usuário recusou repetir a operação manual. A automação da publicação com migrations (ADR-060) ficou preservada na branch `proposta/publicacao-automatica` (`6e38078`), sem publicar, para uma revisão de escopo posterior.

@@ -10123,6 +10123,8 @@ O procedimento está no DEPLOY_STAGING §4.2 e usa peças que já existem e fora
 - **Uma interrupção antes de a migration entrar** volta ao código no ar, sem tocar o banco (§4.2).
 - **A verificação da janela não faz correção.**
 
+**A publicação (2026-11-03):** a janela do DEPLOY_STAGING §4.2 foi executada pelo usuário e terminou com o staging no `f860cc2`, a migration aplicada e a saúde 200. **A verificação funcional do consumo ficou PENDENTE:** o `demo` não tinha pacote, e o atendimento fictício de teste não aconteceu. A F5.2b traz as telas e o E2E do fluxo completo, que rodam no CI.
+
 **Pontos que ficam registrados:**
 
 - **LGPD (ADR-048 §9.2, D5 e B3):** `ClinicsAttendance_is_kept` e `ClinicsPackageCorrection_is_final` recusam apagar atendimento e correção fora da cascata do workspace. Isso é coerente com a recusa provisória do §9.1, mas a política definitiva de exclusão, quando decidida, precisa revisitar os dois gatilhos.

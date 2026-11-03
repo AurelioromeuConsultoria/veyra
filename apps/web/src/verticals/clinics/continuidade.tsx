@@ -1,5 +1,6 @@
 import {
   horaLocal,
+  type ClinicsPackageCorrectionReason,
   type ClinicsPackageStatus,
   type ClinicsReturnCancelReason,
   type ClinicsReturnStatus,
@@ -35,6 +36,12 @@ export const ROTULO_DO_PACOTE: Record<ClinicsPackageStatus, string> = {
   active: 'Ativo',
   completed: 'Concluído',
   canceled: 'Cancelado',
+};
+
+/** O motivo da correção de consumo (ADR-059): lista fechada, sem texto livre. */
+export const ROTULO_DO_MOTIVO_DA_CORRECAO: Record<ClinicsPackageCorrectionReason, string> = {
+  wrong_choice: 'Escolha errada no registro',
+  package_registered_late: 'Pacote cadastrado depois do atendimento',
 };
 
 /**

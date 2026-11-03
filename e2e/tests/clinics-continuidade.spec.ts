@@ -231,6 +231,82 @@ test.describe('Clinics — continuidade (pacotes, retornos e faltas)', () => {
     }
   });
 
+  test('F5.2b: o profissional corrige na agenda o consumo do pacote para avulso; a sessão volta ao pacote, e a ficha mostra a sessão e a correção', async ({
+    page,
+  }) => {
+    const db = await openE2eDb();
+    try {
+      const c = await cenario(db);
+      await agendamento(db, c, '21:00', 'confirmed');
+      const { rows } = await db.query<{ id: string }>(
+        `INSERT INTO "ClinicsPackage" ("id","workspaceId","patientId","serviceId","totalSessions","currency","createdByMembershipId")
+         VALUES (gen_random_uuid(), $1, $2, $3, 10, 'BRL', $4) RETURNING "id"`,
+        [c.ws, c.pacienteId, c.servicoId, c.dono],
+      );
+      const pacote = rows[0].id;
+      await login(page, PROF_C);
+      await registrarNaAgenda(page, c, c.dia, '21:00', {
+        pacote: /^Pacote de 10 sessões, criado em .+: restam 10, ficam 9 depois deste atendimento$/,
+        botao: /^Registrar e consumir 1 sessão do pacote criado em .+ \(restam 10 → 9\)$/,
+        saldo: /^Saldo no servidor: pacote de 10 sessões, criado em .+: restam 9\.$/,
+      });
+
+      // a correção, pela tela: o consumo atual, a escolha, o saldo antes e depois e o motivo
+      const cartao = page.getByRole('article', { name: `Agendamento ${quem('21:00', c)}` });
+      await cartao.getByRole('button', { name: `Corrigir consumo: ${quem('21:00', c)}` }).click();
+      const painel = page.getByRole('dialog', { name: 'Corrigir consumo' });
+      await expect(
+        painel.getByText(/^Uma sessão do pacote de 10 sessões, criado em .+: restam 9\.$/),
+      ).toBeVisible();
+      const confirmar = painel.getByRole('button', { name: 'Confirmar correção' });
+      await expect(confirmar).toBeDisabled();
+      await painel.getByLabel('Avulso (sem pacote)').check();
+      await expect(painel).toContainText('recebe a sessão de volta: restam 9 → 10');
+      await expect(confirmar).toBeDisabled();
+      await painel.getByLabel('Motivo da correção').selectOption('wrong_choice');
+      await confirmar.click();
+      await expect(painel.getByRole('status')).toHaveText(
+        'Consumo corrigido: de o pacote para avulso (correção nº 1).',
+      );
+
+      // no banco: a sessão voltou, o vigente é avulso, o original não mudou, uma correção
+      const estado = await db.query<{
+        consumidas: number;
+        vigente: string | null;
+        original: string;
+        revisao: number;
+        correcoes: number;
+      }>(
+        `SELECT p."consumedSessions" AS consumidas, a."currentPackageId" AS vigente,
+                a."packageId" AS original, a."consumptionRevision" AS revisao,
+                (SELECT count(*)::int FROM "ClinicsPackageCorrection" k WHERE k."attendanceId" = a."id") AS correcoes
+           FROM "ClinicsAttendance" a JOIN "ClinicsPackage" p ON p."id" = $1
+          WHERE a."packageId" = $1`,
+        [pacote],
+      );
+      expect(estado.rows).toEqual([
+        { consumidas: 0, vigente: null, original: pacote, revisao: 1, correcoes: 1 },
+      ]);
+      await painel.getByRole('button', { name: 'Concluir' }).click();
+      await expect(painel).toBeHidden();
+
+      // a ficha: o saldo de volta e as sessões do pacote com a correção
+      await page.goto(`/clinics/patient?id=${c.pacienteId}`);
+      const pacotes = page.getByRole('region', { name: 'Pacotes do paciente' });
+      const linha = pacotes.getByRole('row', { name: `Pacote de 10 sessões de ${c.servico}` });
+      await expect(linha).toContainText('0 de 10');
+      await linha.getByRole('button', { name: /^Sessões:/ }).click();
+      const sessoes = page.getByRole('dialog', { name: 'Sessões do pacote' });
+      await expect(sessoes).toContainText('Consomem este pacote agora (0 de 10)');
+      await expect(sessoes).toContainText('Nenhuma sessão consumida.');
+      await expect(sessoes).toContainText(
+        'de este pacote para avulso · Escolha errada no registro',
+      );
+    } finally {
+      await db.end();
+    }
+  });
+
   test('a recepção não vê pacotes nem dados de atendimento: a ficha sem a seção, nenhuma consulta, e a API recusa; o cancelado clínico aparece genérico', async ({
     page,
   }) => {

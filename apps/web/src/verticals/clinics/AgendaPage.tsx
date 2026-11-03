@@ -28,6 +28,7 @@ import {
   diaDaSemana,
   horariosLivres,
 } from './agenda/slots';
+import { CorrecaoDeConsumo } from './agenda/CorrecaoDeConsumo';
 import { RegistroDeAtendimento } from './agenda/RegistroDeAtendimento';
 import { VinculoComOportunidade } from './agenda/VinculoComOportunidade';
 
@@ -108,6 +109,8 @@ function AgendaReady() {
   const { data: user } = useSession();
   const podeMarcar = hasPermission(user, 'clinics:schedule:write');
   const podeAtender = hasPermission(user, 'clinics:care:write');
+  // a correção do consumo pede as mesmas chaves do registro com pacote (ADR-059)
+  const podeCorrigir = podeAtender && hasPermission(user, 'clinics:care:read');
   // o vínculo com a oportunidade (F4.4): ler exige os pipelines
   const podeVerOportunidade = hasPermission(user, 'pipelines:read');
   const minhaConta = user?.activeMembership?.membershipId ?? null;
@@ -291,6 +294,7 @@ function AgendaReady() {
                       agendamento={agendamento}
                       podeMarcar={podeMarcar}
                       podeAtender={podeAtender}
+                      podeCorrigir={podeCorrigir}
                       podeVerOportunidade={podeVerOportunidade}
                       fuso={unidade?.timezone ?? null}
                       // profissional arquivado: o drawer não teria serviços nem horários
@@ -336,6 +340,7 @@ function CartaoDeAgendamento({
   agendamento,
   podeMarcar,
   podeAtender,
+  podeCorrigir,
   podeVerOportunidade,
   fuso,
   podeRemarcar,
@@ -344,6 +349,7 @@ function CartaoDeAgendamento({
   agendamento: ClinicsAppointmentDto;
   podeMarcar: boolean;
   podeAtender: boolean;
+  podeCorrigir: boolean;
   podeVerOportunidade: boolean;
   fuso: string | null;
   podeRemarcar: boolean;
@@ -352,6 +358,7 @@ function CartaoDeAgendamento({
   const queryClient = useQueryClient();
   const [cancelando, setCancelando] = useState(false);
   const [registrando, setRegistrando] = useState(false);
+  const [corrigindo, setCorrigindo] = useState(false);
   const [oportunidade, setOportunidade] = useState(false);
   const [motivo, setMotivo] = useState<ClinicsCancelReason | ''>('');
   const recarregar = () => void queryClient.invalidateQueries({ queryKey: AGENDA_KEY });
@@ -438,6 +445,16 @@ function CartaoDeAgendamento({
                 Registrar atendimento
               </Button>
             ) : null}
+            {podeCorrigir && agendamento.attendanceId ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                aria-label={`Corrigir consumo: ${quem}`}
+                onClick={() => setCorrigindo(true)}
+              >
+                Corrigir consumo
+              </Button>
+            ) : null}
             {podeVerOportunidade ? (
               <Button
                 size="sm"
@@ -498,6 +515,16 @@ function CartaoDeAgendamento({
             fuso={fuso}
             onAgendaMudou={recarregar}
             onDone={() => setRegistrando(false)}
+          />
+        ) : null}
+      </Drawer>
+      <Drawer open={corrigindo} onOpenChange={setCorrigindo} title="Corrigir consumo">
+        {corrigindo ? (
+          <CorrecaoDeConsumo
+            agendamento={agendamento}
+            fuso={fuso}
+            onAgendaMudou={recarregar}
+            onDone={() => setCorrigindo(false)}
           />
         ) : null}
       </Drawer>
