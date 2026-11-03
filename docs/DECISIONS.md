@@ -9362,7 +9362,7 @@ O que as revisões corrigiram:
 
 ## ADR-056 — Quem acumula funções na clínica: papéis combinados do vertical (F5.1b, D7)
 
-**Status:** APROVADO pelo usuário em 2026-11-02, com as condições abaixo. **Implementado em commit local** (2026-11-02), revisado por `reviewer` e `security`; sem push, deploy nem sincronização no staging. **A F5.1b fecha no escopo entregue** (decisão do usuário, 2026-11-02), com o adendo 1. Ela não resolve todo o problema de autoridade na ativação: a janela dos papéis do Core segue aberta, na proposta separada do ADR-057. · **Data:** 2026-11-02
+**Status:** APROVADO pelo usuário em 2026-11-02, com as condições abaixo. **Implementado** (2026-11-02), revisado por `reviewer` e `security`. **Publicado em 2026-11-03,** no staging com o `8db9851`, pelo job `Staging` (ADR-058); a sincronização no `demo` rodou no mesmo dia e criou "Recepção e atendimento" (`clinics:reception-care`) sem nenhum membro e sem divergência. **A F5.1b fecha no escopo entregue** (decisão do usuário, 2026-11-02), com o adendo 1. Ela não resolve todo o problema de autoridade na ativação: a janela dos papéis do Core segue aberta, na proposta separada do ADR-057. · **Data:** 2026-11-02
 
 **Contexto.**
 
@@ -9833,3 +9833,152 @@ Os dois valiam para deploys manuais pelo painel. A publicação comum agora segu
   - os quatro jobs;
   - o `Staging`, com a base `df94fb5` confirmada pela `STAGING_BASE`, o commit publicado igual ao testado, a saúde e o registro.
 - **O segundo run** é o primeiro com a base vinda de um deploy do próprio job, pela API. Ele prova o registro e o `is_webhook` falso no Coolify real.
+- **O primeiro run, em 2026-11-03** (run 41651171010): os quatro jobs verdes, a base `df94fb5` confirmada pela `STAGING_BASE`, o `8db9851` publicado e conferido no Coolify às 14:31 UTC, a saúde 200 e o registro `success` no `staging-conferido`. A `STAGING_BASE` foi apagada em seguida. O segundo run ainda não aconteceu.
+
+## ADR-059 — Correção de um consumo de pacote registrado por engano (F5.2)
+
+**Status:** PROPOSTO (2026-11-03). Nenhum código autorizado: o plano, as operações e as permissões vão à revisão do usuário antes (ROADMAP, F5.2). · **Data:** 2026-11-03
+
+**Contexto.**
+
+- **Hoje o consumo não tem volta.** O registro de atendimento escolhe avulso ou um pacote (ADR-048 adendo 7, F3.1), e o banco fixa a escolha:
+  - o gatilho `clinics_attendance_package_is_final` recusa mudar o `packageId` do atendimento;
+  - o gatilho `clinics_package_guard` só deixa o contador subir de um em um, e pacote encerrado não muda mais.
+- **O efeito de um engano:** a sessão fica no pacote errado ou fora do pacote certo. Num pacote concluído pela sessão errada, o paciente perde uma sessão, e nada no sistema a devolve.
+- **O que já foi decidido** (adendo 7, item 9): a correção é obrigatória antes do piloto; o atendimento original nunca é apagado; o ajuste é um lançamento próprio, com quem, quando e o motivo por lista fechada. O item 3 do mesmo adendo diz que uma correção muda a regra do contador "com ADR próprio": é este.
+- **Os critérios do ROADMAP:** preservar o atendimento e o lançamento original; registrar quem corrigiu e o motivo; impedir a devolução duplicada da sessão; ser consistente com concorrência, repetição e pacote cancelado ou concluído. Ajuste de sessões não é estorno financeiro.
+
+**O que a correção é, e o que não é.**
+
+- **É:** trocar o consumo de um atendimento já registrado, numa destas três formas:
+  - do pacote P para avulso;
+  - de avulso para o pacote P;
+  - do pacote P para o pacote Q.
+- **Não é:**
+  - desfazer o atendimento. O agendamento continua `attended`, e o registro, os retornos e a taxa de faltas não mudam. Desfazer um atendimento registrado por engano é outra decisão;
+  - mudar total, preço, paciente ou serviço de um pacote;
+  - reabrir à mão um pacote cancelado;
+  - estorno, crédito ou qualquer efeito financeiro (a D1 e a F6).
+
+**Decisões propostas.**
+
+1. **O lançamento original fica, e a correção é um lançamento próprio, só de acréscimo.**
+   - **`ClinicsAttendance.packageId` continua imutável.** Ele é a escolha feita no registro.
+   - **Coluna nova, `ClinicsAttendance.currentPackageId`: o consumo vigente.** Ela nasce igual ao `packageId` (o banco força) e só muda pela inserção de uma correção. Os atendimentos existentes são preenchidos com o próprio `packageId`, na migration.
+   - **Tabela nova, `ClinicsPackageCorrection`** (classe S, sem texto livre):
+     - o atendimento, o consumo anterior (`fromPackageId`) e o novo (`toPackageId`), os dois anuláveis (avulso);
+     - o motivo (item 5);
+     - quem corrigiu (FK composta para a membership);
+     - quando, pelo relógio do banco (ADR-049).
+
+     Ela nunca é alterada nem apagada; só sai na cascata do workspace.
+
+   - **O banco amarra a correção ao vigente.** O gatilho da inserção trava o atendimento, recusa a correção cujo "de" não é o consumo vigente e passa o vigente para o "para". Fora desse gatilho, o `currentPackageId` não muda: o guarda do atendimento recusa.
+   - **Mesmo paciente e mesmo serviço, garantidos por FK composta,** como no vínculo do retorno (F3.2). A correção leva o paciente e o serviço do agendamento, e cada pacote referido precisa ter os mesmos.
+   - **Uma correção errada se corrige com outra,** sempre a partir do vigente. Nada é editado.
+
+2. **O contador: a igualdade passa a ser garantida pelo banco.**
+   - **A definição nova:** `consumedSessions` é o número de atendimentos cujo consumo **vigente** é o pacote.
+   - **Hoje a igualdade depende do caminho único de escrita** (adendo 7, item 3). A correção abre um segundo caminho, e é aí que uma garantia por convenção fica frágil.
+   - **A proposta:** um gatilho de restrição **adiado para o `COMMIT`**, em `ClinicsPackage` e em `ClinicsAttendance`. Ele recalcula a contagem de cada pacote tocado na transação e, se divergir, desfaz a transação inteira. Vale para os três caminhos: o registro, o cancelamento e a correção.
+   - **O custo:** uma contagem indexada por pacote tocado, no fim da transação, com um índice novo em `(workspaceId, currentPackageId)`.
+   - **A consulta de conferência do runbook** (DEPLOY_STAGING §7.1) passa a contar pelo consumo vigente.
+
+3. **Os estados do pacote na correção.**
+   - **Devolver a sessão a P:**
+     - **P ativo:** as consumidas descem uma.
+     - **P concluído:** as consumidas descem uma, e P volta a ativo, com o `closedAt` nulo. A conclusão é consequência do contador: com a sessão devolvida, ela deixa de ser verdade, e o paciente pode usar a sessão. Não é a reabertura manual, que continua fora.
+     - **P cancelado:** as consumidas descem uma, e P **continua cancelado**. O cancelamento foi decisão de alguém e não se desfaz por correção. O contador fica certo para o histórico e para a F6, e o saldo não é usável.
+   - **Consumir de Q:** as mesmas condições do registro. Q precisa ser do mesmo paciente e serviço do agendamento, estar ativo e ter saldo.
+     - Com Q concluído ou cancelado, a resposta é 409, e nada muda, nem a devolução a P.
+     - Se a correção leva Q ao total, Q passa a concluído na mesma instrução, pelo gatilho de hoje.
+   - **O guarda do pacote passa a aceitar a descida de uma sessão nesses três casos.** Quem garante que ela corresponde a uma sessão de fato devolvida é a igualdade conferida no `COMMIT` (item 2).
+
+4. **Repetição e concorrência.**
+   - **O pedido leva três coisas:** o consumo que a pessoa viu (`expectedPackageId`), o novo (`packageId`, ou nulo para avulso) e o motivo.
+   - **Quando o vigente já não é o esperado:**
+     - se a última correção do atendimento é exatamente este pedido (mesmo "de", "para" e motivo), ela é devolvida, sem novo efeito;
+     - senão, 409 neutro: "o consumo deste atendimento mudou; recarregue".
+
+     **É isso que impede a devolução duplicada:** a segunda tentativa nunca acha a sessão ainda no pacote.
+
+   - **Pedir como novo o consumo que já é o vigente** é 400.
+   - **A ordem das travas** é a do registro: o agendamento, depois os pacotes em ordem de id. O registro trava o agendamento e um pacote; o cancelamento, só o pacote. Não há ciclo.
+   - **As corridas têm teste com a ordem forçada,** como na F3.1:
+     - duas correções do mesmo atendimento;
+     - uma correção e o registro de outro atendimento disputando a última sessão de Q;
+     - uma correção e o cancelamento de P, e de Q, nas duas ordens;
+     - uma correção e a conclusão de P pela última sessão.
+
+5. **O motivo: lista fechada, sem texto livre (H7).**
+   - **`wrong_choice`, "escolha errada no registro":** o pacote errado, o avulso por esquecimento ou o pacote por engano.
+   - **`package_registered_late`, "pacote cadastrado depois do atendimento":** o paciente já tinha contratado o pacote, mas ele só entrou no sistema depois. Vale só de avulso para pacote, e só para um pacote criado depois do registro do atendimento, pelo relógio do banco nos dois lados (ADR-049); o servidor confere.
+   - **O que o motivo não cobre:** uma decisão comercial posterior, como uma cortesia ou um pacote contratado depois para absorver uma sessão anterior. Isso não é engano e fica para a F6. O sistema não distingue "cadastrado depois" de "contratado depois": quem corrige declara o motivo e responde por ele na trilha.
+
+6. **Permissões: as mesmas do consumo no registro, sem chave nova.**
+   - **Corrigir exige `clinics:care:write` e `clinics:care:read`,** as mesmas de quem registra o atendimento e escolhe o pacote.
+   - **Por quê:** a correção não dá poder novo. Quem registra já escolhe avulso ou qualquer pacote elegível no registro. A correção dá a mesma escolha depois, com uma trilha mais forte: o motivo e o histórico visível.
+   - **A alternativa considerada, uma chave própria** (por exemplo, `clinics:packages:correct`): deixaria a clínica restringir a correção ao gestor. Ela não entra agora, porque uma chave nova precisa chegar aos papéis dos workspaces já ativos, e a concessão a papéis do Core na ativação é a janela aberta do ADR-057. Se a operação pedir essa restrição, ela entra depois do ADR-057.
+   - **Quem só tem a agenda** não vê consumo, pacote nem correção, como hoje (ADR-048 §5).
+
+7. **O que aparece, e onde.**
+   - **A API:**
+     - `POST /clinics/appointments/:id/attendance/package-correction`: corrige, com `care:write` e `care:read`;
+     - `GET /clinics/packages/:id/sessions`: as sessões que consomem o pacote agora e as correções que o tocaram, com `care:read`;
+     - o DTO do atendimento: `packageId` passa a ser o consumo vigente, e entram `originalPackageId` e o número de correções. A repetição do registro continua comparando com a escolha original, porque é o mesmo pedido de antes.
+   - **A tela:**
+     - no painel de pacotes do paciente, cada pacote mostra as sessões consumidas e as correções;
+     - no atendimento registrado, na agenda, a ação "Corrigir consumo", com: o consumo atual, a escolha nova, o saldo antes e depois dos dois pacotes, o motivo e a confirmação.
+
+     Valem as regras do registro: nada vem marcado, e uma falha ao carregar os pacotes nunca vira "avulso".
+
+8. **Auditoria** (allowlist; só ids, contagens e enums):
+   - `clinics.package.consumption_corrected`: o atendimento, o "de", o "para", o motivo e, de cada pacote, as consumidas e o estado antes e depois. A volta de P a ativo aparece aqui;
+   - `clinics.package.completed`, quando a correção conclui Q.
+
+9. **Banco** (migration transacional, ADR-051):
+   - o enum do motivo e a tabela, com as FKs compostas `NO ACTION` e o workspace em cascata;
+   - a coluna `currentPackageId`, preenchida na mesma transação, com a FK composta e o índice;
+   - os gatilhos: a correção só de acréscimo; o vigente só pela correção; a descida no guarda do pacote; a igualdade adiada;
+   - o ensaio da falha forçada, com a conferência dos dados (o preenchimento) e o inventário no runbook;
+   - o modelo no registro do vertical, no `check:fk` e na presença da porta E6.
+
+10. **Testes previstos:**
+    - as três formas, com P e Q nos três estados;
+    - a igualdade conferida ao fim de cada cenário, e a recusa no `COMMIT` quando um caminho a quebra;
+    - a repetição idêntica, a repetição com outro pedido e o "esperado" velho;
+    - as corridas do item 4;
+    - as permissões, e quem só tem a agenda sem ver nada;
+    - outro paciente, outro serviço e outro workspace;
+    - o motivo `package_registered_late` fora das condições dele;
+    - a imutabilidade da correção e do `packageId` original;
+    - mutações em cada garantia.
+
+**Divisão em entregas,** cada uma com `reviewer`, `security`, mutações e bateria:
+
+- **F5.2a:** a migration, a API e os testes;
+- **F5.2b:** as telas e o e2e.
+
+**A publicação da F5.2a no staging.** Ela traz uma migration. Pelo ADR-058, o job `Staging` recusa publicar uma migration, mesmo aditiva e compatível, porque as migrations não rodam na subida: o `00ef0ba` continua sendo decisão separada. Então a F5.2a pede uma janela (DEPLOY_STAGING §4.1), ou a decisão sobre o `00ef0ba` antes do push dela.
+
+**Integrar ou construir.** Não há ferramenta madura que dispense as invariantes do próprio vertical. A opção é construir.
+
+**Fica fora:**
+
+- desfazer um atendimento;
+- correção em lote;
+- prazo para corrigir;
+- reabertura manual de pacote;
+- qualquer efeito financeiro;
+- uso pela IA, que não ganha ferramenta;
+- notificações.
+
+**Decisões para aprovação:**
+
+1. o lançamento próprio, com o original imutável e o vigente só pela correção (item 1);
+2. a igualdade do contador conferida pelo banco no `COMMIT` (item 2);
+3. os estados: P concluído volta a ativo, P cancelado continua cancelado, e Q precisa estar ativo (item 3);
+4. a repetição pelo "esperado" e o 409 neutro (item 4);
+5. os dois motivos, e a decisão comercial fora (item 5);
+6. as permissões do registro, sem chave nova até o ADR-057 (item 6);
+7. a divisão em F5.2a e F5.2b, e a janela ou o `00ef0ba` para publicar a F5.2a.

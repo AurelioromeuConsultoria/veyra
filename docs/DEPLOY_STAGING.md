@@ -2571,3 +2571,11 @@ O usuário entra e troca para o workspace Demonstração. Depois:
   - os Envios com "Envio simulado";
   - nenhuma repetição contínua de 409 em abas novas.
 - **Depois:** um deploy automático do staging foi proposto à parte (a branch local `proposta/deploy-automatico`, com o ADR-053, adendo 2), com as migrations na subida. **Em 2026-11-02, o usuário aprovou o ADR-058:** a publicação autorizada sobe pelo CI, depois dos quatro jobs verdes (§4.0). As migrations na subida continuam sendo uma decisão separada.
+
+### O primeiro deploy pelo CI (2026-11-03)
+
+- **A configuração (§4.0):** o Auto Deploy em "Manual deployments only", pelo usuário; o ambiente `staging` restrito à `main` e a `STAGING_BASE`, criados por Claude com o `gh`; o token e os três secrets do ambiente, pelo usuário, pela tela. Nenhum secret no repositório.
+- **O push** de `df94fb5..8db9851` (a F5.1b e o ADR-058), sem migration nem caminho guardado.
+- **O run 41651171010:** os quatro jobs verdes; o `Staging` confirmou a base `df94fb5` pela `STAGING_BASE`, publicou o `8db9851` (deploy `qmfvgsgywuvtlqwf7e8gvank`, 14:26 às 14:31 UTC), conferiu o commit no ar e a saúde, e registrou a publicação.
+- **De fora,** às 14:31 UTC: `/api/health` 200 e a tela 200. A `STAGING_BASE` foi apagada logo depois.
+- **A sincronização no `demo`,** autorizada (§7.1) e rodada pelo usuário no terminal do container `api`: `Papel criado em demo: "Recepção e atendimento" (clinics:reception-care), com a matriz padrão e SEM nenhum membro` e `Sem divergência com a matriz padrão`.
