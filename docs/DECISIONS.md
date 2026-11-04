@@ -10390,7 +10390,35 @@ O B1 só se considera levantado depois da F5.3d, com o `reviewer` e o `security`
 - **O ajuste nos testes:** dois specs do Clinics que chamam os serviços direto (G2 e G4) passaram a pôr no CLS o papel da dona, como num pedido real. Sem o papel, a permissão é negada (falha fechada), e agora isso inclui a regra uniforme.
 - **Não conferido no `demo`:** nada desta entrega foi publicado.
 - **A revisão de segurança do delta aprovou com ressalvas, todas opcionais.** A recusa da troca e da exclusão da oportunidade foi antecipada para antes da transação, sem prender trava nem conexão; a reconferência sob a trava continua. As demais ficam como pendência antes do uso real:
-  - **a nota com mais de um alvo:** o contrato aceita contato, empresa e oportunidade juntos. Excluir a empresa, ou excluir um interessado, apaga em cascata uma nota que também é de paciente, sem a chave. Não revela a classificação; só destrói. Só pela API direta;
-  - **a automação de tarefa:** ela herda o vínculo atual da tarefa de origem, mas o `{{title}}` vem do evento. Se alguém com a chave renomear a tarefa e tirar o contato antes de o job rodar, a tarefa criada fica sem pessoa e com o título antigo;
-  - **a exclusão de contato com o Clinics desativado:** ninguém exclui, nem para atender a um pedido do titular (LGPD). O caminho é reativar o Clinics para atender ao pedido;
+  - **a nota com mais de um alvo** (resolvida no adendo 4, item 3): o contrato aceita contato, empresa e oportunidade juntos. Excluir a empresa, ou excluir um interessado, apaga em cascata uma nota que também é de paciente, sem a chave. Não revela a classificação; só destrói. Só pela API direta;
+  - **a automação de tarefa** (resolvida no adendo 4, item 2): ela herdava o vínculo atual da tarefa de origem, mas o `{{title}}` vem do evento. Se alguém com a chave renomear a tarefa e tirar o contato antes de o job rodar, a tarefa criada fica sem pessoa e com o título antigo;
+  - **a exclusão de contato com o Clinics desativado:** ninguém exclui, nem para atender a um pedido do titular (LGPD). Reativar só recompõe as permissões aplicáveis (adendo 4, item 4). A política de exclusão de pacientes é pendência do B3;
   - **para a F5.3c e a F5.3d:** a automação de evento de oportunidade copia o título da oportunidade; as atividades `message_*` aparecem na timeline; a oportunidade ainda ligada a um agendamento recusa a exclusão (409). Esta revela um vínculo clínico passado, não a classificação atual.
+
+**Adendo 4 — três caminhos da própria F5.3b fechados antes da publicação (2026-11-04).** Decisão do usuário, depois do commit `5df01a5`. A recusa uniforme da exclusão de contatos, do adendo 3, foi aprovada.
+
+1. **A chave da leitura exige a que revela.** Antes, o modo era livre ao encontrar `clinics:patient-content:read`, mesmo sem `clinics:schedule:read`. Agora, ler o conteúdo de paciente exige as DUAS chaves, além da permissão do recurso. Num workspace sujeito à proteção, quem tem só a chave da leitura recebe a regra uniforme. Quem tem as duas passa sem a consulta de presença, porque nada fica oculto.
+2. **A automação usa o título e os vínculos da MESMA linha.** A tarefa criada por um evento de tarefa lê o título, o contato e a oportunidade atuais da tarefa de origem. O título do evento não é usado, porque pode ser de quando a tarefa era de um paciente.
+   - **As condições também são avaliadas sobre essa linha** (revisão de segurança do adendo 4): uma condição `title contains` não casa com o título antigo.
+   - Isso resolve o caso que estava registrado como pendência no adendo 3: a tarefa renomeada e desvinculada antes de o job rodar.
+   - Sem a origem, o título não é copiado.
+   - **Só num workspace sujeito à proteção** (a presença, pela porta do E8). No workspace que nunca teve o Clinics, a automação de tarefa é a de antes da F5.3b: o título e as condições do evento, sem vínculo herdado. Assim o CRM ali não muda, como o usuário pediu.
+3. **A exclusão que levaria em cascata uma nota oculta é recusada.** Isso vale para empresa, contato e oportunidade, e na oportunidade também para as tarefas. As notas antigas com mais de um alvo, como "da empresa e do paciente", ficam preservadas, e a exclusão responde o mesmo 403 "Conteúdo restrito", sem apagar nada.
+   - **"Oculta"** é o que quem pede não apagaria diretamente, pelo mesmo filtro das listas.
+   - **No modo uniforme**, oculto é tudo o que tem pessoa, então a recusa não distingue paciente de interessado.
+   - **A conferência roda duas vezes:** antes da transação e de novo dentro dela, o que reduz a janela sem fechá-la. Ficam como limites, porque só apagam e não revelam:
+     - **a conversão concorrente de OUTRO contato,** que torna oculta uma nota entre a conferência e o `DELETE`;
+     - **a inserção concorrente,** por quem tem a chave, de uma nota (ou tarefa) com um alvo oculto entre a conferência e o `DELETE`. Nada trava a linha da empresa ou da oportunidade, e a trava do contato (`FOR NO KEY UPDATE`) não conflita com a conferência de FK da inserção. Fechar exigiria travar a linha-mãe com `FOR UPDATE` antes da conferência; fica como pendência antes do uso real.
+   - **A criação de notas com mais de um alvo não mudou:** restringi-la deixaria as antigas expostas, e a recusa da cascata as cobre.
+4. **O roteiro da desativação:** reativar o Clinics só recompõe as permissões aplicáveis. São a matriz padrão nos papéis de sistema e o livro. As chaves de papéis personalizados não voltam. A exclusão de pacientes continua recusada, e a política dela é pendência do B3 (`DEPLOY_STAGING`, ativação do Clinics).
+5. **Sem migration, e o CRM do workspace que nunca teve o Clinics não muda:** nada é oculto ali, e as conferências novas não recusam nada.
+
+**Resultado (commit local, 2026-11-04):**
+
+- **A integração `clinics-patient-content`** passa. Os cenários novos:
+  - a chave da leitura sem a da agenda dá respostas iguais para paciente e interessado;
+  - a automação com a origem renomeada e desvinculada antes do job;
+  - as exclusões de empresa, interessado e oportunidade recusadas, sem apagar nada, com o controle sem nota oculta e o Owner excluindo;
+  - a recusa da cascata igual para paciente e interessado sem a agenda.
+  - **depois da revisão de segurança do delta,** mais três: as condições da automação sobre a linha atual; a automação de tarefa inalterada no workspace sem o Clinics; e a oportunidade só com uma tarefa oculta. São 20 cenários no total.
+- **Os specs existentes** de exclusão de empresa, contato e oportunidade, de automações, de consentimentos, de uso e das guardas do Clinics passam.

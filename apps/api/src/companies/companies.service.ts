@@ -6,8 +6,10 @@ import type {
   Paginated,
   UpdateCompanyInput,
 } from '@veyra/contracts';
+import type { AuthContext } from '../common/decorators';
 import { MudancasDeRestricao } from '../content-use/restriction-changes';
 import { CustomFieldsService } from '../custom-fields/custom-fields.service';
+import { ProtectedContentService } from '../extensions/protected-content';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { TagsService } from '../tags/tags.service';
 
@@ -35,6 +37,7 @@ export class CompaniesService {
     private readonly tags: TagsService,
     private readonly customFields: CustomFieldsService,
     private readonly restricao: MudancasDeRestricao,
+    private readonly protegido: ProtectedContentService,
   ) {}
 
   async list(input: ListCompaniesInput): Promise<Paginated<CompanyDto>> {
@@ -140,9 +143,12 @@ export class CompaniesService {
     return this.get(id);
   }
 
-  async remove(id: string): Promise<void> {
+  async remove(auth: AuthContext, id: string): Promise<void> {
     const existing = await this.prisma.db.company.findFirst({ where: { id } });
     if (!existing) throw new NotFoundException('Empresa não encontrada');
+    // as notas da empresa saem em cascata, inclusive as que também são de uma
+    // pessoa: se alguma é oculta para quem pede, nada é apagado (ADR-061, adendo 4)
+    await this.protegido.exigirCascataVisivel(auth, { notas: { companyId: id } });
     // a transação interativa das mudanças: a espera pelas linhas dos contatos
     // tem prazo (a normalização as segura pela passada inteira) e vira 409
     const db = this.prisma.db as unknown as {
@@ -168,6 +174,10 @@ export class CompaniesService {
       // quem entrou na empresa depois da leitura (as linhas acima já são nossas)
       await tx.contact.updateMany({ where: { companyId: id }, data: { companyId: null } });
       await this.customFields.deleteValues(tx, 'company', id);
+      // de novo, na transação da exclusão: reduz a janela, sem fechá-la — uma
+      // nota inserida entre esta conferência e o DELETE ainda sai na cascata
+      // (só destrói, não revela; limite registrado no ADR-061, adendo 4)
+      await this.protegido.exigirCascataVisivel(auth, { notas: { companyId: id } }, tx);
       await tx.company.deleteMany({ where: { id } });
     });
   }

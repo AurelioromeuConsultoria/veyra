@@ -12,6 +12,7 @@ import { AuditService } from '../audit/audit.service';
 import { AuthContext } from '../common/decorators';
 import { MAX_ATTEMPTS, OUTBOX_EVENTS, type ClaimedEvent } from '../outbox/outbox.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
+import { ProtectedContentService } from '../extensions/protected-content';
 import { TasksService } from '../tasks/tasks.service';
 
 type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
@@ -53,6 +54,7 @@ export class AutomationsService {
     private readonly prisma: PrismaService,
     private readonly tasks: TasksService,
     private readonly audit: AuditService,
+    private readonly protegido: ProtectedContentService,
   ) {}
 
   // ── CRUD ──────────────────────────────────────────────────────────────────
@@ -217,10 +219,9 @@ export class AutomationsService {
 
       const payload = (event.payload ?? {}) as Record<string, unknown>;
       const conditions = (automation.conditions ?? []) as AutomationCondition[];
-      const matches = conditions.every((condition) => this.matches(condition, payload));
 
       try {
-        await this.execute(event, automation.id, automation.actionConfig, payload, matches);
+        await this.execute(event, automation.id, automation.actionConfig, payload, conditions);
       } catch (error) {
         // uma automação com defeito não impede as OUTRAS de rodar…
         this.logger.error(
@@ -255,9 +256,47 @@ export class AutomationsService {
     automationId: string,
     rawConfig: unknown,
     payload: Record<string, unknown>,
-    matches: boolean,
+    conditions: readonly AutomationCondition[],
   ): Promise<void> {
+    // a regra da mesma linha vale onde há conteúdo protegido (E8): num
+    // workspace que nunca teve a extensão, o comportamento de sempre — o
+    // título e as condições do evento, sem vínculo herdado
+    const mesmaLinha =
+      event.eventType.startsWith('task.') &&
+      (await this.protegido.workspaceSujeito(event.workspaceId));
     await this.prisma.raw.$transaction(async (tx) => {
+      /**
+       * A tarefa criada por um evento de TAREFA fica com o contato e a
+       * oportunidade da tarefa de origem: o `{{title}}` dela é conteúdo de
+       * quem ela é, e a proteção das notas e tarefas (E8, ADR-061 adendo 2)
+       * segue esses vínculos. O título e os vínculos vêm da MESMA linha, a de
+       * agora: o título do evento pode ser de quando a tarefa era de outra
+       * pessoa (renomeada e desvinculada antes de o job rodar; adendo 4). Sem a
+       * origem (apagada), não se sabe de quem era: o título não é copiado.
+       * As CONDIÇÕES também são avaliadas sobre essa linha, nunca sobre o
+       * título do evento: a decisão e o efeito saem da mesma versão.
+       */
+      let alvo: { contactId?: string; dealId?: string } = {
+        contactId:
+          typeof payload.id === 'string' && event.eventType.startsWith('contact.')
+            ? payload.id
+            : undefined,
+      };
+      let dados = payload;
+      if (mesmaLinha && typeof payload.id === 'string') {
+        // `prisma.raw` (a transação do worker, cross-workspace): filtro explícito
+        const origem = await tx.task.findFirst({
+          where: { workspaceId: event.workspaceId, id: payload.id },
+          select: { contactId: true, dealId: true, title: true },
+        });
+        if (origem) {
+          alvo = { contactId: origem.contactId ?? undefined, dealId: origem.dealId ?? undefined };
+          dados = { ...payload, title: origem.title };
+        } else {
+          dados = { ...payload, title: '' };
+        }
+      }
+      const matches = conditions.every((condition) => this.matches(condition, dados));
       try {
         await tx.automationExecution.create({
           data: {
@@ -277,33 +316,10 @@ export class AutomationsService {
 
       const config = createTaskConfigSchema.parse(rawConfig);
       const dueAt = new Date(Date.now() + config.dueInDays * 24 * 60 * 60 * 1000);
-      /**
-       * A tarefa criada por um evento de TAREFA fica com o contato e a
-       * oportunidade da tarefa de origem: o `{{title}}` dela é conteúdo de
-       * quem ela é, e a proteção das notas e tarefas (E8, ADR-061 adendo 2)
-       * segue esses vínculos. Sem a origem (apagada antes de o evento rodar),
-       * não se sabe de quem era: o título dela não é copiado (falha fechada).
-       */
-      let alvo: { contactId?: string; dealId?: string } = {
-        contactId:
-          typeof payload.id === 'string' && event.eventType.startsWith('contact.')
-            ? payload.id
-            : undefined,
-      };
-      let dados = payload;
-      if (event.eventType.startsWith('task.') && typeof payload.id === 'string') {
-        // `prisma.raw` (a transação do worker, cross-workspace): filtro explícito
-        const origem = await tx.task.findFirst({
-          where: { workspaceId: event.workspaceId, id: payload.id },
-          select: { contactId: true, dealId: true },
-        });
-        if (origem) {
-          alvo = { contactId: origem.contactId ?? undefined, dealId: origem.dealId ?? undefined };
-        } else {
-          dados = { ...payload, title: '' };
-        }
-      }
-      const title = this.renderTitle(config.title, dados) || 'Tarefa da automação';
+      // sem a origem, o título dela não é copiado; o texto fixo evita a tarefa sem
+      // título (só onde vale a regra da mesma linha: fora dela, como sempre foi)
+      const renderizado = this.renderTitle(config.title, dados);
+      const title = renderizado || (mesmaLinha ? 'Tarefa da automação' : renderizado);
       const taskId = await this.tasks.createWithin(
         tx as unknown as Db,
         event.workspaceId,

@@ -1,4 +1,5 @@
 import { ForbiddenException, Inject, Injectable } from '@nestjs/common';
+import { ClsService } from 'nestjs-cls';
 import type { PermissionKey } from '@veyra/contracts';
 import { PermissionsService } from '../auth/permissions.service';
 import type { AuthContext } from '../common/decorators';
@@ -72,7 +73,23 @@ export class ProtectedContentService {
     private readonly providers: readonly ProtectedContentProvider[],
     private readonly permissions: PermissionsService,
     private readonly prisma: PrismaService,
+    private readonly cls: ClsService,
   ) {}
+
+  /**
+   * O workspace está sujeito à proteção de alguma extensão? Para quem roda
+   * FORA de um pedido (o worker de automações), sem `auth`: a consulta é
+   * feita no CLS do workspace dado. Um erro rejeita, nunca vira "não sujeito".
+   */
+  async workspaceSujeito(workspaceId: string): Promise<boolean> {
+    return this.cls.run(async () => {
+      this.cls.set('workspaceId', workspaceId);
+      for (const p of this.providers) {
+        if (await p.appliesToWorkspace()) return true;
+      }
+      return false;
+    });
+  }
 
   private modo(auth: AuthContext): Promise<Modo> {
     let modo = this.modos.get(auth);
@@ -88,11 +105,13 @@ export class ProtectedContentService {
   private async calcularModo(auth: AuthContext): Promise<Modo> {
     const filtros: Record<string, unknown>[] = [];
     for (const p of this.providers) {
-      if (await this.permissions.has(auth, p.unlockKey as PermissionKey)) continue;
+      const revela = await this.permissions.has(auth, p.revealKey as PermissionKey);
+      const libera = await this.permissions.has(auth, p.unlockKey as PermissionKey);
+      // ler o conteúdo protegido exige AS DUAS chaves (e a do recurso, na rota):
+      // a chave da leitura sozinha, sem saber quem é protegido, não libera nada
+      if (revela && libera) continue;
       if (!(await p.appliesToWorkspace())) continue;
-      if (!(await this.permissions.has(auth, p.revealKey as PermissionKey))) {
-        return { tipo: 'uniforme' };
-      }
+      if (!revela) return { tipo: 'uniforme' };
       filtros.push(p.contactFilter());
     }
     if (filtros.length === 0) return { tipo: 'livre' };
@@ -182,6 +201,33 @@ export class ProtectedContentService {
     if (!(await this.alvoOculto(auth, alvo))) return true;
     if ((await this.modo(auth)).tipo === 'uniforme') return false;
     throw new ForbiddenException(CONTEUDO_RESTRITO);
+  }
+
+  /**
+   * Excluir uma empresa, um contato ou uma oportunidade apaga em cascata as
+   * notas (e, da oportunidade, as tarefas) ligadas a ela — inclusive as que
+   * têm OUTRO alvo oculto para quem pede (uma nota da empresa e de uma pessoa protegida).
+   * Se a cascata levaria algo que quem pede não apagaria diretamente, a
+   * exclusão é recusada com o mesmo 403, e nada é apagado (ADR-061, adendo 4).
+   * No `uniforme`, oculto é tudo o que tem pessoa: a recusa não distingue
+   * a pessoa protegida das outras.
+   */
+  async exigirCascataVisivel(
+    auth: AuthContext,
+    cascata: { notas?: Record<string, unknown>; tarefas?: Record<string, unknown> },
+    db: Db = this.prisma.db,
+  ): Promise<void> {
+    const visivel = await this.visivel(auth);
+    if (Object.keys(visivel).length === 0) return;
+    const oculto = { NOT: visivel };
+    if (cascata.notas) {
+      const n = await db.note.count({ where: { AND: [cascata.notas, oculto] } } as never);
+      if (n > 0) throw new ForbiddenException(CONTEUDO_RESTRITO);
+    }
+    if (cascata.tarefas) {
+      const n = await db.task.count({ where: { AND: [cascata.tarefas, oculto] } } as never);
+      if (n > 0) throw new ForbiddenException(CONTEUDO_RESTRITO);
+    }
   }
 
   /**

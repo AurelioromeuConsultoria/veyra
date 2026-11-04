@@ -330,12 +330,20 @@ describe('Clinics — notas e tarefas de pacientes (integração, F5.3b)', () =>
     'deals:write',
   ];
   /** um papel PERSONALIZADO só com chaves do Core (como o Guest, com escrita) */
-  const operadorSemAgenda = async (workspaceId: string, email: string) => {
+  const operadorSemAgenda = async (
+    workspaceId: string,
+    email: string,
+    extras: readonly string[] = [],
+  ) => {
     const role = await prisma.raw.role.create({
       data: { workspaceId, name: `Sem agenda ${email}`, isSystem: false },
     });
     await prisma.raw.rolePermission.createMany({
-      data: SEM_AGENDA.map((permissionKey) => ({ workspaceId, roleId: role.id, permissionKey })),
+      data: [...SEM_AGENDA, ...extras].map((permissionKey) => ({
+        workspaceId,
+        roleId: role.id,
+        permissionKey,
+      })),
     });
     await createMembershipFixture(
       prisma,
@@ -531,5 +539,191 @@ describe('Clinics — notas e tarefas de pacientes (integração, F5.3b)', () =>
     expect((await conversao).status).toBe(201);
     expect((await troca).status).toBe(404);
     expect((await prisma.raw.task.findFirst({ where: { id: t } }))?.contactId).toBe(interessado);
+  });
+
+  // ── adendo 4: os três caminhos fechados antes da publicação ───────────────
+  it('adendo 4: a chave do conteúdo SEM a da agenda não libera nada — a mesma regra uniforme', async () => {
+    const operador = await operadorSemAgenda(ws.workspaceId, 'so-conteudo@veyra.test', [
+      'clinics:patient-content:read',
+    ]);
+    const p = await conteudoEquivalente(paciente);
+    const i = await conteudoEquivalente(interessado);
+    const lidoP = await leituras(operador, p);
+    expect(lidoP).toEqual(await leituras(operador, i));
+    expect(lidoP.tasks).toEqual([200, { items: [], total: 0, page: 1, pageSize: 50 }]);
+    expect(lidoP.notes).toEqual([200, []]);
+    const escritoP = await escritas(operador, p);
+    expect(escritoP).toEqual(await escritas(operador, i));
+    expect(escritoP.filter(([status]) => status === 403)).toHaveLength(7);
+  });
+
+  it('adendo 4: a automação usa o título e os vínculos da MESMA linha — renomeada e desvinculada antes do job', async () => {
+    await post('/api/automations', owner, {
+      name: 'Retorno da tarefa',
+      trigger: 'task.created',
+      action: 'create_task',
+      actionConfig: { title: 'Retorno: {{title}}', dueInDays: 1 },
+    }).expect(201);
+    const t = await tarefa({ contactId: paciente, title: 'Ligar sobre a alergia' });
+    // antes de o job rodar, quem tem a chave renomeia e desvincula
+    await enviar('patch', `/api/tasks/${t}`, owner, {
+      title: 'Ligar amanhã',
+      contactId: null,
+    }).expect(200);
+    const jobs = app.get(JobsService);
+    for (let n = 0; n < 4; n += 1) {
+      if ((await jobs.dispatchPending()).delivered === 0) break;
+    }
+    const criada = await prisma.raw.task.findFirst({
+      where: { workspaceId: ws.workspaceId, title: { startsWith: 'Retorno:' } },
+    });
+    expect(criada).toMatchObject({ title: 'Retorno: Ligar amanhã', contactId: null, dealId: null });
+    // o título antigo não está em tarefa nenhuma, livre ou não
+    expect(await prisma.raw.task.count({ where: { title: { contains: 'alergia' } } })).toBe(0);
+    // nem no que a recepção lê: listas e timelines
+    expect(
+      JSON.stringify((await get('/api/tasks?status=all', recepcao).expect(200)).body),
+    ).not.toMatch(/alergia/i);
+    for (const alvo of [`contactId=${paciente}`, `contactId=${interessado}`]) {
+      const r = await get(`/api/activities?${alvo}`, recepcao).expect(200);
+      expect(JSON.stringify(r.body)).not.toMatch(/alergia/i);
+    }
+    // a única atividade com o título antigo é a da criação, presa ao paciente
+    const comTitulo = await prisma.raw.activity.findMany({
+      where: {
+        workspaceId: ws.workspaceId,
+        payload: { path: ['title'], string_contains: 'alergia' },
+      },
+      select: { contactId: true, type: true },
+    });
+    expect(comTitulo).toEqual([{ contactId: paciente, type: 'task_created' }]);
+  });
+
+  it('adendo 4: excluir empresa, interessado ou oportunidade que levaria em cascata uma nota oculta é recusado, sem apagar nada', async () => {
+    const empresa = (await post('/api/companies', owner, { name: 'Empresa Fictícia' }).expect(201))
+      .body.id as string;
+    const dealDoPaciente = (
+      await post('/api/deals', owner, { title: 'Pacote', contactId: paciente }).expect(201)
+    ).body.id as string;
+    const dealLivre = (await post('/api/deals', owner, { title: 'Sem contato' }).expect(201)).body
+      .id as string;
+    // notas antigas com mais de um alvo (pela API: o contrato aceita)
+    const n1 = await nota({ companyId: empresa, contactId: paciente });
+    const n2 = await nota({ contactId: interessado, dealId: dealDoPaciente });
+    const n3 = await nota({ dealId: dealLivre, contactId: paciente });
+    const t3 = await tarefa({ dealId: dealLivre, contactId: paciente });
+    // a recepção não apaga nenhuma delas diretamente…
+    for (const n of [n1, n2, n3]) await enviar('delete', `/api/notes/${n}`, recepcao).expect(404);
+    // …nem pela cascata
+    for (const caminho of [
+      `/api/companies/${empresa}`,
+      `/api/contacts/${interessado}`,
+      `/api/deals/${dealLivre}`,
+    ]) {
+      const r = await enviar('delete', caminho, recepcao).expect(403);
+      expect(r.body.message).toMatch(RESTRITO);
+    }
+    expect(await prisma.raw.note.count({ where: { id: { in: [n1, n2, n3] } } })).toBe(3);
+    expect(await prisma.raw.task.count({ where: { id: t3 } })).toBe(1);
+    expect(await prisma.raw.company.count({ where: { id: empresa } })).toBe(1);
+    expect(await prisma.raw.contact.count({ where: { id: interessado } })).toBe(1);
+    // sem nada oculto na cascata, a recepção exclui como sempre
+    const outra = (await post('/api/companies', owner, { name: 'Outra' }).expect(201)).body
+      .id as string;
+    await nota({ companyId: outra, contactId: interessado });
+    await enviar('delete', `/api/companies/${outra}`, recepcao).expect(200);
+    // quem tem as duas chaves exclui, e a cascata segue
+    await enviar('delete', `/api/companies/${empresa}`, owner).expect(200);
+    expect(await prisma.raw.note.count({ where: { id: n1 } })).toBe(0);
+  });
+
+  it('adendo 4: sem a agenda, a recusa da cascata é igual para paciente e interessado', async () => {
+    const operador = await operadorSemAgenda(ws.workspaceId, 'sem-agenda@veyra.test');
+    const respostas: [number, string][] = [];
+    for (const pessoa of [paciente, interessado]) {
+      const empresa = (await post('/api/companies', owner, { name: 'Empresa' }).expect(201)).body
+        .id as string;
+      await nota({ companyId: empresa, contactId: pessoa });
+      const deal = (await post('/api/deals', owner, { title: 'Sem contato' }).expect(201)).body
+        .id as string;
+      await nota({ dealId: deal, contactId: pessoa });
+      for (const caminho of [`/api/companies/${empresa}`, `/api/deals/${deal}`]) {
+        const r = await enviar('delete', caminho, operador);
+        respostas.push([r.status, r.body.message]);
+      }
+    }
+    expect(respostas).toEqual(Array(4).fill([403, 'Conteúdo restrito']));
+  });
+
+  const rodarAutomacoes = async () => {
+    const jobs = app.get(JobsService);
+    for (let n = 0; n < 4; n += 1) {
+      if ((await jobs.dispatchPending()).delivered === 0) break;
+    }
+  };
+
+  it('adendo 4: as CONDIÇÕES da automação também leem a linha atual — o título antigo não decide nada', async () => {
+    await post('/api/automations', owner, {
+      name: 'Alergia',
+      trigger: 'task.created',
+      conditions: [{ field: 'title', op: 'contains', value: 'alergia' }],
+      action: 'create_task',
+      actionConfig: { title: 'Retorno: {{title}}', dueInDays: 1 },
+    }).expect(201);
+    const t = await tarefa({ contactId: paciente, title: 'Ligar sobre a alergia' });
+    await enviar('patch', `/api/tasks/${t}`, owner, {
+      title: 'Ligar amanhã',
+      contactId: null,
+    }).expect(200);
+    await rodarAutomacoes();
+    // a condição não casa com o título de agora: nada é criado
+    expect(await prisma.raw.task.count({ where: { title: { startsWith: 'Retorno:' } } })).toBe(0);
+    expect(
+      await prisma.raw.automationExecution.findFirst({ select: { status: true, reason: true } }),
+    ).toEqual({ status: 'skipped', reason: 'conditions_not_met' });
+  });
+
+  it('adendo 4: num workspace que nunca teve o Clinics, a automação de tarefa é a de sempre', async () => {
+    const beta = await createWorkspaceFixture(prisma, 'beta');
+    await createMembershipFixture(
+      prisma,
+      beta.workspaceId,
+      await createUserFixture(prisma, 'owner-beta@veyra.test'),
+      beta.roles.owner,
+    );
+    const dona = await loginAs('owner-beta@veyra.test');
+    await post('/api/automations', dona, {
+      name: 'Retorno',
+      trigger: 'task.created',
+      conditions: [{ field: 'title', op: 'contains', value: 'proposta' }],
+      action: 'create_task',
+      actionConfig: { title: 'Retorno: {{title}}', dueInDays: 1 },
+    }).expect(201);
+    const c = (await post('/api/contacts', dona, { name: 'Contato do Core' }).expect(201)).body
+      .id as string;
+    const t = (
+      await post('/api/tasks', dona, { title: 'Enviar proposta', contactId: c }).expect(201)
+    ).body.id as string;
+    await enviar('patch', `/api/tasks/${t}`, dona, { title: 'Ligar' }).expect(200);
+    await rodarAutomacoes();
+    // como antes da F5.3b: o título e a condição do EVENTO, sem vínculo herdado
+    const criada = await prisma.raw.task.findFirst({
+      where: { workspaceId: beta.workspaceId, title: { startsWith: 'Retorno:' } },
+    });
+    expect(criada).toMatchObject({
+      title: 'Retorno: Enviar proposta',
+      contactId: null,
+      dealId: null,
+    });
+  });
+
+  it('adendo 4: a oportunidade só com uma TAREFA oculta (sem nota) também não é apagada', async () => {
+    const dealLivre = (await post('/api/deals', owner, { title: 'Sem contato' }).expect(201)).body
+      .id as string;
+    const t = await tarefa({ dealId: dealLivre, contactId: paciente });
+    const r = await enviar('delete', `/api/deals/${dealLivre}`, recepcao).expect(403);
+    expect(r.body.message).toMatch(RESTRITO);
+    expect(await prisma.raw.task.count({ where: { id: t } })).toBe(1);
+    expect(await prisma.raw.deal.count({ where: { id: dealLivre } })).toBe(1);
   });
 });

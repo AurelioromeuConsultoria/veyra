@@ -530,6 +530,9 @@ export class ContactsService {
     // denunciaria a classificação: quem nem sabe quem é protegido não exclui
     // contato nenhum (ADR-061, adendo 3)
     await this.protegido.exigirPessoasVisiveis(auth);
+    // as notas do contato saem com ele, inclusive as que também são de OUTRA
+    // pessoa oculta para quem pede (adendo 4): nada é apagado
+    await this.protegido.exigirCascataVisivel(auth, { notas: { contactId: id } });
     const contactsLimit = await this.usage.prepareConsume(auth.workspaceId as string, 'contacts');
     // a mídia recebida do titular sai com ele, e devolve o armazenamento
     const storageLimit = await this.usage.prepareConsume(
@@ -582,7 +585,10 @@ export class ContactsService {
         // preserva o registro comercial, desvinculando o titular
         await tx.deal.updateMany({ where: { contactId: id }, data: { contactId: null } });
         await tx.task.updateMany({ where: { contactId: id }, data: { contactId: null } });
-        // remove o que é conteúdo SOBRE o titular
+        // remove o que é conteúdo SOBRE o titular — conferido de novo aqui, o
+        // que reduz a janela sem fechá-la: a trava do contato não barra a
+        // inserção de uma nota (só destrói, não revela; ADR-061, adendo 4)
+        await this.protegido.exigirCascataVisivel(auth, { notas: { contactId: id } }, tx);
         await tx.note.deleteMany({ where: { contactId: id } });
         // CustomFieldValue.entityId não tem FK (exceção documentada): limpeza aqui
         await this.customFields.deleteValues(tx, 'contact', id);

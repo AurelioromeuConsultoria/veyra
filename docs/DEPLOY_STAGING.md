@@ -1741,6 +1741,16 @@ O que `enable` faz, e não se desfaz sozinho:
   (`ClinicsSettings`) conta como presença do vertical e não é apagada por
   nenhum comando. A restrição só deixa de existir com a exclusão do workspace
   (ADR-047 §4). Ativar "só para testar" é irreversível neste sentido.
+- **Com o Clinics desativado, as notas e as tarefas de pessoas ficam ocultas
+  para todos, inclusive o Owner, e ninguém exclui contatos** (ADR-061, adendos
+  3 e 4). A desativação tira de todos as chaves `clinics:*`, e a presença
+  continua. Isso vale também para atender a um pedido de exclusão do titular.
+- **Reativar (`enable`) só recompõe as permissões aplicáveis:** a matriz padrão
+  do vertical nos papéis de sistema (Owner, Admin, Member, `Profissional` e
+  "Recepção e atendimento"), mais o livro das chaves novas. As chaves `clinics:*`
+  que um papel personalizado tinha antes da desativação não voltam. Depois da
+  reativação, quem tem as chaves volta a excluir interessados. A exclusão de
+  **pacientes** continua recusada: a política dela é pendência do B3.
 
 Para conferir que só o `demo` foi ativado:
 

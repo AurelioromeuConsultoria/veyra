@@ -19,7 +19,7 @@ import {
   listCompaniesSchema,
   updateCompanySchema,
 } from '@veyra/contracts';
-import { RequirePermissions } from '../common/decorators';
+import { AuthContext, CurrentAuth, RequirePermissions } from '../common/decorators';
 import { ZodPipe } from '../common/zod.pipe';
 import { CompaniesService } from './companies.service';
 
@@ -58,8 +58,11 @@ export class CompaniesController {
 
   @RequirePermissions('contacts:write')
   @Delete(':id')
-  async remove(@Param('id', new ParseUUIDPipe()) id: string): Promise<{ ok: true }> {
-    await this.companies.remove(id);
+  async remove(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<{ ok: true }> {
+    await this.companies.remove(auth, id);
     return { ok: true };
   }
 }

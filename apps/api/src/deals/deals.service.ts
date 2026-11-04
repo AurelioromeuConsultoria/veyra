@@ -306,11 +306,18 @@ export class DealsService {
     if (!existing) throw new NotFoundException('Oportunidade não encontrada');
     // antes da transação (sem prender a conexão dela), e de novo dentro
     await this.protegido.exigirAlvoVisivel(auth, { dealId: id });
+    // as notas e as tarefas da oportunidade saem em cascata, inclusive as que
+    // também são de OUTRA pessoa oculta para quem pede (adendo 4)
+    const cascata = { notas: { dealId: id }, tarefas: { dealId: id } };
+    await this.protegido.exigirCascataVisivel(auth, cascata);
     const db = this.prisma.db as unknown as TxRunner;
     await db.$transaction(async (tx) => {
       // apagar a oportunidade apaga as notas e as tarefas dela (cascade): de um
       // contato de conteúdo protegido, só com a chave (ADR-061, adendo 2)
       await this.protegido.exigirAlvoVisivel(auth, { dealId: id }, tx);
+      // de novo aqui: reduz a janela, sem fechá-la (a inserção concorrente de uma
+      // nota ou tarefa ainda sai na cascata; só destrói; ADR-061, adendo 4)
+      await this.protegido.exigirCascataVisivel(auth, cascata, tx);
       // ajuste #8: exclusão é SÓ AuditLog — uma Activity ligada ao Deal morreria
       // no cascade e não deixaria histórico útil
       await this.audit.record(tx, auth.workspaceId as string, 'deal.deleted', {
