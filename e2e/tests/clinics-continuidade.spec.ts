@@ -448,7 +448,7 @@ test.describe('Clinics — continuidade (pacotes, retornos e faltas)', () => {
         await page.getByLabel('Até (exclusive)').fill(somarDias(c.dia, 1));
         // exato: o painel "Por profissional" (ADR-062 adendo 1) também tem a palavra
         await page
-          .getByLabel('Profissional', { exact: true })
+          .getByRole('combobox', { name: 'Profissional', exact: true })
           .selectOption({ label: c.profissional });
       };
       const resumo = page.getByLabel('Taxa de faltas');
