@@ -601,7 +601,10 @@ describe('Clinics — o alcance clínico do profissional (integração, F5.3a)',
       await prisma.raw.rolePermission.deleteMany({
         where: { workspaceId: ws.workspaceId, permissionKey: 'clinics:care:all' },
       });
-      await prisma.raw.permissionBackfill.deleteMany({ where: { workspaceId: ws.workspaceId } });
+      // só o livro DESTA chave: a da F5.3b (ADR-061, adendo 2) tem o próprio
+      await prisma.raw.permissionBackfill.deleteMany({
+        where: { workspaceId: ws.workspaceId, permissionKey: 'clinics:care:all' },
+      });
     };
 
     it('preenche Owner, Admin e "Recepção e atendimento" (com o pré-requisito); nunca Profissional nem Member; uma vez só', async () => {
@@ -621,7 +624,9 @@ describe('Clinics — o alcance clínico do profissional (integração, F5.3a)',
         }),
       ).toBe(3);
       expect(
-        await prisma.raw.permissionBackfill.count({ where: { workspaceId: ws.workspaceId } }),
+        await prisma.raw.permissionBackfill.count({
+          where: { workspaceId: ws.workspaceId, permissionKey: 'clinics:care:all' },
+        }),
       ).toBe(3);
       // de novo: nada muda
       expect(await preencher()).toBe(0);
