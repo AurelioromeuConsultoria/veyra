@@ -58,8 +58,12 @@ test.describe('Clinics — catálogo da clínica', () => {
       await page.getByRole('button', { name: 'Salvar perfil' }).click();
       await expect(page.getByRole('status')).toContainText('Perfil salvo');
 
-      // vínculo: ação SEPARADA, com o aviso de que não muda papel nem permissões
-      await expect(page.getByText(/não muda o papel nem concede permissões/)).toBeVisible();
+      // vínculo: ação SEPARADA, com o aviso de que não muda o papel e de que define
+      // os atendimentos alcançados por quem atende (D8, ADR-061)
+      await expect(page.getByText(/não muda o papel dela/)).toBeVisible();
+      await expect(
+        page.getByText(/define quais atendimentos a pessoa lê, registra e corrige/),
+      ).toBeVisible();
       await page
         .getByRole('region', { name: /Conta vinculada/ })
         .getByRole('combobox')
