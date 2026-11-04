@@ -18,8 +18,8 @@ import { clinicsExperience } from './experience';
  * - a RAI nunca leva contato ao encaixe;
  * - com as chaves, cada bloco tem a sua: o próximo horário e os retornos com a
  *   agenda, os pacotes só com `clinics:care:read`, a ficha com a porta dela;
- * - o 400 da consulta de horários (o servidor que ainda não a aceita) é "sem
- *   dado": o bloco some, e os outros seguem.
+ * - qualquer erro da consulta de horários, inclusive um 400, aparece como
+ *   indisponível no bloco, e os outros seguem.
  */
 
 const CONVERSA = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e51';
@@ -276,7 +276,7 @@ describe('Contexto clínico da conversa (encaixe do manifesto)', () => {
     expect(
       within(clinico).getByRole('link', { name: /Abrir a ficha do paciente/ }),
     ).toHaveAttribute('href', `/clinics/patient?id=${PACIENTE}`);
-    // o intervalo pedido tem 30 dias de distância, por paciente
+    // o intervalo pedido tem 31 dias (o teto, as duas pontas incluídas), por paciente
     const pedido = chamadas.find((u) => u.startsWith('/api/clinics/appointments'))!;
     const q = new URL(pedido, 'http://x').searchParams;
     expect(q.get('patientId')).toBe(PACIENTE);
@@ -312,17 +312,18 @@ describe('Contexto clínico da conversa (encaixe do manifesto)', () => {
     ]);
   });
 
-  it('o 400 dos horários é "sem dado": o bloco some e os outros seguem', async () => {
+  it('o 400 dos horários não é "sem dado": aparece como indisponível, e os outros seguem', async () => {
     mockApi({
       ...CLINICA,
       '/api/clinics/appointments': { status: 400, body: { message: 'Data inválida' } },
     });
     const { painel } = renderizar(COMPLETO, conversa());
     const clinico = await within(painel).findByRole('region', { name: 'Contexto clínico' });
+    const proximo = await within(clinico).findByRole('group', { name: 'Próximo horário' });
+    expect(await within(proximo).findByText('Agenda indisponível agora.')).toBeInTheDocument();
+    expect(within(proximo).queryByText(/Nenhum horário/)).toBeNull();
     await waitFor(() => expect(clinico).toHaveTextContent('Limpeza de pele · 4 de 5 restantes'));
-    await assentar();
-    expect(within(clinico).queryByRole('group', { name: 'Próximo horário' })).toBeNull();
-    expect(within(clinico).queryByText('Agenda indisponível agora.')).toBeNull();
+    expect(clinico).toHaveTextContent(/1 pendente(?!s)/);
   });
 
   it('outro erro dos horários aparece como indisponível, sem dado antigo', async () => {

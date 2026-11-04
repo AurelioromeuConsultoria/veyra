@@ -43,7 +43,11 @@ export function useHojeDaUnidade(): { hoje: string | null; falhou: boolean } {
   };
 }
 
-/** Os horários do paciente num intervalo local (até 31 dias, o teto do contrato). */
+/**
+ * Os horários do paciente num intervalo local (até 31 dias, o teto do
+ * contrato). É a MESMA consulta, com a mesma chave, na ficha e no contexto
+ * clínico das Conversas: qualquer erro chega a quem chama, sem desvio.
+ */
 export function useAgendamentosDoPaciente(
   pacienteId: string,
   de: string | null,

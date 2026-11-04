@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider, focusManager } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { vi } from 'vitest';
 import { AppShell } from '../../components/layout/AppShell';
 import { ExperienceProvider } from '../../lib/experience';
@@ -147,6 +147,13 @@ const agendamento = (extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 
+/** Os parâmetros da URL atual da rota de teste (a sonda não desenha nada). */
+let paramsAtuais = new URLSearchParams();
+function SondaDaUrl() {
+  paramsAtuais = new URLSearchParams(useLocation().search);
+  return null;
+}
+
 function renderizar(ui: ReactNode, caminho = `/clinics/agenda?dia=${DIA}`) {
   render(
     <QueryClientProvider
@@ -154,6 +161,7 @@ function renderizar(ui: ReactNode, caminho = `/clinics/agenda?dia=${DIA}`) {
     >
       <MemoryRouter initialEntries={[caminho]}>
         <ExperienceProvider value={clinicsExperience}>{ui}</ExperienceProvider>
+        <SondaDaUrl />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -906,6 +914,31 @@ describe('Agenda da clínica (F2.3)', () => {
         time: '10:00',
       }),
     );
+  });
+
+  it('"Agendar" da ficha: o parâmetro sai da URL mantendo o dia, e fechar o formulário não o reabre', async () => {
+    mockApi({
+      'GET /api/auth/me': { body: usuario(RECEPCAO) },
+      ...catalogo,
+      [`GET /api/clinics/patients/${PAC}`]: {
+        body: { id: PAC, contactId: 'c1', name: 'Paciente Fictícia', createdAt: '' },
+      },
+      'GET /api/clinics/appointments': { body: [] },
+    });
+    renderizar(<ClinicsAgendaPage />, `/clinics/agenda?dia=${DIA}&agendar=${PAC}&visao=semana`);
+    const drawer = await screen.findByRole('dialog', { name: 'Agendar' });
+    await waitFor(() => expect(paramsAtuais.has('agendar')).toBe(false));
+    // só o `agendar` sai: o dia e a visão ficam
+    expect(paramsAtuais.get('dia')).toBe(DIA);
+    expect(paramsAtuais.get('visao')).toBe('semana');
+
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Fechar' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Agendar' })).toBeNull());
+    // depois de assentar, o formulário continua fechado e a URL não volta a pedir
+    await act(() => new Promise((r) => setTimeout(r, 60)));
+    expect(screen.queryByRole('dialog', { name: 'Agendar' })).toBeNull();
+    expect(paramsAtuais.has('agendar')).toBe(false);
+    expect(paramsAtuais.get('dia')).toBe(DIA);
   });
 
   it('"Agendar" da ficha: trocar o paciente volta à busca; sem `schedule:write`, nada abre', async () => {

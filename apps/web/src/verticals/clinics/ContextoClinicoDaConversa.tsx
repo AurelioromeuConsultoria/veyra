@@ -1,8 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
 import {
+  CLINICS_APPOINTMENTS_MAX_RANGE_DAYS,
   horaLocal,
   somarDias,
-  type ClinicsAppointmentDto,
   type ClinicsAppointmentStatus,
   type ClinicsPackageDto,
   type ClinicsPatientDto,
@@ -12,12 +12,13 @@ import { ArrowUpRight } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { StatusChip } from '../../components/ui/status';
-import { api, ApiError, toQuery } from '../../lib/api';
+import { api, toQuery } from '../../lib/api';
 import type { ContextoDaConversaProps } from '../../lib/experience';
 import { hasPermission, useSession } from '../../lib/session';
 import { useClinicsAccess } from './access';
-import { AGENDA_KEY, ROTULO_DO_ESTADO, TOM_DO_ESTADO } from './agenda/slots';
+import { ROTULO_DO_ESTADO, TOM_DO_ESTADO } from './agenda/slots';
 import { PACKAGES_KEY, dataCurta } from './continuidade';
+import { useAgendamentosDoPaciente } from './ficha/AtendimentosDoPaciente';
 import { fichaDoPaciente } from './nav';
 import { TETO_DOS_RETORNOS, useRetornos } from './retornos/ListaDeRetornos';
 
@@ -129,24 +130,24 @@ function hojeNoNavegador(): string {
   return horaLocal(new Date(), Intl.DateTimeFormat().resolvedOptions().timeZone).data;
 }
 
+/**
+ * Os dias à frente que a janela cobre, contando hoje: o intervalo tem o teto do
+ * servidor (31 dias, as duas pontas incluídas, ADR-062 adendo 1, item 1), e o
+ * primeiro deles é ontem.
+ */
+const DIAS_A_FRENTE = CLINICS_APPOINTMENTS_MAX_RANGE_DAYS - 1;
+
 function ProximoHorario({ pacienteId }: { pacienteId: string }) {
-  // a janela começa ONTEM: o fuso do navegador pode estar um dia à frente da
-  // unidade. O intervalo segue com 30 dias de distância (o teto do servidor é
-  // 31 dias, ADR-062 adendo 1, item 1); o que já passou sai pelo instante
+  // a janela começa ONTEM porque o fuso do navegador pode estar um dia à frente
+  // do da unidade. São 31 dias: ontem, hoje e os 29 seguintes, ou seja, os
+  // próximos 30 dias contando hoje (no fuso do navegador, que pode diferir do
+  // da unidade em um dia na borda final). O que já terminou sai pelo instante.
   const hoje = hojeNoNavegador();
-  const from = somarDias(hoje, -1);
-  const to = somarDias(hoje, 29);
-  const horarios = useQuery({
-    queryKey: [...AGENDA_KEY, 'patient', pacienteId, from, to],
-    queryFn: () =>
-      api.get<ClinicsAppointmentDto[]>(
-        `/api/clinics/appointments${toQuery({ patientId: pacienteId, from, to })}`,
-      ),
-    // um 400 (o servidor que ainda não aceita o intervalo) não melhora repetindo
-    retry: false,
-  });
-  // 400 = a consulta por paciente não existe neste servidor: sem dado, sem bloco
-  if (horarios.error instanceof ApiError && horarios.error.status === 400) return null;
+  const de = somarDias(hoje, -1);
+  const ate = somarDias(de, CLINICS_APPOINTMENTS_MAX_RANGE_DAYS - 1);
+  // a MESMA consulta (e a mesma chave) da ficha: qualquer erro, inclusive um
+  // 400, aparece como indisponível
+  const horarios = useAgendamentosDoPaciente(pacienteId, de, ate);
   const agora = Date.now();
   const proximo = (horarios.data ?? [])
     .filter((a) => ESTADOS_DO_PROXIMO.includes(a.status) && Date.parse(a.endsAt) > agora)
@@ -158,7 +159,9 @@ function ProximoHorario({ pacienteId }: { pacienteId: string }) {
       ) : !horarios.data ? (
         <Espera />
       ) : !proximo ? (
-        <p className="text-[13px] text-muted-fg">Nenhum horário nos próximos 30 dias.</p>
+        <p className="text-[13px] text-muted-fg">
+          Nenhum horário nos próximos {DIAS_A_FRENTE} dias.
+        </p>
       ) : (
         <>
           <p className="text-[14px] font-semibold">
