@@ -161,7 +161,9 @@ test('aba desatualizada: depois de um login em OUTRA aba, o formulário enviado 
     expect(rows[0].n).toBe('0');
 
     // e a aba recomeça na sessão do cookie, sem nada da anterior
-    await expect(page.getByText('CLINICA', { exact: true })).toBeVisible();
+    await expect(
+      page.getByLabel('Onde você está').getByText('CLINICA', { exact: true }),
+    ).toBeVisible();
     await expect(page.getByLabel('Nome')).toHaveCount(0);
   } finally {
     await db.end();

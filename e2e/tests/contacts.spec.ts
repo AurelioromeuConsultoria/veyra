@@ -37,7 +37,9 @@ test.describe('Contatos (UI)', () => {
     const contextB = await browser.newContext();
     const pageB = await contextB.newPage();
     await login(pageB, OWNER_B, 'Contatos');
-    await expect(pageB.getByText('BETA', { exact: true })).toBeVisible();
+    await expect(
+      pageB.getByLabel('Onde você está').getByText('BETA', { exact: true }),
+    ).toBeVisible();
     await expect(pageB.getByText(/Segredo do A/)).toHaveCount(0);
     await contextB.close();
   });
