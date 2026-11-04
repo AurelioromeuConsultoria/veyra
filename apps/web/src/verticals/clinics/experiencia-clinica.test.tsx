@@ -286,11 +286,12 @@ describe('o Hoje da clínica', () => {
     renderizar(<ClinicsTodayPage />, '/clinics/today');
 
     // o "hoje" é o da unidade (quinta, 14), não o do navegador (sexta, 15, em UTC)
-    expect(await screen.findByText('quinta-feira, 14 de março')).toBeInTheDocument();
+    expect(await screen.findByText(/Quinta-feira, 14 de março$/)).toBeInTheDocument();
     const agenda = await screen.findByRole('region', { name: 'Agenda de hoje' });
-    expect(
-      await within(agenda).findByText('1 atendido · 1 falta · 1 chegou · 2 pendentes · 1 a seguir'),
-    ).toBeInTheDocument();
+    // o resumo em chips de estado (ADR-062): cada contagem exata no seu chip
+    for (const chip of ['1 atendido', '1 falta', '1 chegou', '2 pendentes', '1 a seguir']) {
+      expect(await within(agenda).findByText(chip)).toBeInTheDocument();
+    }
     expect(within(agenda).getByText(/^Pendentes/)).toBeInTheDocument();
     expect(within(agenda).getByText('Chegaram')).toBeInTheDocument();
     expect(within(agenda).getByText('A seguir')).toBeInTheDocument();

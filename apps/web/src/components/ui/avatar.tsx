@@ -18,7 +18,11 @@ const PARES = [
 
 export function iniciais(nome: string | null | undefined): string {
   if (!nome) return '—';
-  const partes = nome.trim().split(/\s+/).filter(Boolean);
+  // o tratamento (Dra., Dr., Sr., Sra.) não é inicial de ninguém
+  const partes = nome
+    .trim()
+    .split(/\s+/)
+    .filter((p) => p && !/^(dra?|sra?)\.?$/i.test(p));
   if (partes.length === 0) return '—';
   const primeira = partes[0]?.[0] ?? '';
   const ultima = partes.length > 1 ? (partes.at(-1)?.[0] ?? '') : '';

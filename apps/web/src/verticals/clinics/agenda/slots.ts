@@ -24,6 +24,19 @@ export const ROTULO_DO_ESTADO: Record<ClinicsAppointmentStatus, string> = {
   attended: 'Atendido',
 };
 
+/** O tom do estado (ADR-062): a mesma cor diz o mesmo estado em todo o app. */
+export const TOM_DO_ESTADO: Record<
+  ClinicsAppointmentStatus,
+  'pending' | 'confirmed' | 'arrived' | 'done' | 'missed' | 'neutral'
+> = {
+  scheduled: 'pending',
+  confirmed: 'confirmed',
+  arrived: 'arrived',
+  canceled: 'neutral',
+  no_show: 'missed',
+  attended: 'done',
+};
+
 export const ROTULO_DO_MOTIVO: Record<ClinicsCancelReason, string> = {
   patient_request: 'Pedido do paciente',
   clinic_request: 'Pedido da clínica',

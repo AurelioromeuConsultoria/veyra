@@ -144,7 +144,7 @@ async function abrirAgenda(page: Page, email: string, dia: string) {
 
 async function irParaAgenda(page: Page, dia: string) {
   await page.goto(`/clinics/agenda?dia=${dia}`);
-  await expect(page.getByRole('heading', { name: 'Agenda da clínica', level: 1 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Agenda', level: 1, exact: true })).toBeVisible();
 }
 
 /**

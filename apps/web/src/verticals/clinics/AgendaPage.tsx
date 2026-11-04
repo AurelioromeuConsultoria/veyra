@@ -12,10 +12,13 @@ import {
 import { CalendarPlus, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { clsx } from 'clsx';
+import { Avatar } from '../../components/ui/avatar';
 import { Button } from '../../components/ui/button';
+import { StatusChip } from '../../components/ui/status';
 import { Drawer } from '../../components/ui/drawer';
 import { Field, Input, Select } from '../../components/ui/input';
-import { EmptyState, PageHeader, Panel } from '../../components/ui/page';
+import { EmptyState, PageHeader } from '../../components/ui/page';
 import { api, ApiError, toQuery } from '../../lib/api';
 import { hasPermission, useSession } from '../../lib/session';
 import { useClinicsAccess } from './access';
@@ -23,6 +26,7 @@ import {
   ATENDIVEIS,
   ESTADOS_ATIVOS,
   ROTULO_DO_ESTADO,
+  TOM_DO_ESTADO,
   ROTULO_DO_MOTIVO,
   TRANSICOES,
   diaDaSemana,
@@ -197,8 +201,7 @@ function AgendaReady() {
   return (
     <div className="flex h-full flex-col">
       <PageHeader
-        eyebrow="Clínica"
-        title="Agenda da clínica"
+        title="Agenda"
         meta={`${diaLegivel(dia)} · hora local da unidade (${unidade.timezone})`}
       >
         <div className="flex items-center gap-1">
@@ -239,7 +242,7 @@ function AgendaReady() {
         ) : null}
       </PageHeader>
 
-      <div className="min-h-0 flex-1 overflow-auto p-6">
+      <div className="min-h-0 flex-1 overflow-auto p-7">
         {agenda.isError ? (
           <p role="alert" className="mb-3 text-data text-negative">
             {/* a recusa do dia acima do teto diz o porquê (ADR-055, adendo 4) */}
@@ -258,8 +261,8 @@ function AgendaReady() {
           />
         ) : (
           <div
-            className="grid gap-4"
-            style={{ gridTemplateColumns: `repeat(${colunas.length}, minmax(14rem, 1fr))` }}
+            className="grid items-start gap-5"
+            style={{ gridTemplateColumns: `repeat(${colunas.length}, minmax(16rem, 1fr))` }}
           >
             {colunas.map((coluna) => {
               const expediente = (coluna.profissional?.workingHours ?? [])
@@ -273,36 +276,48 @@ function AgendaReady() {
                 <section
                   key={coluna.id}
                   aria-label={`Agenda de ${coluna.nome}`}
-                  className="flex flex-col gap-2"
+                  className="overflow-hidden rounded-card border border-border bg-surface"
                 >
-                  <header>
-                    <h2 className="text-body font-medium">{coluna.nome}</h2>
-                    {coluna.profissional ? (
-                      <p className="text-data text-muted-fg">
-                        {expediente.length > 0
-                          ? `Expediente ${expediente.join(', ')}`
-                          : 'Sem expediente neste dia'}
-                      </p>
+                  <header className="flex items-center gap-3 border-b border-border px-4 py-3.5">
+                    <Avatar nome={coluna.nome} chave={coluna.id} />
+                    <div className="min-w-0 flex-1">
+                      <h2 className="truncate font-sans text-[14.5px] font-semibold tracking-normal">
+                        {coluna.nome}
+                      </h2>
+                      {coluna.profissional ? (
+                        <p className="text-[12.5px] text-muted-fg">
+                          {expediente.length > 0
+                            ? `Expediente ${expediente.join(', ')}`
+                            : 'Sem expediente neste dia'}
+                        </p>
+                      ) : null}
+                    </div>
+                    {agenda.data && !agenda.isError ? (
+                      <StatusChip tom="neutral">
+                        {doProfissional.filter((a) => a.status !== 'canceled').length}
+                      </StatusChip>
                     ) : null}
                   </header>
-                  {agenda.data && !agenda.isError && doProfissional.length === 0 ? (
-                    <p className="text-body-sm text-muted-fg">Nenhum agendamento.</p>
-                  ) : null}
-                  {doProfissional.map((agendamento) => (
-                    <CartaoDeAgendamento
-                      key={agendamento.id}
-                      agendamento={agendamento}
-                      podeMarcar={podeMarcar}
-                      podeAtender={podeAtender}
-                      podeCorrigir={podeCorrigir}
-                      podeVerOportunidade={podeVerOportunidade}
-                      fuso={unidade?.timezone ?? null}
-                      // profissional arquivado: o drawer não teria serviços nem horários
-                      podeRemarcar={podeMarcar && coluna.profissional !== null}
-                      onRemarcar={() => setDrawer({ kind: 'remarcar', agendamento })}
-                      profissionais={ativos}
-                    />
-                  ))}
+                  <div className="flex flex-col gap-2.5 p-3">
+                    {agenda.data && !agenda.isError && doProfissional.length === 0 ? (
+                      <p className="px-1 py-3 text-[13.5px] text-muted-fg">Nenhum agendamento.</p>
+                    ) : null}
+                    {doProfissional.map((agendamento) => (
+                      <CartaoDeAgendamento
+                        key={agendamento.id}
+                        agendamento={agendamento}
+                        podeMarcar={podeMarcar}
+                        podeAtender={podeAtender}
+                        podeCorrigir={podeCorrigir}
+                        podeVerOportunidade={podeVerOportunidade}
+                        fuso={unidade?.timezone ?? null}
+                        // profissional arquivado: o drawer não teria serviços nem horários
+                        podeRemarcar={podeMarcar && coluna.profissional !== null}
+                        onRemarcar={() => setDrawer({ kind: 'remarcar', agendamento })}
+                        profissionais={ativos}
+                      />
+                    ))}
+                  </div>
                 </section>
               );
             })}
@@ -332,6 +347,16 @@ function AgendaReady() {
     </div>
   );
 }
+
+/** O cartão do horário tingido pelo estado (ADR-062): a barra e o fundo dizem o estado. */
+const CARTAO_DO_TOM = {
+  pending: 'border-state-pending-fg/25 border-l-state-pending-fg bg-state-pending/45',
+  confirmed: 'border-state-confirmed-fg/20 border-l-state-confirmed-fg bg-state-confirmed/45',
+  arrived: 'border-state-arrived-fg/20 border-l-state-arrived-fg bg-state-arrived/50',
+  done: 'border-border border-l-state-done-fg bg-surface-2',
+  missed: 'border-state-missed-fg/20 border-l-state-missed-fg bg-state-missed/45',
+  neutral: 'border-border border-l-border-strong bg-surface-2 opacity-80',
+} as const;
 
 function hhmm(minuto: number): string {
   return `${String(Math.floor(minuto / 60)).padStart(2, '0')}:${String(minuto % 60).padStart(2, '0')}`;
@@ -398,16 +423,32 @@ function CartaoDeAgendamento({
   const transicoes = TRANSICOES[agendamento.status];
 
   return (
-    <Panel>
+    <div
+      className={clsx(
+        'rounded-[10px] border border-l-4',
+        CARTAO_DO_TOM[TOM_DO_ESTADO[agendamento.status]],
+      )}
+    >
       <article aria-label={`Agendamento ${quem}`} className="space-y-1.5 p-3">
-        <p className="num text-data text-muted-fg">
-          {agendamento.localStart}–{agendamento.localEnd}
+        <p className="flex items-center justify-between gap-2">
+          <span className="num text-[12.5px] text-foreground/80">
+            {agendamento.localStart}–{agendamento.localEnd}
+          </span>
+          <StatusChip tom={TOM_DO_ESTADO[agendamento.status]} className="h-5.5 px-2 text-[11.5px]">
+            {ROTULO_DO_ESTADO[agendamento.status]}
+            {agendamento.cancelReason ? ` · ${ROTULO_DO_MOTIVO[agendamento.cancelReason]}` : ''}
+          </StatusChip>
         </p>
-        <p className="text-body-sm font-medium">{agendamento.patientName}</p>
-        <p className="text-data text-muted-fg">{agendamento.serviceName}</p>
-        <p className="text-data">
-          {ROTULO_DO_ESTADO[agendamento.status]}
-          {agendamento.cancelReason ? ` · ${ROTULO_DO_MOTIVO[agendamento.cancelReason]}` : ''}
+        <p className="flex items-center gap-2">
+          <Avatar nome={agendamento.patientName} chave={agendamento.patientId} tamanho="sm" />
+          <span className="min-w-0">
+            <span className="block truncate text-[14px] font-semibold">
+              {agendamento.patientName}
+            </span>
+            <span className="block truncate text-[12.5px] text-muted-fg">
+              {agendamento.serviceName}
+            </span>
+          </span>
         </p>
         {erro ? (
           <p role="alert" className="text-data text-negative">
@@ -613,7 +654,7 @@ function CartaoDeAgendamento({
           <VinculoComOportunidade agendamento={agendamento} podeMudar={podeMarcar} />
         ) : null}
       </Drawer>
-    </Panel>
+    </div>
   );
 }
 

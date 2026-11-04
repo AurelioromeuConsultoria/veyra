@@ -20,7 +20,9 @@ import { PageHeader, Panel } from '../../../components/ui/page';
 import { api, ApiError, toQuery } from '../../../lib/api';
 import { alcanca, useSession, type Exige } from '../../../lib/session';
 import { useClinicsStatus } from '../access';
-import { ATENDIVEIS, diaDaSemana, ROTULO_DO_ESTADO } from '../agenda/slots';
+import { ATENDIVEIS, diaDaSemana, ROTULO_DO_ESTADO, TOM_DO_ESTADO } from '../agenda/slots';
+import { Avatar } from '../../../components/ui/avatar';
+import { StatusChip } from '../../../components/ui/status';
 import { RegistroDeAtendimento } from '../agenda/RegistroDeAtendimento';
 import {
   CLINICS_AGENDA_PATH,
@@ -61,6 +63,12 @@ function diaLegivel(data: string): string {
   return DIA_LEGIVEL.format(new Date(Date.UTC(ano, mes - 1, dia)));
 }
 /** "1 falta", "2 faltas". */
+/** Bom dia, boa tarde ou boa noite, pela hora do navegador de quem lê. */
+function saudacao(): string {
+  const hora = new Date().getHours();
+  return hora < 12 ? 'Bom dia' : hora < 18 ? 'Boa tarde' : 'Boa noite';
+}
+
 function contagem(quantos: number, um: string, varios: string): string {
   return `${quantos} ${quantos === 1 ? um : varios}`;
 }
@@ -97,7 +105,17 @@ export function ClinicsTodayPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <PageHeader title="Hoje" meta={hoje ? diaLegivel(hoje) : undefined}>
+      <PageHeader
+        title="Hoje"
+        meta={
+          hoje ? (
+            <>
+              {saudacao()}, {user?.name?.split(/\s+/)[0] ?? ''}.{' '}
+              {diaLegivel(hoje).replace(/^./, (c) => c.toUpperCase())}
+            </>
+          ) : undefined
+        }
+      >
         {unidades.data && unidades.data.length > 1 ? (
           <Select
             aria-label="Unidade"
@@ -112,8 +130,8 @@ export function ClinicsTodayPage() {
           </Select>
         ) : null}
       </PageHeader>
-      <div className="min-h-0 flex-1 overflow-auto p-6">
-        <div className="grid max-w-6xl gap-4 lg:grid-cols-2">
+      <div className="min-h-0 flex-1 overflow-auto p-7">
+        <div className="grid max-w-6xl gap-5 lg:grid-cols-2">
           {/* sem a unidade, os cartões do dia não somem em silêncio */}
           {comCatalogo && unidades.isError ? (
             <div className="lg:col-span-2">
@@ -167,13 +185,19 @@ function Cartao({
   return (
     <Panel className="flex flex-col">
       <section aria-label={titulo} className="flex flex-1 flex-col">
-        <header className="flex items-baseline gap-3 border-b border-border px-4 py-2.5">
-          <h2 className="eyebrow mr-auto text-muted-fg">{titulo}</h2>
-          {resumo ? <span className="num text-data text-muted-fg">{resumo}</span> : null}
+        <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-5 py-3.5">
+          <h2 className="mr-auto font-display text-[17px] font-semibold tracking-[-0.01em]">
+            {titulo}
+          </h2>
+          {resumo ? (
+            <span className="flex flex-wrap items-center gap-1.5 text-[13px] text-muted-fg">
+              {resumo}
+            </span>
+          ) : null}
         </header>
-        <div className="flex-1 px-4 py-3">{children}</div>
+        <div className="flex-1 px-5 py-4">{children}</div>
         {rodape ? (
-          <footer className="border-t border-border px-4 py-2 text-data">{rodape}</footer>
+          <footer className="border-t border-border px-5 py-3 text-[13px]">{rodape}</footer>
         ) : null}
       </section>
     </Panel>
@@ -244,25 +268,36 @@ function AgendaDeHoje({ unidade, hoje }: { unidade: ClinicsUnitDto; hoje: string
   const contar = (f: (a: ClinicsAppointmentDto) => boolean) => dia.filter(f).length;
   const pendentes = (a: ClinicsAppointmentDto) =>
     PENDENTE.has(a.status) && Date.parse(a.startsAt) < agora;
-  const resumo = [
-    contagem(
-      contar((a) => a.status === 'attended'),
-      'atendido',
-      'atendidos',
-    ),
-    contagem(
-      contar((a) => a.status === 'no_show'),
-      'falta',
-      'faltas',
-    ),
-    contagem(
-      contar((a) => a.status === 'arrived'),
-      'chegou',
-      'chegaram',
-    ),
-    contagem(contar(pendentes), 'pendente', 'pendentes'),
-    `${contar((a) => PENDENTE.has(a.status) && Date.parse(a.startsAt) >= agora)} a seguir`,
-  ].join(' · ');
+  // o resumo do dia em chips de estado (ADR-062): a mesma cor da linha
+  const resumo = (
+    <>
+      <StatusChip tom="done">
+        {contagem(
+          contar((a) => a.status === 'attended'),
+          'atendido',
+          'atendidos',
+        )}
+      </StatusChip>
+      <StatusChip tom="missed">
+        {contagem(
+          contar((a) => a.status === 'no_show'),
+          'falta',
+          'faltas',
+        )}
+      </StatusChip>
+      <StatusChip tom="arrived">
+        {contagem(
+          contar((a) => a.status === 'arrived'),
+          'chegou',
+          'chegaram',
+        )}
+      </StatusChip>
+      <StatusChip tom="pending">{contagem(contar(pendentes), 'pendente', 'pendentes')}</StatusChip>
+      <StatusChip tom="neutral">
+        {`${contar((a) => PENDENTE.has(a.status) && Date.parse(a.startsAt) >= agora)} a seguir`}
+      </StatusChip>
+    </>
+  );
 
   const meus = meu ? dia.filter((a) => a.professionalId === meu.id) : [];
   const daEquipe = meu ? dia.filter((a) => a.professionalId !== meu.id) : dia;
@@ -329,7 +364,7 @@ function BlocoDaAgenda({
         type="button"
         onClick={() => setAberto((v) => !v)}
         aria-expanded={aberto}
-        className="flex items-center gap-1.5 text-body-sm font-medium"
+        className="flex items-center gap-1.5 text-[14px] font-semibold"
       >
         <ChevronRight
           size={13}
@@ -337,10 +372,10 @@ function BlocoDaAgenda({
           className={aberto ? 'rotate-90 transition-transform' : 'transition-transform'}
         />
         {titulo}
-        <span className="num text-data font-normal text-muted-fg">({itens.length})</span>
+        <span className="font-normal text-muted-fg">({itens.length})</span>
       </button>
       {aberto ? (
-        <div className="mt-2 space-y-3 pl-5">
+        <div className="mt-3 space-y-4">
           <Grupo
             rotulo="Pendentes — o horário passou, sem desfecho registrado"
             itens={pendentes}
@@ -372,14 +407,14 @@ function Grupo({
   const mostrados = limite ? itens.slice(0, limite) : itens;
   return (
     <div>
-      <p className="eyebrow mb-1 text-muted-fg/80">{rotulo}</p>
-      <ul className="space-y-1">
+      <p className="eyebrow mb-1 text-muted-fg">{rotulo}</p>
+      <ul className="divide-y divide-border/70">
         {mostrados.map((a) => (
           <LinhaDoHorario key={a.id} agendamento={a} unidade={unidade} />
         ))}
       </ul>
       {limite && itens.length > limite ? (
-        <p className="num mt-1 text-data text-muted-fg">e mais {itens.length - limite}</p>
+        <p className="mt-1 text-[13px] text-muted-fg">e mais {itens.length - limite}</p>
       ) : null}
     </div>
   );
@@ -412,15 +447,16 @@ function LinhaDoHorario({
     onSettled: atualizar,
   });
   return (
-    <li className="flex flex-wrap items-center gap-x-3 gap-y-1 text-body-sm">
-      <span className="num w-11 shrink-0 text-muted-fg">{a.localStart}</span>
-      <span className="min-w-0 flex-1 truncate">
-        {a.patientName}{' '}
-        <span className="text-muted-fg">
-          · {a.serviceName} · {a.professionalName}
+    <li className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2.5 text-[14px]">
+      <span className="num w-12 shrink-0 text-[13px] text-foreground/80">{a.localStart}</span>
+      <Avatar nome={a.patientName} chave={a.patientId} tamanho="sm" />
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="truncate font-semibold">{a.patientName}</span>
+        <span className="truncate text-[13px] text-muted-fg">
+          {a.serviceName} · {a.professionalName}
         </span>
       </span>
-      <span className="text-data text-muted-fg">{ROTULO_DO_ESTADO[a.status].toLowerCase()}</span>
+      <StatusChip tom={TOM_DO_ESTADO[a.status]}>{ROTULO_DO_ESTADO[a.status]}</StatusChip>
       {podeMarcar && a.status === 'scheduled' ? (
         <Button
           size="sm"
@@ -542,13 +578,13 @@ function ConfirmarAmanha({ unidade, amanha }: { unidade: ClinicsUnitDto; amanha:
         <Vazio>Todos os horários de amanhã estão confirmados.</Vazio>
       ) : (
         <>
-          <ul className="space-y-1">
+          <ul className="divide-y divide-border/70">
             {naoConfirmados.slice(0, MOSTRA).map((a) => (
               <LinhaDoHorario key={a.id} agendamento={a} unidade={unidade} />
             ))}
           </ul>
           {naoConfirmados.length > MOSTRA ? (
-            <p className="num mt-1 text-data text-muted-fg">
+            <p className="mt-1 text-[13px] text-muted-fg">
               e mais {naoConfirmados.length - MOSTRA}
             </p>
           ) : null}
@@ -602,12 +638,13 @@ function RetornosVencidos({ unidade }: { unidade: ClinicsUnitDto | null }) {
       ) : total === 0 ? (
         <Vazio>Nenhum retorno vencido.</Vazio>
       ) : (
-        <ul className="space-y-1">
+        <ul className="divide-y divide-border/70">
           {retornos.data.slice(0, MOSTRA).map((r) => (
-            <li key={r.id} className="flex items-center gap-3 text-body-sm">
-              <span className="min-w-0 flex-1 truncate">{r.patientName}</span>
-              <span className="num text-data text-muted-fg">venceu {dataCurta(r.dueDate)}</span>
-              <span className="text-data text-muted-fg">
+            <li key={r.id} className="flex flex-wrap items-center gap-3 py-2.5 text-[14px]">
+              <Avatar nome={r.patientName} chave={r.patientId} tamanho="sm" />
+              <span className="min-w-0 flex-1 truncate font-semibold">{r.patientName}</span>
+              <StatusChip tom="missed">venceu {dataCurta(r.dueDate)}</StatusChip>
+              <span className="text-[13px] text-muted-fg">
                 {r.assignee ? r.assignee.name : 'sem responsável'}
               </span>
             </li>
@@ -662,16 +699,17 @@ function ConversasComJanela() {
       ) : comJanela.length === 0 ? (
         <Vazio>Nenhuma delas com a janela aberta.</Vazio>
       ) : (
-        <ul className="space-y-1">
+        <ul className="divide-y divide-border/70">
           {comJanela.slice(0, MOSTRA).map((c) => (
-            <li key={c.id} className="flex items-center gap-3 text-body-sm">
+            <li key={c.id} className="flex items-center gap-3 py-2.5 text-[14px]">
+              <Avatar nome={c.contactName ?? '?'} chave={c.contactId ?? c.id} tamanho="sm" />
               <Link
                 to={`/inbox?c=${encodeURIComponent(c.id)}`}
-                className="min-w-0 flex-1 truncate hover:underline"
+                className="min-w-0 flex-1 truncate font-semibold hover:underline"
               >
                 {c.contactName ?? 'Remetente a identificar'}
               </Link>
-              <span className="text-data text-muted-fg">
+              <span className="text-[13px] text-muted-fg">
                 a janela fecha {fechaEm(c.windowExpiresAt!, agora)}
               </span>
             </li>
@@ -719,15 +757,17 @@ function FaltasDaSemana({ unidade, hoje }: { unidade: ClinicsUnitDto; hoje: stri
       ) : !faltas.data ? (
         <Vazio>Carregando…</Vazio>
       ) : (
-        <div className="space-y-1 text-body-sm">
+        <div className="space-y-1.5 text-[14px]">
           <p>
-            <span className="num font-medium">{faltas.data.noShow}</span>{' '}
+            <span className="font-display text-[28px] font-semibold tracking-[-0.02em]">
+              {faltas.data.noShow}
+            </span>{' '}
             {faltas.data.noShow === 1 ? 'falta' : 'faltas'}
             {faltas.data.rate !== null ? (
               <span className="num text-muted-fg"> · {PORCENTAGEM.format(faltas.data.rate)}</span>
             ) : null}
           </p>
-          <p className="text-data text-muted-fg">
+          <p className="text-[13px] text-muted-fg">
             {faltas.data.pendingPast === 1
               ? '1 horário já passado sem atendimento ou falta registrados'
               : `${faltas.data.pendingPast} horários já passados sem atendimento ou falta registrados`}{' '}
