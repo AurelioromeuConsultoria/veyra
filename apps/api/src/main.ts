@@ -6,6 +6,7 @@ import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { configureHttp } from './bootstrap';
+import { aplicarMigrationsNaSubida } from './common/migrations-na-subida';
 import { aplicarTravaDeManutencao } from './common/trava-de-manutencao';
 
 async function bootstrap(): Promise<void> {
@@ -19,6 +20,11 @@ async function bootstrap(): Promise<void> {
       'Trava de manutenção LIGADA no banco: a API sobe em manutenção, qualquer que seja o MAINTENANCE_MODE do ambiente',
     );
   }
+  // as migrations na SUBIDA do staging (ADR-058, adendo 2): depois da trava e
+  // antes do AppModule. Em manutenção (a trava ou o MAINTENANCE_MODE), quem
+  // opera conduz, e nada migra por conta própria
+  const migrations = aplicarMigrationsNaSubida(process.env, trava === 'ligada');
+  if (migrations === 'aplicadas') new Logger('Migrations').log('Migrations pendentes aplicadas');
   const { AppModule } = await import('./app.module');
   const app = await NestFactory.create(AppModule, { bodyParser: false });
   const config = app.get(ConfigService);

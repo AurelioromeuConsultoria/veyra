@@ -24,9 +24,13 @@ case "$COOLIFY_URL" in
 esac
 API="${COOLIFY_URL%/}/api/v1"
 INTERVALO_S="${INTERVALO_S:-10}"
-# a guarda: o que não vai ao ar sozinho (ADR-058; DEPLOY_STAGING §4.1)
-GUARDADOS=(apps/api/prisma/migrations apps/api/src/common/env.ts apps/api/Dockerfile apps/web/Dockerfile
+# a guarda: o que não vai ao ar sozinho (ADR-058; DEPLOY_STAGING §4.1). As
+# migrations saíram da lista no adendo 2: a API as aplica na subida
+# (`common/migrations-na-subida.ts`), e o passo 3 só confere que são NOVAS e
+# transacionais (ADR-051)
+GUARDADOS=(apps/api/src/common/env.ts apps/api/Dockerfile apps/web/Dockerfile
   deploy/staging/docker-compose.yml deploy/staging/web deploy/staging/backup)
+MIGRATIONS=apps/api/prisma/migrations
 
 # o cabeçalho do token num arquivo (fora do argv do curl), apagado na saída
 CABECALHO=$(mktemp)
@@ -61,6 +65,54 @@ coolify_get() {
 }
 # o que mudou nos caminhos guardados entre dois commits
 guardados_entre() { git diff --name-only "$1" "$2" -- "${GUARDADOS[@]}"; }
+
+# As migrations entre dois commits que NÃO sobem sozinhas (ADR-058, adendo 2):
+# imprime o primeiro problema, ou nada. Sobe só o arquivo NOVO (migration
+# publicada não se edita, ADR-051 §4), com o nome no padrão (o git põe entre
+# aspas o nome com acento ou espaço, e esse nome não passaria pela conferência),
+# numa transação só (nada antes do `BEGIN;` nem depois do `COMMIT;`, um de cada,
+# sem ROLLBACK nem outra transação no meio) e sem instrução destrutiva. O hook
+# do agente não vale para commit humano: a recusa da destrutiva é daqui. Limite:
+# um `END;` solto no nível de cima não se distingue do fim de uma função
+# PL/pgSQL sem um parser de SQL; a guarda é contra acidente, não contra quem
+# tem escrita na `main` (SECURITY.md)
+migrations_que_nao_sobem() {
+  local lista estado arquivo sql corpo linha
+  lista=$(git diff --name-status "$1" "$2" -- "$MIGRATIONS") || {
+    echo "não consegui ler as migrations entre $1 e $2"
+    return 0
+  }
+  while IFS=$'\t' read -r estado arquivo; do
+    [ -n "$estado" ] || continue
+    if [ "$estado" != A ]; then
+      echo "uma migration já publicada mudou ($estado $arquivo): migration publicada não se edita (ADR-051 §4)"
+      return 0
+    fi
+    if ! [[ "$arquivo" =~ ^apps/api/prisma/migrations/[0-9]{14}_[a-z0-9_]+/migration\.sql$ ]]; then
+      echo "um arquivo novo em migrations fora do padrão (<14 dígitos>_<nome>/migration.sql): $arquivo"
+      return 0
+    fi
+    sql=$(git show "$2:$arquivo") || {
+      echo "não consegui ler $arquivo"
+      return 0
+    }
+    # o corpo, sem linhas vazias nem comentários de linha inteira
+    corpo=$(grep -vE '^[[:space:]]*(--.*)?$' <<<"$sql" || true)
+    # o mesmo corpo numa linha só: pega o `; COMMIT;` e a instrução quebrada em linhas
+    linha=$(tr '\n' ' ' <<<"$corpo")
+    if [ "$(head -n 1 <<<"$corpo")" != 'BEGIN;' ] || [ "$(tail -n 1 <<<"$corpo")" != 'COMMIT;' ] ||
+      [ "$(grep -oiE '(^|;)[[:space:]]*BEGIN[[:space:]]*;' <<<"$linha" | wc -l | tr -d ' ')" != 1 ] ||
+      [ "$(grep -oiE '(^|;)[[:space:]]*COMMIT[[:space:]]*(AND[[:space:]]+(NO[[:space:]]+)?CHAIN[[:space:]]*)?;' <<<"$linha" | wc -l | tr -d ' ')" != 1 ] ||
+      grep -qiE '(^|;)[[:space:]]*(ROLLBACK|ABORT|START[[:space:]]+TRANSACTION)\b' <<<"$linha"; then
+      echo "a migration $arquivo não é uma transação só (ADR-051): nada antes do BEGIN; nem depois do COMMIT;"
+      return 0
+    fi
+    if grep -qiE '\b(DROP[[:space:]]+(TABLE|COLUMN|SCHEMA|TYPE|CONSTRAINT|TRIGGER|FUNCTION|POLICY|VIEW)|DISABLE[[:space:]]+(TRIGGER|ROW)|TRUNCATE|DELETE[[:space:]]+FROM|RENAME|SET[[:space:]]+NOT[[:space:]]+NULL)\b|ALTER[[:space:]]+TABLE[^;]*[[:space:]]DROP[[:space:]]|ALTER[[:space:]]+TABLE[^;]*[[:space:]]ALTER[[:space:]][^;]*[[:space:]]TYPE[[:space:]]' <<<"$linha"; then
+      echo "a migration $arquivo tem instrução destrutiva ou que pode quebrar o código ou a integridade no ar (DROP, DISABLE, TRUNCATE, DELETE, RENAME, troca de tipo, SET NOT NULL)"
+      return 0
+    fi
+  done <<<"$lista"
+}
 
 # O registro das publicações conferidas: um deployment do GitHub no ambiente
 # `staging-conferido`, criado SÓ por este script, no fim de um deploy com o commit
@@ -154,8 +206,17 @@ fi
 MUDOU=$(guardados_entre "$BASE" "$SHA")
 if [ -n "$MUDOU" ]; then
   echo "$MUDOU" >&2
-  pare "desde $BASE há migration, variável exigida ou mudança na pilha do staging: o deploy automático não publica, e a versão no ar continua. Siga o DEPLOY_STAGING §4.1, com autorização própria"
+  pare "desde $BASE há variável exigida ou mudança na pilha do staging: o deploy automático não publica, e a versão no ar continua. Siga o DEPLOY_STAGING §4.1, com autorização própria"
 fi
+# As migrations sobem com o código (ADR-058, adendo 2), mas só as que a subida
+# aplica sem surpresa (a função `migrations_que_nao_sobem`, acima). O resto
+# volta à janela
+PROBLEMA=$(migrations_que_nao_sobem "$BASE" "$SHA")
+[ -z "$PROBLEMA" ] || pare "$PROBLEMA. O deploy automático não publica, e a versão no ar continua; siga o DEPLOY_STAGING §4.1"
+NOVAS=$(git diff --name-only --diff-filter=A "$BASE" "$SHA" -- "$MIGRATIONS")
+while IFS= read -r ARQUIVO; do
+  [ -z "$ARQUIVO" ] || echo "migration nova, aplicada na subida: ${ARQUIVO%/migration.sql}"
+done <<<"$NOVAS"
 
 # 4. O deploy (POST; versões antigas do Coolify só aceitam GET)
 CODIGO=$(coolify -X POST "$API/deploy?uuid=$COOLIFY_APP_UUID&force=false")
@@ -198,13 +259,13 @@ if ! [[ "$PUBLICADO" =~ ^[0-9a-f]{40}$ ]]; then
   pare "o deploy $DEP terminou, mas o Coolify não informou o commit publicado (\"$PUBLICADO\"): confira no painel"
 fi
 if [ "$PUBLICADO" != "$SHA" ]; then
-  AVISO="sem migration nem mudança guardada desde a base"
+  AVISO="sem mudança guardada desde a base"
   # o commit da corrida chegou depois do checkout deste job: busca no origin
   git cat-file -e "$PUBLICADO^{commit}" 2>/dev/null || git fetch --quiet origin "$PUBLICADO" 2>/dev/null || true
   if ! git cat-file -e "$PUBLICADO^{commit}" 2>/dev/null; then
     AVISO="fora do histórico do repositório, e não sei se traz migration: fixe AGORA o recurso no painel nesse commit, o que pausa a publicação, e siga o DEPLOY_STAGING §4.1"
-  elif [ -n "$(guardados_entre "$BASE" "$PUBLICADO")" ]; then
-    AVISO="COM migration ou mudança guardada desde a base: fixe AGORA o recurso no painel nesse commit, o que pausa a publicação, e siga o DEPLOY_STAGING §4.1"
+  elif [ -n "$(guardados_entre "$BASE" "$PUBLICADO")" ] || [ -n "$(migrations_que_nao_sobem "$BASE" "$PUBLICADO")" ]; then
+    AVISO="COM mudança guardada ou migration que não sobe sozinha desde a base, e a migration pode já ter sido aplicada na subida: fixe AGORA o recurso no painel nesse commit, o que pausa a publicação, e siga o DEPLOY_STAGING §4.1"
   fi
   pare "o Coolify publicou $PUBLICADO, não o commit testado $SHA: um push chegou antes de o deploy sair da fila. $PUBLICADO está no ar sem a conferência deste run ($AVISO)"
 fi

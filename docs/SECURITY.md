@@ -323,6 +323,13 @@ O webhook do WhatsApp é o **único caminho de escrita público e não autentica
      - uma imagem anterior ao adendo ignora a trava. A reabertura com o `2b6deb1` é exceção, nunca protegida pela trava nem automática: autorização específica, a imagem exata e o banco compatível com o snapshot (DEPLOY_STAGING §14, etapa G);
      - o papel da aplicação no staging é o mesmo superusuário do `db` e, tecnicamente, poderia desligá-la. O código não o faz, e o teste estático impede outro arquivo com o texto.
 
+- **As migrations na subida (ADR-058, adendo 2).** A API do staging aplica as migrations novas ao subir, e o job `Staging` as publica sem uma pessoa no meio. O poder de quem escreve na `main` não aumenta (o papel da app no staging já é superusuário, e o código dela já rodava com o `DATABASE_URL`), mas o SQL vindo da `main` agora roda sozinho:
+  - a guarda do job (migration nova, com o nome no padrão, numa transação só, sem destrutiva, inclusive `DROP CONSTRAINT`, que derrubaria uma FK composta entre workspaces) protege contra ACIDENTE, não contra quem tem escrita, e não pega um `UPDATE` em massa;
+  - a proteção de branch da `main`, quando existir, passa a guardar também o schema do staging;
+  - o processo da migration recebe só `PATH`, `HOME`, `NODE_ENV` e `DATABASE_URL`, nunca os outros segredos da API. O erro de uma migration (P3018) pode levar ao log valores de linha; no staging, com dados fictícios, aceito;
+  - em manutenção (a trava do banco ou `MAINTENANCE_MODE=true`), nada migra na subida;
+  - a produção, quando existir, migra com um papel separado, sem superusuário, e decide o próprio caminho.
+
 ## 8. Segredos e criptografia
 
 - Segredos **jamais** em DTOs, logs, front, commits ou mensagens de erro. Hook `guard-secrets.sh` **nega** commit de `.env`, chaves privadas e tokens reais (só `.env.example` com placeholders).

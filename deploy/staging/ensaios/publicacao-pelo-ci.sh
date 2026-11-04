@@ -52,14 +52,40 @@ echo docs >docs/x.md && git commit -qam docs && C1=$(git rev-parse HEAD)
 echo docs2 >docs/x.md && git commit -qam docs2 && C2=$(git rev-parse HEAD)
 git push -q origin HEAD:refs/heads/main
 git branch -q apenas-local
-echo 'SELECT 1;' >apps/api/prisma/migrations/20990101000000_ensaio/migration.sql && git add -A && git commit -qm migration && CM=$(git rev-parse HEAD)
+printf 'BEGIN;\nSELECT 1;\nCOMMIT;\n' >apps/api/prisma/migrations/20990101000000_ensaio/migration.sql && git add -A && git commit -qm migration && CM=$(git rev-parse HEAD)
+# o adendo 2 do ADR-058: a migration publicada que mudou (CME) e a nova sem
+# transação (CMX), cada uma a partir de CM, num ramo próprio
+RAMO=$(git rev-parse --abbrev-ref HEAD)
+git checkout -q -b editada "$CM"
+printf 'BEGIN;\nSELECT 9;\nCOMMIT;\n' >apps/api/prisma/migrations/20990101000000_ensaio/migration.sql && git commit -qam editada && CME=$(git rev-parse HEAD)
+git checkout -q -b sem-transacao "$CM"
+mkdir -p apps/api/prisma/migrations/20990101000001_sem_transacao
+echo 'SELECT 3;' >apps/api/prisma/migrations/20990101000001_sem_transacao/migration.sql && git add -A && git commit -qm sem-transacao && CMX=$(git rev-parse HEAD)
+# a instrução depois do COMMIT (CMD), a destrutiva dentro da transação (CMR), o
+# nome fora do padrão (CMN) e a função PL/pgSQL com BEGIN e END soltos (CMF, sobe)
+git checkout -q -b depois-do-commit "$CM"
+mkdir -p apps/api/prisma/migrations/20990101000002_depois
+printf -- '-- cabeçalho\nBEGIN;\nSELECT 1;\nCOMMIT;\nSELECT 2;\n' >apps/api/prisma/migrations/20990101000002_depois/migration.sql && git add -A && git commit -qm depois && CMD=$(git rev-parse HEAD)
+git checkout -q -b destrutiva "$CM"
+mkdir -p apps/api/prisma/migrations/20990101000003_destrutiva
+printf 'BEGIN;\nALTER TABLE "x" DROP COLUMN "y";\nCOMMIT;\n' >apps/api/prisma/migrations/20990101000003_destrutiva/migration.sql && git add -A && git commit -qm destrutiva && CMR=$(git rev-parse HEAD)
+git checkout -q -b nome-fora "$CM"
+mkdir -p "apps/api/prisma/migrations/20990101000004_ação"
+printf 'BEGIN;\nSELECT 1;\nCOMMIT;\n' >"apps/api/prisma/migrations/20990101000004_ação/migration.sql" && git add -A && git commit -qm nome && CMN=$(git rev-parse HEAD)
+git checkout -q -b commit-no-meio "$CM"
+mkdir -p apps/api/prisma/migrations/20990101000006_meio
+printf 'BEGIN;\nSELECT 1;\n  commit;\nSELECT 2;\nCOMMIT;\n' >apps/api/prisma/migrations/20990101000006_meio/migration.sql && git add -A && git commit -qm meio && CMM=$(git rev-parse HEAD)
+git checkout -q -b funcao "$CM"
+mkdir -p apps/api/prisma/migrations/20990101000005_funcao
+printf 'BEGIN;\nCREATE FUNCTION f() RETURNS trigger LANGUAGE plpgsql AS $$\nBEGIN\n  RETURN NEW;\nEND;\n$$;\nCOMMIT;\n' >apps/api/prisma/migrations/20990101000005_funcao/migration.sql && git add -A && git commit -qm funcao && CMF=$(git rev-parse HEAD)
+git checkout -q "$RAMO"
 git clone -q "$E/origin.git" "$E/outro"
 (
   cd "$E/outro"
   git config user.email ensaio@veyra.test
   git config user.name ensaio
   mkdir -p apps/api/prisma/migrations/20990102000000_corrida
-  echo 'SELECT 2;' >apps/api/prisma/migrations/20990102000000_corrida/migration.sql
+  printf 'BEGIN;\nSELECT 2;\nCOMMIT;\n' >apps/api/prisma/migrations/20990102000000_corrida/migration.sql
   git add -A && git commit -qm corrida && git push -q origin HEAD:refs/heads/main
 )
 CR=$(git -C "$E/outro" rev-parse HEAD)
@@ -135,9 +161,10 @@ roda api-instavel 0 "staging no ar com $C1"
 roda auto-desconhecido 0 "não informou o Auto Deploy"
 roda falhou 1 "terminou em failed"
 roda commit-head 1 "não informou o commit publicado"
-roda commit-trocado-sem-migration 1 "sem migration nem mudança guardada" "$C1" "$C0" "$C2"
-roda commit-trocado-com-migration 1 "COM migration ou mudança guardada desde a base: fixe AGORA" "$C1" "$C0" "$CM"
-roda commit-trocado-na-corrida 1 "COM migration ou mudança guardada desde a base: fixe AGORA" "$C1" "$C0" "$CR"
+roda commit-trocado-sem-migration 1 "sem mudança guardada desde a base" "$C1" "$C0" "$C2"
+# a migration já não é guardada (adendo 2): a corrida que a publicou subiu e migrou
+roda commit-trocado-com-migration 1 "sem mudança guardada desde a base" "$C1" "$C0" "$CM"
+roda commit-trocado-na-corrida 1 "sem mudança guardada desde a base" "$C1" "$C0" "$CR"
 roda commit-trocado-desconhecido 1 "não sei se traz migration: fixe AGORA" "$C1" "$C0" "$SEM_ORIGEM"
 roda auto-ligado 1 "Auto Deploy do Coolify está ligado"
 roda fixado 1 "fixado em 2b6deb1"
@@ -150,7 +177,17 @@ roda sem-base 1 "SHA completo" "$C1" "$C0" "" STAGING_BASE=HEAD
 roda base-webhook 1 "veio do webhook"
 roda origem-desconhecida 1 "nem a origem do último deploy"
 roda base-igual 1 "já estava no ar antes deste job"
-roda migration-nova 1 "há migration" "$CM" "$C0"
+# adendo 2: a migration NOVA e transacional sobe com o código; a editada e a sem transação, não
+ESPERA_REGISTRO=1 roda migration-nova 0 "migration nova, aplicada na subida: apps/api/prisma/migrations/20990101000000_ensaio" "$CM" "$C0"
+roda migration-sem-transacao 1 "não é uma transação só (ADR-051)" "$CMX" "$C0"
+roda migration-depois-do-commit 1 "não é uma transação só (ADR-051)" "$CMD" "$C0"
+roda migration-destrutiva 1 "tem instrução destrutiva" "$CMR" "$C0"
+roda migration-nome-fora 1 "fora do padrão" "$CMN" "$C0"
+roda migration-commit-no-meio 1 "não é uma transação só (ADR-051)" "$CMM" "$C0"
+ESPERA_REGISTRO=1 roda migration-com-funcao 0 "migration nova, aplicada na subida: apps/api/prisma/migrations/20990101000005_funcao" "$CMF" "$C0"
+# a corrida que publicou uma migration que não sobe sozinha: o aviso manda fixar
+roda commit-trocado-migration-ruim 1 "migration que não sobe sozinha desde a base, e a migration pode já ter sido aplicada na subida: fixe AGORA" "$C1" "$C0" "$CMX"
+SEM_REGISTRO=1 roda migration-editada 1 "uma migration já publicada mudou" "$CME" "$CM" "" STAGING_BASE="$CM"
 SEM_REGISTRO=1 roda base-nao-conferida 1 "não foi publicado por um Staging conferido"
 roda terceiro-push 1 "não foi publicado por um Staging conferido" "$C1" "$CM"
 SEM_REGISTRO=1 ESPERA_REGISTRO=1 roda base-pela-variavel 0 "base confirmada pela STAGING_BASE" "$C1" "$C0" "" STAGING_BASE="$C0"

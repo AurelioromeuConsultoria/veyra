@@ -9856,6 +9856,29 @@ Os dois valiam para deploys manuais pelo painel. A publicação comum agora segu
 
 **Consequências.** Mais minutos de runner por push, menos tempo de relógio. A meta estimada é de 7 a 8 minutos do push ao staging. Se um spec E2E depender de estado deixado por outro arquivo, a divisão expõe isso como falha: o certo é corrigir o spec, não juntar as partes.
 
+### ADR-058, adendo 2 — As migrations na subida da API (2026-11-04)
+
+**Status:** APROVADO pelo usuário em 2026-11-04 ("pode adotar"), depois da pergunta "não podemos ter as migrations rodando quando o app inicia?". Substitui, para o staging, a proposta do `00ef0ba` (branch `proposta/deploy-automatico`, nunca publicada).
+
+**Contexto.** Pelo ADR-058, migration não subia sozinha: cada entrega com migration pedia uma janela manual (§4.1), e o usuário não quer mais deploy manual. O `00ef0ba` resolvia com o `migrate deploy` no `command` do compose, mas o compose é arquivo guardado pelo job, e ligá-lo exigiria uma última janela.
+
+**Decisão.**
+
+- A API aplica as migrations pendentes ao subir, no `main.ts`, depois da trava de manutenção e antes do `AppModule` (`common/migrations-na-subida.ts`). Só no container do staging (`NODE_ENV=production` e `VEYRA_ENV=staging`); com a trava ligada, nada migra; `MIGRATIONS_NA_SUBIDA=false` no painel desliga. Falhou, a subida para (a migration é uma transação, ADR-051, e o banco fica como estava).
+- O job `Staging` deixa de recusar migration em geral. Ele publica a migration NOVA, com o nome no padrão, numa transação só (nada antes do `BEGIN;` nem depois do `COMMIT;`) e sem instrução destrutiva ou que quebre o código no ar, e recusa as outras (janela, §4.1). A recusa da destrutiva é do job: o hook do agente não vê commit humano. Quando o Coolify publica outro commit, a mesma conferência decide o aviso.
+- Nada muda no compose, no `Dockerfile` nem no `env.ts`: o próprio job publica esta mudança.
+
+**Alternativas.** O `command` do compose (o `00ef0ba`): exigiria uma janela para ligar e mais uma para desligar. Rodar o `migrate` no job do CI contra o banco do staging: abriria o banco à rede do GitHub e poria a credencial nos secrets. Manter a janela por migration: o que o usuário recusou.
+
+**Consequências.**
+
+- Uma migration falhada deixa a API nova em laço (P3009) até o `resolve --rolled-back` num container avulso da mesma imagem (DEPLOY_STAGING §4.0, "As migrations na subida"). O agente não tem acesso ao servidor: essa recuperação é de quem opera.
+- A migration roda enquanto o código anterior ainda atende: ela precisa ser compatível com ele (aditiva). É o que o ADR-051 já pede.
+- O ensaio da publicação (`deploy/staging/ensaios/publicacao-pelo-ci.sh`) ganhou os cenários da migration nova e da com função PL/pgSQL (publicam), da editada, da fora de transação, da com instrução depois do `COMMIT;`, da destrutiva e da com nome fora do padrão (recusam), o do `commit;` em minúsculas no meio do arquivo (recusa) e o da corrida que publicou uma migration que não sobe sozinha (manda fixar): 47 cenários, verde. A mesma conferência, rodada sobre as migrations transacionais reais do repositório, aceitou as aditivas e recusou as duas que derrubam restrição (`DROP CONSTRAINT`), a dos convites e a da origem do envio, que iriam para a janela.
+- O caminho real foi ensaiado com a imagem (`deploy/staging/ensaios/migrations-na-subida.sh`): a aplicação num banco vazio, a falha (a primeira subida com "current transaction is aborted", a seguinte com P3009, nada criado) e a recuperação pelo container avulso. Não ensaiado: o comportamento do Coolify durante a migration e a rede do projeto na VPS.
+- Revisão: `reviewer` e `security` pediram a conferência da destrutiva no job (o hook do agente não vê commit humano), a do nome, a da transação inteira, a da corrida, o ambiente mínimo do processo da migration, a manutenção pelo `MAINTENANCE_MODE` e o `MIGRATIONS_NA_SUBIDA=false` no começo de toda janela. Tudo entrou.
+- Produção, quando existir, decide o próprio caminho: aqui só o `VEYRA_ENV=staging` migra.
+
 ## ADR-059 — Correção de um consumo de pacote registrado por engano (F5.2)
 
 **Status:** APROVADO pelo usuário em 2026-11-03, em duas entregas, com os ajustes do fim deste ADR ("Aprovação com ajustes"), que prevalecem sobre o texto proposto. A F5.2a está autorizada até o commit local. · **Data:** 2026-11-03

@@ -94,7 +94,7 @@ api() {
     TOKEN_ENCRYPTION_KEY=ensaio-chave-de-cifra-nunca-em-producao \
     ADDRESS_LOCK_KEY=ensaio-chave-das-travas-de-endereco-32ch \
     OUTBOUND_APPROVAL_KEY=ensaio-chave-da-aprovacao-do-envio-32ch \
-    DISABLE_JOBS=false "$@" node "$API/dist/main.js"
+    DISABLE_JOBS=false MIGRATIONS_NA_SUBIDA=false "$@" node "$API/dist/main.js"
 }
 
 # 2. sem a variável, ou com valor inválido, nada sobe — e pelo motivo certo.

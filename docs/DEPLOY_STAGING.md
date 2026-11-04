@@ -181,7 +181,9 @@ docker ps --format '{{.Names}}' | grep -i veyra
      ao ar por fora), a base não conferida e a falta de base;
 
   4. recusa, sem deploy, se desde a base mudou o que não sobe sozinho:
-     - as migrations (`apps/api/prisma/migrations/`);
+     - uma migration que não passa na conferência das "migrations na subida"
+       (abaixo): editada, fora do padrão, fora de transação ou destrutiva. A
+       migration NOVA e aditiva sobe com o código (ADR-058, adendo 2);
      - as variáveis exigidas (`apps/api/src/common/env.ts`);
      - a pilha: `deploy/staging/docker-compose.yml`, `deploy/staging/web/`,
        `deploy/staging/backup/` e os dois `Dockerfile`. Os ensaios e roteiros
@@ -189,7 +191,7 @@ docker ps --format '{{.Names}}' | grep -i veyra
   5. dispara o deploy pela API do Coolify e o acompanha até o fim;
   6. confere que o commit publicado é o testado;
   7. confere `/api/health` de fora. Ele não toca o banco: prova que a API
-     subiu, e a compatibilidade com o schema vem da guarda de migration;
+     subiu, e a API só sobe depois de aplicar as migrations;
   8. registra a publicação conferida no `staging-conferido`.
 - **A versão no ar** é o commit do último deploy concluído no Coolify, na lista
   de Deployments do recurso. O log do `Staging` que publicou diz
@@ -326,6 +328,39 @@ com o ADR-058**. Com o Auto Deploy ligado, o próprio push publicaria antes do C
   commit** (isso pausa a publicação) e siga o §4.1. O job dele, depois do CI,
   recusa, porque ele já está no ar sem a guarda.
 
+#### As migrations na subida (ADR-058, adendo 2; decisão do usuário, 2026-11-04)
+
+- **A regra:** a API do staging aplica as migrations pendentes ao subir, antes do Nest (`apps/api/src/common/migrations-na-subida.ts`, chamado pelo `main.ts` depois da trava de manutenção). Roda só com `NODE_ENV=production` (a imagem) e `VEYRA_ENV=staging` (o painel); o desenvolvimento, o CI e o E2E migram pelo caminho deles. Nada muda no compose, no `Dockerfile` nem no `env.ts`.
+- **O que o job publica sozinho:** a migration NOVA, com o nome no padrão (`<14 dígitos>_<nome>/migration.sql`), numa transação só (a primeira linha com conteúdo é `BEGIN;`, a última `COMMIT;`, um de cada em qualquer grafia, sem `ROLLBACK`) e sem instrução destrutiva ou que quebre o código ou a integridade no ar (`DROP` de tabela, coluna, schema, tipo, restrição, gatilho, função, política ou visão; `DISABLE TRIGGER/ROW`; `TRUNCATE`; `DELETE FROM`; `RENAME`; troca de tipo de coluna; `SET NOT NULL`). Qualquer outra volta à janela (§4.1). A conferência é do job: o hook do agente não vê commit humano. Ela NÃO pega um `UPDATE` em massa: migration de dados continua pedindo o ensaio do `create-migration` e a revisão.
+- **A compatibilidade:** a migration roda antes do código novo atender, e o código anterior pode ainda estar de pé enquanto ela roda: ela precisa ser aditiva. Se o Coolify recria o container (para o antigo, sobe o novo) ou mantém o antigo até o novo ficar saudável não foi conferido num deploy real; até lá, conte com o staging fora durante a migration e, numa falha, até a recuperação.
+- **Em manutenção, nada migra na subida:** com a trava do banco ou com `MAINTENANCE_MODE=true`.
+- **`MIGRATIONS_NA_SUBIDA=false` no painel desliga.** Use no começo de TODA janela (§4.1), junto da fixação do recurso, e tire no fim: senão o Deploy da janela aplicaria a migration antes de quem opera. O job não vê o painel: com o desligamento, o recurso precisa estar fixado.
+- **Os limites:** uma migration longa conta dentro do início do healthcheck (40 s, mais 3 × 30 s), e a subida corta a migration em 10 min. Um Stop ou um segundo deploy no meio dela a interrompe; ela volta inteira (a transação), mas fica registrada como falhada.
+- **O `/api/health` do passo 7** prova que a API subiu, e ela só sobe depois de aplicar as migrations (fora de manutenção e sem o desligamento).
+
+**Uma migration falhou na subida: a recuperação** (ensaiada com a imagem da API num banco descartável; o registro do ensaio fica logo abaixo):
+
+- **O sintoma:** o job `Staging` termina em falha (o deploy não fica saudável) e a API nova reinicia em laço. A primeira subida mostra a falha: numa migration transacional, o Prisma só diz "current transaction is aborted", e a causa está no log do Postgres. As seguintes recusam com P3009 enquanto a falha estiver registrada. O banco está como antes: a migration é uma transação.
+- **Outro push não basta:** sem o `resolve`, ele também recusa. E o `docker exec` no container da API não serve, porque ele não fica de pé.
+- **Os passos** (pelo terminal da VPS, por quem opera):
+  1. **Prove o estado** pelo inventário da migration, no "Falha de migration", mais abaixo. Nunca marque `rolled-back` às cegas.
+  2. **Marque a migration como revertida** num container AVULSO da mesma imagem, na rede do projeto. O `DATABASE_URL` vem do container da API por `--env-file`, nunca em argumento:
+
+     ```bash
+     P=umoaea9vz6qchhhh5wkg0bv9; M='<a migration falhada>'
+     A=$(docker ps -a -q --filter label=com.docker.compose.project=$P --filter label=com.docker.compose.service=api | head -1)
+     # a rede DO PROJETO (o nome leva o id dele); vazia, o docker recusa e nada é escrito
+     N=$(docker inspect "$A" --format '{{range $k, $v := .NetworkSettings.Networks}}{{println $k}}{{end}}' | grep -m1 -F "$P")
+     docker run --rm --network "$N" \
+       --env-file <(docker inspect "$A" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^DATABASE_URL=') \
+       -e NPM_CONFIG_UPDATE_NOTIFIER=false -e CHECKPOINT_DISABLE=1 "$(docker inspect "$A" --format '{{.Image}}')" \
+       npx --no-install prisma migrate resolve --rolled-back "$M"
+     ```
+
+  3. **Depois do passo 2:** se a causa foi uma interrupção, a API volta no próximo reinício e aplica a migration. Se a migration está errada, ela falha de novo: a correção segue o "Falha de migration", e o passo 2 se repete antes do push corrigido.
+
+  **O ensaio (2026-11-04):** `deploy/staging/ensaios/migrations-na-subida.sh`, com a imagem real da API e um banco descartável local. Num banco vazio, as 59 migrations aplicadas na subida e saúde 200. Com uma migration a mais que falha dentro da transação: a primeira subida parou com "current transaction is aborted", a segunda com P3009, e nada da migration ficou no banco. O `resolve --rolled-back` pela forma do passo 2 (o `DATABASE_URL` por `--env-file`, no ensaio pelo `host.docker.internal` em vez da rede do projeto), e a imagem sem a migration falhada voltou com saúde 200. O que o ensaio NÃO prova: o comportamento do Coolify (se recria ou mantém o container antigo) e a rede do projeto na VPS.
+
 ### 4.1 Deploy com janela: migration, manutenção, restauração
 
 O que a §4.0 não publica sozinha passa por aqui, com autorização própria. A janela da F5.2a (§4.2) é uma exceção decidida pelo usuário: o recurso fica em `HEAD`, porque a guarda do job recusa a migration antes de pedir o deploy, e nenhum push sai durante ela.
@@ -334,8 +369,11 @@ O que a §4.0 não publica sozinha passa por aqui, com autorização própria. A
 a migration, a restauração (§6), a rotação de chave (`SECURITY.md` §8) e a
 manutenção.
 
-- **No começo,** fixe o recurso no **commit que está no ar** e, depois,
-  confira que não há job `Staging` em andamento nem na fila no GitHub. Fixar
+- **No começo,** fixe o recurso no **commit que está no ar**, defina
+  `MIGRATIONS_NA_SUBIDA=false` no painel (ADR-058, adendo 2: senão o Deploy da
+  janela aplica a migration antes de quem opera) e, depois, confira que não há
+  job `Staging` em andamento nem na fila no GitHub. No fim, tire o
+  `MIGRATIONS_NA_SUBIDA=false` junto com a fixação. Fixar
   pausa a publicação automática, porque o job recusa com o recurso fixado. Um
   job que já tinha passado dessa conferência ainda publicaria, e por isso a
   conferência vem depois.

@@ -73,7 +73,7 @@ pnpm monorepo · TypeScript strict ponta a ponta · NestJS (monólito modular) �
 - [ ] Migration nova conforme ADR-051, com atomicidade ou exceção justificada e recuperação ensaiada.
 - [ ] Testes relevantes passam; mudança em tenancy/RBAC tem teste de isolamento.
 - [ ] `docs/` atualizado se comportamento ou decisão mudou.
-- [ ] Push somente se pedido explicitamente. O push na `main` também publica no staging, depois do CI verde (ADR-058): diga o que muda lá. Migration, variável exigida (`env.ts`), Dockerfile ou mudança na pilha (`deploy/staging/docker-compose.yml`, `web/`, `backup/`) não sobe sozinha e pede o `DEPLOY_STAGING` §4.1.
+- [ ] Push somente se pedido explicitamente. O push na `main` também publica no staging, depois do CI verde (ADR-058): diga o que muda lá. Migration nova, transacional e compatível sobe sozinha e é aplicada na subida da API (ADR-058 adendo 2); migration editada, fora de transação, destrutiva ou incompatível, variável exigida (`env.ts`), Dockerfile ou mudança na pilha (`deploy/staging/docker-compose.yml`, `web/`, `backup/`) não sobe sozinha e pede o `DEPLOY_STAGING` §4.1.
 
 ## 7. Camada operacional `.claude/` vs documentação `docs/`
 
