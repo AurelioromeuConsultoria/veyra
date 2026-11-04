@@ -17,6 +17,24 @@ import { clinicsPresente } from './clinics-presence';
 export class ClinicsProtectedContent implements ProtectedContentProvider {
   readonly unlockKey = 'clinics:patient-content:read';
   readonly revealKey = 'clinics:schedule:read';
+  // o que na trilha diz QUEM é paciente (falha fechada: toda ação do vertical,
+  // menos a configuração), os envios do vertical pelo Core e o consentimento
+  // das finalidades dele (ADR-061, adendo 7)
+  readonly auditReveal = {
+    actionPrefix: 'clinics.',
+    exceptActionPrefixes: [
+      'clinics.enabled',
+      'clinics.disabled',
+      'clinics.reenabled',
+      'clinics.roles_synced',
+      'clinics.demo_loaded',
+      'clinics.unit.',
+      'clinics.service.',
+      'clinics.professional.',
+    ],
+    originPrefixes: ['clinics.'],
+    purposeKeyPrefix: 'clinics_',
+  } as const;
 
   constructor(private readonly prisma: PrismaService) {}
 

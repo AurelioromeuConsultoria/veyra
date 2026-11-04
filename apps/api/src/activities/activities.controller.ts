@@ -45,7 +45,20 @@ export class ActivitiesController {
           dealId: query.dealId,
         }),
         // o título das oportunidades de contato oculto (adendo 5)
-        titulosOcultos: (dealIds) => this.protegido.oportunidadesOcultas(auth, dealIds),
+        titulosOcultos: async (itens) => {
+          const ocultos = await this.protegido.titulosDeOportunidadeOcultos(
+            auth,
+            itens.map((i) => i.dealId),
+          );
+          return new Set(
+            itens
+              .filter((i) => {
+                const o = ocultos.get(i.dealId);
+                return o && (o.todos || (typeof i.title === 'string' && o.titulos.has(i.title)));
+              })
+              .map((i) => i.id),
+          );
+        },
       },
     );
   }

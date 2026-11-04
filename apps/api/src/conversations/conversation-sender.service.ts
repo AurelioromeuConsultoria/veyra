@@ -74,6 +74,12 @@ const MENSAGEM_MUDOU = 'A conversa acabou de mudar. Recarregue e tente de novo.'
 export const MENSAGEM_MIDIA_PROTEGIDA =
   'Esta conversa tem mídia de um contato protegido e não pode voltar a remetente a identificar. A correção de uma atribuição errada ainda não está disponível.';
 
+function mesmoConjuntoDeIds(a: readonly string[], b: readonly string[]): boolean {
+  const x = new Set(a);
+  const y = new Set(b);
+  return x.size === y.size && [...x].every((id) => y.has(id));
+}
+
 @Injectable()
 export class ConversationSenderService {
   constructor(
@@ -124,6 +130,16 @@ export class ConversationSenderService {
     // o modo da proteção calculado FORA da transação (guardado por pedido): as
     // consultas dele não seguram uma conexão enquanto as travas estão presas
     await this.protegido.duvidaOculta(auth);
+    /**
+     * Em workspace sujeito ao E8, TODOS os candidatos do número entram nas
+     * travas exclusivas de contato — as mesmas de quem torna o contato protegido: a
+     * conversão de qualquer candidato fica em série com a identificação, e a
+     * conferência do atalho (abaixo) não lê uma classificação velha (ADR-061,
+     * adendo 7, item 4c). Lidos antes, relidos sob as travas: diferentes, 409.
+     */
+    const candidatosTravados = (await this.protegido.workspaceSujeito(workspaceId))
+      ? (await this.classificar(this.prisma.db, antes.externalAddress)).map((c) => c.id)
+      : null;
     const regiao = await this.contacts.regiaoDoWorkspace(workspaceId);
     const contactsLimit = escolhido
       ? null
@@ -132,13 +148,30 @@ export class ConversationSenderService {
     await this.restricao.naTransacaoInterativa(
       this.prisma.db as unknown as TxRunner,
       async (tx) => {
-        const conversa = await this.travarERelear(tx, workspaceId, antes, [escolhido], []);
+        const conversa = await this.travarERelear(
+          tx,
+          workspaceId,
+          antes,
+          [escolhido, ...(candidatosTravados ?? [])],
+          [],
+        );
         if (conversa.senderStatus !== 'unidentified' || conversa.contactId !== null) {
           throw new ConflictException(MENSAGEM_MUDOU);
         }
         const endereco = this.enderecoDe(conversa);
         // os candidatos RELIDOS sob as travas, contados na trilha em todo ato
         const classificados = await this.classificar(tx, endereco);
+        if (
+          candidatosTravados &&
+          !mesmoConjuntoDeIds(
+            candidatosTravados,
+            classificados.map((c) => c.id),
+          )
+        ) {
+          throw new ConflictException(
+            'Os contatos deste número mudaram enquanto a conversa era identificada; recarregue e tente de novo.',
+          );
+        }
         let contactId: string;
         if (escolhido) {
           // um contato fora dos candidatos é recusado

@@ -43,6 +43,19 @@ export interface ProtectedContentProvider {
    * nunca vira "não sujeito".
    */
   appliesToWorkspace(): Promise<boolean>;
+  /**
+   * O que, na trilha, revela quais contatos são protegidos (ADR-061, adendo
+   * 7): no `uniforme`, essas linhas não saem. Falha fechada: TODA ação com o
+   * prefixo da extensão é escondida, exceto as de configuração declaradas;
+   * mais as linhas do Core cuja origem (`originRef`) é da extensão e as de
+   * consentimento de uma finalidade dela.
+   */
+  readonly auditReveal?: {
+    actionPrefix: string;
+    exceptActionPrefixes: readonly string[];
+    originPrefixes: readonly string[];
+    purposeKeyPrefix?: string;
+  };
 }
 
 export const PROTECTED_CONTENT_PROVIDERS = Symbol('PROTECTED_CONTENT_PROVIDERS');
@@ -186,6 +199,111 @@ export class ProtectedContentService {
    */
   async semClassificacao(auth: AuthContext): Promise<boolean> {
     return (await this.modo(auth)).tipo === 'uniforme';
+  }
+
+  /**
+   * O que EXCLUI da trilha as linhas que revelam a classificação, para quem
+   * NÃO pode sabê-la (o `uniforme`; adendo 7). `where`: as ações da extensão
+   * (falha fechada, menos a configuração), no SQL. `revela`: as linhas do
+   * Core cuja origem ou finalidade é da extensão — conferidas linha a linha,
+   * porque um filtro JSON no SQL vira NULL onde o campo falta. `null`: nada.
+   */
+  async trilhaQueRevela(auth: AuthContext): Promise<{
+    where: Record<string, unknown>;
+    revela: (linha: { before: unknown; after: unknown }) => boolean;
+  } | null> {
+    if ((await this.modo(auth)).tipo !== 'uniforme') return null;
+    const acoes: Record<string, unknown>[] = [];
+    const origens: string[] = [];
+    const finalidades = new Set<string>();
+    for (const p of this.providers) {
+      const r = p.auditReveal;
+      if (!r || !(await p.appliesToWorkspace())) continue;
+      acoes.push({
+        AND: [
+          { action: { startsWith: r.actionPrefix } },
+          ...(r.exceptActionPrefixes.length > 0
+            ? [{ NOT: { OR: r.exceptActionPrefixes.map((e) => ({ action: { startsWith: e } })) } }]
+            : []),
+        ],
+      });
+      origens.push(...r.originPrefixes);
+      if (r.purposeKeyPrefix) {
+        const linhas = (await this.prisma.db.consentPurpose.findMany({
+          where: { key: { startsWith: r.purposeKeyPrefix } },
+          select: { id: true },
+        } as never)) as unknown as { id: string }[];
+        for (const { id } of linhas) finalidades.add(id);
+      }
+    }
+    if (acoes.length === 0) return null;
+    const campo = (lado: unknown, nome: string): unknown =>
+      lado && typeof lado === 'object' ? (lado as Record<string, unknown>)[nome] : undefined;
+    return {
+      where: { NOT: { OR: acoes } },
+      revela: (linha) =>
+        [linha.before, linha.after].some((lado) => {
+          const origem = campo(lado, 'originRef');
+          const finalidade = campo(lado, 'purposeId');
+          return (
+            (typeof origem === 'string' && origens.some((o) => origem.startsWith(o))) ||
+            (typeof finalidade === 'string' && finalidades.has(finalidade))
+          );
+        }),
+    };
+  }
+
+  /**
+   * Os títulos de oportunidade que quem pede NÃO lê (ADR-061, adendo 7):
+   * `todos` quando a oportunidade de agora é de contato oculto (ou não existe
+   * mais, na dúvida); e, em `titulos`, os que ela teve enquanto era de um
+   * contato oculto — lidos das atividades, que gravam o contato do momento.
+   * Assim a oportunidade que saiu de um contato protegido não devolve os títulos do
+   * tempo dele, e um título dado depois segue visível.
+   */
+  async titulosDeOportunidadeOcultos(
+    auth: AuthContext,
+    dealIds: readonly string[],
+    db: Db = this.prisma.db,
+  ): Promise<Map<string, { todos: boolean; titulos: Set<string> }>> {
+    const unicos = [...new Set(dealIds)];
+    const resultado = new Map<string, { todos: boolean; titulos: Set<string> }>();
+    if (unicos.length === 0 || !(await this.duvidaOculta(auth))) return resultado;
+    const [deals, atividades] = await Promise.all([
+      db.deal.findMany({
+        where: { id: { in: unicos } },
+        select: { id: true, contactId: true },
+      } as never) as unknown as Promise<{ id: string; contactId: string | null }[]>,
+      db.activity.findMany({
+        where: {
+          dealId: { in: unicos },
+          type: { in: ['deal_created', 'deal_updated'] },
+          contactId: { not: null },
+        },
+        select: { dealId: true, contactId: true, payload: true },
+      } as never) as unknown as Promise<
+        { dealId: string; contactId: string; payload: Record<string, unknown> | null }[]
+      >,
+    ]);
+    const atuais = new Map(deals.map((d) => [d.id, d.contactId]));
+    const ocultos = await this.contatosOcultos(
+      auth,
+      [...deals.map((d) => d.contactId), ...atividades.map((a) => a.contactId)],
+      db,
+    );
+    for (const id of unicos) {
+      const atual = atuais.get(id);
+      const todos =
+        !atuais.has(id) || (atual !== null && atual !== undefined && ocultos.has(atual));
+      const titulos = new Set(
+        atividades
+          .filter((a) => a.dealId === id && ocultos.has(a.contactId))
+          .map((a) => a.payload?.title)
+          .filter((t): t is string => typeof t === 'string'),
+      );
+      resultado.set(id, { todos, titulos });
+    }
+    return resultado;
   }
 
   /**

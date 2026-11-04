@@ -87,9 +87,15 @@ export class AuditService {
     return { type: 'user', membershipId: auth.membershipId };
   }
 
-  async list(input: ListAuditInput): Promise<AuditPageDto> {
+  async list(
+    input: ListAuditInput,
+    options: { fora?: Record<string, unknown> | null } = {},
+  ): Promise<AuditPageDto> {
     const cursor = input.cursor ? decodeCursor(input.cursor) : null;
     const where = {
+      // as linhas que revelam a classificação, para quem não pode sabê-la
+      // (ADR-061, adendo 7): fora da trilha, nem pelos filtros
+      ...(options.fora ?? {}),
       ...(input.entityType ? { entityType: input.entityType } : {}),
       ...(input.entityId ? { entityId: input.entityId } : {}),
       ...(input.action ? { action: input.action } : {}),

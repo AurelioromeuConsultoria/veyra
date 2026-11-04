@@ -135,7 +135,9 @@ export class ActivitiesService {
        * pede (ADR-061, adendo 5): o `title` sai do payload, e a resposta diz
        * que há conteúdo restrito
        */
-      titulosOcultos?: (dealIds: string[]) => Promise<Set<string>>;
+      titulosOcultos?: (
+        itens: { id: string; dealId: string; contactId: string | null; title: unknown }[],
+      ) => Promise<Set<string>>;
     } = {},
   ): Promise<ActivityPageDto> {
     /**
@@ -196,14 +198,23 @@ export class ActivitiesService {
     const comTitulo = page.filter(
       (row) => TIPOS_COM_TITULO_DO_DEAL.has(row.type) && row.dealId !== null,
     );
-    const ocultos =
+    // o título oculto pela oportunidade de AGORA ou por ter sido dado enquanto
+    // ela era de um contato oculto (ADR-061, adendo 7, item 4a): o conjunto
+    // de ids de ATIVIDADE
+    const ocultasPorId =
       options.titulosOcultos && comTitulo.length > 0
-        ? await options.titulosOcultos(comTitulo.map((row) => row.dealId as string))
+        ? await options.titulosOcultos(
+            comTitulo.map((row) => ({
+              id: row.id,
+              dealId: row.dealId as string,
+              contactId: row.contactId,
+              title: (row.payload as Record<string, unknown> | null)?.title,
+            })),
+          )
         : new Set<string>();
     const items: ActivityDto[] = page.map((row) => {
       const payload = row.payload as ActivityDto['payload'];
-      const semTitulo =
-        TIPOS_COM_TITULO_DO_DEAL.has(row.type) && row.dealId !== null && ocultos.has(row.dealId);
+      const semTitulo = TIPOS_COM_TITULO_DO_DEAL.has(row.type) && ocultasPorId.has(row.id);
       return {
         id: row.id,
         type: row.type as ActivityType,
@@ -220,7 +231,9 @@ export class ActivitiesService {
         rows.length > limit && last
           ? encodeCursor({ occurredAt: last.occurredAt, id: last.id })
           : null,
-      ...(options.conteudoRestrito || ocultos.size > 0 ? { restrictedContent: true as const } : {}),
+      ...(options.conteudoRestrito || ocultasPorId.size > 0
+        ? { restrictedContent: true as const }
+        : {}),
     };
   }
 

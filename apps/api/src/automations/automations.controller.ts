@@ -41,9 +41,10 @@ export class AutomationsController {
   @RequirePermissions('automations:manage')
   @Get('executions')
   listExecutions(
+    @CurrentAuth() auth: AuthContext,
     @Query(new ZodPipe(listExecutionsSchema)) query: { limit: number },
   ): Promise<AutomationExecutionDto[]> {
-    return this.automations.listExecutions(query.limit);
+    return this.automations.listExecutions(auth, query.limit);
   }
 
   @RequirePermissions('automations:manage')

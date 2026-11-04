@@ -156,8 +156,31 @@ export class AutomationsService {
     });
   }
 
-  async listExecutions(limit: number): Promise<AutomationExecutionDto[]> {
+  /**
+   * Em workspace sujeito ao E8 e fora do modo livre, as execuções de
+   * automações disparadas por evento de oportunidade ou de tarefa não saem:
+   * o executado/pulado, por condição de agora ou de antes, deixaria deduzir
+   * conteúdo protegido (ADR-061, adendo 7, item 4b). Igual para todos, sem
+   * depender da classificação nem do histórico. No workspace sem a extensão,
+   * como sempre.
+   */
+  private async execucoesQueDeduzemTitulo(
+    auth: AuthContext,
+  ): Promise<Record<string, unknown> | null> {
+    if (!(await this.protegido.duvidaOculta(auth))) return null;
+    return {
+      NOT: {
+        automation: {
+          OR: [{ trigger: { startsWith: 'deal.' } }, { trigger: { startsWith: 'task.' } }],
+        },
+      },
+    };
+  }
+
+  async listExecutions(auth: AuthContext, limit: number): Promise<AutomationExecutionDto[]> {
+    const fora = await this.execucoesQueDeduzemTitulo(auth);
     const rows = (await this.prisma.db.automationExecution.findMany({
+      where: fora ?? {},
       orderBy: { createdAt: 'desc' },
       take: limit,
     } as never)) as unknown as {

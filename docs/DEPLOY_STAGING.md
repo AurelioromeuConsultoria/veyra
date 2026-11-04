@@ -2874,3 +2874,18 @@ O usuário entra e troca para o workspace Demonstração. Depois:
   - a recusa da exclusão em cascata.
 
   Pela integração (`clinics-patient-content`, 20 cenários), pelo web e pelo CI verde.
+
+### A F5.3c no ar (2026-11-04)
+
+- **A publicação:** `f401482`, pelo job `Staging` do run 41883052697, com os quatro jobs verdes.
+  - Inclui `1e08eb1` (o registro da F5.3b), `ed35156` (a F5.3c), `79ee27d` (o replay e o marcador `[anexo]`) e `f401482` (a mídia histórica: a conversa de paciente com mídia não volta à RAI).
+  - Sem migration e sem variável nova.
+- **Conferido no `demo`:** nada além da publicação. O `demo` não tem conta Member nem Guest, e a F5.3c não muda o que o Owner vê.
+- **Validado pelos testes, e não no `demo`:**
+  - mídia: o anexo restrito, o marcador genérico, a RAI conservadora e o bloqueio da mídia histórica;
+  - campos personalizados e títulos restritos;
+  - replay com o acesso de agora;
+  - regra uniforme;
+  - workspace sem o Clinics.
+
+  Pela integração (`clinics-patient-media-fields`, 19 cenários), pelos specs afetados e pelo CI verde.

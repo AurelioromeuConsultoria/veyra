@@ -10525,3 +10525,62 @@ O workspace que nunca teve o Clinics fica sempre no modo livre, com o comportame
    - **O registro anterior, mantido como histórico:** o item dependia de decisão do usuário e não tinha sido implementado. A proteção hoje é derivada do contato ATUAL da conversa, e nada guarda de quem a conversa era quando a mídia chegou. Os caminhos possíveis:
    - **sem migration:** recusar a todos, inclusive a quem tem as chaves, desfazer ou rejeitar a conversa de um contato protegido que tenha mídia. A proteção fica preservada, mas ninguém corrige uma atribuição errada dessa conversa;
    - **com migration:** gravar em cada mensagem o contato da conversa no momento em que ela chegou. A mídia é protegida se esse contato OU o atual for oculto. Também é preciso decidir quem pode liberar a mídia de uma atribuição errada, se alguém puder.
+
+**Adendo 7 — a F5.3d: busca, exportações e auditoria, e os três pontos registrados (2026-11-04), antes do código.** Autorizada pelo usuário até a publicação, junto com a F5.3c.
+
+1. **Busca (mapeada, sem mudança).** Nenhuma busca procura em conteúdo protegido.
+   - **Contatos:** a busca vai por nome e e-mail, e o resultado já sai com os campos mascarados.
+   - **Tarefas, notas e oportunidades:** não têm busca por texto.
+   - **Pacientes e interessados:** a busca exige `clinics:schedule:read`, que é justamente a chave que revela quem é paciente.
+2. **Exportações (mapeadas, sem mudança).** Não existe exportação no produto. O único CSV é de importação, e as métricas só agregam contagens. A exportação LGPD futura nasce sob o E8, e isso fica registrado aqui como condição dela.
+3. **Auditoria (`GET /audit`).** Até aqui a trilha devolvia `title` e `fileName` em claro, e as ações do vertical revelavam quem é paciente.
+   - **Os campos protegidos na leitura da trilha:**
+     - `title` das ações `deal.*` e `task.*` (inclusive as da automação e da IA);
+     - `fileName` das ações `file.*`.
+
+     Eles saem como "Conteúdo restrito" quando a entidade é oculta para quem lê, pela mesma regra do adendo 5: a oportunidade pelo contato atual, a tarefa pelo alvo atual e o arquivo pela mídia protegida. A entidade que não existe mais é tratada na dúvida, de forma conservadora: fora do modo livre, o campo sai mascarado.
+
+   - **As ações que revelam a classificação:** a extensão as declara por um prefixo (`clinics.`). No modo uniforme elas não saem da trilha, para quem não pode saber quem é paciente. No restrito e no livre, saem como sempre.
+   - **Quem tem `audit:read` e as duas chaves** lê a trilha como sempre. No workspace sem o Clinics, nada muda.
+4. **Os três pontos do adendo 5:**
+   - **(a) Títulos antigos na timeline:** a máscara olha também o contato GRAVADO na atividade. O título sai mascarado se a oportunidade de agora OU o contato do momento for oculto.
+   - **(b) O histórico das automações:** num workspace sujeito e fora do modo livre, as execuções de automações com condição sobre `title`, disparadas por evento de oportunidade ou de tarefa, não saem da lista. É igual para todos, sem depender da classificação.
+   - **(c) A corrida na identificação do remetente:** a identificação passa a travar todos os candidatos do número, com as travas exclusivas de contato, as mesmas da conversão em paciente. Os candidatos são lidos antes e relidos sob as travas, e um conjunto diferente responde 409. A conversão de qualquer candidato fica em série com a identificação.
+5. **O B1, ao fim da F5.3d:** a conclusão vai no resultado deste adendo, depois da revisão final.
+
+**Resultado do adendo 7 e conclusão da F5.3 (2026-11-04):**
+
+- **A revisão final corrigiu quatro pontos.** O `reviewer` pediu mudanças, e o `security` bloqueou:
+  - **as linhas do Core que dizem quem é paciente:** o envio do vertical (`business_outbound.approved`, com origem `clinics.outreach`) e o consentimento das finalidades `clinics_` saíam no modo uniforme. Agora a extensão declara as origens e as finalidades, e o Core tira essas linhas, conferidas uma a uma depois da consulta (um filtro JSON no SQL vira NULL onde o campo falta);
+  - **as ações do vertical, com falha fechada:** no uniforme, toda ação `clinics.*` some, exceto a configuração declarada (ativação, papéis, catálogo e profissionais);
+  - **os títulos antigos:** a trilha e a timeline mascaram também os títulos que a oportunidade teve enquanto era de um contato oculto, lidos das atividades, que gravam o contato do momento. O título dado depois da transferência segue visível. Na trilha, a tarefa também é olhada pelo alvo que teve no passado;
+  - **o histórico das automações:** fora do modo livre, saem TODAS as execuções de gatilho de oportunidade ou de tarefa, porque tirar a condição sobre o título reabria as antigas. Na trilha, a linha da tarefa que a automação ou a IA criou sobre conteúdo oculto também sai;
+  - **a identificação:** o 409 de um conjunto de candidatos mudado tem mensagem própria.
+- **Validado pelos testes:**
+  - **a integração `clinics-patient-audit`,** com 10 cenários:
+    - a trilha no modo restrito e no uniforme, inclusive as linhas do Core, a configuração visível, o Owner depois da desativação, a tarefa da automação e o arquivo;
+    - o workspace sem o Clinics;
+    - os títulos depois da transferência, na trilha e na timeline;
+    - as automações, com a condição tirada;
+    - a corrida na identificação, forçada com pausa e espera de trava observada;
+  - **os specs existentes** de auditoria, consentimentos, envio do negócio, automações, oportunidades, conversas, identidade do WhatsApp, pedidos de envio do Clinics e do papel combinado.
+
+  A verificação geral é o CI da publicação.
+
+- **Backlog (opcional na revisão):**
+  - a identificação marca como órfãos os usos em curso de todos os candidatos travados, o que é falha fechada;
+  - a máscara da trilha confere as tarefas uma a uma;
+  - falta um teste que ligue a allowlist da trilha aos campos mascarados.
+- **A conclusão sobre o B1:**
+  - **Coberto:** a parte técnica do acesso ao conteúdo clínico pelas pessoas e papéis do workspace, entre a F5.3a e a F5.3d. São as notas, as tarefas, a mídia, os campos, os títulos, a trilha, a timeline, o histórico das automações, o replay e a RAI, para a demonstração com dados fictícios. Na trilha, as linhas que dizem quem é paciente saem; fora dela, o sinal ainda existe nos itens 7 e 8 abaixo.
+  - **O B1 NÃO é levantado.** Continuam obrigatórios antes do piloto com dados reais:
+    1. **a agenda do Core (`CalendarEvent`):** o título, a descrição e o local de um evento ligado ao contato ou à oportunidade de um paciente saem a quem tem `calendar:read` (Member e Guest), na atividade `event_scheduled` e na notificação `calendar_event_scheduled`. É texto escrito sobre o contato, da mesma classe das notas e tarefas, e fica fora da F5.3. O Clinics tem a agenda própria dele. A do Core não está nas rotas da experiência da clínica, mas a API dela responde;
+    2. o procedimento seguro para corrigir uma atribuição errada de remetente em conversa de paciente com mídia (adendo 6, item 3);
+    3. a corrida de inserção na cascata da exclusão, que é pendência de integridade (adendo 4);
+    4. a corrida do registro manual de mensagem com anexo contra o rejeitar (adendo 6, backlog);
+    5. a corrida do vínculo profissional lido fora da transação (D8, adendo 1, aceito só para a demonstração);
+    6. **o sinal fraco da IA:** um interessado liberado para IA que vira paciente passa a ser recusado, o que se confunde com a revogação manual;
+    7. **a lista de consentimentos por contato:** `GET /contacts/:id/consents` e `GET /conversations/:id/consents` devolvem `purposeKey: 'clinics_confirmacao'` sem o E8. Quem tem `consents:read` e não tem a agenda deduz quem é paciente. Isso vale para um papel personalizado e para todos depois da desativação. O `consent.revoked` da trilha não tem `purposeId`, e a lista liga o id ao contato;
+    8. **o texto das conversas:** o adendo 5 manteve o texto visível. Quem lê conversas sem a agenda (o Guest padrão, por exemplo) lê o envio do vertical, como a confirmação com data e hora, e a mensagem do próprio paciente. As conversas estão entre as superfícies que revelam a classificação (adendo 3, item 9);
+    9. **a condição para a política de exclusão do B3:** excluir um paciente apagaria em cascata as atividades do tempo dele, e os títulos antigos voltariam em claro na trilha;
+    10. a validação operacional e jurídica do modelo de acesso, junto com o B3 (a política de exclusão de pacientes) e o B4.
