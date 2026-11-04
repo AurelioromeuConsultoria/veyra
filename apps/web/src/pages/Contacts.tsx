@@ -259,7 +259,7 @@ export function ContactsPage() {
                   {headerGroup.headers.map((header) => {
                     const sortKey = sortable[header.column.id];
                     return (
-                      <th key={header.id} className="eyebrow px-4 py-2 text-left text-muted-fg">
+                      <th key={header.id} className="eyebrow px-5 py-3 text-left text-muted-fg">
                         {sortKey ? (
                           <button
                             type="button"

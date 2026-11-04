@@ -130,7 +130,7 @@ function ReleasesReady() {
                 {['Contato', 'Motivo', 'Liberado em', ''].map((header, index) => (
                   <th
                     key={`${header}-${index}`}
-                    className="eyebrow px-4 py-2 text-left text-muted-fg"
+                    className="eyebrow px-5 py-3 text-left text-muted-fg"
                   >
                     {header}
                   </th>
@@ -140,12 +140,12 @@ function ReleasesReady() {
             <tbody>
               {(rows ?? []).map((release) => (
                 <tr key={release.contactId} className="border-b border-border/60 last:border-b-0">
-                  <td className="px-4 py-2">{release.contactName}</td>
-                  <td className="px-4 py-2">{RELEASE_REASON_LABELS[release.reason]}</td>
-                  <td className="px-4 py-2 num text-data text-muted-fg">
+                  <td className="px-5 py-3">{release.contactName}</td>
+                  <td className="px-5 py-3">{RELEASE_REASON_LABELS[release.reason]}</td>
+                  <td className="px-5 py-3 num text-data text-muted-fg">
                     {fullStamp(release.createdAt)}
                   </td>
-                  <td className="px-4 py-2 text-right">
+                  <td className="px-5 py-3 text-right">
                     <Button
                       variant="ghost"
                       size="sm"

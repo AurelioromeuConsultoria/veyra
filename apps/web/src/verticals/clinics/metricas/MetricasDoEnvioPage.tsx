@@ -171,7 +171,7 @@ function Bloco({
   return (
     <Panel>
       <section aria-label={rotulo} className="space-y-4 p-5">
-        <h2 className="text-display-sm">{titulo}</h2>
+        <h2 className="font-display text-[17px] font-semibold">{titulo}</h2>
         {children}
       </section>
     </Panel>
@@ -190,7 +190,9 @@ function Numero({ rotulo, valor, nota }: { rotulo: string; valor: string; nota?:
   return (
     <div>
       <dt className="eyebrow text-muted-fg">{rotulo}</dt>
-      <dd className="num text-display-sm">{valor}</dd>
+      <dd className="num mt-1 font-display text-[32px] font-semibold leading-none tracking-[-0.02em]">
+        {valor}
+      </dd>
       {nota ? <dd className="text-data text-muted-fg">{nota}</dd> : null}
     </div>
   );
@@ -209,7 +211,9 @@ function Etapa({
   return (
     <div data-status={etapa.status}>
       <dt className="eyebrow text-muted-fg">{rotulo}</dt>
-      <dd className="num text-display-sm">{valor}</dd>
+      <dd className="num mt-1 font-display text-[32px] font-semibold leading-none tracking-[-0.02em]">
+        {valor}
+      </dd>
       <dd className="text-data text-muted-fg">{nota}</dd>
       {ajuda ? <dd className="text-data text-muted-fg">{ajuda}</dd> : null}
     </div>

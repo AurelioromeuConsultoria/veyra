@@ -88,7 +88,7 @@ export function CompaniesPage() {
             <thead>
               <tr className="border-b border-border bg-surface-2/50">
                 {['Nome', 'Domínio', 'Porte', 'Tags', 'Contatos', 'Criada'].map((header) => (
-                  <th key={header} className="eyebrow px-4 py-2 text-left text-muted-fg">
+                  <th key={header} className="eyebrow px-5 py-3 text-left text-muted-fg">
                     {header}
                   </th>
                 ))}
@@ -101,18 +101,18 @@ export function CompaniesPage() {
                   className="cursor-pointer border-b border-border/60 transition-colors last:border-b-0 hover:bg-surface-2/70"
                   onClick={() => setDrawer(company)}
                 >
-                  <td className="px-4 py-2 font-medium">{company.name}</td>
-                  <td className="px-4 py-2 text-muted-fg">{company.domain ?? '—'}</td>
-                  <td className="px-4 py-2">{company.size ? sizeLabels[company.size] : '—'}</td>
-                  <td className="px-4 py-2">
+                  <td className="px-5 py-3 font-medium">{company.name}</td>
+                  <td className="px-5 py-3 text-muted-fg">{company.domain ?? '—'}</td>
+                  <td className="px-5 py-3">{company.size ? sizeLabels[company.size] : '—'}</td>
+                  <td className="px-5 py-3">
                     <span className="flex flex-wrap gap-1">
                       {company.tags.map((tag) => (
                         <TagBadge key={tag.id} name={tag.name} color={tag.color} />
                       ))}
                     </span>
                   </td>
-                  <td className="px-4 py-2 num text-data">{company.contactCount}</td>
-                  <td className="px-4 py-2 num text-data text-muted-fg">
+                  <td className="px-5 py-3 num text-data">{company.contactCount}</td>
+                  <td className="px-5 py-3 num text-data text-muted-fg">
                     {dateFormat.format(new Date(company.createdAt))}
                   </td>
                 </tr>

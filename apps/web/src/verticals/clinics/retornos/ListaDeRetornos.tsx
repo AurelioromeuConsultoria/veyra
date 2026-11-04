@@ -9,7 +9,9 @@ import type {
 import { horaLocal, somarDias } from '@veyra/contracts/verticals/clinics';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
+import { Avatar } from '../../../components/ui/avatar';
 import { Button } from '../../../components/ui/button';
+import { StatusChip, type Tom } from '../../../components/ui/status';
 import { Drawer } from '../../../components/ui/drawer';
 import { Field, Select } from '../../../components/ui/input';
 import { EmptyState, Panel } from '../../../components/ui/page';
@@ -26,6 +28,13 @@ import {
   quandoLocal,
 } from '../continuidade';
 import { fichaDoPaciente } from '../nav';
+
+/** a cor do estado do retorno (ADR-062): pendente pede ação; concluído descansa */
+const TOM_DO_RETORNO: Record<keyof typeof ROTULO_DO_RETORNO, Tom> = {
+  pending: 'pending',
+  done: 'done',
+  canceled: 'neutral',
+};
 
 export interface FiltrosDeRetorno {
   status?: string;
@@ -117,7 +126,7 @@ export function ListaDeRetornos({
                 'Estado',
                 ...(podeAgir ? ['Ações'] : []),
               ].map((h) => (
-                <th key={h} className="eyebrow px-4 py-2 text-left text-muted-fg">
+                <th key={h} className="eyebrow px-5 py-3 text-left text-muted-fg">
                   {h}
                 </th>
               ))}
@@ -133,40 +142,52 @@ export function ListaDeRetornos({
                   className="border-b border-border/60 last:border-b-0"
                 >
                   {mostrarPaciente ? (
-                    <td className="px-4 py-2">
-                      <Link className="underline" to={fichaDoPaciente(r.patientId)}>
+                    <td className="px-5 py-3">
+                      <Link
+                        className="flex items-center gap-2.5 font-semibold hover:underline"
+                        to={fichaDoPaciente(r.patientId)}
+                      >
+                        <Avatar nome={r.patientName} chave={r.patientId} tamanho="sm" />
                         {r.patientName}
                       </Link>
                     </td>
                   ) : null}
-                  <td className="px-4 py-2">{r.serviceName}</td>
-                  <td className="px-4 py-2 num text-data">
+                  <td className="px-5 py-3">{r.serviceName}</td>
+                  <td className="px-5 py-3 num text-data">
                     {dataCurta(r.dueDate)}
-                    {r.overdue ? <span className="ml-2 text-negative">Vencido</span> : null}
+                    {r.overdue ? (
+                      <StatusChip tom="missed" className="ml-2">
+                        Vencido
+                      </StatusChip>
+                    ) : null}
                   </td>
-                  <td className="px-4 py-2">
+                  <td className="px-5 py-3">
                     {r.assignee ? (
                       <>
                         {r.assignee.name}
                         {r.assignee.hasAccess ? null : (
-                          <span className="ml-2 text-negative">sem acesso</span>
+                          <StatusChip tom="missed" className="ml-2">
+                            sem acesso
+                          </StatusChip>
                         )}
                       </>
                     ) : (
                       <span className="text-muted-fg">Sem responsável</span>
                     )}
                   </td>
-                  <td className="px-4 py-2 num text-data">
+                  <td className="px-5 py-3 num text-data">
                     {r.appointment
                       ? `${fuso ? instanteLocal(r.appointment.startsAt, fuso) : 'horário indisponível (unidade fora do catálogo ativo)'} · ${ROTULO_DO_ESTADO[r.appointment.status]}`
                       : '—'}
                   </td>
-                  <td className="px-4 py-2">
-                    {ROTULO_DO_RETORNO[r.status]}
-                    {r.cancelReason ? ` · ${ROTULO_DO_MOTIVO_DO_RETORNO[r.cancelReason]}` : ''}
+                  <td className="px-5 py-3">
+                    <StatusChip tom={TOM_DO_RETORNO[r.status]}>
+                      {ROTULO_DO_RETORNO[r.status]}
+                      {r.cancelReason ? ` · ${ROTULO_DO_MOTIVO_DO_RETORNO[r.cancelReason]}` : ''}
+                    </StatusChip>
                   </td>
                   {podeAgir ? (
-                    <td className="px-4 py-2">
+                    <td className="px-5 py-3">
                       {r.status === 'pending' ? (
                         <div className="flex flex-wrap gap-1">
                           <Button

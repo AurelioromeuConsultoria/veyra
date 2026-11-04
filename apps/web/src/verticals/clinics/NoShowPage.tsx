@@ -183,7 +183,9 @@ function Faltas({ unidades }: { unidades: ClinicsUnitDto[] }) {
             <dl aria-label="Taxa de faltas" className="grid gap-4 p-5 sm:grid-cols-2">
               <div>
                 <dt className="eyebrow text-muted-fg">Taxa de faltas</dt>
-                <dd className="num text-display-sm">{taxaLegivel(dado.rate)}</dd>
+                <dd className="num mt-1 font-display text-[40px] font-semibold leading-none tracking-[-0.02em] text-state-missed-fg">
+                  {taxaLegivel(dado.rate)}
+                </dd>
                 <dd className="text-data text-muted-fg">
                   {dado.rate === null
                     ? 'Nenhum atendido nem falta no período.'

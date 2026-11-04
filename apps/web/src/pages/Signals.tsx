@@ -219,7 +219,7 @@ export function SignalsPage() {
               <thead>
                 <tr className="border-b border-border bg-surface-2/50">
                   {['Quando', 'Capacidade', 'Resultado', 'Tokens', 'Custo'].map((header) => (
-                    <th key={header} className="eyebrow px-4 py-2 text-left text-muted-fg">
+                    <th key={header} className="eyebrow px-5 py-3 text-left text-muted-fg">
                       {header}
                     </th>
                   ))}
@@ -232,7 +232,7 @@ export function SignalsPage() {
                       {dateTimeFormat.format(new Date(run.createdAt))}
                     </td>
                     <td className="num px-4 py-2 text-data">{run.capability}</td>
-                    <td className="px-4 py-2">
+                    <td className="px-5 py-3">
                       <span
                         className={clsx(
                           'num text-data',

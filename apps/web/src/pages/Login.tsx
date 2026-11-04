@@ -3,6 +3,7 @@ import { loginSchema, type LoginInput } from '@veyra/contracts';
 import { useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { Navigate } from 'react-router-dom';
+import { Marca } from '../components/layout/Marca';
 import { Button } from '../components/ui/button';
 import { Field, Input } from '../components/ui/input';
 import { ApiError } from '../lib/api';
@@ -26,10 +27,12 @@ export function LoginPage() {
     <main className="flex min-h-screen">
       <div className="flex flex-1 items-center justify-center px-6 py-12">
         <div className="w-full max-w-sm rise">
-          <span className="block text-display-lg leading-none text-accent">veyra</span>
-          <p className="eyebrow mt-2 text-muted-fg">CRM Core · plataforma</p>
+          <Marca nome="veyra" tom="dia" />
 
-          <h1 className="mt-8 text-display-sm">Entrar no workspace</h1>
+          <h1 className="mt-10 font-display text-[26px] font-semibold tracking-[-0.02em]">
+            Entrar no workspace
+          </h1>
+          <p className="mt-1.5 text-[14px] text-muted-fg">Use o e-mail do seu convite.</p>
           <form
             className="mt-5 space-y-4"
             onSubmit={form.handleSubmit((values) => login.mutate(values))}
@@ -66,38 +69,31 @@ export function LoginPage() {
         </div>
       </div>
 
-      {/*
-       * Painel mineral: superfície, hairlines e uma frase. Nenhum gradiente,
-       * nenhum glow — a profundidade vem do contraste entre superfícies (§5).
-       */}
-      <aside className="relative hidden w-[46%] max-w-2xl flex-col justify-between border-l border-border bg-surface px-12 py-12 lg:flex">
-        <div
-          className="pointer-events-none absolute inset-0 opacity-[0.5]"
-          style={{
-            backgroundImage:
-              'repeating-linear-gradient(90deg, var(--border) 0 1px, transparent 1px 96px)',
-            maskImage: 'linear-gradient(to bottom, transparent, black 30%, black 70%, transparent)',
-          }}
-        />
-        <p className="eyebrow relative text-muted-fg">Núcleo de relacionamento</p>
-        <div className="relative max-w-md">
-          <p className="text-display-lg">
-            O trabalho do dia — contatos, oportunidades e conversas — num só instrumento.
+      {/* o painel é a MOLDURA do app (ADR-062): o mesmo verde-abissal da lateral */}
+      <aside className="relative hidden w-[46%] max-w-2xl flex-col justify-between bg-frame px-12 py-12 text-frame-fg lg:flex">
+        <p className="text-[12px] font-semibold uppercase tracking-[0.06em] text-frame-label">
+          Núcleo de relacionamento
+        </p>
+        <div className="max-w-md">
+          <p className="font-display text-[34px] font-semibold leading-[1.15] tracking-[-0.02em] text-white">
+            O trabalho do dia — contatos, conversas e próximas ações — num lugar só.
           </p>
-          <p className="mt-4 text-body text-muted-fg">
+          <p className="mt-4 text-[15px] text-frame-muted">
             A inteligência aparece como sinal, sugestão e próxima ação. Nada sai sem uma decisão
             humana.
           </p>
         </div>
-        <dl className="relative flex gap-10">
+        <dl className="flex gap-10">
           {[
             ['Isolamento', 'por workspace'],
             ['Permissões', 'default-deny'],
             ['Auditoria', 'de ponta a ponta'],
           ].map(([term, detail]) => (
             <div key={term}>
-              <dt className="eyebrow text-muted-fg">{term}</dt>
-              <dd className="mt-1 text-data text-foreground">{detail}</dd>
+              <dt className="text-[12px] font-semibold uppercase tracking-[0.06em] text-frame-label">
+                {term}
+              </dt>
+              <dd className="mt-1 text-[14px] text-white">{detail}</dd>
             </div>
           ))}
         </dl>

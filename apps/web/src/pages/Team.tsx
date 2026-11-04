@@ -169,17 +169,17 @@ export function TeamPage() {
                 const alcance = papel ? administra(minhas, papel) : false;
                 return (
                   <tr key={m.membershipId} className="border-b border-border/60 last:border-b-0">
-                    <td className="px-4 py-2">
+                    <td className="px-5 py-3">
                       <span className="font-medium">{m.name || m.email}</span>
                       {sou ? <span className="ml-2 text-data-sm text-muted-fg">(você)</span> : null}
                       <span className="block num text-data-sm text-muted-fg">{m.email}</span>
                     </td>
-                    <td className="px-4 py-2">
+                    <td className="px-5 py-3">
                       {nomeDoPapel({ name: m.roleName, systemKey: m.roleSystemKey })}
                     </td>
-                    <td className="px-4 py-2 text-data">{ESTADO[m.status]}</td>
-                    <td className="px-4 py-2 num text-data text-muted-fg">{data(m.createdAt)}</td>
-                    <td className="px-4 py-2 text-right">
+                    <td className="px-5 py-3 text-data">{ESTADO[m.status]}</td>
+                    <td className="px-5 py-3 num text-data text-muted-fg">{data(m.createdAt)}</td>
+                    <td className="px-5 py-3 text-right">
                       {!podeGerir || !papeis.data ? null : sou ? (
                         <span className="text-data-sm text-muted-fg">
                           Seu acesso é alterado por outra pessoa
@@ -249,25 +249,25 @@ export function TeamPage() {
                     const papel = porId.get(c.roleId);
                     return (
                       <tr key={c.id} className="border-b border-border/60 last:border-b-0">
-                        <td className="px-4 py-2 num text-data">{c.email}</td>
-                        <td className="px-4 py-2">
+                        <td className="px-5 py-3 num text-data">{c.email}</td>
+                        <td className="px-5 py-3">
                           {nomeDoPapel({ name: c.roleName, systemKey: c.roleSystemKey })}
                         </td>
-                        <td className="px-4 py-2 text-data text-muted-fg">
+                        <td className="px-5 py-3 text-data text-muted-fg">
                           {c.issuedByProvisioning
                             ? 'Operação (provisionamento)'
                             : c.createdByMembershipId
                               ? (nomeDoMembro.get(c.createdByMembershipId) ?? 'Ex-membro')
                               : '—'}
                         </td>
-                        <td className="px-4 py-2 text-data">
+                        <td className="px-5 py-3 text-data">
                           {expirado ? (
                             <span className="text-warning">Expirou em {dataHora(c.expiresAt)}</span>
                           ) : (
                             <>Aguardando aceite até {dataHora(c.expiresAt)}</>
                           )}
                         </td>
-                        <td className="px-4 py-2 text-right">
+                        <td className="px-5 py-3 text-right">
                           {!papeis.data ? null : papel && administra(minhas, papel) ? (
                             <Button
                               size="sm"

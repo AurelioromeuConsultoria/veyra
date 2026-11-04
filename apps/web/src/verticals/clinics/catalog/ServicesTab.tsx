@@ -88,7 +88,7 @@ export function ServicesTab() {
               {['Serviço', 'Duração', 'Preço', 'Situação', ''].map((header, index) => (
                 <th
                   key={`${header}-${index}`}
-                  className="eyebrow px-4 py-2 text-left text-muted-fg"
+                  className="eyebrow px-5 py-3 text-left text-muted-fg"
                 >
                   {header}
                 </th>
@@ -98,15 +98,15 @@ export function ServicesTab() {
           <tbody>
             {(services.data ?? []).map((service) => (
               <tr key={service.id} className="border-b border-border/60 last:border-b-0">
-                <td className="px-4 py-2">{service.name}</td>
-                <td className="px-4 py-2 num text-data">{service.durationMin} min</td>
-                <td className="px-4 py-2 num text-data">
+                <td className="px-5 py-3">{service.name}</td>
+                <td className="px-5 py-3 num text-data">{service.durationMin} min</td>
+                <td className="px-5 py-3 num text-data">
                   {service.priceCents === null ? '—' : formatCents(service.priceCents)}
                 </td>
-                <td className="px-4 py-2 text-muted-fg">
+                <td className="px-5 py-3 text-muted-fg">
                   {service.archivedAt ? 'Arquivado' : 'Ativo'}
                 </td>
-                <td className="px-4 py-2 text-right">
+                <td className="px-5 py-3 text-right">
                   {canManage ? (
                     <span className="inline-flex gap-1">
                       <Button

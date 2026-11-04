@@ -77,7 +77,7 @@ export function AuditPage() {
             <thead>
               <tr className="border-b border-border bg-surface-2/50">
                 {['Quando', 'Quem', 'Ação', 'Entidade', 'Mudança'].map((header) => (
-                  <th key={header} className="eyebrow px-4 py-2 text-left text-muted-fg">
+                  <th key={header} className="eyebrow px-5 py-3 text-left text-muted-fg">
                     {header}
                   </th>
                 ))}
@@ -89,14 +89,14 @@ export function AuditPage() {
                   <td className="whitespace-nowrap px-5 py-1.5 num text-data text-muted-fg">
                     {dateTimeFormat.format(new Date(entry.createdAt))}
                   </td>
-                  <td className="px-4 py-2">
+                  <td className="px-5 py-3">
                     {entry.actorLabel ?? '—'}
                     {entry.actorType !== 'user' ? (
                       <span className="ml-1 text-data-sm text-muted-fg">({entry.actorType})</span>
                     ) : null}
                   </td>
-                  <td className="px-4 py-2 num text-data">{entry.action}</td>
-                  <td className="px-4 py-2">
+                  <td className="px-5 py-3 num text-data">{entry.action}</td>
+                  <td className="px-5 py-3">
                     {entityLabels[entry.entityType] ?? entry.entityType}
                   </td>
                   <td className="max-w-md truncate px-5 py-1.5 text-muted-fg" title={diff(entry)}>

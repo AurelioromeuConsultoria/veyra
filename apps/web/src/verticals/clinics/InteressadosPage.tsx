@@ -3,6 +3,7 @@ import type { ClinicsLeadDto, ClinicsLeadsPageDto } from '@veyra/contracts/verti
 import { UserPlus } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { Avatar } from '../../components/ui/avatar';
 import { Button } from '../../components/ui/button';
 import { Drawer } from '../../components/ui/drawer';
 import { Input } from '../../components/ui/input';
@@ -141,14 +142,15 @@ function Interessados() {
           <Panel>
             <ul className="divide-y divide-border">
               {itens.map((i) => (
-                <li key={i.id} className="flex items-center gap-3 px-4 py-2.5">
+                <li key={i.id} className="flex items-center gap-3 px-5 py-3">
                   <Link
                     to={pessoaDoContato(i.id)}
-                    className="min-w-0 flex-1 truncate text-body-sm hover:underline"
+                    className="flex min-w-0 flex-1 items-center gap-3 text-[14px] font-semibold hover:underline"
                   >
-                    {i.name}
+                    <Avatar nome={i.name} chave={i.id} />
+                    <span className="truncate">{i.name}</span>
                   </Link>
-                  <span className="num shrink-0 text-data text-muted-fg">
+                  <span className="num shrink-0 text-[12.5px] text-muted-fg">
                     chegou em {DATA.format(new Date(i.createdAt))}
                   </span>
                   {criaFicha ? (

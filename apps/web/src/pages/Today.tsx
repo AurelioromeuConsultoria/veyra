@@ -472,7 +472,7 @@ function SeeAll({ to, children }: { to: string; children: ReactNode }) {
 function SectionTitle({ title, question }: { title: string; question: string }) {
   return (
     <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-      <h2 className="text-display-sm">{title}</h2>
+      <h2 className="font-display text-[17px] font-semibold">{title}</h2>
       <p className="text-data text-muted-fg">{question}</p>
     </div>
   );
@@ -496,7 +496,7 @@ function Block({
   return (
     <section className="rise" style={{ animationDelay: `${delay}ms` }}>
       <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <h2 className="text-display-sm">{title}</h2>
+        <h2 className="font-display text-[17px] font-semibold">{title}</h2>
         <p className="text-data text-muted-fg">{question}</p>
         <SeeAll to={to}>{linkLabel}</SeeAll>
       </div>

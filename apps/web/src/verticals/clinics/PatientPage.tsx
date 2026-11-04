@@ -211,7 +211,7 @@ function PacotesDoPaciente({ pacienteId }: { pacienteId: string }) {
             <tr className="border-b border-border bg-surface-2/50">
               {['Serviço', 'Sessões', 'Restantes', 'Preço total registrado', 'Estado', ''].map(
                 (h) => (
-                  <th key={h} className="eyebrow px-4 py-2 text-left text-muted-fg">
+                  <th key={h} className="eyebrow px-5 py-3 text-left text-muted-fg">
                     {h}
                   </th>
                 ),
@@ -225,16 +225,16 @@ function PacotesDoPaciente({ pacienteId }: { pacienteId: string }) {
                 aria-label={descricao(p)}
                 className="border-b border-border/60 last:border-b-0"
               >
-                <td className="px-4 py-2">{nomeDo(p.serviceId)}</td>
-                <td className="px-4 py-2 num text-data">
+                <td className="px-5 py-3">{nomeDo(p.serviceId)}</td>
+                <td className="px-5 py-3 num text-data">
                   {p.consumedSessions} de {p.totalSessions}
                 </td>
-                <td className="px-4 py-2 num text-data">{p.remainingSessions}</td>
-                <td className="px-4 py-2 num text-data">
+                <td className="px-5 py-3 num text-data">{p.remainingSessions}</td>
+                <td className="px-5 py-3 num text-data">
                   {p.totalPriceCents === null ? 'Não informado' : formatCents(p.totalPriceCents)}
                 </td>
-                <td className="px-4 py-2">{ROTULO_DO_PACOTE[p.status]}</td>
-                <td className="px-4 py-2">
+                <td className="px-5 py-3">{ROTULO_DO_PACOTE[p.status]}</td>
+                <td className="px-5 py-3">
                   <Button
                     size="sm"
                     variant="ghost"

@@ -7,7 +7,9 @@ import { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { z } from 'zod';
 import { Timeline } from '../components/Timeline';
+import { Avatar } from '../components/ui/avatar';
 import { Button } from '../components/ui/button';
+import { StatusChip } from '../components/ui/status';
 import { Drawer } from '../components/ui/drawer';
 import { Field, Input, Select } from '../components/ui/input';
 import { PageHeader } from '../components/ui/page';
@@ -286,13 +288,13 @@ function Column({
         }
       }}
     >
-      <header className="flex items-baseline justify-between gap-2 border-b border-border px-3 py-2.5">
-        <span className="eyebrow truncate text-muted-fg">{column.stageName}</span>
-        <span className="num shrink-0 text-data-sm text-muted-fg">
+      <header className="flex items-baseline justify-between gap-2 border-b border-border px-3.5 py-3">
+        <span className="truncate text-[14px] font-semibold">{column.stageName}</span>
+        <span className="num shrink-0 text-[12px] text-muted-fg">
           {column.deals.length} · {formatCents(column.totalCents)}
         </span>
       </header>
-      <ul className="flex-1 space-y-2 overflow-y-auto p-2">
+      <ul className="flex-1 space-y-2.5 overflow-y-auto p-2.5">
         {column.deals.map((deal) => (
           <li key={deal.id}>
             <article
@@ -319,7 +321,7 @@ function Column({
                 }
               }}
               className={clsx(
-                'cursor-pointer rounded-control border bg-surface p-3 shadow-raised transition-colors duration-150',
+                'cursor-pointer rounded-[10px] border bg-surface p-3.5 transition-colors duration-150',
                 focusedDeal === deal.id
                   ? 'border-accent ring-1 ring-accent/30'
                   : 'border-border hover:border-border-strong',
@@ -329,11 +331,16 @@ function Column({
                 // o título de oportunidade de pessoa protegida (ADR-061, adendo 5)
                 <p className="text-body-sm italic text-muted-fg">Conteúdo restrito</p>
               ) : (
-                <p className="text-body-sm font-medium">{deal.title}</p>
+                <p className="text-[14px] font-semibold">{deal.title}</p>
               )}
               {(deal.contactName ?? deal.companyName) ? (
-                <p className="mt-0.5 truncate text-data text-muted-fg">
-                  {deal.contactName ?? deal.companyName}
+                <p className="mt-1.5 flex items-center gap-2 text-[13px] text-muted-fg">
+                  <Avatar
+                    nome={deal.contactName ?? deal.companyName}
+                    chave={deal.contactId ?? deal.companyId ?? undefined}
+                    tamanho="sm"
+                  />
+                  <span className="truncate">{deal.contactName ?? deal.companyName}</span>
                 </p>
               ) : null}
               <p className="mt-2.5 flex items-baseline justify-between gap-2">
@@ -344,9 +351,9 @@ function Column({
                 {/* "0d" sozinho era críptico: o número precisa dizer de que
                     tempo se trata — dias desde a entrada NESTA etapa */}
                 {deal.daysInStage >= 7 ? (
-                  <span className="num shrink-0 rounded-sm bg-warning/12 px-1 text-data-sm text-warning">
+                  <StatusChip tom="pending" className="num">
                     {deal.daysInStage}d parado
-                  </span>
+                  </StatusChip>
                 ) : (
                   <span className="num shrink-0 text-data-sm text-muted-fg">
                     {deal.daysInStage}d na etapa

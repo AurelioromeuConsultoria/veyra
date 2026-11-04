@@ -427,7 +427,7 @@ function Envios({ unidades, podeEnviar }: { unidades: ClinicsUnitDto[]; podeEnvi
                     'Número',
                     'Situação',
                   ].map((h) => (
-                    <th key={h} className="eyebrow px-4 py-2 text-left text-muted-fg">
+                    <th key={h} className="eyebrow px-5 py-3 text-left text-muted-fg">
                       {h}
                     </th>
                   ))}
@@ -450,7 +450,7 @@ function Envios({ unidades, podeEnviar }: { unidades: ClinicsUnitDto[]; podeEnvi
                       className="border-b border-border/60 last:border-b-0"
                     >
                       {podeEnviar ? (
-                        <td className="px-4 py-2">
+                        <td className="px-5 py-3">
                           <input
                             type="checkbox"
                             aria-label={`Escolher ${c.patientName}, ${quando}`}
@@ -460,9 +460,9 @@ function Envios({ unidades, podeEnviar }: { unidades: ClinicsUnitDto[]; podeEnvi
                           />
                         </td>
                       ) : null}
-                      <td className="px-4 py-2">{c.patientName}</td>
-                      <td className="px-4 py-2 num text-data">{quando}</td>
-                      <td className="px-4 py-2 num text-data">
+                      <td className="px-5 py-3">{c.patientName}</td>
+                      <td className="px-5 py-3 num text-data">{quando}</td>
+                      <td className="px-5 py-3 num text-data">
                         {c.numbers.length === 0 ? (
                           <span className="text-negative">sem número</span>
                         ) : c.numbers.length === 1 || !marcado ? (
@@ -486,7 +486,7 @@ function Envios({ unidades, podeEnviar }: { unidades: ClinicsUnitDto[]; podeEnvi
                           </Select>
                         )}
                       </td>
-                      <td className="px-4 py-2">
+                      <td className="px-5 py-3">
                         {c.request ? (
                           <button
                             type="button"

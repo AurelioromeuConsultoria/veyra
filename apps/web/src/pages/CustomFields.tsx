@@ -78,7 +78,7 @@ export function CustomFieldsPage() {
                   (header, index) => (
                     <th
                       key={`${header}-${index}`}
-                      className="eyebrow px-4 py-2 text-left text-muted-fg"
+                      className="eyebrow px-5 py-3 text-left text-muted-fg"
                     >
                       {header}
                     </th>
@@ -89,17 +89,17 @@ export function CustomFieldsPage() {
             <tbody>
               {(fields.data ?? []).map((field) => (
                 <tr key={field.id} className="border-b border-border/60 last:border-b-0">
-                  <td className="px-4 py-2">
+                  <td className="px-5 py-3">
                     {field.entityType === 'contact' ? 'Contato' : 'Empresa'}
                   </td>
-                  <td className="px-4 py-2 num text-data">{field.key}</td>
-                  <td className="px-4 py-2">{field.label}</td>
-                  <td className="px-4 py-2">{typeLabels[field.type]}</td>
-                  <td className="px-4 py-2">{field.required ? 'Sim' : '—'}</td>
+                  <td className="px-5 py-3 num text-data">{field.key}</td>
+                  <td className="px-5 py-3">{field.label}</td>
+                  <td className="px-5 py-3">{typeLabels[field.type]}</td>
+                  <td className="px-5 py-3">{field.required ? 'Sim' : '—'}</td>
                   <td className="max-w-xs truncate px-5 py-1.5 text-muted-fg">
                     {field.options.join(', ') || '—'}
                   </td>
-                  <td className="px-4 py-2 text-right">
+                  <td className="px-5 py-3 text-right">
                     {canManage ? (
                       <Button
                         variant="ghost"
