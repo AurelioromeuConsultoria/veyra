@@ -8,6 +8,7 @@ import {
   type ClinicsServiceDto,
   type ClinicsUnitDto,
 } from '@veyra/contracts/verticals/clinics';
+import { clsx } from 'clsx';
 import { CalendarPlus, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
@@ -19,6 +20,7 @@ import { api, ApiError, toQuery } from '../../lib/api';
 import { hasPermission, useSession } from '../../lib/session';
 import { useClinicsAccess } from './access';
 import { GradeDoDia, type ColunaDaGrade } from './agenda/GradeDoDia';
+import { diasDaSemana, unirIntervalos } from './agenda/grade';
 import { PainelDoAgendamento } from './agenda/PainelDoAgendamento';
 import { AGENDA_KEY, ESTADOS_ATIVOS, diaDaSemana, horariosLivres } from './agenda/slots';
 
@@ -87,6 +89,28 @@ export function ClinicsAgendaPage() {
 
 type Coluna = { id: string; nome: string; profissional: ClinicsProfessionalDto | null };
 
+/** A visão da Agenda (ADR-062 adendo 1), na URL: `?visao=semana`; sem ela, o Dia. */
+type Visao = 'dia' | 'semana';
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const formatoDoDiaDaSemana = new Intl.DateTimeFormat('pt-BR', {
+  weekday: 'long',
+  day: '2-digit',
+  month: '2-digit',
+  timeZone: 'UTC',
+});
+/** `segunda-feira, 04/11`: o nome de uma coluna da Semana. */
+function diaDaSemanaLegivel(data: string): string {
+  const [ano, mes, dia] = data.split('-').map(Number);
+  return formatoDoDiaDaSemana.format(new Date(Date.UTC(ano, mes - 1, dia)));
+}
+/** `04/11 a 10/11/2030`. */
+function semanaLegivel(dias: string[]): string {
+  const curta = (d: string) => `${d.slice(8)}/${d.slice(5, 7)}`;
+  return `${curta(dias[0])} a ${curta(dias[6])}/${dias[6].slice(0, 4)}`;
+}
+
 function AgendaReady() {
   const { data: user } = useSession();
   const podeMarcar = hasPermission(user, 'clinics:schedule:write');
@@ -101,8 +125,36 @@ function AgendaReady() {
   /** o agendamento aberto da grade, pelo id: o painel segue o dado recarregado */
   const [aberto, setAberto] = useState<string | null>(null);
   const [drawer, setDrawer] = useState<
-    { kind: 'novo' } | { kind: 'remarcar'; agendamento: ClinicsAppointmentDto } | null
+    | { kind: 'novo'; pacienteId?: string }
+    | { kind: 'remarcar'; agendamento: ClinicsAppointmentDto }
+    | null
   >(null);
+
+  /** Muda só o que se pede na URL: o dia, a visão e o profissional ficam. */
+  const mudar = (mudancas: Record<string, string | null>) =>
+    setParams(
+      (atual) => {
+        const proximos = new URLSearchParams(atual);
+        for (const [chave, valor] of Object.entries(mudancas)) {
+          if (valor === null) proximos.delete(chave);
+          else proximos.set(chave, valor);
+        }
+        return proximos;
+      },
+      { replace: true },
+    );
+
+  // "Agendar" da ficha (ADR-062 adendo 1): o formulário abre com o paciente
+  // escolhido, uma vez; o parâmetro sai da URL para não reabrir ao recarregar
+  const agendarPara = params.get('agendar');
+  useEffect(() => {
+    if (agendarPara === null) return;
+    if (podeMarcar && UUID.test(agendarPara)) {
+      setDrawer({ kind: 'novo', pacienteId: agendarPara });
+    }
+    mudar({ agendar: null });
+    // `mudar` é recriada a cada render; o efeito segue só o parâmetro
+  }, [agendarPara, podeMarcar]);
 
   const unidades = useQuery({
     queryKey: ['clinics', 'catalog', 'units'],
@@ -120,12 +172,39 @@ function AgendaReady() {
   const hoje = unidade ? horaLocal(new Date(), unidade.timezone).data : null;
   const pedido = params.get('dia');
   const dia = dataValida(pedido) ? pedido : hoje;
+  const visao: Visao = params.get('visao') === 'semana' ? 'semana' : 'dia';
+  const dias = dia ? diasDaSemana(dia) : null;
+
+  const ativos = (profissionais.data ?? []).filter((p) => p.archivedAt === null);
+  const meus = ativos.filter((p) => p.account?.membershipId === minhaConta);
+  // o profissional escolhido só vale se está entre os ativos
+  const escolhido = ativos.find((p) => p.id === params.get('profissional')) ?? null;
+  /** os profissionais na tela; `null` = todos os da unidade (inclusive arquivados) */
+  const recorte: string[] | null = soMinha
+    ? meus.map((p) => p.id)
+    : escolhido
+      ? [escolhido.id]
+      : null;
+  // a Semana de UM profissional pede só a dele ao servidor; a de vários, a da unidade
+  const soUm = recorte?.length === 1 ? recorte[0] : undefined;
+
   const agenda = useQuery({
-    queryKey: [...AGENDA_KEY, dia],
+    queryKey:
+      visao === 'dia' ? [...AGENDA_KEY, dia] : [...AGENDA_KEY, 'semana', dias?.[0], soUm ?? null],
     queryFn: () =>
-      api.get<ClinicsAppointmentDto[]>(`/api/clinics/appointments${toQuery({ date: dia ?? '' })}`),
+      api.get<ClinicsAppointmentDto[]>(
+        `/api/clinics/appointments${
+          visao === 'dia'
+            ? toQuery({ date: dia ?? '' })
+            : toQuery({ from: dias?.[0], to: dias?.[6], professionalId: soUm })
+        }`,
+      ),
     // sem unidade ativa a tela não mostra a agenda: então nem a consulta (classe S)
-    enabled: dia !== null && unidade !== undefined,
+    // e a Semana espera o catálogo, que diz de quem ela é
+    enabled:
+      dia !== null &&
+      unidade !== undefined &&
+      (visao === 'dia' || profissionais.data !== undefined),
   });
 
   if (unidades.isError || profissionais.isError || servicos.isError) {
@@ -149,20 +228,20 @@ function AgendaReady() {
       </div>
     );
   }
-  if (!unidade || !dia || !profissionais.data || !servicos.data) {
+  if (!unidade || !dia || !dias || !profissionais.data || !servicos.data) {
     return <p className="p-6 text-body-sm text-muted-fg">Carregando…</p>;
   }
 
-  const ativos = profissionais.data.filter((p) => p.archivedAt === null);
-  const meus = ativos.filter((p) => p.account?.membershipId === minhaConta);
-  const colunas: Coluna[] = (soMinha ? meus : ativos).map((p) => ({
-    id: p.id,
-    nome: p.name,
-    profissional: p,
-  }));
+  // com erro, NADA de dado antigo na tela (dado classe S) — nem no painel aberto
+  const doPeriodo = (agenda.isError ? [] : (agenda.data ?? [])).filter(
+    (a) => recorte === null || recorte.includes(a.professionalId),
+  );
+  const colunas: Coluna[] = (
+    recorte === null ? ativos : ativos.filter((p) => recorte.includes(p.id))
+  ).map((p) => ({ id: p.id, nome: p.name, profissional: p }));
   // agendamento de profissional ARQUIVADO (ou fora da lista) não pode sumir da tela:
   // a recepção ainda precisa vê-lo, cancelá-lo ou registrá-lo
-  if (!soMinha && agenda.data && !agenda.isError) {
+  if (recorte === null && agenda.data && !agenda.isError) {
     const comColuna = new Set(colunas.map((c) => c.id));
     for (const a of agenda.data) {
       if (!comColuna.has(a.professionalId)) {
@@ -175,26 +254,37 @@ function AgendaReady() {
       }
     }
   }
-  const irPara = (data: string) => setParams({ dia: data }, { replace: true });
-  const semana = diaDaSemana(dia);
-  // com erro, NADA de dado antigo na tela (dado classe S) — nem no painel aberto
-  const doDia = agenda.isError ? [] : (agenda.data ?? []);
-  const selecionado = aberto ? doDia.find((a) => a.id === aberto) : undefined;
-  // o aberto sumiu do dia (remarcado para outro dia, erro na recarga): o painel fecha
+  const passo = visao === 'dia' ? 1 : 7;
+  const irPara = (data: string) => mudar({ dia: data });
+  const selecionado = aberto ? doPeriodo.find((a) => a.id === aberto) : undefined;
+  // o aberto sumiu do período (remarcado para longe, erro na recarga): o painel fecha
   if (aberto && !selecionado && (agenda.data !== undefined || agenda.isError)) setAberto(null);
+
+  /** O expediente de um dia da semana, na unidade, de quem está na tela. */
+  const expedienteDe = (pessoas: readonly ClinicsProfessionalDto[], semana: number) =>
+    unirIntervalos(
+      pessoas.flatMap((p) =>
+        p.workingHours
+          .filter((h) => h.weekday === semana && h.unitId === unidade.id)
+          .map((h) => ({ inicio: h.startMinute, fim: h.endMinute })),
+      ),
+    );
+  const naSemana = colunas.flatMap((c) => (c.profissional ? [c.profissional] : []));
 
   return (
     <div className="flex h-full flex-col">
       <PageHeader
         title="Agenda"
-        meta={`${diaLegivel(dia)} · hora local da unidade (${unidade.timezone})`}
+        meta={`${
+          visao === 'dia' ? diaLegivel(dia) : `Semana de ${semanaLegivel(dias)}`
+        } · hora local da unidade (${unidade.timezone})`}
       >
         <div className="flex items-center gap-1">
           <Button
             variant="ghost"
             size="sm"
-            aria-label="Dia anterior"
-            onClick={() => irPara(somarDias(dia, -1))}
+            aria-label={visao === 'dia' ? 'Dia anterior' : 'Semana anterior'}
+            onClick={() => irPara(somarDias(dia, -passo))}
           >
             <ChevronLeft size={14} />
           </Button>
@@ -204,12 +294,48 @@ function AgendaReady() {
           <Button
             variant="ghost"
             size="sm"
-            aria-label="Próximo dia"
-            onClick={() => irPara(somarDias(dia, 1))}
+            aria-label={visao === 'dia' ? 'Próximo dia' : 'Próxima semana'}
+            onClick={() => irPara(somarDias(dia, passo))}
           >
             <ChevronRight size={14} />
           </Button>
         </div>
+        <div
+          role="group"
+          aria-label="Visualização"
+          className="flex overflow-hidden rounded-control border border-border"
+        >
+          {(['dia', 'semana'] as const).map((v) => (
+            <button
+              key={v}
+              type="button"
+              aria-pressed={visao === v}
+              onClick={() => mudar({ visao: v === 'semana' ? 'semana' : null })}
+              className={clsx(
+                'h-8 px-3 text-[13px] font-medium',
+                visao === v
+                  ? 'bg-frame text-frame-fg'
+                  : 'bg-surface text-muted-fg hover:bg-surface-2',
+              )}
+            >
+              {v === 'dia' ? 'Dia' : 'Semana'}
+            </button>
+          ))}
+        </div>
+        <Select
+          size="sm"
+          aria-label="Filtrar por profissional"
+          value={escolhido?.id ?? ''}
+          disabled={soMinha}
+          onChange={(e) => mudar({ profissional: e.target.value || null })}
+        >
+          <option value="">Todos os profissionais</option>
+          {ativos.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </Select>
         {meus.length > 0 ? (
           <label className="flex items-center gap-2 text-body-sm text-muted-fg">
             <input
@@ -230,36 +356,56 @@ function AgendaReady() {
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto p-7">
         {agenda.isError ? (
           <p role="alert" className="text-data text-negative">
-            {/* a recusa do dia acima do teto diz o porquê (ADR-055, adendo 4) */}
+            {/* a recusa acima do teto diz o porquê (ADR-055, adendo 4) */}
             {agenda.error instanceof ApiError && agenda.error.status === 422
               ? agenda.error.message
-              : 'Não foi possível carregar a agenda do dia.'}
+              : visao === 'dia'
+                ? 'Não foi possível carregar a agenda do dia.'
+                : 'Não foi possível carregar a agenda da semana.'}
           </p>
         ) : null}
         {agenda.isPending ? (
-          <p className="text-body-sm text-muted-fg">Carregando a agenda do dia…</p>
+          <p className="text-body-sm text-muted-fg">
+            {visao === 'dia' ? 'Carregando a agenda do dia…' : 'Carregando a agenda da semana…'}
+          </p>
         ) : null}
         {colunas.length === 0 ? (
           <EmptyState
             title="Nenhum profissional ativo."
             hint="Cadastre profissionais e o expediente deles no catálogo."
           />
-        ) : (
+        ) : visao === 'dia' ? (
           <GradeDoDia
             colunas={colunas.map((coluna): ColunaDaGrade => ({
               id: coluna.id,
               nome: coluna.nome,
               expediente: coluna.profissional
                 ? coluna.profissional.workingHours
-                    .filter((h) => h.weekday === semana && h.unitId === unidade.id)
+                    .filter((h) => h.weekday === diaDaSemana(dia) && h.unitId === unidade.id)
                     .map((h) => ({ inicio: h.startMinute, fim: h.endMinute }))
                 : null,
-              agendamentos: doDia.filter((a) => a.professionalId === coluna.id),
+              agendamentos: doPeriodo.filter((a) => a.professionalId === coluna.id),
             }))}
             carregado={agenda.data !== undefined && !agenda.isError}
             dia={dia}
             fuso={unidade.timezone}
             onAbrir={setAberto}
+          />
+        ) : (
+          <GradeDoDia
+            colunas={dias.map((data): ColunaDaGrade => ({
+              id: data,
+              nome: diaDaSemanaLegivel(data),
+              data,
+              expediente: expedienteDe(naSemana, diaDaSemana(data)),
+              agendamentos: doPeriodo.filter((a) => a.localDate === data),
+            }))}
+            carregado={agenda.data !== undefined && !agenda.isError}
+            dia={dias[0]}
+            fuso={unidade.timezone}
+            onAbrir={setAberto}
+            onAbrirDia={(data) => mudar({ dia: data, visao: null })}
+            mostrarProfissional={soUm === undefined}
           />
         )}
       </div>
@@ -296,6 +442,7 @@ function AgendaReady() {
             profissionais={ativos}
             servicos={servicos.data.filter((s) => s.archivedAt === null)}
             remarcando={drawer.kind === 'remarcar' ? drawer.agendamento : null}
+            pacienteInicialId={drawer.kind === 'novo' ? drawer.pacienteId : undefined}
             onDone={(data) => {
               setDrawer(null);
               irPara(data);
@@ -313,6 +460,7 @@ function FormularioDeAgenda({
   profissionais,
   servicos,
   remarcando,
+  pacienteInicialId,
   onDone,
 }: {
   unidade: ClinicsUnitDto;
@@ -320,12 +468,29 @@ function FormularioDeAgenda({
   profissionais: ClinicsProfessionalDto[];
   servicos: ClinicsServiceDto[];
   remarcando: ClinicsAppointmentDto | null;
+  /** o "Agendar" da ficha: o paciente já escolhido (ADR-062 adendo 1) */
+  pacienteInicialId?: string;
   onDone: (data: string) => void;
 }) {
   const queryClient = useQueryClient();
   const [termo, setTermo] = useState('');
   const [busca, setBusca] = useState('');
-  const [paciente, setPaciente] = useState<ClinicsPatientDto | null>(null);
+  const [escolhidoNaBusca, setEscolhidoNaBusca] = useState<ClinicsPatientDto | null>(null);
+  /** a pessoa trocou o paciente que veio da ficha: vale a busca */
+  const [trocou, setTrocou] = useState(false);
+  const vindoDaFicha = remarcando === null && pacienteInicialId !== undefined && !trocou;
+  // o mesmo pedido (e a mesma chave) da ficha: o paciente pela rota da agenda
+  const inicial = useQuery({
+    queryKey: ['clinics', 'patients', 'one', pacienteInicialId],
+    queryFn: () => api.get<ClinicsPatientDto>(`/api/clinics/patients/${pacienteInicialId}`),
+    enabled: vindoDaFicha,
+  });
+  // com erro, ninguém escolhido por engano
+  const paciente = vindoDaFicha
+    ? inicial.isError
+      ? null
+      : (inicial.data ?? null)
+    : escolhidoNaBusca;
   // serviço original arquivado: o servidor recusaria; a pessoa escolhe outro
   const servicoOriginalAtivo =
     remarcando !== null && servicos.some((s) => s.id === remarcando.serviceId);
@@ -429,6 +594,22 @@ function FormularioDeAgenda({
             ? 'A duração registrada é mantida; trocar o serviço usa a duração dele.'
             : `O serviço ${remarcando.serviceName} foi arquivado: escolha outro.`}
         </p>
+      ) : vindoDaFicha ? (
+        <div role="group" aria-label="Paciente" className="space-y-1.5">
+          <p className="text-body-sm font-medium">Paciente</p>
+          {inicial.isError ? (
+            <p role="alert" className="text-data text-negative">
+              Não foi possível carregar o paciente. Busque pelo nome.
+            </p>
+          ) : !inicial.data ? (
+            <p className="text-body-sm text-muted-fg">Carregando o paciente…</p>
+          ) : (
+            <p className="text-body-sm">{inicial.data.name}</p>
+          )}
+          <Button type="button" size="sm" variant="ghost" onClick={() => setTrocou(true)}>
+            Escolher outro paciente
+          </Button>
+        </div>
       ) : (
         <>
           <Field label="Buscar paciente" hint="Pelo nome (mínimo 2 letras).">
@@ -438,7 +619,7 @@ function FormularioDeAgenda({
               value={termo}
               onChange={(e) => {
                 setTermo(e.target.value);
-                setPaciente(null);
+                setEscolhidoNaBusca(null);
               }}
             />
           </Field>
@@ -462,7 +643,7 @@ function FormularioDeAgenda({
                     type="radio"
                     name="paciente"
                     checked={paciente?.id === p.id}
-                    onChange={() => setPaciente(p)}
+                    onChange={() => setEscolhidoNaBusca(p)}
                   />
                   {p.name}
                 </label>

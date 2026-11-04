@@ -1,5 +1,6 @@
 import { QueryClientProvider, type QueryClient } from '@tanstack/react-query';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { horaLocal, somarDias } from '@veyra/contracts/verticals/clinics';
 import type { ReactNode } from 'react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { vi } from 'vitest';
@@ -1133,7 +1134,7 @@ describe('ficha do paciente — abas e resumo (ADR-062)', () => {
     );
     const abas = await screen.findAllByRole('tab');
     // sem contato vinculado, nem notas nem contato
-    expect(abas.map((a) => a.textContent)).toEqual(['Pacotes', 'Retornos']);
+    expect(abas.map((a) => a.textContent)).toEqual(['Pacotes', 'Retornos', 'Atendimentos']);
     const pacotes = screen.getByRole('tab', { name: 'Pacotes' });
     expect(pacotes).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('tabpanel')).toHaveAccessibleName('Pacotes');
@@ -1150,6 +1151,9 @@ describe('ficha do paciente — abas e resumo (ADR-062)', () => {
     expect(busca.get('aba')).toBe('retornos');
     // a seta passa do fim e volta ao começo
     fireEvent.keyDown(retornos, { key: 'ArrowRight' });
+    const atendimentos = screen.getByRole('tab', { name: 'Atendimentos' });
+    expect(atendimentos).toHaveAttribute('aria-selected', 'true');
+    fireEvent.keyDown(atendimentos, { key: 'ArrowRight' });
     expect(screen.getByRole('tab', { name: 'Pacotes' })).toHaveAttribute('aria-selected', 'true');
   });
 
@@ -1219,6 +1223,250 @@ describe('ficha do paciente — abas e resumo (ADR-062)', () => {
     recarregar();
     expect(await within(ativos).findByText('Pacotes indisponíveis agora.')).toBeInTheDocument();
     expect(within(ativos).queryByRole('img')).toBeNull();
+  });
+});
+
+describe('ficha do paciente — próximo horário, atendimentos e atalhos (ADR-062 adendo 1)', () => {
+  const CONTATO = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e41';
+  const AG2 = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e42';
+  /** hoje na unidade (São Paulo), como a ficha calcula */
+  const hoje = () => horaLocal(new Date(), 'America/Sao_Paulo').data;
+  const cancelado = {
+    ...agendamento,
+    status: 'canceled',
+    cancelReason: 'patient_request',
+  };
+  const futuro = {
+    ...agendamento,
+    id: AG2,
+    status: 'confirmed',
+    localDate: '2030-11-12',
+    localStart: '16:00',
+    localEnd: '17:00',
+    startsAt: '2030-11-12T19:00:00.000Z',
+    endsAt: '2030-11-12T20:00:00.000Z',
+  };
+  const ficha = (permissoes: string[], extra: Record<string, Rota> = {}) =>
+    mockApi({
+      'GET /api/auth/me': { body: usuario(permissoes) },
+      ...catalogo,
+      [`GET /api/clinics/patients/${PAC}`]: {
+        body: {
+          id: PAC,
+          name: 'Paciente Fictícia',
+          contactId: CONTATO,
+          createdAt: '2030-01-01T00:00:00Z',
+        },
+      },
+      'GET /api/clinics/returns': { body: [] },
+      'GET /api/clinics/appointments': { body: [cancelado, futuro] },
+      ...extra,
+    });
+  const aAgenda = (chamadas: { chave: string }[]) =>
+    chamadas.filter((c) => c.chave.startsWith('GET /api/clinics/appointments')).map((c) => c.chave);
+  function Local() {
+    const l = useLocation();
+    return <output data-testid="local">{`${l.pathname}${l.search}`}</output>;
+  }
+
+  it('o próximo horário: o primeiro que ainda vai acontecer, pela agenda do paciente nos próximos 31 dias', async () => {
+    const chamadas = ficha(RECEPCAO);
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    const resumo = await screen.findByRole('complementary', { name: 'Resumo do paciente' });
+    const proximo = within(resumo).getByRole('region', { name: 'Próximo horário' });
+    // o cancelado não é o próximo
+    expect(await within(proximo).findByText(/terça-feira, 12\/11 às/)).toBeInTheDocument();
+    expect(within(proximo).getByText('16:00')).toBeInTheDocument();
+    expect(within(proximo).getByText('Limpeza · Ana Fictícia')).toBeInTheDocument();
+    expect(within(proximo).getByText('Confirmado')).toBeInTheDocument();
+    expect(within(proximo).getByRole('link', { name: 'Ver na agenda' })).toHaveAttribute(
+      'href',
+      '/clinics/agenda?dia=2030-11-12',
+    );
+    expect(aAgenda(chamadas)).toEqual([
+      `GET /api/clinics/appointments?patientId=${PAC}&from=${hoje()}&to=${somarDias(hoje(), 30)}`,
+    ]);
+  });
+
+  it('o próximo horário: sem nenhum, diz; com erro, nada de dado', async () => {
+    ficha(RECEPCAO, { 'GET /api/clinics/appointments': { body: [cancelado] } });
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    expect(await screen.findByText('Nenhum horário nos próximos 31 dias.')).toBeInTheDocument();
+    cleanup();
+    ficha(RECEPCAO, { 'GET /api/clinics/appointments': { status: 500, body: { message: 'x' } } });
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    expect(await screen.findByText('Próximo horário indisponível agora.')).toBeInTheDocument();
+    expect(screen.queryByText('Confirmado')).toBeNull();
+  });
+
+  it('a aba Atendimentos: o mês, com o estado de cada horário; as setas andam de mês em mês', async () => {
+    const chamadas = ficha(RECEPCAO);
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}&aba=atendimentos`);
+    const secao = await screen.findByRole('region', { name: 'Atendimentos do paciente' });
+    const linha = await within(secao).findByRole('row', {
+      name: '04/11/2030 09:00, Limpeza com Ana Fictícia',
+    });
+    expect(within(linha).getByText('Cancelado · Pedido do paciente')).toBeInTheDocument();
+    expect(
+      within(
+        within(secao).getByRole('row', { name: '12/11/2030 16:00, Limpeza com Ana Fictícia' }),
+      ).getByText('Confirmado'),
+    ).toBeInTheDocument();
+    // o mês de hoje, inteiro (cabe no teto de 31 dias)
+    const inicio = `${hoje().slice(0, 8)}01`;
+    const [ano, mes] = inicio.split('-').map(Number);
+    const ultimo = new Date(Date.UTC(ano, mes, 0)).toISOString().slice(0, 10);
+    expect(aAgenda(chamadas)).toContain(
+      `GET /api/clinics/appointments?patientId=${PAC}&from=${inicio}&to=${ultimo}`,
+    );
+    fireEvent.click(within(secao).getByRole('button', { name: 'Mês anterior' }));
+    const anterior = new Date(Date.UTC(ano, mes - 2, 1)).toISOString().slice(0, 10);
+    const fimDoAnterior = somarDias(inicio, -1);
+    await waitFor(() =>
+      expect(aAgenda(chamadas)).toContain(
+        `GET /api/clinics/appointments?patientId=${PAC}&from=${anterior}&to=${fimDoAnterior}`,
+      ),
+    );
+  });
+
+  it('a aba Atendimentos com erro: o alerta, sem linhas antigas', async () => {
+    ficha(RECEPCAO, { 'GET /api/clinics/appointments': { status: 500, body: { message: 'x' } } });
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}&aba=atendimentos`);
+    const secao = await screen.findByRole('region', { name: 'Atendimentos do paciente' });
+    expect(
+      await within(secao).findByText('Não foi possível carregar os atendimentos.'),
+    ).toBeInTheDocument();
+    expect(within(secao).queryByText('Confirmado')).toBeNull();
+  });
+
+  it('o cabeçalho: o consentimento só com `consents:read` e `contacts:read`; a origem só com `contacts:read`', async () => {
+    const consentimentos = (extra: Record<string, unknown> = {}) => ({
+      numbers: ['+5511900000000'],
+      consents: [{ id: 'k1', revokedAt: null }],
+      stopBlocks: [],
+      ...extra,
+    });
+    const contato = { id: CONTATO, name: 'Paciente Fictícia', source: 'Indicação' };
+    let chamadas = ficha([...RECEPCAO, 'consents:read'], {
+      [`GET /api/contacts/${CONTATO}/consents`]: { body: consentimentos() },
+      [`GET /api/contacts/${CONTATO}`]: { body: contato },
+    });
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    expect(await screen.findByText('Consentimento ativo')).toBeInTheDocument();
+    expect(await screen.findByText('Indicação')).toBeInTheDocument();
+    expect(screen.getByText(/^Origem:/)).toBeInTheDocument();
+    // a consulta do painel de consentimento, uma vez só
+    expect(
+      chamadas.filter((c) => c.chave === `GET /api/contacts/${CONTATO}/consents`),
+    ).toHaveLength(1);
+    cleanup();
+
+    // o pedido de parar vem antes do consentimento
+    ficha([...RECEPCAO, 'consents:read'], {
+      [`GET /api/contacts/${CONTATO}/consents`]: {
+        body: consentimentos({ stopBlocks: [{ id: 's1', number: '+5511900000000' }] }),
+      },
+      [`GET /api/contacts/${CONTATO}`]: { body: contato },
+    });
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    expect(await screen.findByText('Pedido de parar ativo')).toBeInTheDocument();
+    cleanup();
+
+    // sem `consents:read`: nem o chip nem a consulta; a origem continua
+    chamadas = ficha(RECEPCAO, { [`GET /api/contacts/${CONTATO}`]: { body: contato } });
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    expect(await screen.findByText('Indicação')).toBeInTheDocument();
+    expect(chamadas.some((c) => c.chave.includes('/consents'))).toBe(false);
+    expect(screen.queryByText(/consentimento/i)).toBeNull();
+    cleanup();
+
+    // sem `contacts:read` (o Profissional): nem origem, nem consentimento, nem consulta ao contato
+    chamadas = ficha([...PROFISSIONAL, 'consents:read'], {
+      'GET /api/clinics/packages': { body: [] },
+    });
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    await screen.findByRole('heading', { name: 'Paciente Fictícia' });
+    await screen.findByRole('region', { name: 'Pacotes do paciente' });
+    expect(chamadas.some((c) => c.chave.includes(`/api/contacts/${CONTATO}`))).toBe(false);
+    expect(screen.queryByText(/^Origem:/)).toBeNull();
+  });
+
+  it('"Agendar" abre a Agenda com o paciente; sem `schedule:write`, só "Abrir a agenda"', async () => {
+    ficha(RECEPCAO);
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    expect(await screen.findByRole('link', { name: 'Agendar' })).toHaveAttribute(
+      'href',
+      `/clinics/agenda?agendar=${PAC}`,
+    );
+    expect(screen.queryByRole('link', { name: 'Abrir a agenda' })).toBeNull();
+    cleanup();
+    ficha(PROFISSIONAL, { 'GET /api/clinics/packages': { body: [] } });
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    expect(await screen.findByRole('link', { name: 'Abrir a agenda' })).toHaveAttribute(
+      'href',
+      '/clinics/agenda',
+    );
+    expect(screen.queryByRole('link', { name: 'Agendar' })).toBeNull();
+  });
+
+  it('"Enviar mensagem": a conversa mais recente do contato; sem nenhuma, cria; sem poder criar, explica', async () => {
+    const LER = [...RECEPCAO, 'conversations:read'];
+    // há conversa: abre a mais recente, em qualquer estado
+    let chamadas = ficha(LER, {
+      'GET /api/conversations': { body: { items: [{ id: 'cv1' }], nextCursor: null } },
+    });
+    renderizar(
+      <>
+        <ClinicsPatientPage />
+        <Local />
+      </>,
+      `/clinics/patient?id=${PAC}`,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Enviar mensagem' }));
+    await waitFor(() => expect(screen.getByTestId('local')).toHaveTextContent('/inbox?c=cv1'));
+    expect(chamadas.map((c) => c.chave)).toContain(
+      `GET /api/conversations?contactId=${CONTATO}&status=all&limit=1`,
+    );
+    expect(chamadas.some((c) => c.chave === 'POST /api/conversations')).toBe(false);
+    cleanup();
+
+    // nenhuma conversa, com `conversations:write`: cria uma com o contato e abre
+    chamadas = ficha([...LER, 'conversations:write'], {
+      'GET /api/conversations': { body: { items: [], nextCursor: null } },
+      'POST /api/conversations': { status: 201, body: { id: 'cv2' } },
+    });
+    renderizar(
+      <>
+        <ClinicsPatientPage />
+        <Local />
+      </>,
+      `/clinics/patient?id=${PAC}`,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Enviar mensagem' }));
+    await waitFor(() => expect(screen.getByTestId('local')).toHaveTextContent('/inbox?c=cv2'));
+    expect(chamadas.find((c) => c.chave === 'POST /api/conversations')?.corpo).toEqual({
+      contactId: CONTATO,
+    });
+    cleanup();
+
+    // nenhuma conversa, sem `conversations:write`: explica, e nada é criado
+    chamadas = ficha(LER, {
+      'GET /api/conversations': { body: { items: [], nextCursor: null } },
+    });
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    fireEvent.click(await screen.findByRole('button', { name: 'Enviar mensagem' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Nenhuma conversa com esta pessoa, e você não pode iniciar uma.',
+    );
+    expect(chamadas.some((c) => c.chave === 'POST /api/conversations')).toBe(false);
+    cleanup();
+
+    // sem `conversations:read`: o atalho não existe
+    chamadas = ficha(RECEPCAO);
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    await screen.findByRole('heading', { name: 'Paciente Fictícia' });
+    expect(screen.queryByRole('button', { name: 'Enviar mensagem' })).toBeNull();
+    expect(chamadas.some((c) => c.chave.includes('/api/conversations'))).toBe(false);
   });
 });
 

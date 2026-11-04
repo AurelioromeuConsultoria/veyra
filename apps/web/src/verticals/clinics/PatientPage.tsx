@@ -8,6 +8,7 @@ import type {
   ClinicsUnitDto,
 } from '@veyra/contracts/verticals/clinics';
 import { createClinicsPackageSchema } from '@veyra/contracts/verticals/clinics';
+import { CalendarPlus } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { Avatar } from '../../components/ui/avatar';
@@ -28,6 +29,12 @@ import {
   dataCurta,
   quandoLocal,
 } from './continuidade';
+import {
+  AtendimentosDoPaciente,
+  ConteudoDoProximoHorario,
+  useProximoHorario,
+} from './ficha/AtendimentosDoPaciente';
+import { ChipDoConsentimento, EnviarMensagem, OrigemDoContato } from './ficha/CabecalhoDaFicha';
 import { reaisToCents } from './format';
 import { CLINICS_AGENDA_PATH, CLINICS_PATIENTS_PATH } from './nav';
 import { NotasETarefasDoPaciente } from './NotasETarefasDoPaciente';
@@ -48,7 +55,7 @@ const TOM_DO_PACOTE: Record<ClinicsPackageStatus, Tom> = {
   canceled: 'neutral',
 };
 
-type ChaveDaAba = 'pacotes' | 'retornos' | 'notas' | 'contato';
+type ChaveDaAba = 'pacotes' | 'retornos' | 'atendimentos' | 'notas' | 'contato';
 const BASE_DAS_ABAS = 'ficha';
 
 /**
@@ -72,6 +79,9 @@ function FichaReady() {
   const idValido = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
   const { data: user } = useSession();
   const lePacotes = hasPermission(user, 'clinics:care:read');
+  // a porta da ficha já exige ler a agenda; a condição fica explícita aqui
+  const leAgenda = hasPermission(user, 'clinics:schedule:read');
+  const podeAgendar = hasPermission(user, 'clinics:schedule:write');
   const podeCriarRetorno =
     lePacotes &&
     hasPermission(user, 'clinics:care:write') &&
@@ -106,6 +116,7 @@ function FichaReady() {
   const abas: Aba<ChaveDaAba>[] = [
     ...(lePacotes ? [{ chave: 'pacotes' as const, rotulo: 'Pacotes' }] : []),
     { chave: 'retornos', rotulo: 'Retornos' },
+    ...(leAgenda ? [{ chave: 'atendimentos' as const, rotulo: 'Atendimentos' }] : []),
     ...(contactId && alcanca(user, { permission: 'tasks:read' })
       ? [{ chave: 'notas' as const, rotulo: 'Notas e tarefas' }]
       : []),
@@ -136,25 +147,39 @@ function FichaReady() {
             <h1 className="truncate font-display text-[28px] font-semibold leading-tight tracking-[-0.02em]">
               {paciente.data.name}
             </h1>
-            <p className="mt-1.5 flex flex-wrap items-center gap-2 text-[13px] text-muted-fg">
+            <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[13px] text-muted-fg">
               <StatusChip tom="accent">
                 Paciente desde {new Date(paciente.data.createdAt).toLocaleDateString('pt-BR')}
               </StatusChip>
-            </p>
+              {/* cada item com a chave que governa o dado (ADR-062 adendo 1) */}
+              {contactId ? <ChipDoConsentimento contactId={contactId} /> : null}
+              {contactId ? <OrigemDoContato contactId={contactId} /> : null}
+            </div>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-start gap-2">
             <Link
               to={CLINICS_PATIENTS_PATH}
               className="inline-flex h-10 items-center rounded-control border border-border-strong bg-surface px-4 text-[14px] font-medium hover:bg-surface-2"
             >
               Todos os pacientes
             </Link>
-            <Link
-              to={CLINICS_AGENDA_PATH}
-              className="inline-flex h-10 items-center rounded-control border border-accent bg-accent px-4 text-[14px] font-semibold text-accent-fg hover:bg-accent-hover"
-            >
-              Abrir a agenda
-            </Link>
+            {contactId ? <EnviarMensagem contactId={contactId} /> : null}
+            {podeAgendar ? (
+              // a Agenda abre o formulário com este paciente já escolhido
+              <Link
+                to={`${CLINICS_AGENDA_PATH}?agendar=${encodeURIComponent(id)}`}
+                className="inline-flex h-10 items-center gap-2 rounded-control border border-accent bg-accent px-4 text-[14px] font-semibold text-accent-fg hover:bg-accent-hover"
+              >
+                <CalendarPlus size={15} aria-hidden /> Agendar
+              </Link>
+            ) : (
+              <Link
+                to={CLINICS_AGENDA_PATH}
+                className="inline-flex h-10 items-center rounded-control border border-border-strong bg-surface px-4 text-[14px] font-medium hover:bg-surface-2"
+              >
+                Abrir a agenda
+              </Link>
+            )}
           </div>
         </header>
         <Abas
@@ -188,6 +213,7 @@ function FichaReady() {
                 <ListaDeRetornos filtros={{ patientId: id }} mostrarPaciente={false} />
               </section>
             ) : null}
+            {ativa === 'atendimentos' ? <AtendimentosDoPaciente pacienteId={id} /> : null}
             {ativa === 'notas' && contactId ? (
               <NotasETarefasDoPaciente contactId={contactId} />
             ) : null}
@@ -199,6 +225,9 @@ function FichaReady() {
             aria-label="Resumo do paciente"
             className="flex min-w-[280px] flex-[1_1_300px] flex-col gap-5"
           >
+            {leAgenda ? (
+              <ProximoHorario pacienteId={id} onVer={() => abrirAba('atendimentos')} />
+            ) : null}
             <RetornosPendentes pacienteId={id} onVer={() => abrirAba('retornos')} />
             {lePacotes ? <PacotesAtivos pacienteId={id} onVer={() => abrirAba('pacotes')} /> : null}
           </aside>
@@ -212,9 +241,8 @@ function FichaReady() {
 }
 
 // ── O resumo ao lado (ADR-062) ─────────────────────────────────────────────
-// Só o que a ficha JÁ consulta, com as mesmas chaves de consulta: nenhum pedido
-// novo, nenhum dado que a ficha não mostrava. O "próximo horário" do desenho
-// não entra: não há consulta de agendamentos por paciente.
+// Só o que a ficha JÁ consulta, com as mesmas chaves de consulta. O "próximo
+// horário" vem da agenda por paciente (ADR-062 adendo 1), com a chave da porta.
 
 /** Linha de espera do resumo: a moldura fica, o dado chega dentro dela. */
 function CarregandoNoResumo() {
@@ -252,6 +280,20 @@ function CartaoDoResumo({
       </header>
       {children}
     </Panel>
+  );
+}
+
+/** O próximo horário do paciente, nos próximos 31 dias (o teto do intervalo). */
+function ProximoHorario({ pacienteId, onVer }: { pacienteId: string; onVer: () => void }) {
+  const estado = useProximoHorario(pacienteId);
+  return (
+    <CartaoDoResumo titulo="Próximo horário" verRotulo="Ver atendimentos" onVer={onVer}>
+      {!estado.falhou && !estado.carregado ? (
+        <CarregandoNoResumo />
+      ) : (
+        <ConteudoDoProximoHorario estado={estado} />
+      )}
+    </CartaoDoResumo>
   );
 }
 

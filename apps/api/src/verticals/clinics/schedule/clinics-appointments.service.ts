@@ -88,6 +88,11 @@ export const ROTULO: Record<ClinicsAppointmentStatus, string> = {
  * (o Hoje da clínica, ADR-055 adendo 4) não pode afirmar um total que não sabe.
  */
 const TETO_DO_DIA = 500;
+/**
+ * O teto do intervalo (a Semana da unidade, o mês de um paciente), pela mesma
+ * razão: acima dele, recusa, nunca a lista cortada (ADR-062 adendo 1).
+ */
+const TETO_DO_INTERVALO = 2000;
 
 const COM_NOMES = {
   patient: { select: { contact: { select: { name: true } } } },
@@ -109,23 +114,40 @@ export class ClinicsAppointmentsService {
     private readonly validade: ValidadeDosPedidos,
   ) {}
 
-  /** O dia LOCAL de uma unidade. O vínculo com atendimento só para quem lê atendimento. */
+  /**
+   * A agenda num período LOCAL: um dia (`date`) ou um intervalo (`from`/`to`,
+   * até 31 dias, ADR-062 adendo 1), estreitada por profissional e por
+   * paciente. Cada horário é lido no fuso da SUA unidade. O vínculo com
+   * atendimento só para quem lê atendimento (autorização de campo e D8).
+   */
   async list(
     query: ListClinicsAppointmentsInput,
     visao: VisaoClinica,
   ): Promise<ClinicsAppointmentDto[]> {
-    const unidade = await this.unidade(this.prisma.db, query.unitId);
-    // janela JUSTA ao dia local (folga de 3 h para mudança de horário) e
-    // filtro pela data local: o teto vale para o dia pedido, não para vizinhos
-    const inicioDoDia = aproximarMeiaNoite(query.date, unidade.timezone);
-    const fimDoDia = aproximarMeiaNoite(somarDias(query.date, 1), unidade.timezone);
+    // o contrato garante exatamente uma forma de período
+    const de = (query.date ?? query.from) as string;
+    const ate = (query.date ?? query.to) as string;
+    const unidades = await this.unidadesDaConsulta(query);
+    if (unidades.length === 0) return [];
+    const fusoDa = new Map(unidades.map((u) => [u.id, u.timezone]));
+    // janela JUSTA ao período local (folga de 3 h para mudança de horário) e
+    // filtro pela data local: o teto vale para o período pedido, não para
+    // vizinhos. Com unidades em fusos diferentes, a janela cobre todos
+    let inicio = Infinity;
+    let fim = -Infinity;
+    for (const u of unidades) {
+      inicio = Math.min(inicio, aproximarMeiaNoite(de, u.timezone));
+      fim = Math.max(fim, aproximarMeiaNoite(somarDias(ate, 1), u.timezone));
+    }
+    const teto = query.date !== undefined ? TETO_DO_DIA : TETO_DO_INTERVALO;
     const rows = (await this.prisma.db.clinicsAppointment.findMany({
       where: {
-        unitId: unidade.id,
+        unitId: { in: unidades.map((u) => u.id) },
         ...(query.professionalId ? { professionalId: query.professionalId } : {}),
+        ...(query.patientId ? { patientId: query.patientId } : {}),
         startsAt: {
-          gte: new Date(inicioDoDia - 3 * 3_600_000),
-          lt: new Date(fimDoDia + 3 * 3_600_000),
+          gte: new Date(inicio - 3 * 3_600_000),
+          lt: new Date(fim + 3 * 3_600_000),
         },
       },
       include: {
@@ -133,17 +155,37 @@ export class ClinicsAppointmentsService {
         ...(visao.alcance ? { attendance: { select: { id: true, professionalId: true } } } : {}),
       },
       orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
-      take: TETO_DO_DIA + 1,
+      take: teto + 1,
     } as never)) as unknown as AppointmentRow[];
-    // a janela (com a folga) passou do teto: o dia pode estar incompleto
-    if (rows.length > TETO_DO_DIA) {
+    // a janela (com a folga) passou do teto: o período pode estar incompleto
+    if (rows.length > teto) {
       throw new UnprocessableEntityException(
-        `Este dia tem mais de ${TETO_DO_DIA} horários e não cabe numa lista só.`,
+        query.date !== undefined
+          ? `Este dia tem mais de ${TETO_DO_DIA} horários e não cabe numa lista só.`
+          : `Este período tem mais de ${TETO_DO_INTERVALO} horários e não cabe numa lista só. Escolha um intervalo menor ou um profissional.`,
       );
     }
     return rows
-      .filter((row) => horaLocal(row.startsAt, unidade.timezone).data === query.date)
-      .map((row) => toDto(row, unidade.timezone, visao));
+      .filter((row) => {
+        const data = horaLocal(row.startsAt, fusoDa.get(row.unitId) as string).data;
+        return data >= de && data <= ate;
+      })
+      .map((row) => toDto(row, fusoDa.get(row.unitId) as string, visao));
+  }
+
+  /**
+   * As unidades da consulta. Com `unitId`, ela (ativa). Sem ele, a única ativa,
+   * como sempre; mas o histórico de UM paciente (`patientId`) cobre todas as
+   * unidades do workspace, inclusive as arquivadas: a ficha não pede unidade.
+   */
+  private async unidadesDaConsulta(query: ListClinicsAppointmentsInput): Promise<Unidade[]> {
+    if (query.unitId || !query.patientId) {
+      return [await this.unidade(this.prisma.db, query.unitId)];
+    }
+    return (await this.prisma.db.clinicsUnit.findMany({
+      select: { id: true, timezone: true },
+      orderBy: { id: 'asc' },
+    })) as unknown as Unidade[];
   }
 
   async create(

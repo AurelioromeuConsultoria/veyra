@@ -56,7 +56,12 @@ export class ClinicsAppointmentsController {
     private readonly alcance: AlcanceClinicoService,
   ) {}
 
-  /** O vínculo com o atendimento sai SÓ para quem lê atendimento (autorização de campo). */
+  /**
+   * O dia, o intervalo (a Semana) e o histórico de um paciente (a ficha) são a
+   * MESMA rota, com a mesma chave e o mesmo recorte (ADR-062 adendo 1): o
+   * vínculo com o atendimento sai SÓ para quem lê atendimento (autorização de
+   * campo), e só o do alcance clínico (D8).
+   */
   @RequireClinicsPermissions('clinics:schedule:read')
   @Get('appointments')
   async list(

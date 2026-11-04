@@ -103,3 +103,34 @@ export function raias<T extends Intervalo & { id: string }>(
   fecharGrupo();
   return resultado;
 }
+
+// ── A Semana (ADR-062 adendo 1) ────────────────────────────────────────────
+
+/**
+ * Os sete dias LOCAIS da semana de `dia`, de segunda a domingo: só aritmética
+ * de calendário (o dia já é o da unidade).
+ */
+export function diasDaSemana(dia: string): string[] {
+  const [ano, mes, d] = dia.split('-').map(Number);
+  const base = Date.UTC(ano, mes - 1, d);
+  const semana = new Date(base).getUTCDay(); // 0 = domingo
+  const segunda = base - ((semana + 6) % 7) * 86_400_000;
+  return Array.from({ length: 7 }, (_, i) =>
+    new Date(segunda + i * 86_400_000).toISOString().slice(0, 10),
+  );
+}
+
+/**
+ * A união de expedientes (a Semana de vários profissionais): o que está dentro
+ * do expediente de ALGUÉM fica claro; o resto, apagado.
+ */
+export function unirIntervalos(intervalos: readonly Intervalo[]): Intervalo[] {
+  const ordenados = [...intervalos].sort((a, b) => a.inicio - b.inicio);
+  const unidos: Intervalo[] = [];
+  for (const i of ordenados) {
+    const ultimo = unidos.at(-1);
+    if (ultimo && i.inicio <= ultimo.fim) ultimo.fim = Math.max(ultimo.fim, i.fim);
+    else unidos.push({ ...i });
+  }
+  return unidos;
+}

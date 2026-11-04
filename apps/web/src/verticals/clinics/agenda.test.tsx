@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider, focusManager } from '@tanstack/react-query';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
@@ -765,6 +765,173 @@ describe('Agenda da clínica (F2.3)', () => {
     }
     fireEvent.click(screen.getByRole('button', { name: 'Próximo dia' })); // sem RangeError
     await screen.findByRole('region', { name: 'Agenda de Ana Fictícia' });
+  });
+
+  it('a Semana (ADR-062 adendo 1): na URL, sete dias de segunda a domingo, UMA consulta do intervalo, e o bloco abre o mesmo painel', async () => {
+    const SEXTA = '2030-11-08';
+    const daBia = {
+      id: ARQ,
+      professionalId: BIA,
+      professionalName: 'Bia Fictícia',
+      localDate: SEXTA,
+      localStart: '14:00',
+      localEnd: '15:00',
+      startsAt: '2030-11-08T17:00:00.000Z',
+      endsAt: '2030-11-08T18:00:00.000Z',
+      status: 'confirmed',
+    };
+    const chamadas = mockApi({
+      'GET /api/auth/me': { body: usuario(RECEPCAO) },
+      ...catalogo,
+      'GET /api/clinics/appointments': { body: [agendamento(), agendamento(daBia)] },
+    });
+    // uma quarta: a semana é a que a contém
+    renderizar(<ClinicsAgendaPage />, '/clinics/agenda?dia=2030-11-06&visao=semana');
+    const segunda = await screen.findByRole('region', { name: 'Agenda de segunda-feira, 04/11' });
+    for (const dia of ['terça-feira, 05/11', 'sexta-feira, 08/11', 'domingo, 10/11']) {
+      expect(screen.getByRole('region', { name: `Agenda de ${dia}` })).toBeInTheDocument();
+    }
+    expect(screen.queryByRole('region', { name: 'Agenda de Ana Fictícia' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Semana' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Dia' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByText(/Semana de 04\/11 a 10\/11\/2030/)).toBeInTheDocument();
+    // o expediente de todos os ativos no dia (seg a sex 08:00–12:00); no fim de semana, nenhum
+    expect(within(segunda).getByText('08:00–12:00')).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('region', { name: 'Agenda de domingo, 10/11' })).getByText(
+        'Sem expediente',
+      ),
+    ).toBeInTheDocument();
+    // cada horário no seu dia, e o bloco diz de quem é quando a semana é de todos
+    expect(
+      await within(segunda).findByRole('article', { name: `Agendamento ${QUEM}` }),
+    ).toHaveTextContent('Ana Fictícia');
+    expect(
+      within(screen.getByRole('region', { name: 'Agenda de sexta-feira, 08/11' })).getByRole(
+        'article',
+        { name: 'Agendamento 14:00 Paciente Fictícia (Bia Fictícia)' },
+      ),
+    ).toBeInTheDocument();
+    const consultas = chamadas
+      .filter((c) => c.chave.startsWith('GET /api/clinics/appointments'))
+      .map((c) => c.chave);
+    expect(new Set(consultas)).toEqual(
+      new Set(['GET /api/clinics/appointments?from=2030-11-04&to=2030-11-10']),
+    );
+    const painel = await abrirAgendamento();
+    expect(
+      within(painel).getByRole('button', { name: `Marcar como confirmado: ${QUEM}` }),
+    ).toBeInTheDocument();
+    fireEvent.keyDown(painel, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Agendamento' })).toBeNull());
+
+    // a semana anda de sete em sete
+    fireEvent.click(screen.getByRole('button', { name: 'Próxima semana' }));
+    expect(
+      await screen.findByRole('region', { name: 'Agenda de segunda-feira, 11/11' }),
+    ).toBeInTheDocument();
+    // o cabeçalho do dia abre o Dia, com a grade por profissional
+    fireEvent.click(screen.getByRole('button', { name: 'Ver o dia quarta-feira, 13/11' }));
+    expect(
+      await screen.findByRole('region', { name: 'Agenda de Ana Fictícia' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Dia' })).toHaveAttribute('aria-pressed', 'true');
+    expect(chamadas.map((c) => c.chave)).toContain('GET /api/clinics/appointments?date=2030-11-13');
+  });
+
+  it('a Semana de UM profissional: só a dele é pedida ao servidor, e o Dia mostra só a coluna dele', async () => {
+    const chamadas = mockApi({
+      'GET /api/auth/me': { body: usuario(RECEPCAO) },
+      ...catalogo,
+      'GET /api/clinics/appointments': { body: [] },
+    });
+    renderizar(<ClinicsAgendaPage />, `/clinics/agenda?dia=${DIA}&visao=semana`);
+    await screen.findByRole('region', { name: 'Agenda de segunda-feira, 04/11' });
+    fireEvent.change(screen.getByLabelText('Filtrar por profissional'), {
+      target: { value: BIA },
+    });
+    await waitFor(() =>
+      expect(chamadas.map((c) => c.chave)).toContain(
+        `GET /api/clinics/appointments?from=2030-11-04&to=2030-11-10&professionalId=${BIA}`,
+      ),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Dia' }));
+    expect(
+      await screen.findByRole('region', { name: 'Agenda de Bia Fictícia' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Agenda de Ana Fictícia' })).toBeNull();
+  });
+
+  it('a Semana com erro: o alerta da semana, sem blocos', async () => {
+    mockApi({
+      'GET /api/auth/me': { body: usuario(RECEPCAO) },
+      ...catalogo,
+      'GET /api/clinics/appointments': { status: 500, body: { message: 'x' } },
+    });
+    renderizar(<ClinicsAgendaPage />, `/clinics/agenda?dia=${DIA}&visao=semana`);
+    expect(
+      await screen.findByText('Não foi possível carregar a agenda da semana.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('article')).toBeNull();
+  });
+
+  it('"Agendar" da ficha: o formulário abre com o paciente escolhido, sem busca, e envia o id dele', async () => {
+    const chamadas = mockApi({
+      'GET /api/auth/me': { body: usuario(RECEPCAO) },
+      ...catalogo,
+      [`GET /api/clinics/patients/${PAC}`]: {
+        body: { id: PAC, contactId: 'c1', name: 'Paciente Fictícia', createdAt: '' },
+      },
+      'GET /api/clinics/appointments': { body: [] },
+      'POST /api/clinics/appointments': { status: 201, body: agendamento() },
+    });
+    renderizar(<ClinicsAgendaPage />, `/clinics/agenda?dia=${DIA}&agendar=${PAC}`);
+    const drawer = await screen.findByRole('dialog', { name: 'Agendar' });
+    expect(
+      await within(within(drawer).getByRole('group', { name: 'Paciente' })).findByText(
+        'Paciente Fictícia',
+      ),
+    ).toBeInTheDocument();
+    expect(within(drawer).queryByLabelText(/^Buscar paciente/)).toBeNull();
+    fireEvent.change(within(drawer).getByLabelText(/^Serviço/), { target: { value: S1 } });
+    fireEvent.change(within(drawer).getByLabelText(/^Profissional/), { target: { value: ANA } });
+    fireEvent.change(within(drawer).getByLabelText(/^Horário/), { target: { value: '10:00|' } });
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Agendar' }));
+    await waitFor(() =>
+      expect(chamadas.find((c) => c.chave === 'POST /api/clinics/appointments')?.corpo).toEqual({
+        patientId: PAC,
+        professionalId: ANA,
+        serviceId: S1,
+        date: DIA,
+        time: '10:00',
+      }),
+    );
+  });
+
+  it('"Agendar" da ficha: trocar o paciente volta à busca; sem `schedule:write`, nada abre', async () => {
+    mockApi({
+      'GET /api/auth/me': { body: usuario(RECEPCAO) },
+      ...catalogo,
+      [`GET /api/clinics/patients/${PAC}`]: {
+        body: { id: PAC, contactId: 'c1', name: 'Paciente Fictícia', createdAt: '' },
+      },
+      'GET /api/clinics/appointments': { body: [] },
+    });
+    renderizar(<ClinicsAgendaPage />, `/clinics/agenda?dia=${DIA}&agendar=${PAC}`);
+    const drawer = await screen.findByRole('dialog', { name: 'Agendar' });
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Escolher outro paciente' }));
+    expect(within(drawer).getByLabelText(/^Buscar paciente/)).toBeInTheDocument();
+    expect(within(drawer).getByRole('button', { name: 'Agendar' })).toBeDisabled();
+    cleanup();
+
+    mockApi({
+      'GET /api/auth/me': { body: usuario(PROFISSIONAL) },
+      ...catalogo,
+      'GET /api/clinics/appointments': { body: [] },
+    });
+    renderizar(<ClinicsAgendaPage />, `/clinics/agenda?dia=${DIA}&agendar=${PAC}`);
+    await screen.findByRole('region', { name: 'Agenda de Ana Fictícia' });
+    expect(screen.queryByRole('dialog', { name: 'Agendar' })).toBeNull();
   });
 
   it('agendar: paciente por BUSCA, só profissional habilitado, só horário livre; envia o corpo certo e mostra o 409', async () => {

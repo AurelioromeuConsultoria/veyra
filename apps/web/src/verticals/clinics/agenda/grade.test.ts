@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { faixaDoDia, foraDoExpediente, intervaloDoAgendamento, raias } from './grade';
+import {
+  diasDaSemana,
+  faixaDoDia,
+  foraDoExpediente,
+  intervaloDoAgendamento,
+  raias,
+  unirIntervalos,
+} from './grade';
 
 describe('grade da agenda', () => {
   it('a faixa vai do primeiro ao último horário, em horas cheias; vazia, o horário comercial', () => {
@@ -60,5 +67,39 @@ describe('grade da agenda', () => {
     expect(r.get('c')).toEqual({ raia: 2, raias: 3 });
     // começa onde o grupo termina: largura inteira
     expect(r.get('d')).toEqual({ raia: 0, raias: 1 });
+  });
+
+  it('a semana vai de segunda a domingo, atravessando mês e ano', () => {
+    const semana = ['2030-11-04', '2030-11-05', '2030-11-06', '2030-11-07'];
+    const fim = ['2030-11-08', '2030-11-09', '2030-11-10'];
+    expect(diasDaSemana('2030-11-04')).toEqual([...semana, ...fim]);
+    expect(diasDaSemana('2030-11-07')).toEqual([...semana, ...fim]);
+    // o domingo é o FIM da semana, não o começo
+    expect(diasDaSemana('2030-11-10')).toEqual([...semana, ...fim]);
+    // 01/01/2031 é uma quarta-feira
+    expect(diasDaSemana('2031-01-01')).toEqual([
+      '2030-12-30',
+      '2030-12-31',
+      '2031-01-01',
+      '2031-01-02',
+      '2031-01-03',
+      '2031-01-04',
+      '2031-01-05',
+    ]);
+  });
+
+  it('a união de expedientes junta o que se sobrepõe ou se encosta', () => {
+    expect(
+      unirIntervalos([
+        { inicio: 780, fim: 1080 },
+        { inicio: 480, fim: 720 },
+        { inicio: 600, fim: 780 },
+        { inicio: 1140, fim: 1200 },
+      ]),
+    ).toEqual([
+      { inicio: 480, fim: 1080 },
+      { inicio: 1140, fim: 1200 },
+    ]);
+    expect(unirIntervalos([])).toEqual([]);
   });
 });

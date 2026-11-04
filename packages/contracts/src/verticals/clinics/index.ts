@@ -506,12 +506,68 @@ export type ChangeClinicsAppointmentStatusInput = z.infer<
   typeof changeClinicsAppointmentStatusSchema
 >;
 
-/** O dia LOCAL de uma unidade. Sem `unitId`, vale a única unidade ativa. */
-export const listClinicsAppointmentsSchema = z.object({
-  date: localDate,
-  unitId: z.uuid().optional(),
-  professionalId: z.uuid().optional(),
-});
+/**
+ * O maior intervalo da agenda, em dias LOCAIS contados com as duas pontas
+ * (ADR-062 adendo 1): cabe a Semana e um mês inteiro da ficha.
+ */
+export const CLINICS_APPOINTMENTS_MAX_RANGE_DAYS = 31;
+
+/** Dias de calendário de `de` até `ate` (0 = o mesmo dia). Só aritmética de datas. */
+function diasDeCalendario(de: string, ate: string): number {
+  const utc = (valor: string) => {
+    const [ano, mes, dia] = valor.split('-').map(Number);
+    return Date.UTC(ano, mes - 1, dia);
+  };
+  return Math.round((utc(ate) - utc(de)) / 86_400_000);
+}
+
+/**
+ * A agenda de uma unidade num período LOCAL (ADR-062 adendo 1). EXATAMENTE uma
+ * forma de período: `date` (um dia) OU `from` e `to` (o intervalo, as duas
+ * pontas incluídas, até 31 dias). Os filtros estreitam: `professionalId`,
+ * `patientId` (o histórico da ficha) e `unitId`. Sem `unitId`, vale a única
+ * unidade ativa; com `patientId` e sem `unitId`, todas as unidades do
+ * workspace, cada horário no fuso da sua unidade.
+ */
+export const listClinicsAppointmentsSchema = z
+  .object({
+    date: localDate.optional(),
+    from: localDate.optional(),
+    to: localDate.optional(),
+    unitId: z.uuid().optional(),
+    professionalId: z.uuid().optional(),
+    patientId: z.uuid().optional(),
+  })
+  .superRefine((valor, ctx) => {
+    const temIntervalo = valor.from !== undefined || valor.to !== undefined;
+    if (valor.date !== undefined && temIntervalo) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['date'],
+        message: 'Use date ou from e to, não os dois',
+      });
+      return;
+    }
+    if (valor.date !== undefined) return;
+    if (valor.from === undefined || valor.to === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [valor.from === undefined ? 'from' : 'to'],
+        message: 'Informe date, ou from e to',
+      });
+      return;
+    }
+    const dias = diasDeCalendario(valor.from, valor.to);
+    if (dias < 0) {
+      ctx.addIssue({ code: 'custom', path: ['to'], message: 'O fim vem antes do início' });
+    } else if (dias + 1 > CLINICS_APPOINTMENTS_MAX_RANGE_DAYS) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['to'],
+        message: `O intervalo vai até ${CLINICS_APPOINTMENTS_MAX_RANGE_DAYS} dias`,
+      });
+    }
+  });
 export type ListClinicsAppointmentsInput = z.infer<typeof listClinicsAppointmentsSchema>;
 
 export interface ClinicsAppointmentDto {

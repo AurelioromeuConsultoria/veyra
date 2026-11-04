@@ -2756,6 +2756,7 @@ Implementa os itens 4 e 5 do adendo 2, só na API. As telas e o e2e ficam para a
    - **O que a agenda mostra:** o paciente aparece só pelo nome (§5.2), além dos horários locais e dos instantes.
    - **Autorização de campo** (SECURITY §4): o vínculo com o atendimento (`attendanceId`) é **omitido no servidor** para quem não tem `clinics:care:read`.
    - **Teto:** um dia de uma unidade. São no máximo 500 linhas, sem paginação, e o teto entra na dívida.
+   - _(Alterado pelo ADR-062 adendo 1, item 1: a mesma rota aceita `patientId` e um intervalo `from`/`to` de datas locais, as duas pontas incluídas, até 31 dias, com exatamente uma forma de período, `date` OU `from`/`to`. A chave e a autorização de campo são as mesmas, inclusive o alcance clínico do D8. Com `patientId` e sem `unitId`, valem todas as unidades do workspace, inclusive as arquivadas, cada horário no fuso da sua. O intervalo tem teto de 2000 linhas e recusa com 422 acima dele.)_
 
 9. **Mudar o fuso da unidade** com agendamentos ativos futuros responde 409 (item 4 do adendo 2).
    - **"Futuro"** se compara com o relógio da aplicação. O início do agendamento é um horário escolhido por uma pessoa, não um agendamento de fila, então o ADR-049 não se aplica, e alguns segundos de desvio não mudam a decisão.
