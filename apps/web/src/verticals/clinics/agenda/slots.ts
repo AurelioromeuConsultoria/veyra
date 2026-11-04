@@ -7,6 +7,9 @@ import {
   type ClinicsWorkingIntervalDto,
 } from '@veyra/contracts/verticals/clinics';
 
+/** A chave de todas as agendas do dia no cache (invalidar recarrega a grade). */
+export const AGENDA_KEY = ['clinics', 'appointments'] as const;
+
 /** Estados que ocupam o horário: os mesmos do EXCLUDE no banco. */
 export const ESTADOS_ATIVOS: readonly ClinicsAppointmentStatus[] = [
   'scheduled',

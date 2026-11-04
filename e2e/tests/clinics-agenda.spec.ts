@@ -164,6 +164,16 @@ const daAgendaDoDia = (dia: string) => (r: { url(): string; request(): { method(
 const quem = (hora: string, c: Cenario) => `${hora} ${c.paciente} (${c.profissional})`;
 const cartao = (page: Page, hora: string, c: Cenario) =>
   page.getByRole('article', { name: `Agendamento ${quem(hora, c)}` });
+/** O bloco da grade abre o painel do agendamento: as ações moram nele (ADR-062). */
+async function abrirAgendamento(page: Page, hora: string, c: Cenario) {
+  await cartao(page, hora, c)
+    .getByRole('button', { name: `Abrir agendamento: ${quem(hora, c)}` })
+    .click();
+  const painel = page.getByRole('dialog', { name: 'Agendamento' });
+  await expect(painel).toContainText(c.paciente);
+  await expect(painel).toContainText(c.profissional);
+  return painel;
+}
 
 async function preencherAgendamento(page: Page, c: Cenario) {
   const drawer = page.getByRole('dialog', { name: 'Agendar' });
@@ -232,12 +242,16 @@ test.describe('Clinics — agenda da clínica', () => {
 
       await entrarNaClinica(page, PROF_C);
       await irParaAgenda(page, c.dia);
-      const meu = cartao(page, '21:00', c);
+      const meu = await abrirAgendamento(page, '21:00', c);
       await expect(
         meu.getByRole('button', { name: `Registrar atendimento: ${quem('21:00', c)}` }),
       ).toBeVisible();
-      const alheio = cartao(page, '21:30', { ...c, profissional: outroNome });
-      await expect(alheio).toBeVisible();
+      await meu.getByRole('button', { name: 'Fechar' }).click();
+      await expect(meu).toBeHidden();
+      const doOutro = { ...c, profissional: outroNome };
+      await expect(cartao(page, '21:30', doOutro)).toBeVisible();
+      const alheio = await abrirAgendamento(page, '21:30', doOutro);
+      await expect(alheio).toContainText('Confirmado');
       await expect(alheio.getByRole('button', { name: /^Registrar atendimento:/ })).toHaveCount(0);
     } finally {
       await db.end();
@@ -268,7 +282,8 @@ test.describe('Clinics — agenda da clínica', () => {
         return typeof meu?.attendanceId === 'string';
       });
       const doProfissional = cartao(page, '22:00', c);
-      await doProfissional
+      const painel = await abrirAgendamento(page, '22:00', c);
+      await painel
         .getByRole('button', { name: `Registrar atendimento: ${quem('22:00', c)}` })
         .click();
       // a escolha é explícita (F3.3b): sem pacote do paciente, só "avulso"
@@ -291,8 +306,10 @@ test.describe('Clinics — agenda da clínica', () => {
         expect(daRecepcao.some((a) => 'attendanceId' in a)).toBe(false);
         const cartaoDaRecepcao = cartao(recepcao, '22:00', c);
         await expect(cartaoDaRecepcao).toContainText('Atendido');
+        const painelDaRecepcao = await abrirAgendamento(recepcao, '22:00', c);
+        await expect(painelDaRecepcao).toContainText('Atendido');
         await expect(
-          cartaoDaRecepcao.getByRole('button', { name: /Registrar atendimento/ }),
+          painelDaRecepcao.getByRole('button', { name: /Registrar atendimento/ }),
         ).toHaveCount(0);
       } finally {
         await recepcao.close();

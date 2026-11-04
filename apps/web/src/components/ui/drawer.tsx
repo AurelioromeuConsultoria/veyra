@@ -8,11 +8,14 @@ export function Drawer({
   onOpenChange,
   title,
   children,
+  onCloseAutoFocus,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
   children: ReactNode;
+  /** para onde o foco volta ao fechar (sem gatilho do Radix, ele cairia no `body`) */
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -21,6 +24,7 @@ export function Drawer({
         <Dialog.Content
           className="fixed inset-y-0 right-0 flex w-full max-w-md flex-col border-l border-border bg-surface shadow-float focus:outline-none"
           aria-describedby={undefined}
+          onCloseAutoFocus={onCloseAutoFocus}
         >
           <header className="flex items-center justify-between border-b border-border px-5 py-3.5">
             <Dialog.Title className="text-display-sm">{title}</Dialog.Title>

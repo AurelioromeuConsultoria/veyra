@@ -138,6 +138,8 @@ Regra que nasceu aqui: **o rótulo não promete urgência que não existe** — 
 
 **Parcimônia do acento na visão executiva.** Os links "ver tudo" de cada bloco são cinza com seta, não verdes: quatro links no acento numa tela só transformariam a única cor de marca em decoração. O acento fica com o wordmark, o marcador da seção ativa e a ação primária.
 
+**A grade da Agenda (ADR-062).** Horas à esquerda, uma coluna por profissional; cada agendamento é um bloco posicionado pela hora LOCAL de início (a da unidade, vinda do servidor) e com a altura da duração, na cor do estado. A faixa vai do primeiro ao último expediente do dia (agendamento fora dele alarga a faixa; nada some), o trecho fora do expediente fica apagado e a linha do agora aparece só no dia de hoje da unidade — relógio do navegador, só para desenhar. O bloco é pequeno demais para ações: ele abre o painel do agendamento (drawer), onde moram TODAS as ações do antigo cartão, com os mesmos rótulos. Setas andam entre os blocos (cima e baixo na coluna, lados para o bloco mais perto da mesma hora), Enter abre, e fechar o painel devolve o foco ao bloco.
+
 ### 5.3 Marca de aba
 
 `apps/web/public/favicon.svg` — ladrilho no verde-abissal com um "V" de peso **assimétrico** (braço esquerdo cheio, direito reduzido a uma hairline). A assimetria é a mesma ideia do medidor de janela (§6.1), e é o que separa este V de um checkmark genérico. Nenhum hex fora dos tokens do §4; variante noturna porque o ladrilho escuro some contra a aba escura do navegador. `<title>` por rota traz seção e workspace — quem opera dois clientes em duas abas não adivinha pelo ícone.

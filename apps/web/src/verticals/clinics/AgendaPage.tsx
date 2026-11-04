@@ -3,7 +3,6 @@ import {
   horaLocal,
   somarDias,
   type ClinicsAppointmentDto,
-  type ClinicsCancelReason,
   type ClinicsPatientDto,
   type ClinicsProfessionalDto,
   type ClinicsServiceDto,
@@ -12,37 +11,16 @@ import {
 import { CalendarPlus, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { clsx } from 'clsx';
-import { Avatar } from '../../components/ui/avatar';
 import { Button } from '../../components/ui/button';
-import { StatusChip } from '../../components/ui/status';
 import { Drawer } from '../../components/ui/drawer';
 import { Field, Input, Select } from '../../components/ui/input';
 import { EmptyState, PageHeader } from '../../components/ui/page';
 import { api, ApiError, toQuery } from '../../lib/api';
 import { hasPermission, useSession } from '../../lib/session';
 import { useClinicsAccess } from './access';
-import {
-  ATENDIVEIS,
-  ESTADOS_ATIVOS,
-  ROTULO_DO_ESTADO,
-  TOM_DO_ESTADO,
-  ROTULO_DO_MOTIVO,
-  TRANSICOES,
-  diaDaSemana,
-  horariosLivres,
-} from './agenda/slots';
-import { CorrecaoDeConsumo } from './agenda/CorrecaoDeConsumo';
-import { RegistroDeAtendimento } from './agenda/RegistroDeAtendimento';
-import { VinculoComOportunidade } from './agenda/VinculoComOportunidade';
-
-const AGENDA_KEY = ['clinics', 'appointments'] as const;
-const ROTULO_DA_ACAO = {
-  // confirmar à mão não é enviar a confirmação por WhatsApp (ADR-055, adendo 4)
-  confirmed: 'Marcar como confirmado',
-  arrived: 'Registrar chegada',
-  no_show: 'Marcar falta',
-} as const;
+import { GradeDoDia, type ColunaDaGrade } from './agenda/GradeDoDia';
+import { PainelDoAgendamento } from './agenda/PainelDoAgendamento';
+import { AGENDA_KEY, ESTADOS_ATIVOS, diaDaSemana, horariosLivres } from './agenda/slots';
 
 /**
  * `AAAA-MM-DD` que existe no calendário, na faixa que o servidor aceita (anos
@@ -120,6 +98,8 @@ function AgendaReady() {
   const minhaConta = user?.activeMembership?.membershipId ?? null;
   const [params, setParams] = useSearchParams();
   const [soMinha, setSoMinha] = useState(false);
+  /** o agendamento aberto da grade, pelo id: o painel segue o dado recarregado */
+  const [aberto, setAberto] = useState<string | null>(null);
   const [drawer, setDrawer] = useState<
     { kind: 'novo' } | { kind: 'remarcar'; agendamento: ClinicsAppointmentDto } | null
   >(null);
@@ -197,6 +177,11 @@ function AgendaReady() {
   }
   const irPara = (data: string) => setParams({ dia: data }, { replace: true });
   const semana = diaDaSemana(dia);
+  // com erro, NADA de dado antigo na tela (dado classe S) — nem no painel aberto
+  const doDia = agenda.isError ? [] : (agenda.data ?? []);
+  const selecionado = aberto ? doDia.find((a) => a.id === aberto) : undefined;
+  // o aberto sumiu do dia (remarcado para outro dia, erro na recarga): o painel fecha
+  if (aberto && !selecionado && (agenda.data !== undefined || agenda.isError)) setAberto(null);
 
   return (
     <div className="flex h-full flex-col">
@@ -242,9 +227,9 @@ function AgendaReady() {
         ) : null}
       </PageHeader>
 
-      <div className="min-h-0 flex-1 overflow-auto p-7">
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto p-7">
         {agenda.isError ? (
-          <p role="alert" className="mb-3 text-data text-negative">
+          <p role="alert" className="text-data text-negative">
             {/* a recusa do dia acima do teto diz o porquê (ADR-055, adendo 4) */}
             {agenda.error instanceof ApiError && agenda.error.status === 422
               ? agenda.error.message
@@ -252,7 +237,7 @@ function AgendaReady() {
           </p>
         ) : null}
         {agenda.isPending ? (
-          <p className="mb-3 text-body-sm text-muted-fg">Carregando a agenda do dia…</p>
+          <p className="text-body-sm text-muted-fg">Carregando a agenda do dia…</p>
         ) : null}
         {colunas.length === 0 ? (
           <EmptyState
@@ -260,70 +245,44 @@ function AgendaReady() {
             hint="Cadastre profissionais e o expediente deles no catálogo."
           />
         ) : (
-          <div
-            className="grid items-start gap-5"
-            style={{ gridTemplateColumns: `repeat(${colunas.length}, minmax(16rem, 1fr))` }}
-          >
-            {colunas.map((coluna) => {
-              const expediente = (coluna.profissional?.workingHours ?? [])
-                .filter((h) => h.weekday === semana && h.unitId === unidade.id)
-                .map((h) => `${hhmm(h.startMinute)}–${hhmm(h.endMinute)}`);
-              // com erro, NADA de dado antigo na tela (dado classe S)
-              const doProfissional = agenda.isError
-                ? []
-                : (agenda.data ?? []).filter((a) => a.professionalId === coluna.id);
-              return (
-                <section
-                  key={coluna.id}
-                  aria-label={`Agenda de ${coluna.nome}`}
-                  className="overflow-hidden rounded-card border border-border bg-surface"
-                >
-                  <header className="flex items-center gap-3 border-b border-border px-4 py-3.5">
-                    <Avatar nome={coluna.nome} chave={coluna.id} />
-                    <div className="min-w-0 flex-1">
-                      <h2 className="truncate font-sans text-[14.5px] font-semibold tracking-normal">
-                        {coluna.nome}
-                      </h2>
-                      {coluna.profissional ? (
-                        <p className="text-[12.5px] text-muted-fg">
-                          {expediente.length > 0
-                            ? `Expediente ${expediente.join(', ')}`
-                            : 'Sem expediente neste dia'}
-                        </p>
-                      ) : null}
-                    </div>
-                    {agenda.data && !agenda.isError ? (
-                      <StatusChip tom="neutral">
-                        {doProfissional.filter((a) => a.status !== 'canceled').length}
-                      </StatusChip>
-                    ) : null}
-                  </header>
-                  <div className="flex flex-col gap-2.5 p-3">
-                    {agenda.data && !agenda.isError && doProfissional.length === 0 ? (
-                      <p className="px-1 py-3 text-[13.5px] text-muted-fg">Nenhum agendamento.</p>
-                    ) : null}
-                    {doProfissional.map((agendamento) => (
-                      <CartaoDeAgendamento
-                        key={agendamento.id}
-                        agendamento={agendamento}
-                        podeMarcar={podeMarcar}
-                        podeAtender={podeAtender}
-                        podeCorrigir={podeCorrigir}
-                        podeVerOportunidade={podeVerOportunidade}
-                        fuso={unidade?.timezone ?? null}
-                        // profissional arquivado: o drawer não teria serviços nem horários
-                        podeRemarcar={podeMarcar && coluna.profissional !== null}
-                        onRemarcar={() => setDrawer({ kind: 'remarcar', agendamento })}
-                        profissionais={ativos}
-                      />
-                    ))}
-                  </div>
-                </section>
-              );
-            })}
-          </div>
+          <GradeDoDia
+            colunas={colunas.map((coluna): ColunaDaGrade => ({
+              id: coluna.id,
+              nome: coluna.nome,
+              expediente: coluna.profissional
+                ? coluna.profissional.workingHours
+                    .filter((h) => h.weekday === semana && h.unitId === unidade.id)
+                    .map((h) => ({ inicio: h.startMinute, fim: h.endMinute }))
+                : null,
+              agendamentos: doDia.filter((a) => a.professionalId === coluna.id),
+            }))}
+            carregado={agenda.data !== undefined && !agenda.isError}
+            dia={dia}
+            fuso={unidade.timezone}
+            onAbrir={setAberto}
+          />
         )}
       </div>
+
+      {selecionado ? (
+        <PainelDoAgendamento
+          key={selecionado.id}
+          agendamento={selecionado}
+          podeMarcar={podeMarcar}
+          podeAtender={podeAtender}
+          podeCorrigir={podeCorrigir}
+          podeVerOportunidade={podeVerOportunidade}
+          fuso={unidade.timezone}
+          // profissional arquivado: o drawer de remarcar não teria serviços nem horários
+          podeRemarcar={podeMarcar && ativos.some((p) => p.id === selecionado.professionalId)}
+          onRemarcar={() => {
+            setAberto(null);
+            setDrawer({ kind: 'remarcar', agendamento: selecionado });
+          }}
+          profissionais={ativos}
+          onFechar={() => setAberto(null)}
+        />
+      ) : null}
 
       <Drawer
         open={drawer !== null}
@@ -342,316 +301,6 @@ function AgendaReady() {
               irPara(data);
             }}
           />
-        ) : null}
-      </Drawer>
-    </div>
-  );
-}
-
-/** O cartão do horário tingido pelo estado (ADR-062): a barra e o fundo dizem o estado. */
-const CARTAO_DO_TOM = {
-  pending: 'border-state-pending-fg/25 border-l-state-pending-fg bg-state-pending/45',
-  confirmed: 'border-state-confirmed-fg/20 border-l-state-confirmed-fg bg-state-confirmed/45',
-  arrived: 'border-state-arrived-fg/20 border-l-state-arrived-fg bg-state-arrived/50',
-  done: 'border-border border-l-state-done-fg bg-surface-2',
-  missed: 'border-state-missed-fg/20 border-l-state-missed-fg bg-state-missed/45',
-  neutral: 'border-border border-l-border-strong bg-surface-2 opacity-80',
-} as const;
-
-function hhmm(minuto: number): string {
-  return `${String(Math.floor(minuto / 60)).padStart(2, '0')}:${String(minuto % 60).padStart(2, '0')}`;
-}
-
-function CartaoDeAgendamento({
-  agendamento,
-  podeMarcar,
-  podeAtender,
-  podeCorrigir,
-  podeVerOportunidade,
-  fuso,
-  podeRemarcar,
-  onRemarcar,
-  profissionais,
-}: {
-  agendamento: ClinicsAppointmentDto;
-  podeMarcar: boolean;
-  podeAtender: boolean;
-  podeCorrigir: boolean;
-  podeVerOportunidade: boolean;
-  fuso: string | null;
-  podeRemarcar: boolean;
-  onRemarcar: () => void;
-  /** os ativos: a cobertura depois da chegada escolhe entre os habilitados */
-  profissionais: ClinicsProfessionalDto[];
-}) {
-  const queryClient = useQueryClient();
-  const [cancelando, setCancelando] = useState(false);
-  const [registrando, setRegistrando] = useState(false);
-  const [corrigindo, setCorrigindo] = useState(false);
-  const recarregar = () => void queryClient.invalidateQueries({ queryKey: AGENDA_KEY });
-  const [trocando, setTrocando] = useState(false);
-  const [novoProfissional, setNovoProfissional] = useState('');
-  // a cobertura depois da chegada (ADR-061): só quem faz o serviço, menos o atual
-  const cobrem = profissionais.filter(
-    (p) => p.id !== agendamento.professionalId && p.serviceIds.includes(agendamento.serviceId),
-  );
-  const trocar = useMutation({
-    mutationFn: (professionalId: string) =>
-      api.post<ClinicsAppointmentDto>(`/api/clinics/appointments/${agendamento.id}/professional`, {
-        professionalId,
-      }),
-    onSuccess: () => {
-      setTrocando(false);
-      setNovoProfissional('');
-    },
-    onSettled: recarregar,
-  });
-  const [oportunidade, setOportunidade] = useState(false);
-  const [motivo, setMotivo] = useState<ClinicsCancelReason | ''>('');
-  const mudar = useMutation({
-    mutationFn: (corpo: { to: string; cancelReason?: ClinicsCancelReason }) =>
-      api.post<ClinicsAppointmentDto>(`/api/clinics/appointments/${agendamento.id}/status`, corpo),
-    onSuccess: () => {
-      setCancelando(false);
-      setMotivo('');
-    },
-    onSettled: recarregar,
-  });
-  const erro = mudar.error ?? trocar.error;
-  // único por cartão: hora, paciente e profissional
-  const quem = `${agendamento.localStart} ${agendamento.patientName} (${agendamento.professionalName})`;
-  const transicoes = TRANSICOES[agendamento.status];
-
-  return (
-    <div
-      className={clsx(
-        'rounded-[10px] border border-l-4',
-        CARTAO_DO_TOM[TOM_DO_ESTADO[agendamento.status]],
-      )}
-    >
-      <article aria-label={`Agendamento ${quem}`} className="space-y-1.5 p-3">
-        <p className="flex items-center justify-between gap-2">
-          <span className="num text-[12.5px] text-foreground/80">
-            {agendamento.localStart}–{agendamento.localEnd}
-          </span>
-          <StatusChip tom={TOM_DO_ESTADO[agendamento.status]} className="h-5.5 px-2 text-[11.5px]">
-            {ROTULO_DO_ESTADO[agendamento.status]}
-            {agendamento.cancelReason ? ` · ${ROTULO_DO_MOTIVO[agendamento.cancelReason]}` : ''}
-          </StatusChip>
-        </p>
-        <p className="flex items-center gap-2">
-          <Avatar nome={agendamento.patientName} chave={agendamento.patientId} tamanho="sm" />
-          <span className="min-w-0">
-            <span className="block truncate text-[14px] font-semibold">
-              {agendamento.patientName}
-            </span>
-            <span className="block truncate text-[12.5px] text-muted-fg">
-              {agendamento.serviceName}
-            </span>
-          </span>
-        </p>
-        {erro ? (
-          <p role="alert" className="text-data text-negative">
-            {erro instanceof ApiError ? erro.message : 'Não foi possível concluir.'}
-          </p>
-        ) : null}
-        {cancelando ? null : (
-          <div className="flex flex-wrap gap-1">
-            {podeMarcar
-              ? transicoes
-                  .filter((t) => t !== 'canceled')
-                  .map((t) => (
-                    <Button
-                      key={t}
-                      size="sm"
-                      variant="ghost"
-                      disabled={mudar.isPending}
-                      aria-label={`${ROTULO_DA_ACAO[t]}: ${quem}`}
-                      onClick={() => mudar.mutate({ to: t })}
-                    >
-                      {ROTULO_DA_ACAO[t]}
-                    </Button>
-                  ))
-              : null}
-            {podeRemarcar &&
-            (agendamento.status === 'scheduled' || agendamento.status === 'confirmed') ? (
-              <Button
-                size="sm"
-                variant="ghost"
-                aria-label={`Remarcar: ${quem}`}
-                onClick={onRemarcar}
-              >
-                Remarcar
-              </Button>
-            ) : null}
-            {podeMarcar && transicoes.includes('canceled') ? (
-              <Button
-                size="sm"
-                variant="ghost"
-                aria-label={`Cancelar: ${quem}`}
-                onClick={() => setCancelando(true)}
-              >
-                Cancelar
-              </Button>
-            ) : null}
-            {podeAtender &&
-            ATENDIVEIS.includes(agendamento.status) &&
-            // D8 (ADR-061): só o horário no alcance clínico de quem atende
-            agendamento.careInScope === true ? (
-              <Button
-                size="sm"
-                variant="secondary"
-                aria-label={`Registrar atendimento: ${quem}`}
-                onClick={() => {
-                  mudar.reset();
-                  setRegistrando(true);
-                }}
-              >
-                Registrar atendimento
-              </Button>
-            ) : null}
-            {podeCorrigir && agendamento.attendanceId && agendamento.careInScope === true ? (
-              <Button
-                size="sm"
-                variant="ghost"
-                aria-label={`Corrigir consumo: ${quem}`}
-                onClick={() => setCorrigindo(true)}
-              >
-                Corrigir consumo
-              </Button>
-            ) : null}
-            {podeVerOportunidade ? (
-              <Button
-                size="sm"
-                variant="ghost"
-                aria-label={`Oportunidade: ${quem}`}
-                onClick={() => setOportunidade(true)}
-              >
-                Oportunidade
-              </Button>
-            ) : null}
-          </div>
-        )}
-        {podeMarcar && agendamento.status === 'arrived' && !cancelando ? (
-          trocando ? (
-            <div className="flex flex-wrap items-end gap-2">
-              <Field label="Quem vai atender">
-                <Select
-                  size="sm"
-                  aria-label={`Quem vai atender: ${quem}`}
-                  value={novoProfissional}
-                  onChange={(e) => setNovoProfissional(e.target.value)}
-                >
-                  <option value="" disabled>
-                    {cobrem.length === 0
-                      ? 'Ninguém mais faz este serviço'
-                      : 'Escolha o profissional'}
-                  </option>
-                  {cobrem.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-              <Button
-                size="sm"
-                variant="primary"
-                aria-label={`Confirmar troca: ${quem}`}
-                disabled={!novoProfissional || trocar.isPending}
-                onClick={() => trocar.mutate(novoProfissional)}
-              >
-                Confirmar troca
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  setTrocando(false);
-                  setNovoProfissional('');
-                }}
-              >
-                Voltar
-              </Button>
-            </div>
-          ) : (
-            <Button
-              size="sm"
-              variant="ghost"
-              aria-label={`Trocar profissional: ${quem}`}
-              onClick={() => {
-                trocar.reset();
-                setTrocando(true);
-              }}
-            >
-              Trocar profissional
-            </Button>
-          )
-        ) : null}
-        {cancelando ? (
-          <div className="flex flex-wrap items-end gap-2">
-            <Field label="Motivo do cancelamento">
-              <Select
-                size="sm"
-                aria-label={`Motivo do cancelamento: ${quem}`}
-                value={motivo}
-                onChange={(e) => setMotivo(e.target.value as ClinicsCancelReason)}
-              >
-                <option value="" disabled>
-                  Escolha o motivo
-                </option>
-                {(Object.keys(ROTULO_DO_MOTIVO) as ClinicsCancelReason[]).map((m) => (
-                  <option key={m} value={m}>
-                    {ROTULO_DO_MOTIVO[m]}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-            <Button
-              size="sm"
-              variant="danger"
-              aria-label={`Confirmar cancelamento: ${quem}`}
-              disabled={!motivo || mudar.isPending}
-              onClick={() => motivo && mudar.mutate({ to: 'canceled', cancelReason: motivo })}
-            >
-              Confirmar cancelamento
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => {
-                setCancelando(false);
-                setMotivo('');
-              }}
-            >
-              Voltar
-            </Button>
-          </div>
-        ) : null}
-      </article>
-      <Drawer open={registrando} onOpenChange={setRegistrando} title="Registrar atendimento">
-        {registrando ? (
-          <RegistroDeAtendimento
-            agendamento={agendamento}
-            fuso={fuso}
-            onAgendaMudou={recarregar}
-            onDone={() => setRegistrando(false)}
-          />
-        ) : null}
-      </Drawer>
-      <Drawer open={corrigindo} onOpenChange={setCorrigindo} title="Corrigir consumo">
-        {corrigindo ? (
-          <CorrecaoDeConsumo
-            agendamento={agendamento}
-            fuso={fuso}
-            onAgendaMudou={recarregar}
-            onDone={() => setCorrigindo(false)}
-          />
-        ) : null}
-      </Drawer>
-      <Drawer open={oportunidade} onOpenChange={setOportunidade} title="Oportunidade">
-        {oportunidade ? (
-          <VinculoComOportunidade agendamento={agendamento} podeMudar={podeMarcar} />
         ) : null}
       </Drawer>
     </div>

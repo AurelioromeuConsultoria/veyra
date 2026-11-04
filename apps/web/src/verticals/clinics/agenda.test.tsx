@@ -169,6 +169,12 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** Abre o agendamento pelo bloco da grade: as ações moram no painel (ADR-062). */
+async function abrirAgendamento(quem = QUEM) {
+  fireEvent.click(await screen.findByRole('button', { name: `Abrir agendamento: ${quem}` }));
+  return screen.findByRole('dialog', { name: 'Agendamento' });
+}
+
 /** Passa o tempo de cache (30 s) e devolve o foco: o TanStack recarrega o que venceu. */
 function recarregarAoVoltarOFoco() {
   const agora = Date.now();
@@ -270,16 +276,21 @@ describe('Agenda da clínica (F2.3)', () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Agendar/ })).toBeInTheDocument();
+    const painel = await abrirAgendamento();
     expect(
-      screen.getByRole('button', { name: `Marcar como confirmado: ${QUEM}` }),
+      within(painel).getByRole('button', { name: `Marcar como confirmado: ${QUEM}` }),
     ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: `Marcar falta: ${QUEM}` })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Registrar atendimento/ })).toBeNull();
+    expect(
+      within(painel).getByRole('button', { name: `Marcar falta: ${QUEM}` }),
+    ).toBeInTheDocument();
+    expect(within(painel).queryByRole('button', { name: /Registrar atendimento/ })).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: `Cancelar: ${QUEM}` }));
-    const confirmar = screen.getByRole('button', { name: `Confirmar cancelamento: ${QUEM}` });
+    fireEvent.click(within(painel).getByRole('button', { name: `Cancelar: ${QUEM}` }));
+    const confirmar = within(painel).getByRole('button', {
+      name: `Confirmar cancelamento: ${QUEM}`,
+    });
     expect(confirmar).toBeDisabled();
-    fireEvent.change(screen.getByLabelText(`Motivo do cancelamento: ${QUEM}`), {
+    fireEvent.change(within(painel).getByLabelText(`Motivo do cancelamento: ${QUEM}`), {
       target: { value: 'patient_request' },
     });
     fireEvent.click(confirmar);
@@ -305,13 +316,15 @@ describe('Agenda da clínica (F2.3)', () => {
       [`POST /api/clinics/appointments/${AG}/attendance`]: { status: 201, body: { id: 'x' } },
     });
     renderizar(<ClinicsAgendaPage />);
-    const registrar = await screen.findByRole('button', {
+    await screen.findByRole('article', { name: `Agendamento ${QUEM}` });
+    expect(screen.queryByRole('button', { name: /Agendar/ })).toBeNull();
+    const painel = await abrirAgendamento();
+    const registrar = within(painel).getByRole('button', {
       name: `Registrar atendimento: ${QUEM}`,
     });
-    expect(screen.queryByRole('button', { name: /Agendar/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: /^Registrar chegada:/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: /^Cancelar:/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: /^Remarcar:/ })).toBeNull();
+    expect(within(painel).queryByRole('button', { name: /^Registrar chegada:/ })).toBeNull();
+    expect(within(painel).queryByRole('button', { name: /^Cancelar:/ })).toBeNull();
+    expect(within(painel).queryByRole('button', { name: /^Remarcar:/ })).toBeNull();
     // o botão abre a ESCOLHA (F3.3b): nada é registrado sem escolher
     fireEvent.click(registrar);
     fireEvent.click(await screen.findByLabelText('Avulso (sem pacote)'));
@@ -339,8 +352,11 @@ describe('Agenda da clínica (F2.3)', () => {
     expect(within(coluna).getByText('09:00–10:00')).toBeInTheDocument();
     // cancelar, sim; remarcar, não: o drawer não teria serviços nem horários dele
     const quemArq = '09:00 Paciente Fictícia (Carla Arquivada)';
-    expect(screen.getByRole('button', { name: `Cancelar: ${quemArq}` })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: `Remarcar: ${quemArq}` })).toBeNull();
+    const painel = await abrirAgendamento(quemArq);
+    expect(
+      within(painel).getByRole('button', { name: `Cancelar: ${quemArq}` }),
+    ).toBeInTheDocument();
+    expect(within(painel).queryByRole('button', { name: `Remarcar: ${quemArq}` })).toBeNull();
   });
 
   it('recarga que FALHA depois de um sucesso: some tudo do dia, inclusive a coluna do arquivado', async () => {
@@ -369,12 +385,80 @@ describe('Agenda da clínica (F2.3)', () => {
     expect(
       await screen.findByRole('region', { name: 'Agenda de Carla Arquivada (arquivado)' }),
     ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: `Marcar como confirmado: ${QUEM}` }));
+    const painel = await abrirAgendamento();
+    fireEvent.click(
+      within(painel).getByRole('button', { name: `Marcar como confirmado: ${QUEM}` }),
+    );
     expect(
       await screen.findByText('Não foi possível carregar a agenda do dia.'),
     ).toBeInTheDocument();
+    // nem a grade nem o painel aberto guardam o dado antigo
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.queryByRole('article')).toBeNull();
     expect(screen.queryByRole('region', { name: /arquivado/ })).toBeNull();
+  });
+
+  it('a grade: o bloco fica na hora de início com a altura da duração; as setas andam entre os blocos; fechar o painel devolve o foco ao bloco', async () => {
+    const OUTRO = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e11';
+    const DA_BIA = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e12';
+    mockApi({
+      'GET /api/auth/me': { body: usuario(RECEPCAO) },
+      ...catalogo,
+      'GET /api/clinics/appointments': {
+        body: [
+          agendamento(),
+          agendamento({
+            id: OUTRO,
+            startsAt: '2030-11-04T13:30:00.000Z',
+            endsAt: '2030-11-04T14:00:00.000Z',
+            localStart: '10:30',
+            localEnd: '11:00',
+            status: 'confirmed',
+          }),
+          agendamento({
+            id: DA_BIA,
+            professionalId: BIA,
+            professionalName: 'Bia Fictícia',
+            startsAt: '2030-11-04T13:00:00.000Z',
+            endsAt: '2030-11-04T14:00:00.000Z',
+            localStart: '10:00',
+            localEnd: '11:00',
+          }),
+        ],
+      },
+    });
+    renderizar(<ClinicsAgendaPage />);
+    const primeiro = await screen.findByRole('article', { name: `Agendamento ${QUEM}` });
+    const segundo = screen.getByRole('article', {
+      name: 'Agendamento 10:30 Paciente Fictícia (Ana Fictícia)',
+    });
+    // expediente das 08:00 às 12:00: a grade começa às 08:00, 64 px por hora
+    expect(primeiro).toHaveStyle({ top: '65px', height: '62px' });
+    expect(segundo).toHaveStyle({ top: '161px', height: '30px' });
+    // o bloco curto mostra o estado numa linha só
+    expect(within(segundo).getByText('Confirmado')).toBeInTheDocument();
+
+    const bloco = within(primeiro).getByRole('button', { name: `Abrir agendamento: ${QUEM}` });
+    bloco.focus();
+    fireEvent.keyDown(bloco, { key: 'ArrowDown' });
+    expect(within(segundo).getByRole('button')).toHaveFocus();
+    // para o lado: o bloco da Bia mais perto desta hora
+    fireEvent.keyDown(within(segundo).getByRole('button'), { key: 'ArrowRight' });
+    expect(
+      screen.getByRole('button', {
+        name: 'Abrir agendamento: 10:00 Paciente Fictícia (Bia Fictícia)',
+      }),
+    ).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowLeft' });
+    fireEvent.keyDown(document.activeElement!, { key: 'Home' });
+    expect(bloco).toHaveFocus();
+
+    fireEvent.click(bloco);
+    const painel = await screen.findByRole('dialog', { name: 'Agendamento' });
+    expect(within(painel).getByText('09:00–10:00')).toBeInTheDocument();
+    fireEvent.keyDown(painel, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(bloco).toHaveFocus());
   });
 
   it('remarcar: só os serviços que o profissional faz, e sem `serviceId` quando o serviço não muda', async () => {
@@ -406,7 +490,9 @@ describe('Agenda da clínica (F2.3)', () => {
       [`POST /api/clinics/appointments/${AG}/reschedule`]: { body: agendamento() },
     });
     renderizar(<ClinicsAgendaPage />);
-    fireEvent.click(await screen.findByRole('button', { name: `Remarcar: ${QUEM}` }));
+    fireEvent.click(
+      within(await abrirAgendamento()).getByRole('button', { name: `Remarcar: ${QUEM}` }),
+    );
     const dialogo = await screen.findByRole('dialog', { name: 'Remarcar' });
     const servico = within(dialogo).getByLabelText(/^Serviço/);
     expect(servico).toHaveValue(S1);
@@ -459,7 +545,9 @@ describe('Agenda da clínica (F2.3)', () => {
       },
     });
     renderizar(<ClinicsAgendaPage />);
-    fireEvent.click(await screen.findByRole('button', { name: `Remarcar: ${QUEM}` }));
+    fireEvent.click(
+      within(await abrirAgendamento()).getByRole('button', { name: `Remarcar: ${QUEM}` }),
+    );
     const dialogo = await screen.findByRole('dialog', { name: 'Remarcar' });
     const profissional = within(dialogo).getByLabelText(/^Profissional/);
     expect(profissional).toHaveValue(ANA);
@@ -514,11 +602,12 @@ describe('Agenda da clínica (F2.3)', () => {
       },
     });
     renderizar(<ClinicsAgendaPage />);
-    fireEvent.click(await screen.findByRole('button', { name: `Trocar profissional: ${QUEM}` }));
-    const escolha = screen.getByRole('combobox', { name: `Quem vai atender: ${QUEM}` });
+    const painel = await abrirAgendamento();
+    fireEvent.click(within(painel).getByRole('button', { name: `Trocar profissional: ${QUEM}` }));
+    const escolha = within(painel).getByRole('combobox', { name: `Quem vai atender: ${QUEM}` });
     // só quem faz o serviço, menos a atual
     expect(within(escolha).queryByRole('option', { name: 'Ana Fictícia' })).toBeNull();
-    const confirmar = screen.getByRole('button', { name: `Confirmar troca: ${QUEM}` });
+    const confirmar = within(painel).getByRole('button', { name: `Confirmar troca: ${QUEM}` });
     expect(confirmar).toBeDisabled();
     fireEvent.change(escolha, { target: { value: BIA } });
     fireEvent.click(confirmar);
@@ -538,8 +627,9 @@ describe('Agenda da clínica (F2.3)', () => {
       'GET /api/clinics/packages': { body: [] },
     });
     renderizar(<ClinicsAgendaPage />);
-    expect(await screen.findByText('Paciente Fictícia')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Trocar profissional:/ })).toBeNull();
+    const painel = await abrirAgendamento();
+    expect(within(painel).getByText('Chegou')).toBeInTheDocument();
+    expect(within(painel).queryByRole('button', { name: /^Trocar profissional:/ })).toBeNull();
   });
 
   it('remarcar com o serviço original ARQUIVADO: explica e obriga a escolher outro', async () => {
@@ -576,7 +666,9 @@ describe('Agenda da clínica (F2.3)', () => {
       [`POST /api/clinics/appointments/${AG}/reschedule`]: { body: agendamento() },
     });
     renderizar(<ClinicsAgendaPage />);
-    fireEvent.click(await screen.findByRole('button', { name: `Remarcar: ${QUEM}` }));
+    fireEvent.click(
+      within(await abrirAgendamento()).getByRole('button', { name: `Remarcar: ${QUEM}` }),
+    );
     const dialogo = await screen.findByRole('dialog', { name: 'Remarcar' });
     expect(
       within(dialogo).getByText(/O serviço Limpeza foi arquivado: escolha outro\./),

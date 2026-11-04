@@ -150,7 +150,12 @@ async function registrarNaAgenda(
 ) {
   await page.goto(`/clinics/agenda?dia=${dia}`);
   const cartao = page.getByRole('article', { name: `Agendamento ${quem(hora, c)}` });
-  await cartao.getByRole('button', { name: `Registrar atendimento: ${quem(hora, c)}` }).click();
+  // o bloco da grade abre o painel do agendamento; as ações moram nele (ADR-062)
+  await cartao.getByRole('button', { name: `Abrir agendamento: ${quem(hora, c)}` }).click();
+  await page
+    .getByRole('dialog', { name: 'Agendamento' })
+    .getByRole('button', { name: `Registrar atendimento: ${quem(hora, c)}` })
+    .click();
   const painel = page.getByRole('dialog', { name: 'Registrar atendimento' });
   // nada vem marcado, e não se confirma sem escolher
   await expect(painel.getByRole('button', { name: 'Escolha avulso ou um pacote' })).toBeDisabled();
@@ -255,7 +260,11 @@ test.describe('Clinics — continuidade (pacotes, retornos e faltas)', () => {
 
       // a correção, pela tela: o consumo atual, a escolha, o saldo antes e depois e o motivo
       const cartao = page.getByRole('article', { name: `Agendamento ${quem('21:00', c)}` });
-      await cartao.getByRole('button', { name: `Corrigir consumo: ${quem('21:00', c)}` }).click();
+      await cartao.getByRole('button', { name: `Abrir agendamento: ${quem('21:00', c)}` }).click();
+      await page
+        .getByRole('dialog', { name: 'Agendamento' })
+        .getByRole('button', { name: `Corrigir consumo: ${quem('21:00', c)}` })
+        .click();
       const painel = page.getByRole('dialog', { name: 'Corrigir consumo' });
       await expect(
         painel.getByText(/^Uma sessão do pacote de 10 sessões, criado em .+: restam 9\.$/),

@@ -221,8 +221,15 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/** Abre o agendamento pelo bloco da grade: as ações moram no painel (ADR-062). */
+async function abrirAgendamento() {
+  fireEvent.click(await screen.findByRole('button', { name: `Abrir agendamento: ${QUEM}` }));
+  return screen.findByRole('dialog', { name: 'Agendamento' });
+}
+
 async function abrirRegistro() {
-  fireEvent.click(await screen.findByRole('button', { name: `Registrar atendimento: ${QUEM}` }));
+  const painel = await abrirAgendamento();
+  fireEvent.click(within(painel).getByRole('button', { name: `Registrar atendimento: ${QUEM}` }));
   return screen.findByRole('dialog', { name: 'Registrar atendimento' });
 }
 
@@ -675,7 +682,8 @@ describe('correção do consumo na agenda (F5.2b, ADR-059)', () => {
     ...extra,
   });
   async function abrirCorrecao() {
-    fireEvent.click(await screen.findByRole('button', { name: `Corrigir consumo: ${QUEM}` }));
+    const painel = await abrirAgendamento();
+    fireEvent.click(within(painel).getByRole('button', { name: `Corrigir consumo: ${QUEM}` }));
     return screen.findByRole('dialog', { name: 'Corrigir consumo' });
   }
 
@@ -847,9 +855,16 @@ describe('correção do consumo na agenda (F5.2b, ADR-059)', () => {
       'GET /api/clinics/packages': { body: [] },
     });
     renderizar(<ClinicsAgendaPage />, `/clinics/agenda?dia=${DIA}`);
-    expect(await screen.findAllByText('Paciente Fictícia')).toHaveLength(2);
-    expect(screen.queryByRole('button', { name: /^Registrar atendimento:/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: /^Corrigir consumo:/ })).toBeNull();
+    const blocos = await screen.findAllByRole('button', { name: `Abrir agendamento: ${QUEM}` });
+    expect(blocos).toHaveLength(2);
+    for (const bloco of blocos) {
+      fireEvent.click(bloco);
+      const painel = await screen.findByRole('dialog', { name: 'Agendamento' });
+      expect(within(painel).queryByRole('button', { name: /^Registrar atendimento:/ })).toBeNull();
+      expect(within(painel).queryByRole('button', { name: /^Corrigir consumo:/ })).toBeNull();
+      fireEvent.click(within(painel).getByRole('button', { name: 'Fechar' }));
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    }
   });
 
   it.each([
@@ -868,8 +883,9 @@ describe('correção do consumo na agenda (F5.2b, ADR-059)', () => {
         'GET /api/clinics/packages': { body: [] },
       });
       renderizar(<ClinicsAgendaPage />, `/clinics/agenda?dia=${DIA}`);
-      expect(await screen.findByText('Paciente Fictícia')).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: /^Corrigir consumo:/ })).toBeNull();
+      const painel = await abrirAgendamento();
+      expect(within(painel).getByText('Atendido')).toBeInTheDocument();
+      expect(within(painel).queryByRole('button', { name: /^Corrigir consumo:/ })).toBeNull();
     },
   );
 });

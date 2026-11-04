@@ -850,6 +850,12 @@ const agenda: Record<string, Rota> = {
 };
 const QUEM = '09:00 Paciente Fictícia (Ana Fictícia)';
 
+/** Abre o agendamento pelo bloco da grade: as ações moram no painel (ADR-062). */
+async function abrirAgendamento() {
+  fireEvent.click(await screen.findByRole('button', { name: `Abrir agendamento: ${QUEM}` }));
+  return screen.findByRole('dialog', { name: 'Agendamento' });
+}
+
 describe('vínculo do agendamento com a oportunidade', () => {
   it('troca o vínculo sem efeito; a oportunidade de outro contato é dita, não escondida', async () => {
     const chamadas = mockApi({
@@ -877,7 +883,9 @@ describe('vínculo do agendamento com a oportunidade', () => {
       },
     });
     renderizar(<ClinicsAgendaPage />, '/clinics/agenda?dia=2030-11-04');
-    fireEvent.click(await screen.findByRole('button', { name: `Oportunidade: ${QUEM}` }));
+    fireEvent.click(
+      within(await abrirAgendamento()).getByRole('button', { name: `Oportunidade: ${QUEM}` }),
+    );
     const painel = await screen.findByTestId('vinculo-com-oportunidade');
     expect(within(painel).getByText('Oportunidade de outro contato')).toBeInTheDocument();
     expect(within(painel).getByRole('note')).toHaveTextContent('Vínculo sem efeito');
@@ -902,7 +910,9 @@ describe('vínculo do agendamento com a oportunidade', () => {
       },
     });
     renderizar(<ClinicsAgendaPage />, '/clinics/agenda?dia=2030-11-04');
-    fireEvent.click(await screen.findByRole('button', { name: `Oportunidade: ${QUEM}` }));
+    fireEvent.click(
+      within(await abrirAgendamento()).getByRole('button', { name: `Oportunidade: ${QUEM}` }),
+    );
     const painel = await screen.findByTestId('vinculo-com-oportunidade');
     expect(within(painel).getByText('Nenhuma.')).toBeInTheDocument();
     expect(
@@ -919,8 +929,9 @@ describe('vínculo do agendamento com a oportunidade', () => {
       'GET /api/clinics/appointments': { body: [agendamento()] },
     });
     renderizar(<ClinicsAgendaPage />, '/clinics/agenda?dia=2030-11-04');
-    await screen.findByRole('article', { name: `Agendamento ${QUEM}` });
-    expect(screen.queryByRole('button', { name: `Oportunidade: ${QUEM}` })).toBeNull();
+    const painel = await abrirAgendamento();
+    expect(within(painel).getByText('Confirmado')).toBeInTheDocument();
+    expect(within(painel).queryByRole('button', { name: `Oportunidade: ${QUEM}` })).toBeNull();
     await waitFor(() => expect(chamadas.some((c) => c.chave.includes('/deal'))).toBe(false));
   });
 });

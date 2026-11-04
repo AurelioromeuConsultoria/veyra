@@ -266,7 +266,12 @@ test.describe('Clinics — envios, oportunidade e métricas', () => {
 
       await page.goto(`/clinics/agenda?dia=${c.amanha}`);
       const quem = `10:00 ${c.paciente} (${c.profissional})`;
-      await page.getByRole('button', { name: `Oportunidade: ${quem}` }).click();
+      // o bloco da grade abre o painel do agendamento; as ações moram nele (ADR-062)
+      await page.getByRole('button', { name: `Abrir agendamento: ${quem}` }).click();
+      await page
+        .getByRole('dialog', { name: 'Agendamento' })
+        .getByRole('button', { name: `Oportunidade: ${quem}` })
+        .click();
       const painel = page.getByTestId('vinculo-com-oportunidade');
       await expect(painel).toContainText('Nenhuma.');
       await painel.getByLabel('Vincular a').selectOption(dealId);
