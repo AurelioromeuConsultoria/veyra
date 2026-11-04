@@ -18,11 +18,13 @@ export function PageHeader({
   children?: ReactNode;
 }) {
   return (
-    <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-surface px-6 py-3.5">
+    <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-3 border-b border-border bg-surface px-7 py-5">
       <div className="mr-auto min-w-0">
-        {eyebrow ? <p className="eyebrow mb-1 text-muted-fg">{eyebrow}</p> : null}
-        <h1 className="truncate text-display-md">{title}</h1>
-        {meta ? <div className="mt-0.5 text-data text-muted-fg">{meta}</div> : null}
+        {eyebrow ? <p className="mb-1 text-[13px] text-muted-fg">{eyebrow}</p> : null}
+        <h1 className="truncate font-display text-[26px] font-semibold leading-tight tracking-[-0.02em]">
+          {title}
+        </h1>
+        {meta ? <div className="mt-1 text-[14px] text-muted-fg">{meta}</div> : null}
       </div>
       {children}
     </header>
@@ -31,7 +33,7 @@ export function PageHeader({
 
 /** Área de trabalho: fundo mineral com respiro; painéis flutuam sobre ele. */
 export function PageBody({ className, children }: { className?: string; children: ReactNode }) {
-  return <div className={clsx('min-h-0 flex-1 overflow-auto p-6', className)}>{children}</div>;
+  return <div className={clsx('min-h-0 flex-1 overflow-auto p-7', className)}>{children}</div>;
 }
 
 /**
@@ -63,9 +65,9 @@ export function PanelHeader({
   children?: ReactNode;
 }) {
   return (
-    <header className="flex items-center gap-3 border-b border-border px-4 py-2.5">
-      <h2 className="eyebrow text-muted-fg">{title}</h2>
-      {meta ? <span className="num text-data-sm text-muted-fg">{meta}</span> : null}
+    <header className="flex flex-wrap items-center gap-3 border-b border-border px-5 py-3.5">
+      <h2 className="font-display text-[17px] font-semibold tracking-[-0.01em]">{title}</h2>
+      {meta ? <span className="text-[13px] text-muted-fg">{meta}</span> : null}
       {children ? <div className="ml-auto flex items-center gap-2">{children}</div> : null}
     </header>
   );
@@ -82,10 +84,10 @@ export function EmptyState({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex flex-col items-center gap-2 px-6 py-14 text-center">
-      <span aria-hidden className="h-px w-10 bg-border-strong" />
-      <p className="text-body-sm font-medium">{title}</p>
-      {hint ? <p className="max-w-sm text-data text-muted-fg">{hint}</p> : null}
+    <div className="flex flex-col items-center gap-2 px-6 py-12 text-center">
+      <span aria-hidden className="mb-1 h-10 w-10 rounded-full bg-surface-2" />
+      <p className="text-[15px] font-semibold">{title}</p>
+      {hint ? <p className="max-w-sm text-[13.5px] text-muted-fg">{hint}</p> : null}
       {action ? <div className="mt-1">{action}</div> : null}
     </div>
   );

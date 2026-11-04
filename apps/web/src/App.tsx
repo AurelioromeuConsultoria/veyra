@@ -23,11 +23,25 @@ const AcceptInvitePage = lazy(() =>
  */
 const MANIFESTOS: readonly ExperienceManifest[] = [crmExperience, ...EXPERIENCIAS_DE_EXTENSAO];
 
+/**
+ * A carga nunca ocupa a tela inteira com texto (ADR-062): a MOLDURA aparece
+ * logo — a lateral escura e a faixa — e o conteúdo chega dentro dela. O texto
+ * "Carregando…" fica para o leitor de tela.
+ */
 function Loading() {
   return (
-    <main className="flex min-h-screen items-center justify-center text-sm text-muted-fg">
-      Carregando…
-    </main>
+    <div className="flex h-screen" aria-busy="true">
+      <div aria-hidden className="w-60 shrink-0 bg-frame" />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div aria-hidden className="h-15 shrink-0 border-b border-border bg-surface" />
+        <main className="flex-1 p-7">
+          <p className="sr-only" role="status">
+            Carregando…
+          </p>
+          <div aria-hidden className="h-7 w-56 animate-pulse rounded-control bg-surface-2" />
+        </main>
+      </div>
+    </div>
   );
 }
 

@@ -15,6 +15,7 @@ import { useTheme } from '../../lib/theme';
 import { GlobalSearch } from './GlobalSearch';
 import { NotificationBell } from './NotificationBell';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
+import { Avatar } from '../ui/avatar';
 
 /**
  * MOLDURA do produto: a faixa que não muda enquanto o conteúdo muda.
@@ -41,14 +42,6 @@ function Slash() {
       /
     </span>
   );
-}
-
-function initials(name: string | undefined) {
-  if (!name) return '—';
-  const parts = name.trim().split(/\s+/);
-  return (
-    (parts[0]?.[0] ?? '') + (parts.length > 1 ? (parts.at(-1)?.[0] ?? '') : '')
-  ).toUpperCase();
 }
 
 /** ⌘ no Mac, Ctrl no resto — o atalho impresso tem de ser o atalho real. */
@@ -115,7 +108,7 @@ export function AppHeader({ manifestos }: { manifestos: readonly ExperienceManif
   }, []);
 
   return (
-    <header className="flex h-13 shrink-0 items-center gap-3 border-b border-border bg-surface px-4">
+    <header className="flex h-15 shrink-0 items-center gap-3 border-b border-border bg-surface px-6">
       {/* 1 — rastro */}
       {/*
         Três degraus, e o do meio é o que justifica o rastro existir numa tela
@@ -131,23 +124,25 @@ export function AppHeader({ manifestos }: { manifestos: readonly ExperienceManif
             {section.group ? (
               <>
                 <Slash />
-                <span className="eyebrow truncate text-muted-fg/80">{section.group}</span>
+                <span className="truncate text-[13px] text-muted-fg">{section.group}</span>
               </>
             ) : null}
             <Slash />
-            <span className="eyebrow truncate text-muted-fg">{section.item.label}</span>
+            <span className="truncate text-[13px] font-medium text-foreground">
+              {section.item.label}
+            </span>
           </>
         ) : null}
       </nav>
 
       {/* 2 — busca */}
-      <div className="mx-auto hidden w-full max-w-sm px-4 sm:block">
+      <div className="mx-auto hidden w-full max-w-md px-4 sm:block">
         <button
           type="button"
           onClick={() => setSearchOpen(true)}
-          className="group flex h-8 w-full items-center gap-2 rounded-control border border-border bg-surface-2/50 px-2.5 text-muted-fg transition-colors duration-150 hover:border-border-strong hover:bg-surface-2"
+          className="group flex h-9.5 w-full items-center gap-2.5 rounded-[9px] border border-border bg-surface-2 px-3 text-muted-fg transition-colors duration-150 hover:border-border-strong"
         >
-          <Search size={14} aria-hidden className="shrink-0" />
+          <Search size={15} aria-hidden className="shrink-0" />
           <span className="truncate text-body-sm">
             {singulares.length > 0 ? `Buscar ${singulares.join(', ')} ou seção` : 'Buscar seção'}
           </span>
@@ -181,12 +176,7 @@ export function AppHeader({ manifestos }: { manifestos: readonly ExperienceManif
 
         <span aria-hidden className="mx-1.5 h-5 w-px bg-border" />
 
-        <span
-          aria-hidden
-          className="num flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-surface-2 text-data-sm font-medium text-muted-fg"
-        >
-          {initials(user?.name)}
-        </span>
+        <Avatar nome={user?.name} chave={user?.id} tamanho="sm" className="h-8 w-8" />
         <span className="hidden min-w-0 leading-tight md:block">
           <span className="block truncate text-data font-medium">{user?.name}</span>
           <span className="block truncate text-data-sm text-muted-fg">

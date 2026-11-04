@@ -1,11 +1,12 @@
 import { clsx } from 'clsx';
 import { ChevronRight } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { secaoDeConfiguracao, useExperience, type ExperienceManifest } from '../../lib/experience';
 import { itemAlcancavel, useNavGroups, type NavGroup, type NavItem } from '../../lib/nav';
 import { useSession } from '../../lib/session';
 import { AppHeader } from './AppHeader';
+import { Marca } from './Marca';
 
 /**
  * Duas molduras, dois papéis: a LATERAL diz o que existe (o menu do produto da
@@ -29,15 +30,13 @@ export function AppShell({ manifestos }: { manifestos: readonly ExperienceManife
 
   return (
     <div className="flex h-screen">
-      <aside className="flex w-56 shrink-0 flex-col border-r border-border bg-surface">
-        <div className="flex h-13 shrink-0 items-center border-b border-border px-4">
-          {/* wordmark: o acento aparece aqui e em pouco mais (parcimônia) */}
-          <span className="block text-display-sm leading-none text-accent">
-            {experiencia.marca}
-          </span>
+      {/* a MOLDURA (ADR-062): verde-abissal profundo, com a marca real */}
+      <aside className="flex w-60 shrink-0 flex-col bg-frame text-frame-fg">
+        <div className="flex h-15 shrink-0 items-center px-5">
+          <Marca nome={experiencia.marca} subtitulo={user?.activeMembership?.workspaceName} />
         </div>
 
-        <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-3" aria-label="Principal">
+        <nav className="min-h-0 flex-1 overflow-y-auto px-3 pb-4" aria-label="Principal">
           {groups.map((group) => {
             const items = group.items.filter((item) => itemAlcancavel(user, item));
             if (items.length === 0) return null;
@@ -50,9 +49,11 @@ export function AppShell({ manifestos }: { manifestos: readonly ExperienceManife
               );
             }
             return (
-              <div key={group.label} className="mb-1 mt-3 first:mt-2.5">
+              <div key={group.label} className="mb-1 mt-4 first:mt-2">
                 {group.semRotulo || group.recolhivel ? null : (
-                  <p className="eyebrow px-2.5 pb-1.5 text-muted-fg/80">{group.label}</p>
+                  <p className="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-[0.06em] text-frame-label">
+                    {group.label}
+                  </p>
                 )}
                 {items.map((item) => (
                   <ItemDoMenu key={item.to} item={item} marcado={marcado(item)} />
@@ -75,7 +76,19 @@ export function AppShell({ manifestos }: { manifestos: readonly ExperienceManife
           </p>
         ) : null}
         <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <Outlet />
+          {/* a página carrega DENTRO da moldura, nunca no lugar dela (ADR-062) */}
+          <Suspense
+            fallback={
+              <div className="p-7" aria-busy="true">
+                <p className="sr-only" role="status">
+                  Carregando…
+                </p>
+                <div aria-hidden className="h-7 w-56 animate-pulse rounded-control bg-surface-2" />
+              </div>
+            }
+          >
+            <Outlet />
+          </Suspense>
         </main>
       </div>
     </div>
@@ -96,31 +109,15 @@ function ItemDoMenu({
       end={to === '/' || to === '/settings'}
       className={({ isActive: noCaminho }) =>
         clsx(
-          'relative flex items-center gap-2.5 rounded-control py-1.5 pl-3 pr-2.5 text-body-sm transition-colors duration-150',
+          'relative flex items-center gap-3 rounded-[9px] px-3 py-2 text-[14px] transition-colors duration-150',
           noCaminho || marcado
-            ? 'bg-surface-2 font-medium text-foreground'
-            : 'text-muted-fg hover:bg-surface-2/70 hover:text-foreground',
+            ? 'bg-frame-2 font-semibold text-white'
+            : 'text-frame-fg hover:bg-frame-3 hover:text-white',
         )
       }
     >
-      {({ isActive: noCaminho }) => (
-        <>
-          {/* marcador ativo: a segunda e última aparição do acento */}
-          <span
-            aria-hidden
-            className={clsx(
-              'absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full',
-              noCaminho || marcado ? 'bg-accent' : 'bg-transparent',
-            )}
-          />
-          <Icon
-            size={15}
-            strokeWidth={1.75}
-            className={noCaminho || marcado ? 'text-accent' : undefined}
-          />
-          {label}
-        </>
-      )}
+      <Icon size={17} strokeWidth={1.8} aria-hidden />
+      {label}
     </NavLink>
   );
 }
@@ -155,15 +152,12 @@ function GrupoRecolhivel({
         onClick={() => setAberto((v) => !v)}
         aria-expanded={aberto}
         className={clsx(
-          'relative flex w-full items-center gap-2 rounded-control py-1.5 pl-3 pr-2.5 text-left text-body-sm transition-colors duration-150 hover:bg-surface-2/70 hover:text-foreground',
-          ativo && !aberto ? 'font-medium text-foreground' : 'text-muted-fg',
+          'relative mt-2 flex w-full items-center gap-2 rounded-[9px] px-3 py-1.5 text-left text-[11px] font-semibold uppercase tracking-[0.06em] transition-colors duration-150 hover:text-white',
+          ativo && !aberto ? 'text-white' : 'text-frame-label',
         )}
       >
         {ativo && !aberto ? (
-          <span
-            aria-hidden
-            className="absolute left-0 top-1/2 h-4 w-0.5 -translate-y-1/2 rounded-full bg-accent"
-          />
+          <span aria-hidden className="absolute right-3 h-1.5 w-1.5 rounded-full bg-frame-fg" />
         ) : null}
         <ChevronRight
           size={13}
@@ -173,7 +167,7 @@ function GrupoRecolhivel({
         {group.label}
       </button>
       {aberto ? (
-        <div className="ml-3">
+        <div className="mt-0.5">
           {items.map((item) => (
             <ItemDoMenu key={item.to} item={item} marcado={marcado(item)} />
           ))}

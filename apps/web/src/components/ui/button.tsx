@@ -7,9 +7,8 @@ type Size = 'sm' | 'md' | 'icon';
 const variants: Record<Variant, string> = {
   // acento é a ÚNICA cor de marca — gasta aqui e em pouco mais
   primary:
-    'border border-accent bg-accent text-accent-fg shadow-raised hover:bg-accent-hover hover:border-accent-hover active:bg-accent-active',
-  secondary:
-    'border border-border bg-surface text-foreground hover:bg-surface-2 hover:border-border-strong',
+    'border border-accent bg-accent font-semibold text-accent-fg shadow-raised hover:bg-accent-hover hover:border-accent-hover active:bg-accent-active',
+  secondary: 'border border-border-strong bg-surface text-foreground hover:bg-surface-2',
   ghost:
     'border border-transparent bg-transparent text-muted-fg hover:bg-surface-2 hover:text-foreground',
   danger:
@@ -19,9 +18,9 @@ const variants: Record<Variant, string> = {
 };
 
 const sizes: Record<Size, string> = {
-  sm: 'h-8 gap-1.5 px-3 text-body-sm',
-  md: 'h-9 gap-2 px-4 text-body-sm',
-  icon: 'h-8 w-8 justify-center',
+  sm: 'h-8.5 gap-1.5 px-3 text-[13px]',
+  md: 'h-10 gap-2 px-4 text-[14px]',
+  icon: 'h-9 w-9 justify-center',
 };
 
 export function Button({

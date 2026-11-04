@@ -128,7 +128,7 @@ describe('Clinics no web — o menu é da experiência; a página só consulta c
     renderizar(<AppShell manifestos={[crmExperience, clinicsExperience]} />, '/clinics/catalog');
     const configuracoes = await lateral().findByRole('link', { name: 'Configurações' });
     expect(configuracoes).toHaveAttribute('href', '/settings');
-    expect(configuracoes.className).toMatch(/font-medium/);
+    expect(configuracoes.className).toMatch(/font-semibold/);
     expect(lateral().queryByRole('link', { name: 'Catálogo' })).toBeNull();
     // o Hoje é o da clínica; nada do CRM que não é dela
     expect(lateral().getByRole('link', { name: 'Hoje' })).toHaveAttribute('href', '/clinics/today');

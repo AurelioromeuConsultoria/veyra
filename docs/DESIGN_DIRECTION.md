@@ -49,6 +49,21 @@ Fontes instaladas por npm (`@fontsource*`), servidas pelo próprio bundle: offli
 
 Regra: os três papéis não se substituem. Número de dinheiro nunca em display; título nunca em mono; eyebrow é dado (mono, caixa alta, `letter-spacing` 0,12em), não título.
 
+## 3.1 Revisão de 2026-11 (ADR-062)
+
+A direção "Mineral" foi revista a pedido do usuário. As regras abaixo **prevalecem** sobre as seções seguintes onde diferirem:
+
+- **Moldura escura:** a barra lateral é verde-abissal profundo (`--frame` `#15302D`), com o logo real (variante noturna) e o nome "veyra clinics". O conteúdo fica em superfícies brancas sobre fundo de pedra.
+- **Paleta clara:**
+  - fundo `#F2F0EB`, superfície `#FFFFFF`, superfície-2 `#F7F5F1`;
+  - hairline `#E6E2DA`, divisor `#D9D3C7`;
+  - texto `#1A1F1D`, secundário `#5B625C`;
+  - acento `#1C5A56`, sem mudança.
+- **Estados semânticos** (`--state-*`, cada um em par fundo e texto): a confirmar, confirmado, chegou, atendido e falta ou vencido. A mesma cor significa o mesmo estado em todo o app.
+- **Mono só para dado:** hora, data, número e identificador. Rótulo, cabeçalho de tabela e título de seção ficam em sans. O `eyebrow` mono em caixa alta não é mais rótulo.
+- **Avatar com iniciais,** com cor estável por pessoa.
+- **Cada tela abre com a próxima ação.** A carga nunca ocupa a tela inteira: a moldura aparece primeiro.
+
 ## 4. Cor — paleta fechada e disciplina
 
 Implementação: tokens CSS-first (Tailwind v4 `@theme`), claro em `:root`, dark por classe `.dark` (`apps/web/src/index.css`). A paleta abaixo é a **definitiva** — mudança de direção exige ADR.

@@ -10584,3 +10584,62 @@ O workspace que nunca teve o Clinics fica sempre no modo livre, com o comportame
     8. **o texto das conversas:** o adendo 5 manteve o texto visível. Quem lê conversas sem a agenda (o Guest padrão, por exemplo) lê o envio do vertical, como a confirmação com data e hora, e a mensagem do próprio paciente. As conversas estão entre as superfícies que revelam a classificação (adendo 3, item 9);
     9. **a condição para a política de exclusão do B3:** excluir um paciente apagaria em cascata as atividades do tempo dele, e os títulos antigos voltariam em claro na trilha;
     10. a validação operacional e jurídica do modelo de acesso, junto com o B3 (a política de exclusão de pacientes) e o B4.
+
+## ADR-062 — Redesenho visual e de UX: "Mineral" com moldura, estados e próxima ação (2026-11-04)
+
+**Status:** aprovado pelo usuário em 2026-11-04, a partir do canvas de design "Veyra Clinics — redesenho" (10 telas: Hoje, Agenda, Ficha do paciente, Conversas, Pacientes, Funil, Retornos, Indicadores, Configurações e Entrar).
+
+**Contexto.** O usuário achou o app "feio e simples" e pediu revisão de UX. O diagnóstico foi feito nas telas reais do `demo`:
+
+- bege sobre bege: a barra lateral, o fundo e os cartões quase não se separam;
+- rótulo mono em caixa alta em toda parte, que faz a tela parecer um terminal e tira o destaque dos números;
+- cartões todos iguais, muito vazio sem função e nenhuma próxima ação clara;
+- a agenda é uma lista, sem grade de horários;
+- a ficha do paciente é uma pilha de tabelas, sem cabeçalho da pessoa, e com o formulário de consentimento aberto no meio;
+- a carga inicial de cada tela ocupa a tela inteira com "Carregando…".
+
+**Decisão.** Evoluir a direção "Mineral" (`DESIGN_DIRECTION.md`), sem trocar a identidade:
+
+1. **Moldura:** a barra lateral passa a ser verde-abissal profundo (`#15302D`), com o logo real (o ladrilho do "V" assimétrico, na variante noturna da marca, e "veyra clinics" em Familjen Grotesk). O conteúdo fica em superfícies brancas sobre fundo de pedra.
+2. **Paleta clara revista:**
+   - fundo `#F2F0EB`, superfície `#FFFFFF`, superfície-2 `#F7F5F1`;
+   - hairline `#E6E2DA`, divisor `#D9D3C7`;
+   - texto `#1A1F1D`, secundário `#5B625C`;
+   - o acento `#1C5A56` continua a única cor de marca.
+3. **Estados com cor semântica fixa,** em par fundo e texto, usados em chips, blocos de agenda e marcadores:
+   - a confirmar: âmbar;
+   - confirmado: verde;
+   - chegou: azul;
+   - atendido: cinza;
+   - falta ou vencido: vermelho.
+4. **Tipografia:** as mesmas três famílias. O mono fica SÓ para hora, data, número e identificador; rótulos, cabeçalhos de tabela e títulos de seção voltam a ser texto em sans. O `eyebrow` mono em caixa alta deixa de ser usado como rótulo.
+5. **Pessoas com rosto:** avatar com iniciais, com cor estável por pessoa, nas listas, na agenda, nas conversas e na ficha.
+6. **Cada tela abre com a próxima ação:**
+   - **Hoje:** saudação e frase do que pede você, resumo e a agenda do dia com a ação da linha;
+   - **Agenda:** grade por profissional;
+   - **Ficha:** cabeçalho da pessoa com as ações e abas;
+   - **Conversas:** três colunas, com o contexto do paciente;
+   - **Listas, filas, quadros e cadastros:** seguem os padrões desenhados.
+7. **Carga:** a moldura aparece logo, e o conteúdo carrega dentro dela. Nada de tela cheia com "Carregando…".
+
+**Implementação por entregas:**
+
+1. a base (tokens, moldura, cabeçalho, botões, chips, avatares, carga);
+2. Hoje e Agenda;
+3. Ficha;
+4. Conversas;
+5. as demais telas nos padrões.
+
+O que o canvas mostra como conceito, sem suporte no produto, NÃO entra sem decisão própria: a sugestão da IA "Remarcar" na conversa, a visão "Semana", o status de consentimento no cabeçalho da ficha, a "Origem" do contato e os filtros "Minhas" e "A identificar".
+
+**Alternativas.**
+
+- **Manter a paleta e só ajustar espaçamentos:** rejeitada, porque o problema principal é a falta de separação de planos e de hierarquia.
+- **Trocar a identidade:** rejeitada, porque a marca e as fontes são deliberadas e o problema não é a identidade.
+- **Barra lateral clara:** rejeitada, porque mantém o bege sobre bege.
+
+**Consequências.**
+
+- **Testes:** os testes de interface e os e2e que dependem de textos ou rótulos mudam junto com cada tela.
+- **Modo escuro:** mantém a paleta noturna própria. A moldura no escuro usa o mesmo verde mais profundo.
+- **Documentação:** o `DESIGN_DIRECTION.md` é atualizado no mesmo commit.

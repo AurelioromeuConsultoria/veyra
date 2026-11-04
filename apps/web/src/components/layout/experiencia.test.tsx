@@ -565,7 +565,7 @@ describe('as configurações do produto', () => {
     const rastro = within(await screen.findByRole('navigation', { name: 'Onde você está' }));
     expect(await rastro.findByText('Campos')).toBeInTheDocument();
     expect(rastro.getByText('Configurações')).toBeInTheDocument();
-    expect(menu.getByRole('link', { name: /^Configurações$/ }).className).toMatch(/font-medium/);
+    expect(menu.getByRole('link', { name: /^Configurações$/ }).className).toMatch(/font-semibold/);
   });
 
   it('no CRM, o atalho do cabeçalho leva à página (o menu dele não tem a entrada)', async () => {

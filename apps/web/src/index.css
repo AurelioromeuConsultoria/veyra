@@ -54,8 +54,8 @@
   --text-data-xs--line-height: 1.2;
 
   /* Forma: raio contido; nada de pill generalizado (§5) */
-  --radius-card: 0.625rem;
-  --radius-control: 0.4375rem;
+  --radius-card: 0.875rem; /* 14px — ADR-062 */
+  --radius-control: 0.5625rem; /* 9px */
 
   /* Profundidade: hairline é a regra; sombra só em camada flutuante */
   --shadow-float: 0 18px 40px -24px rgb(29 35 33 / 0.45), 0 2px 8px -4px rgb(29 35 33 / 0.16);
@@ -69,13 +69,13 @@
  * Contraste medido: texto normal ≥ 4.5:1, denso ≥ 6:1 sobre background.
  */
 :root {
-  --background: #f6f3ed; /* calcário quente — nunca branco puro */
-  --surface: #fdfcfa; /* cartão/painel */
-  --surface-2: #ede8de; /* hover, campo, trilho */
-  --border: #e1dbcf; /* hairline */
-  --border-strong: #cfc7b6; /* divisor deliberado, trilho de scroll */
-  --foreground: #1d2321; /* grafite profundo */
-  --muted-fg: #4f564f; /* secundário — 6.9:1 no fundo */
+  --background: #f2f0eb; /* pedra clara — o fundo sobre o qual as superfícies brancas se destacam (ADR-062) */
+  --surface: #ffffff; /* cartão/painel: branco, a separação de plano vem do fundo */
+  --surface-2: #f7f5f1; /* hover, campo, trilho */
+  --border: #e6e2da; /* hairline */
+  --border-strong: #d9d3c7; /* divisor deliberado, contorno de controle */
+  --foreground: #1a1f1d; /* grafite profundo */
+  --muted-fg: #5b625c; /* secundário — 5.6:1 no fundo, 6.2:1 no branco */
 
   --accent: #1c5a56; /* verde-abissal: a ÚNICA cor de marca */
   --accent-hover: #174b48;
@@ -89,7 +89,27 @@
   --ai: #8f4a22; /* cobre queimado: anotação à margem, não clichê violeta */
 
   --ring: var(--accent);
-  --scrollbar: #cfc7b6;
+  --scrollbar: #d9d3c7;
+
+  /* Moldura (ADR-062): a barra lateral em verde-abissal profundo */
+  --frame: #15302d;
+  --frame-2: #234a45; /* item ativo */
+  --frame-3: #1d3b37; /* hover, cartão da conta */
+  --frame-fg: #dce7e3;
+  --frame-muted: #9db7b0;
+  --frame-label: #7fa098;
+
+  /* Estados (ADR-062): a mesma cor diz o mesmo estado em todo o app */
+  --state-pending: #fbefd8;
+  --state-pending-fg: #8a5508;
+  --state-confirmed: #e3f1e8;
+  --state-confirmed-fg: #21653f;
+  --state-arrived: #e2ebf8;
+  --state-arrived-fg: #1f4f8f;
+  --state-done: #eceae5;
+  --state-done-fg: #3e4540;
+  --state-missed: #f9e5e0;
+  --state-missed-fg: #8f2f1f;
 }
 
 /* ── Paleta noturna — grafite AZULADO, não preto (§1) ─────────────────────
@@ -122,6 +142,24 @@
 
   --ring: var(--accent);
   --scrollbar: #4a5867;
+
+  --frame: #0a1a18;
+  --frame-2: #17322f;
+  --frame-3: #112623;
+  --frame-fg: #d5e2de;
+  --frame-muted: #94aea7;
+  --frame-label: #7c9b93;
+
+  --state-pending: #3a2c12;
+  --state-pending-fg: #f0c27a;
+  --state-confirmed: #15301f;
+  --state-confirmed-fg: #86d4a5;
+  --state-arrived: #142a45;
+  --state-arrived-fg: #97c2ec;
+  --state-done: #26323f;
+  --state-done-fg: #c5ced9;
+  --state-missed: #3d1c18;
+  --state-missed-fg: #f3a195;
   --shadow-float: 0 18px 40px -24px rgb(0 0 0 / 0.7), 0 2px 8px -4px rgb(0 0 0 / 0.45);
   --shadow-raised: 0 1px 2px rgb(0 0 0 / 0.3);
 }
@@ -143,6 +181,22 @@
   --color-warning: var(--warning);
   --color-info: var(--info);
   --color-ai: var(--ai);
+  --color-frame: var(--frame);
+  --color-frame-2: var(--frame-2);
+  --color-frame-3: var(--frame-3);
+  --color-frame-fg: var(--frame-fg);
+  --color-frame-muted: var(--frame-muted);
+  --color-frame-label: var(--frame-label);
+  --color-state-pending: var(--state-pending);
+  --color-state-pending-fg: var(--state-pending-fg);
+  --color-state-confirmed: var(--state-confirmed);
+  --color-state-confirmed-fg: var(--state-confirmed-fg);
+  --color-state-arrived: var(--state-arrived);
+  --color-state-arrived-fg: var(--state-arrived-fg);
+  --color-state-done: var(--state-done);
+  --color-state-done-fg: var(--state-done-fg);
+  --color-state-missed: var(--state-missed);
+  --color-state-missed-fg: var(--state-missed-fg);
 }
 
 @layer base {
@@ -215,14 +269,17 @@
 
 /* ── Utilitários da identidade ────────────────────────────────────────────*/
 
-/** Eyebrow/label: mono em caixa alta — papel de DADO, nunca de título. */
+/**
+ * Rótulo (cabeçalho de tabela, legenda de campo): sans, pequeno, firme.
+ * Desde o ADR-062 o mono em caixa alta deixou de ser rótulo — ele fazia a tela
+ * parecer um terminal. O mono fica para hora, data, número e identificador.
+ */
 @utility eyebrow {
-  font-family: var(--font-mono);
-  font-size: var(--text-data-xs);
-  font-weight: 500;
-  line-height: 1.2;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
 }
 
 /** Qualquer número que se compara na vertical. */
