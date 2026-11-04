@@ -71,7 +71,10 @@ const hhmm = (minuto: number) =>
 
 /**
  * Horários LIVRES de um profissional num dia LOCAL da unidade, em ordem de
- * início: dentro do expediente (`encaixeNoExpediente`) e sem sobrepor os
+ * INSTANTE de início (não de hora local): na hora que se repete no fim do
+ * horário de verão, todas as de antes da mudança vêm antes de todas as de
+ * depois, e intervalos de expediente fora de ordem saem ordenados. Só entram
+ * os que cabem no expediente (`encaixeNoExpediente`) e não sobrepõem os
  * agendamentos que ocupam o horário (`[início, fim)`, como o EXCLUDE). Os
  * inícios seguem a grade do passo a partir da meia-noite local: um expediente
  * às 08:07 começa a oferecer em 08:15 (o contrato só aceita passos de 5 min).
@@ -136,6 +139,7 @@ export function horariosLivres(entrada: {
       });
     });
   }
-  // a hora que se repete fica em ordem de INSTANTE (o "depois" vem depois)
+  // a ordem é por INSTANTE: a hora repetida inteira de antes da mudança e só
+  // depois a de depois (ADR-062 adendo 1, parte B)
   return opcoes.sort((a, b) => a.inicio.getTime() - b.inicio.getTime());
 }

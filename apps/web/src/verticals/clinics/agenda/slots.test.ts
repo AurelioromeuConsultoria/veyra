@@ -64,16 +64,64 @@ describe('horários livres — a mesma regra do servidor', () => {
     }).map((o) => o.hora);
     expect(pulo).not.toContain('02:00');
     expect(pulo).not.toContain('02:30');
+    // a LISTA COMPLETA, em ordem de INSTANTE: a hora repetida inteira de
+    // -04:00 primeiro (01:00 a 01:45) e depois a de -05:00
     const repete = horariosLivres({
       data: '2025-11-02',
       timezone: 'America/New_York',
       duracaoMin: 30,
       intervalos: madrugada,
       ocupados: [],
-    }).filter((o) => o.hora === '01:30');
-    expect(repete.map((o) => [o.utcOffset, o.rotulo])).toEqual([
-      ['-04:00', '01:30 (antes da mudança de horário, -04:00)'],
-      ['-05:00', '01:30 (depois da mudança de horário, -05:00)'],
+    });
+    expect(repete.map((o) => [o.valor, o.inicio.toISOString()])).toEqual([
+      ['00:00|', '2025-11-02T04:00:00.000Z'],
+      ['00:15|', '2025-11-02T04:15:00.000Z'],
+      ['00:30|', '2025-11-02T04:30:00.000Z'],
+      ['00:45|', '2025-11-02T04:45:00.000Z'],
+      ['01:00|-04:00', '2025-11-02T05:00:00.000Z'],
+      ['01:15|-04:00', '2025-11-02T05:15:00.000Z'],
+      ['01:30|-04:00', '2025-11-02T05:30:00.000Z'],
+      ['01:45|-04:00', '2025-11-02T05:45:00.000Z'],
+      ['01:00|-05:00', '2025-11-02T06:00:00.000Z'],
+      ['01:15|-05:00', '2025-11-02T06:15:00.000Z'],
+      ['01:30|-05:00', '2025-11-02T06:30:00.000Z'],
+      ['01:45|-05:00', '2025-11-02T06:45:00.000Z'],
+      ['02:00|', '2025-11-02T07:00:00.000Z'],
+      ['02:15|', '2025-11-02T07:15:00.000Z'],
+      ['02:30|', '2025-11-02T07:30:00.000Z'],
+      ['02:45|', '2025-11-02T07:45:00.000Z'],
+      ['03:00|', '2025-11-02T08:00:00.000Z'],
+      ['03:15|', '2025-11-02T08:15:00.000Z'],
+      ['03:30|', '2025-11-02T08:30:00.000Z'],
+    ]);
+    expect(repete.filter((o) => o.hora === '01:30').map((o) => o.rotulo)).toEqual([
+      '01:30 (antes da mudança de horário, -04:00)',
+      '01:30 (depois da mudança de horário, -05:00)',
+    ]);
+  });
+
+  it('intervalos de expediente fora de ordem: a lista sai em ordem de instante', () => {
+    const opcoes = horariosLivres({
+      data: '2030-11-04',
+      timezone: 'America/Sao_Paulo',
+      duracaoMin: 60,
+      intervalos: [
+        { weekday: 1, startMinute: 840, endMinute: 960 }, // 14:00–16:00
+        { weekday: 1, startMinute: 480, endMinute: 600 }, // 08:00–10:00
+      ],
+      ocupados: [],
+    });
+    expect(opcoes.map((o) => o.hora)).toEqual([
+      '08:00',
+      '08:15',
+      '08:30',
+      '08:45',
+      '09:00',
+      '14:00',
+      '14:15',
+      '14:30',
+      '14:45',
+      '15:00',
     ]);
   });
 });

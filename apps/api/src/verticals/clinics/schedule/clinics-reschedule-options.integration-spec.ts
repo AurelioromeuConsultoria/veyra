@@ -240,6 +240,29 @@ describe('Clinics — opções de remarcação (integração, ADR-062 adendo 1, 
     }
   });
 
+  it('o MESMO profissional ocupado em OUTRA unidade também bloqueia (o EXCLUDE não olha a unidade)', async () => {
+    const id = await agendar({});
+    const unitB = (
+      await prisma.raw.clinicsUnit.create({
+        data: { workspaceId: wsA.workspaceId, name: 'Unidade Fictícia B' },
+      })
+    ).id;
+    // a Ana com outra paciente na unidade B, segunda 10:00–11:00
+    await noBanco(sp(SEGUNDA, '10:00'), 60, { patientId: outro, unitId: unitB });
+    agoraEm(sp(SEGUNDA, '09:10'));
+    const dto = await opcoes(id);
+    expect(dto.unitId).toBe(unitA);
+    // 09:15 a 10:45 sobreporiam o horário da unidade B
+    expect(inicios(dto)).toEqual([`${SEGUNDA} 11:00`, `${SEGUNDA} 11:15`, `${SEGUNDA} 11:30`]);
+    jest.restoreAllMocks();
+    // e o banco concorda: remarcar para cima dele na unidade A é 409
+    const recusa = await post(`/api/clinics/appointments/${id}/reschedule`, owner, {
+      date: SEGUNDA,
+      time: '09:15',
+    }).expect(409);
+    expect(recusa.body.message).toBe('Horário já ocupado para este profissional');
+  });
+
   it('o fim do expediente e o fim de semana: o atendimento precisa caber; pula sábado e domingo', async () => {
     const id = await agendar({});
     agoraEm(sp(SEGUNDA, '16:50'));

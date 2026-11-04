@@ -24,13 +24,25 @@ export function rotuloDoHorario(data: string, hora: string, utcOffset?: string):
 /** A sobreposição barrada pelo banco (a mesma mensagem da rota de remarcação). */
 const OCUPADO = 'Horário já ocupado para este profissional';
 
-function mensagemDoErro(erro: unknown): string {
-  if (erro instanceof ApiError) {
-    if (erro.status === 409 && erro.message === OCUPADO) {
-      return 'Esse horário acabou de ser ocupado. As opções foram atualizadas: escolha outra.';
+const ehOcupado = (erro: unknown) =>
+  erro instanceof ApiError && erro.status === 409 && erro.message === OCUPADO;
+
+/**
+ * A mensagem do erro da remarcação. No horário ocupado, só diz que as opções
+ * foram atualizadas DEPOIS que elas voltaram do servidor.
+ */
+function mensagemDoErro(
+  erro: unknown,
+  opcoes: 'atualizando' | 'atualizadas' | 'indisponiveis',
+): string {
+  if (ehOcupado(erro)) {
+    if (opcoes === 'atualizando') {
+      return 'Esse horário acabou de ser ocupado. Atualizando as opções…';
     }
-    return erro.message;
+    if (opcoes === 'indisponiveis') return 'Esse horário acabou de ser ocupado.';
+    return 'Esse horário acabou de ser ocupado. As opções foram atualizadas: escolha outra.';
   }
+  if (erro instanceof ApiError) return erro.message;
   return 'Não foi possível remarcar agora.';
 }
 
@@ -44,21 +56,40 @@ function mensagemDoErro(erro: unknown): string {
  * proveniência falsa. Só montada para quem escreve na agenda
  * (`clinics:schedule:write`); o clique pede confirmação e remarca pela rota
  * que a Agenda já usa, com a auditoria dela. O horário pode ser tomado entre a
- * sugestão e o clique: o 409 recarrega as opções e diz o que houve.
+ * sugestão e o clique: o 409 recarrega as opções e diz o que houve, e os
+ * botões ficam desabilitados até as opções novas chegarem.
+ *
+ * `fixar` prende o agendamento no pai do clique até o usuário dispensar o
+ * resultado: a invalidação da agenda depois da remarcação (ou do 409 de
+ * estado) pode trocar o "próximo remarcável" e remontar o cartão, e o
+ * "Remarcado: …" ou o erro sumiriam sem ninguém ler. Só o 409 de horário
+ * ocupado solta o agendamento: o fluxo volta às opções do mesmo agendamento.
  */
-export function SugestaoDeRemarcacao({ agendamento }: { agendamento: ClinicsAppointmentDto }) {
+export function SugestaoDeRemarcacao({
+  agendamento,
+  fixar,
+}: {
+  agendamento: ClinicsAppointmentDto;
+  fixar: (agendamento: ClinicsAppointmentDto | null) => void;
+}) {
   const queryClient = useQueryClient();
   const [escolhida, setEscolhida] = useState<ClinicsRescheduleOptionDto | null>(null);
   const [feito, setFeito] = useState<ClinicsAppointmentDto | null>(null);
-  const opcoes = useQuery({
-    // debaixo da chave da agenda: marcar, remarcar ou mudar o estado em
-    // qualquer tela recarrega as opções
-    queryKey: [...AGENDA_KEY, 'reschedule-options', agendamento.id, agendamento.startsAt],
-    queryFn: () =>
-      api.get<ClinicsRescheduleOptionsDto>(
-        `/api/clinics/appointments/${encodeURIComponent(agendamento.id)}/reschedule-options?limit=${QUANTOS}`,
-      ),
-  });
+  // depois do 409 de horário ocupado: quantas atualizações as opções tinham
+  // quando o erro chegou (dado ou erro); até passar disso, estão atualizando
+  const [esperaDesde, setEsperaDesde] = useState<number | null>(null);
+  // debaixo da chave da agenda: marcar, remarcar ou mudar o estado em
+  // qualquer tela recarrega as opções
+  const chaveDasOpcoes = [
+    ...AGENDA_KEY,
+    'reschedule-options',
+    agendamento.id,
+    agendamento.startsAt,
+  ] as const;
+  const atualizacoes = () => {
+    const estado = queryClient.getQueryState(chaveDasOpcoes);
+    return (estado?.dataUpdateCount ?? 0) + (estado?.errorUpdateCount ?? 0);
+  };
   const remarcar = useMutation({
     mutationFn: (opcao: ClinicsRescheduleOptionDto) =>
       api.post<ClinicsAppointmentDto>(
@@ -74,12 +105,41 @@ export function SugestaoDeRemarcacao({ agendamento }: { agendamento: ClinicsAppo
       setEscolhida(null);
       void queryClient.invalidateQueries({ queryKey: AGENDA_KEY });
     },
-    // tomado no meio do caminho (ou o agendamento mudou): recarrega as opções
-    onError: () => {
+    onError: (erro) => {
       setEscolhida(null);
+      if (ehOcupado(erro)) {
+        // tomado no meio do caminho: as opções recarregam e o fluxo continua
+        setEsperaDesde(atualizacoes());
+        fixar(null);
+      }
+      // os outros (o agendamento mudou de estado, por exemplo) ficam na tela,
+      // presos, até o usuário dispensar
       void queryClient.invalidateQueries({ queryKey: AGENDA_KEY });
     },
   });
+  // o resultado na tela até o usuário dispensar: nada de opções por trás
+  const resultadoFinal = feito !== null || (remarcar.isError && !ehOcupado(remarcar.error));
+  const opcoes = useQuery({
+    queryKey: chaveDasOpcoes,
+    queryFn: () =>
+      api.get<ClinicsRescheduleOptionsDto>(
+        `/api/clinics/appointments/${encodeURIComponent(agendamento.id)}/reschedule-options?limit=${QUANTOS}`,
+      ),
+    enabled: !resultadoFinal,
+  });
+  const atualizando = esperaDesde !== null && atualizacoes() <= esperaDesde;
+
+  const dispensar = () => {
+    setFeito(null);
+    setEsperaDesde(null);
+    remarcar.reset();
+    fixar(null);
+  };
+  const confirmar = (opcao: ClinicsRescheduleOptionDto) => {
+    // preso desde o clique: nem a resposta nem a invalidação trocam o cartão
+    fixar(agendamento);
+    remarcar.mutate(opcao);
+  };
 
   if (feito) {
     return (
@@ -89,11 +149,26 @@ export function SugestaoDeRemarcacao({ agendamento }: { agendamento: ClinicsAppo
           <span className="num">{rotuloDoHorario(feito.localDate, feito.localStart)}</span>, com{' '}
           {feito.professionalName}.
         </p>
+        <Dispensar onClick={dispensar} />
       </Cartao>
     );
   }
 
   const de = rotuloDoHorario(agendamento.localDate, agendamento.localStart);
+  if (resultadoFinal) {
+    return (
+      <Cartao>
+        <p className="text-[13.5px]">
+          Remarcar {agendamento.serviceName} de <span className="num">{de}</span>:
+        </p>
+        <p role="alert" className="text-data text-negative">
+          {mensagemDoErro(remarcar.error, 'atualizadas')}
+        </p>
+        <Dispensar onClick={dispensar} />
+      </Cartao>
+    );
+  }
+
   return (
     <Cartao>
       <p className="text-[13.5px]">
@@ -101,7 +176,10 @@ export function SugestaoDeRemarcacao({ agendamento }: { agendamento: ClinicsAppo
       </p>
       {remarcar.isError ? (
         <p role="alert" className="text-data text-negative">
-          {mensagemDoErro(remarcar.error)}
+          {mensagemDoErro(
+            remarcar.error,
+            opcoes.isError ? 'indisponiveis' : atualizando ? 'atualizando' : 'atualizadas',
+          )}
         </p>
       ) : null}
       {opcoes.isError ? (
@@ -110,10 +188,15 @@ export function SugestaoDeRemarcacao({ agendamento }: { agendamento: ClinicsAppo
           {opcoes.error instanceof ApiError ? `: ${opcoes.error.message}` : '.'}
         </p>
       ) : !opcoes.data ? (
-        <span
-          aria-hidden
-          className="block h-3.5 w-2/3 animate-pulse rounded bg-border motion-reduce:animate-none"
-        />
+        <div aria-busy="true">
+          <span
+            aria-hidden
+            className="block h-3.5 w-2/3 animate-pulse rounded bg-border motion-reduce:animate-none"
+          />
+          <p className="sr-only" role="status">
+            Carregando os horários livres…
+          </p>
+        </div>
       ) : opcoes.data.options.length === 0 ? (
         <p className="text-[13px] text-muted-fg">
           Nenhum horário livre com {agendamento.professionalName} nos próximos dias.
@@ -132,7 +215,7 @@ export function SugestaoDeRemarcacao({ agendamento }: { agendamento: ClinicsAppo
               variant="primary"
               size="sm"
               disabled={remarcar.isPending}
-              onClick={() => remarcar.mutate(escolhida)}
+              onClick={() => confirmar(escolhida)}
             >
               {remarcar.isPending ? 'Remarcando…' : 'Confirmar remarcação'}
             </Button>
@@ -147,15 +230,18 @@ export function SugestaoDeRemarcacao({ agendamento }: { agendamento: ClinicsAppo
           </div>
         </div>
       ) : (
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2" aria-busy={atualizando || undefined}>
           {opcoes.data.options.map((o) => (
             <Button
               key={o.startsAt}
               variant="secondary"
               size="sm"
               className="num"
+              // as opções de antes do conflito podem incluir o horário tomado
+              disabled={atualizando}
               onClick={() => {
                 remarcar.reset();
+                setEsperaDesde(null);
                 setEscolhida(o);
               }}
             >
@@ -165,6 +251,14 @@ export function SugestaoDeRemarcacao({ agendamento }: { agendamento: ClinicsAppo
         </div>
       )}
     </Cartao>
+  );
+}
+
+function Dispensar({ onClick }: { onClick: () => void }) {
+  return (
+    <Button variant="ghost" size="sm" className="self-start" onClick={onClick}>
+      Dispensar
+    </Button>
   );
 }
 

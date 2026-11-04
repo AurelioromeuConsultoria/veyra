@@ -19,8 +19,13 @@ import { rotuloDoHorario } from './SugestaoDeRemarcacao';
  * - o rótulo é "Sugestão", sem o selo de IA;
  * - o clique pede confirmação e remarca pela rota da Agenda, com o horário
  *   como veio do servidor, e recarrega a agenda;
- * - o horário tomado no meio do caminho (409) aparece com mensagem clara e
- *   as opções são recarregadas.
+ * - o horário tomado no meio do caminho (409) aparece com mensagem clara, os
+ *   botões ficam desabilitados até as opções novas chegarem e só então a
+ *   mensagem diz que foram atualizadas;
+ * - o resultado (o "Remarcado: …" ou o 409 de estado) fica na tela, com o
+ *   agendamento fixado, mesmo que a agenda recarregada troque o próximo
+ *   remarcável, até o usuário dispensar;
+ * - a carga e o erro das opções.
  */
 
 const CONVERSA = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e61';
@@ -114,7 +119,7 @@ const opcoesDto = (options: unknown[]) => ({
 
 type Resposta = { status?: number; body?: unknown };
 type Chamada = { metodo: string; url: string; corpo: unknown };
-type Rota = (c: Chamada) => Resposta | undefined;
+type Rota = (c: Chamada) => Resposta | undefined | Promise<Resposta | undefined>;
 
 /** O fetch falso: a primeira rota que responder ganha; registra método, url e corpo. */
 function mockApi(rota: Rota) {
@@ -127,7 +132,10 @@ function mockApi(rota: Rota) {
       const corpo = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
       const c = { metodo, url, corpo };
       chamadas.push(c);
-      const r = rota(c) ?? { status: 404, body: { message: `sem mock: ${metodo} ${url}` } };
+      const r = (await rota(c)) ?? {
+        status: 404,
+        body: { message: `sem mock: ${metodo} ${url}` },
+      };
       return new Response(JSON.stringify(r.body ?? {}), {
         status: r.status ?? 200,
         headers: { 'Content-Type': 'application/json' },
@@ -169,6 +177,15 @@ function renderizar(permissions: string[]) {
 }
 
 const assentar = () => new Promise((r) => setTimeout(r, 60));
+
+/** Uma resposta presa até o teste soltar. */
+function adiado() {
+  let soltar!: (r: Resposta) => void;
+  const promessa = new Promise<Resposta>((r) => {
+    soltar = r;
+  });
+  return { promessa, soltar };
+}
 const pedidosDeOpcoes = (chamadas: Chamada[]) =>
   chamadas.filter((c) => c.url.includes('/reschedule-options'));
 
@@ -289,14 +306,16 @@ describe('Sugestão de remarcação sem IA (contexto clínico da conversa)', () 
     });
   });
 
-  it('o horário tomado no meio do caminho: mensagem clara e as opções recarregadas', async () => {
+  it('o horário tomado no meio do caminho: botões desabilitados até as opções novas chegarem, e só então "atualizadas"', async () => {
     let pedidos = 0;
+    const recarga = adiado();
     const chamadas = mockApi(
       clinica(HORARIOS, (c) => {
         if (c.url.includes('/reschedule-options')) {
           pedidos += 1;
-          // depois do conflito, a primeira opção já não vem
-          return { body: opcoesDto(pedidos === 1 ? OPCOES : OPCOES.slice(1)) };
+          // a primeira lista vem na hora; a recarga depois do conflito fica
+          // presa, e a primeira opção já não vem nela
+          return pedidos === 1 ? { body: opcoesDto(OPCOES) } : recarga.promessa;
         }
         if (c.metodo === 'POST') {
           return { status: 409, body: { message: 'Horário já ocupado para este profissional' } };
@@ -308,15 +327,183 @@ describe('Sugestão de remarcação sem IA (contexto clínico da conversa)', () 
     const sugestao = await within(painel).findByRole('group', { name: 'Sugestão' });
     fireEvent.click(await within(sugestao).findByRole('button', { name: /11:00/ }));
     fireEvent.click(within(sugestao).getByRole('button', { name: 'Confirmar remarcação' }));
-    expect(await within(sugestao).findByRole('alert')).toHaveTextContent(
-      'Esse horário acabou de ser ocupado. As opções foram atualizadas: escolha outra.',
-    );
+    const alerta = await within(sugestao).findByRole('alert');
     await waitFor(() => expect(pedidosDeOpcoes(chamadas).length).toBe(2));
+    // enquanto a recarga não volta: as opções antigas, desabilitadas, e nada
+    // de "atualizadas"
+    expect(alerta).toHaveTextContent('Esse horário acabou de ser ocupado. Atualizando as opções…');
+    expect(alerta).not.toHaveTextContent('atualizadas');
+    const antigas = within(sugestao).getAllByRole('button');
+    expect(antigas.map((b) => b.textContent)).toEqual([
+      'Seg, 04/11 · 11:00',
+      'Seg, 04/11 · 11:15',
+      'Ter, 05/11 · 08:00',
+    ]);
+    expect(antigas.every((b) => (b as HTMLButtonElement).disabled)).toBe(true);
+    fireEvent.click(antigas[0]);
+    expect(within(sugestao).queryByRole('button', { name: 'Confirmar remarcação' })).toBeNull();
+
+    recarga.soltar({ body: opcoesDto(OPCOES.slice(1)) });
     await waitFor(() =>
-      expect(within(sugestao).queryByRole('button', { name: /11:00/ })).toBeNull(),
+      expect(within(sugestao).getByRole('alert')).toHaveTextContent(
+        'Esse horário acabou de ser ocupado. As opções foram atualizadas: escolha outra.',
+      ),
     );
-    expect(within(sugestao).getByRole('button', { name: /11:15/ })).toBeInTheDocument();
+    expect(within(sugestao).queryByRole('button', { name: /11:00/ })).toBeNull();
+    const novas = within(sugestao).getAllByRole('button');
+    expect(novas.map((b) => b.textContent)).toEqual(['Seg, 04/11 · 11:15', 'Ter, 05/11 · 08:00']);
+    expect(novas.every((b) => !(b as HTMLButtonElement).disabled)).toBe(true);
     expect(within(sugestao).queryByRole('status')).toBeNull();
+  });
+
+  it('o "Remarcado: …" fica na tela quando a agenda recarregada troca o próximo remarcável, até dispensar', async () => {
+    // o remarcado vai para DEPOIS de outro: na agenda nova, o próximo
+    // remarcável passa a ser o outro
+    const depois = horario('h-depois', daqui(9 * 1440), 'scheduled', 'Peeling');
+    let remarcado = false;
+    const chamadas = mockApi(
+      clinica([], (c) => {
+        if (c.metodo === 'POST' && c.url === '/api/clinics/appointments/h-proximo/reschedule') {
+          remarcado = true;
+          return {
+            status: 201,
+            body: { ...horario('h-proximo', OPCOES[2].startsAt, 'scheduled'), ...OPCOES[2] },
+          };
+        }
+        if (c.url.startsWith('/api/clinics/appointments?')) {
+          const proximo = remarcado
+            ? horario('h-proximo', daqui(12 * 1440), 'scheduled')
+            : horario('h-proximo', daqui(2 * 1440), 'confirmed');
+          return { body: [proximo, depois] };
+        }
+        return undefined;
+      }),
+    );
+    const painel = renderizar(ESCREVE);
+    const sugestao = await within(painel).findByRole('group', { name: 'Sugestão' });
+    expect(sugestao).toHaveTextContent('Remarcar Limpeza de pele de');
+    fireEvent.click(await within(sugestao).findByRole('button', { name: /08:00/ }));
+    const agendaAntes = chamadas.filter((c) => c.url.startsWith('/api/clinics/appointments?'));
+    fireEvent.click(within(sugestao).getByRole('button', { name: 'Confirmar remarcação' }));
+    await within(painel).findByText(/^Remarcado:/);
+    // a agenda voltou com o outro na frente, e o resultado continua
+    await waitFor(() =>
+      expect(
+        chamadas.filter((c) => c.url.startsWith('/api/clinics/appointments?')).length,
+      ).toBeGreaterThan(agendaAntes.length),
+    );
+    await assentar();
+    const fixada = within(painel).getByRole('group', { name: 'Sugestão' });
+    expect(within(fixada).getByRole('status')).toHaveTextContent(
+      'Remarcado: Limpeza de pele para Ter, 05/11 · 08:00, com Dra. Ana Fictícia.',
+    );
+    // nada de opções por trás do resultado
+    expect(
+      within(fixada)
+        .getAllByRole('button')
+        .map((b) => b.textContent),
+    ).toEqual(['Dispensar']);
+    const pedidosAntes = pedidosDeOpcoes(chamadas).length;
+    fireEvent.click(within(fixada).getByRole('button', { name: 'Dispensar' }));
+    // dispensado: o cartão volta à agenda atual, com o outro agendamento
+    await waitFor(() =>
+      expect(within(painel).getByRole('group', { name: 'Sugestão' })).toHaveTextContent(
+        'Remarcar Peeling de',
+      ),
+    );
+    await waitFor(() => expect(pedidosDeOpcoes(chamadas).length).toBeGreaterThan(pedidosAntes));
+    expect(pedidosDeOpcoes(chamadas).at(-1)?.url).toBe(
+      '/api/clinics/appointments/h-depois/reschedule-options?limit=3',
+    );
+  });
+
+  it('o 409 de estado não remarcável fica na tela quando a agenda recarregada tira o agendamento, até dispensar', async () => {
+    const depois = horario('h-depois', daqui(9 * 1440), 'scheduled', 'Peeling');
+    let cancelado = false;
+    const chamadas = mockApi(
+      clinica([], (c) => {
+        if (c.metodo === 'POST') {
+          // alguém cancelou o agendamento em outra tela
+          cancelado = true;
+          return {
+            status: 409,
+            body: { message: 'Só agendamento marcado ou confirmado pode ser remarcado' },
+          };
+        }
+        if (c.url.startsWith('/api/clinics/appointments?')) {
+          const proximo = horario(
+            'h-proximo',
+            daqui(2 * 1440),
+            cancelado ? 'canceled' : 'confirmed',
+          );
+          return { body: [proximo, depois] };
+        }
+        return undefined;
+      }),
+    );
+    const painel = renderizar(ESCREVE);
+    const sugestao = await within(painel).findByRole('group', { name: 'Sugestão' });
+    fireEvent.click(await within(sugestao).findByRole('button', { name: /11:15/ }));
+    const agendaAntes = chamadas.filter((c) => c.url.startsWith('/api/clinics/appointments?'));
+    fireEvent.click(within(sugestao).getByRole('button', { name: 'Confirmar remarcação' }));
+    await within(painel).findByRole('alert');
+    await waitFor(() =>
+      expect(
+        chamadas.filter((c) => c.url.startsWith('/api/clinics/appointments?')).length,
+      ).toBeGreaterThan(agendaAntes.length),
+    );
+    await assentar();
+    const fixada = within(painel).getByRole('group', { name: 'Sugestão' });
+    expect(fixada).toHaveTextContent('Remarcar Limpeza de pele de');
+    expect(within(fixada).getByRole('alert')).toHaveTextContent(
+      'Só agendamento marcado ou confirmado pode ser remarcado',
+    );
+    expect(
+      within(fixada)
+        .getAllByRole('button')
+        .map((b) => b.textContent),
+    ).toEqual(['Dispensar']);
+    fireEvent.click(within(fixada).getByRole('button', { name: 'Dispensar' }));
+    await waitFor(() =>
+      expect(within(painel).getByRole('group', { name: 'Sugestão' })).toHaveTextContent(
+        'Remarcar Peeling de',
+      ),
+    );
+    expect(within(painel).queryByRole('alert')).toBeNull();
+  });
+
+  it('as opções carregando: o esqueleto com aviso para leitor de tela, sem botão; depois, as opções', async () => {
+    const carga = adiado();
+    mockApi(
+      clinica(HORARIOS, (c) =>
+        c.url.includes('/reschedule-options') ? carga.promessa : undefined,
+      ),
+    );
+    const painel = renderizar(ESCREVE);
+    const sugestao = await within(painel).findByRole('group', { name: 'Sugestão' });
+    expect(await within(sugestao).findByRole('status')).toHaveTextContent(
+      'Carregando os horários livres…',
+    );
+    expect(within(sugestao).queryByRole('button')).toBeNull();
+    carga.soltar({ body: opcoesDto(OPCOES) });
+    expect(await within(sugestao).findAllByRole('button')).toHaveLength(3);
+    expect(within(sugestao).queryByRole('status')).toBeNull();
+  });
+
+  it('as opções com erro: "Sugestão indisponível", com o motivo do servidor e sem botão', async () => {
+    mockApi(
+      clinica(HORARIOS, (c) =>
+        c.url.includes('/reschedule-options')
+          ? { status: 409, body: { message: 'O horário já começou' } }
+          : undefined,
+      ),
+    );
+    const painel = renderizar(ESCREVE);
+    const sugestao = await within(painel).findByRole('group', { name: 'Sugestão' });
+    expect(
+      await within(sugestao).findByText('Sugestão indisponível agora: O horário já começou'),
+    ).toBeInTheDocument();
+    expect(within(sugestao).queryByRole('button')).toBeNull();
   });
 
   it('sem agendamento futuro remarcável: nem cartão, nem consulta das opções', async () => {

@@ -4,13 +4,14 @@ import {
   CLINICS_RESCHEDULABLE_STATUSES,
   horaLocal,
   somarDias,
+  type ClinicsAppointmentDto,
   type ClinicsAppointmentStatus,
   type ClinicsPackageDto,
   type ClinicsPatientDto,
   type ClinicsServiceDto,
 } from '@veyra/contracts/verticals/clinics';
 import { ArrowUpRight } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { StatusChip } from '../../components/ui/status';
 import { api, toQuery } from '../../lib/api';
@@ -87,7 +88,7 @@ export function ContextoClinicoDaConversa({ contactId }: ContextoDaConversaProps
   return (
     <section aria-label="Contexto clínico" className="flex flex-col gap-3">
       <ProximoHorario pacienteId={paciente.id} />
-      {remarca ? <Remarcacao pacienteId={paciente.id} /> : null}
+      {remarca ? <Remarcacao key={paciente.id} pacienteId={paciente.id} /> : null}
       <RetornosPendentes pacienteId={paciente.id} />
       {lePacotes ? <PacotesAtivos pacienteId={paciente.id} /> : null}
       {abreFicha ? (
@@ -202,9 +203,17 @@ function ProximoHorario({ pacienteId }: { pacienteId: string }) {
  * próximo agendamento que AINDA não começou e está marcado ou confirmado, o
  * mesmo critério do servidor (que confere de novo pelo relógio do banco). Sem
  * ele, ou com a agenda indisponível (o bloco do próximo horário já diz), nada.
+ *
+ * Do clique em "Confirmar" até o usuário dispensar o resultado, o agendamento
+ * fica FIXADO: a invalidação da agenda depois da remarcação pode trocar o
+ * próximo remarcável (o remarcado foi para depois de outro, ou o 409 de
+ * estado o tirou da lista) e, com o `key`, remontar o cartão e sumir com o
+ * resultado. Sair da conversa solta tudo: o Inbox remonta o painel por
+ * conversa.
  */
 function Remarcacao({ pacienteId }: { pacienteId: string }) {
   const horarios = useHorariosDaJanela(pacienteId);
+  const [fixado, setFixado] = useState<ClinicsAppointmentDto | null>(null);
   const agora = Date.now();
   const remarcavel = (horarios.isError ? [] : (horarios.data ?? []))
     .filter(
@@ -213,9 +222,10 @@ function Remarcacao({ pacienteId }: { pacienteId: string }) {
         Date.parse(a.startsAt) > agora,
     )
     .sort(porInicio)[0];
-  if (!remarcavel) return null;
-  // a chave pelo agendamento: outro paciente (outra conversa) começa do zero
-  return <SugestaoDeRemarcacao key={remarcavel.id} agendamento={remarcavel} />;
+  const atual = fixado ?? remarcavel;
+  if (!atual) return null;
+  // a chave pelo agendamento: outro agendamento começa do zero
+  return <SugestaoDeRemarcacao key={atual.id} agendamento={atual} fixar={setFixado} />;
 }
 
 function RetornosPendentes({ pacienteId }: { pacienteId: string }) {
