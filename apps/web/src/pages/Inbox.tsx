@@ -32,9 +32,15 @@ import { Button } from '../components/ui/button';
 import { Drawer } from '../components/ui/drawer';
 import { Input, Select, Textarea } from '../components/ui/input';
 import { EmptyState } from '../components/ui/page';
-import { WindowChip, WindowMeter } from '../components/ui/window-meter';
+import { WindowChip } from '../components/ui/window-meter';
 import { api, ApiError, toQuery } from '../lib/api';
 import { SenderPanel } from './InboxSender';
+import {
+  ContextoDaConversa,
+  ROTULO_DO_CANAL,
+  ROTULO_DO_STATUS,
+  useResponsavel,
+} from './InboxContexto';
 import { ConsentimentoDaConversa, podeVerConsentimentoDaConversa } from './Consentimentos';
 import { TemplatePanel } from './InboxTemplate';
 import { dayLabel, fullStamp, relativeStamp, timeOfDay } from '../lib/format';
@@ -42,11 +48,7 @@ import { useTermo } from '../lib/experience';
 import { DISPATCH_ERROR_LABEL } from '../lib/motivos-do-envio';
 import { hasPermission, useSession } from '../lib/session';
 
-const statusLabels: Record<ConversationStatus, string> = {
-  open: 'Aberta',
-  pending: 'Pendente',
-  closed: 'Fechada',
-};
+const statusLabels = ROTULO_DO_STATUS;
 
 /**
  * Estado do despacho externo. Sem isto, uma mensagem que a Meta recusou (ou que
@@ -68,9 +70,10 @@ const DISPATCH_LABEL: Record<MessageDispatchState, { texto: string; tom: string 
  * Estado do canal externo acima do compositor: opt-in e o motivo quando o envio
  * está bloqueado. É o que evita o atendente descobrir a regra pelo erro.
  *
- * O TEMPO restante não se repete aqui: ele é o medidor de janela sob o
- * cabeçalho da conversa (assinatura visual). Só a janela FECHADA reaparece
- * junto do compositor, porque nesse estado ela é a condição que bloqueia.
+ * O TEMPO restante não se repete aqui: ele é o chip no cabeçalho da conversa
+ * e o medidor no painel de contexto (assinatura visual). Só a janela FECHADA
+ * reaparece junto do compositor, porque nesse estado ela é a condição que
+ * bloqueia.
  */
 function PolicyBanner({ policy }: { policy: SendPolicyDto }) {
   const fechada =
@@ -320,6 +323,15 @@ export function InboxPage() {
    */
   const externo = selected !== null && selected.channelType !== 'internal';
   const modo: SendPolicyDto['mode'] = policy.data?.mode ?? (externo ? 'blocked' : 'free_form');
+  /**
+   * O instante da janela para o chip do cabeçalho e o medidor do contexto: o da
+   * política quando há (ela revalida perto da expiração), senão o do DTO da
+   * conversa — o mesmo que a lista já mostra a quem lê conversas. Exibição só:
+   * quem decide o envio continua sendo `modo`.
+   */
+  const janelaExpiraEm =
+    selected === null ? null : policy.data ? policy.data.windowExpiresAt : selected.windowExpiresAt;
+  const responsavel = useResponsavel(selected);
   /**
    * Trocar de conversa ZERA o compositor. Sem isto, o rascunho e os anexos da
    * conversa A chegavam prontos e habilitados na conversa B — um Enter mandaria
@@ -688,7 +700,10 @@ export function InboxPage() {
       {/* ── conversa ────────────────────────────────────────────────────── */}
       {selected ? (
         <div className="flex min-w-0 flex-1 flex-col">
-          <header className="flex min-h-16 items-center gap-3 border-b border-border bg-surface px-6 py-3">
+          {/* o cabeçalho fica com quem, a janela e as AÇÕES; o assunto e os
+              detalhes moram no painel de contexto (ADR-062) — que some em tela
+              estreita, por isso nenhuma ação vai para lá */}
+          <header className="flex min-h-16 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border bg-surface px-6 py-3">
             <Avatar
               nome={selectedRai ? null : (selected.contactName ?? selected.subject)}
               chave={selected.contactId ?? selected.id}
@@ -699,16 +714,14 @@ export function InboxPage() {
                   ? 'Remetente a identificar'
                   : (selected.contactName ?? selected.subject ?? 'Conversa')}
               </h2>
-              <p className="mt-0.5 flex items-center gap-2 truncate text-[12.5px] text-muted-fg">
-                {selected.contactName && selected.subject ? (
-                  <span className="truncate">{selected.subject}</span>
-                ) : null}
-                <span className="eyebrow rounded-sm bg-surface-2 px-1 py-px">
-                  {selected.channelType}
-                </span>
-                {selected.assigneeName ? <span>{selected.assigneeName}</span> : null}
+              <p className="mt-0.5 truncate text-[12.5px] text-muted-fg">
+                {ROTULO_DO_CANAL[selected.channelType]} ·{' '}
+                {responsavel ? `atribuída a ${responsavel}` : 'sem responsável'}
               </p>
             </div>
+            {/* a janela à vista em qualquer largura: é o primeiro aviso de que
+                o texto livre pode não sair */}
+            {externo ? <WindowChip expiresAt={janelaExpiraEm} variant="header" /> : null}
             {podeVerConsentimentoDaConversa(user, selected) ? (
               <Button size="sm" onClick={() => setConsentimentoAberto(true)}>
                 <ShieldCheck size={13} /> Consentimento
@@ -752,11 +765,6 @@ export function InboxPage() {
 
           {canIdentify && selected.channelType !== 'internal' && selected.senderAddress ? (
             <SenderPanel conversation={selected} onChanged={() => invalidate()} />
-          ) : null}
-
-          {/* ASSINATURA: a janela de 24h como medidor, não como texto de debug */}
-          {policy.data && policy.data.channelType !== 'internal' ? (
-            <WindowMeter expiresAt={policy.data.windowExpiresAt} />
           ) : null}
 
           {shownSummary ? (
@@ -1124,35 +1132,42 @@ export function InboxPage() {
                   ))}
                 </ul>
               ) : null}
-              <div className="flex items-end gap-2">
-                <Textarea
-                  className="min-h-[38px] flex-1"
-                  rows={1}
-                  placeholder="Registrar mensagem…"
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  aria-label="Corpo da mensagem"
-                />
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  disabled={!draft.trim() || send.isPending || !selected.contactId}
-                  onClick={() => send.mutate('inbound')}
-                  title={
-                    selected.contactId
-                      ? 'Registrar como recebida do contato'
-                      : 'Vincule um contato para registrar mensagens recebidas'
+              {/* o compositor do canvas (ADR-062): o texto em cima, com espaço
+                  para escrever; embaixo, anexar à esquerda e o registro à
+                  direita, com "Enviada" como a ação primária */}
+              <Textarea
+                className="min-h-[76px] bg-surface-2/60 px-3.5 py-2.5 text-[14px] leading-[1.45]"
+                rows={3}
+                placeholder="Registrar mensagem…"
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  // Ctrl/⌘+Enter envia pelo MESMO caminho do botão: o submit do
+                  // form, que confere `podeEnviar` — nunca um atalho que o contorne
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                    e.preventDefault();
+                    e.currentTarget.form?.requestSubmit();
                   }
+                }}
+                aria-label="Corpo da mensagem"
+              />
+              <div className="mt-2.5 flex items-center gap-2">
+                {/* o input fica no fluxo de foco (sr-only, não `hidden`): anexar
+                    também se alcança pelo teclado */}
+                <label
+                  title="Anexar arquivo (até 5)"
+                  className={clsx(
+                    'flex h-9 w-9 shrink-0 items-center justify-center rounded-control border border-border text-muted-fg transition-colors focus-within:outline-2 focus-within:outline-offset-1 focus-within:outline-accent',
+                    attach.isPending || attachments.length >= 5
+                      ? 'cursor-not-allowed opacity-45'
+                      : 'cursor-pointer hover:bg-surface-2 hover:text-foreground',
+                  )}
                 >
-                  Recebida
-                </Button>
-                <label className="flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-control text-muted-fg transition-colors hover:bg-surface-2 hover:text-foreground">
-                  <Paperclip size={14} />
+                  <Paperclip size={15} />
                   <span className="sr-only">Anexar arquivo</span>
                   <input
                     type="file"
-                    className="hidden"
+                    className="sr-only"
                     aria-label="Anexar arquivo"
                     disabled={attach.isPending || attachments.length >= 5}
                     onChange={(e) => {
@@ -1162,23 +1177,51 @@ export function InboxPage() {
                     }}
                   />
                 </label>
-                <Button
-                  type="submit"
-                  variant="primary"
-                  size="sm"
-                  /* o veredito é do servidor: `blocked` não envia, e `template`
-                     envia só pelo painel do template, com a prévia */
-                  disabled={!podeEnviar}
-                  title={
-                    modo === 'free_form' ? undefined : (policy.data?.reason ?? 'Envio bloqueado')
-                  }
-                >
-                  <Send size={13} /> Enviada
-                </Button>
+                {attach.isPending ? (
+                  <span className="text-data text-muted-fg">Enviando arquivo…</span>
+                ) : null}
+                <div className="ml-auto flex items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    className="h-9"
+                    disabled={!draft.trim() || send.isPending || !selected.contactId}
+                    onClick={() => send.mutate('inbound')}
+                    title={
+                      selected.contactId
+                        ? 'Registrar como recebida do contato'
+                        : 'Vincule um contato para registrar mensagens recebidas'
+                    }
+                  >
+                    Recebida
+                  </Button>
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    size="sm"
+                    className="h-9 px-4 text-[14px]"
+                    /* o veredito é do servidor: `blocked` não envia, e `template`
+                       envia só pelo painel do template, com a prévia */
+                    disabled={!podeEnviar}
+                    title={
+                      modo === 'free_form'
+                        ? 'Ctrl+Enter ou ⌘+Enter também envia'
+                        : (policy.data?.reason ?? 'Envio bloqueado')
+                    }
+                  >
+                    <Send size={13} /> Enviada
+                  </Button>
+                </div>
               </div>
             </form>
           ) : null}
         </div>
+      ) : null}
+
+      {/* ── contexto (some em tela estreita; nenhuma ação mora só nele) ── */}
+      {selected ? (
+        <ContextoDaConversa key={selected.id} conversa={selected} janelaExpiraEm={janelaExpiraEm} />
       ) : (
         <div className="flex flex-1 items-center justify-center">
           <EmptyState

@@ -64,6 +64,7 @@ A direção "Mineral" foi revista a pedido do usuário. As regras abaixo **preva
 - **Avatar com iniciais,** com cor estável por pessoa.
 - **Cada tela abre com a próxima ação.** A carga nunca ocupa a tela inteira: a moldura aparece primeiro.
 - **Abas** (`components/ui/tabs.tsx`): padrão WAI-ARIA com setas, Home e End; a aba ativa vai na URL (`?aba=`), sem tirar os outros parâmetros. Só existem as abas que a pessoa pode ver, e a aba fechada não é montada, então não consulta nada. A ficha do paciente usa abas para o corpo e um resumo ao lado. O resumo usa só as consultas que a ficha já faz, com as mesmas chaves.
+- **Conversas em três colunas:** lista, conversa e o painel de contexto (quem escreve e os dados da conversa que o Core tem: canal, status, responsável, assunto, datas e o medidor da janela). O painel some em telas estreitas, por isso nenhuma ação mora só nele: as ações ficam no cabeçalho e no compositor. O compositor tem o texto em cima e, embaixo, anexar à esquerda e "Recebida" e "Enviada" (a primária) à direita; Ctrl/⌘+Enter envia pelo mesmo caminho do botão.
 
 ## 4. Cor — paleta fechada e disciplina
 
@@ -155,7 +156,7 @@ Nunca: chat genérico flutuante, "✨ pergunte à IA" onipresente, resultados se
 
 Duas formas são exclusivas do Veyra e reaparecem sempre iguais:
 
-1. **Medidor de janela** (`components/ui/window-meter.tsx`) — a janela de 24h do canal externo é a coisa mais característica do produto. Vira uma hairline de 2px que se esvazia sob o cabeçalho da conversa, com o tempo exato em mono, e um chip compacto na linha da lista. Urgência por cor: **> 6h** neutro, **2–6h** `--warning`, **< 2h** `--negative`, **fechada** estado explícito ("fechada · só template"). O instante vem do servidor (`SendPolicyDto.windowExpiresAt`); o cliente só lê o relógio — política de envio nunca é recalculada na tela (ADR-038).
+1. **Medidor de janela** (`components/ui/window-meter.tsx`) — a janela de 24h do canal externo é a coisa mais característica do produto. Vira uma hairline de 2px que se esvazia no painel de contexto da conversa, com o tempo exato em mono; no cabeçalho da conversa, um chip rotulado ("Janela · 14h02", "Janela fechada · só template") que fica à vista em qualquer largura; e um chip compacto na linha da lista. Urgência por cor: **> 6h** neutro, **2–6h** `--warning`, **< 2h** `--negative`, **fechada** estado explícito ("fechada · só template"). O instante vem do servidor (`SendPolicyDto.windowExpiresAt`); o cliente só lê o relógio — política de envio nunca é recalculada na tela (ADR-038).
 2. **Marca de proveniência da IA** (`components/ui/ai.tsx`, utilitário `.ai-mark`) — tudo que o modelo escreveu recebe um filete de 2px em cobre à esquerda e um selo "IA" em mono caixa-alta: painel de rascunho no inbox, selo de autoria na thread, card de resumo e fila de propostas em Sinais.
 
 ## 7. Voz do produto
