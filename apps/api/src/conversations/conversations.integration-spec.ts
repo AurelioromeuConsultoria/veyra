@@ -275,6 +275,107 @@ describe('Conversas — inbox, mensagens e timeline (integração)', () => {
     expect(todas.body.items).toHaveLength(2);
   });
 
+  // ── "A identificar" (ADR-062, adendo 1, item 3) ───────────────────────────
+
+  /** uma conversa RAI (sem contato), como a ingestão a grava */
+  const conversaRai = async (workspaceId: string, status: 'open' | 'closed' = 'open') => {
+    const canal = (await prisma.raw.channel.findFirst({ where: { workspaceId } }))!.id;
+    return (
+      await prisma.raw.conversation.create({
+        data: {
+          workspaceId,
+          channelId: canal,
+          contactId: null,
+          senderStatus: 'unidentified',
+          status,
+        },
+      })
+    ).id;
+  };
+  const ids = (res: { body: { items: { id: string }[] } }) =>
+    res.body.items.map((c) => c.id).sort();
+
+  it('A identificar: só a RAI, combinada com status e responsável', async () => {
+    const identificada = (
+      await post('/api/conversations', sessionA, { contactId: contactA }).expect(201)
+    ).body.id as string;
+    const raiAberta = await conversaRai(wsA.workspaceId);
+    const raiFechada = await conversaRai(wsA.workspaceId, 'closed');
+    const raiMinha = await conversaRai(wsA.workspaceId);
+    const ownerA = await prisma.raw.membership.findFirst({
+      where: { workspaceId: wsA.workspaceId },
+    });
+    await patch(`/api/conversations/${raiMinha}`, sessionA, {
+      assigneeMembershipId: ownerA!.id,
+    }).expect(200);
+
+    // o padrão continua `open`: a RAI fechada não entra
+    expect(ids(await get('/api/conversations?senderStatus=unidentified', sessionA))).toEqual(
+      [raiAberta, raiMinha].sort(),
+    );
+    expect(
+      ids(await get('/api/conversations?senderStatus=unidentified&status=closed', sessionA)),
+    ).toEqual([raiFechada]);
+    expect(
+      ids(await get('/api/conversations?senderStatus=unidentified&status=all', sessionA)),
+    ).toEqual([raiAberta, raiFechada, raiMinha].sort());
+    // "Minhas" + "A identificar": o responsável e o remetente juntos
+    expect(
+      ids(
+        await get(
+          `/api/conversations?senderStatus=unidentified&assigneeMembershipId=${ownerA!.id}`,
+          sessionA,
+        ),
+      ),
+    ).toEqual([raiMinha]);
+    // `identified` é o complemento; um valor fora do DTO é 400
+    expect(
+      ids(await get('/api/conversations?senderStatus=identified&status=all', sessionA)),
+    ).toEqual([identificada]);
+    await get('/api/conversations?senderStatus=qualquer', sessionA).expect(400);
+  });
+
+  it('P0: A identificar não atravessa workspaces', async () => {
+    const raiA = await conversaRai(wsA.workspaceId);
+    const raiB = await conversaRai(wsB.workspaceId);
+    expect(
+      ids(await get('/api/conversations?senderStatus=unidentified&status=all', sessionA)),
+    ).toEqual([raiA]);
+    expect(
+      ids(await get('/api/conversations?senderStatus=unidentified&status=all', sessionB)),
+    ).toEqual([raiB]);
+  });
+
+  it('A identificar só estreita: nada além do que a lista sem filtro devolve ao mesmo papel', async () => {
+    await post('/api/conversations', sessionA, { contactId: contactA }).expect(201);
+    await conversaRai(wsA.workspaceId);
+    await conversaRai(wsA.workspaceId, 'closed');
+    const guestId = await createUserFixture(prisma, 'guest-a@veyra.test');
+    await createMembershipFixture(prisma, wsA.workspaceId, guestId, wsA.roles.guest);
+    const memberId = await createUserFixture(prisma, 'member-a@veyra.test');
+    await createMembershipFixture(prisma, wsA.workspaceId, memberId, wsA.roles.member);
+    const guest = await loginAs('guest-a@veyra.test');
+    const member = await loginAs('member-a@veyra.test');
+
+    for (const s of [sessionA, member, guest]) {
+      for (const status of ['open', 'closed', 'all']) {
+        const semFiltro = (await get(`/api/conversations?status=${status}`, s).expect(200)).body
+          .items as { id: string; senderStatus: string }[];
+        const filtrada = (
+          await get(`/api/conversations?status=${status}&senderStatus=unidentified`, s).expect(200)
+        ).body.items as { id: string }[];
+        // a mesma conversa, com o MESMO DTO: o filtro não muda a resposta
+        expect(filtrada).toEqual(semFiltro.filter((c) => c.senderStatus === 'unidentified'));
+      }
+    }
+    // sem `contacts:write` (C13), a RAI não existe: o filtro devolve vazio,
+    // igual a um workspace sem nenhuma RAI
+    expect(
+      (await get('/api/conversations?status=all&senderStatus=unidentified', guest).expect(200))
+        .body,
+    ).toEqual({ items: [], nextCursor: null });
+  });
+
   // ── Mensagens ─────────────────────────────────────────────────────────────
 
   it('mensagem manual nos dois sentidos: autor é derivado da direção', async () => {

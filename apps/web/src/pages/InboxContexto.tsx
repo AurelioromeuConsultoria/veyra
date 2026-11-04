@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { Avatar } from '../components/ui/avatar';
 import { WindowMeter } from '../components/ui/window-meter';
-import { useLinks } from '../lib/experience';
+import { useExperienceOpcional, useLinks } from '../lib/experience';
 import { fullStamp } from '../lib/format';
 import { useSession } from '../lib/session';
 
@@ -49,10 +49,11 @@ function Item({ rotulo, children }: { rotulo: string; children: ReactNode }) {
  * própria conversa, para o cabeçalho ficar com o nome, a janela e as ações.
  *
  * Só INFORMAÇÃO que a conversa já mostrava, e só o que o DTO do Core traz — o
- * Core não conhece verticais (CLAUDE.md §3.8), então nada de agenda, pacote ou
- * "próximo horário" aqui. Nenhuma ação mora só neste painel: ele some em telas
- * estreitas, e tudo o que se faz na conversa continua no cabeçalho e no
- * compositor.
+ * Core não conhece verticais (CLAUDE.md §3.8). O que for do produto entra pelo
+ * encaixe `contextoDaConversa` do manifesto (ADR-062, adendo 1, item 5): o
+ * painel o desenha sem saber o que é, e o produto decide com as próprias
+ * chaves. Nenhuma ação mora só neste painel: ele some em telas estreitas, e
+ * tudo o que se faz na conversa continua no cabeçalho e no compositor.
  *
  * A RAI (remetente a identificar) não ganha rosto nem nome: só o número, que a
  * lista já mostra — mascarado pelo servidor para quem não lê contatos.
@@ -67,6 +68,7 @@ export function ContextoDaConversa({
 }) {
   const { data: user } = useSession();
   const links = useLinks();
+  const Encaixe = useExperienceOpcional()?.contextoDaConversa ?? null;
   const responsavel = useResponsavel(conversa);
   const rai = conversa.senderStatus === 'unidentified';
   // o destino é o do produto ativo (ADR-055): sem resolvedor ou sem a
@@ -120,6 +122,11 @@ export function ContextoDaConversa({
           <p className="text-body-sm text-muted-fg">Sem contato vinculado.</p>
         )}
       </div>
+
+      {/* o encaixe do produto: a RAI nunca leva contato para ele */}
+      {Encaixe ? (
+        <Encaixe contactId={rai ? null : conversa.contactId} conversationId={conversa.id} />
+      ) : null}
 
       {conversa.channelType !== 'internal' && janelaExpiraEm !== null ? (
         <div className="rounded-[12px] bg-surface-2 p-3.5">

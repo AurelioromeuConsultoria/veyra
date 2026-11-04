@@ -256,6 +256,35 @@ describe('Clinics — mídia, campos e título de pacientes (integração, F5.3c
     expect((await midiaVista(recepcao, rai, arquivo)).download).toBe(200);
   });
 
+  it('"A identificar" (ADR-062, adendo 1): só estreita, com o MESMO DTO e a MESMA mídia restrita, para cada papel', async () => {
+    const operador = await operadorSemAgenda(ws.workspaceId, 'sem-agenda-rai@veyra.test');
+    const rai = await conversaComMidia(ws.workspaceId, null, await subir());
+    await conversaComMidia(ws.workspaceId, paciente, await subir(), '[audio]');
+    await conversaComMidia(ws.workspaceId, interessado, await subir());
+    for (const s of [owner, recepcao, operador]) {
+      const semFiltro = (await get('/api/conversations?status=all', s).expect(200)).body.items as {
+        id: string;
+        senderStatus: string;
+      }[];
+      const filtrada = (
+        await get('/api/conversations?status=all&senderStatus=unidentified', s).expect(200)
+      ).body.items;
+      expect(filtrada).toEqual(semFiltro.filter((c) => c.senderStatus === 'unidentified'));
+      expect(filtrada.map((c: { id: string }) => c.id)).toEqual([rai]);
+    }
+    // a conversa achada pelo filtro é a mesma: a mídia na dúvida segue restrita
+    // para a recepção e para quem não tem a agenda, aberta para quem tem as chaves
+    expect((await get(`/api/conversations/${rai}/messages`, recepcao)).body.items[0].body).toBe(
+      '[anexo]',
+    );
+    expect((await get(`/api/conversations/${rai}/messages`, operador)).body.items[0].body).toBe(
+      '[anexo]',
+    );
+    expect((await get(`/api/conversations/${rai}/messages`, owner)).body.items[0].body).toBe(
+      '[image]',
+    );
+  });
+
   it('mídia: sem a agenda, paciente e interessado dão as MESMAS respostas', async () => {
     const operador = await operadorSemAgenda(ws.workspaceId, 'sem-agenda@veyra.test');
     const doPaciente = await subir();

@@ -6,7 +6,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { vi } from 'vitest';
 import { WindowChip } from '../components/ui/window-meter';
 import { crmExperience } from '../experiences/crm';
-import { ExperienceProvider } from '../lib/experience';
+import { ExperienceProvider, type ContextoDaConversaProps } from '../lib/experience';
 import { criarQueryClient } from '../lib/session-query';
 import { ContextoDaConversa } from './InboxContexto';
 
@@ -71,13 +71,13 @@ function sessao(permissions: string[], membershipId = 'outra') {
   );
 }
 
-function renderizar(ui: ReactNode) {
+function renderizar(ui: ReactNode, manifesto = crmExperience) {
   const client = criarQueryClient();
   client.setDefaultOptions({ queries: { retry: false, refetchOnWindowFocus: false } });
   render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        <ExperienceProvider value={crmExperience}>{ui}</ExperienceProvider>
+        <ExperienceProvider value={manifesto}>{ui}</ExperienceProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -131,6 +131,37 @@ describe('ContextoDaConversa', () => {
     expect(await within(painel).findByText('você')).toBeInTheDocument();
     expect(within(painel).queryByRole('link')).toBeNull();
     expect(within(painel).queryAllByRole('button')).toHaveLength(0);
+  });
+
+  it('o encaixe do produto é desenhado com o contato, e a RAI chega sem contato', () => {
+    sessao(['conversations:read']);
+    const recebido: ContextoDaConversaProps[] = [];
+    // um encaixe qualquer: o painel não sabe o que ele mostra
+    const Encaixe = (props: ContextoDaConversaProps) => {
+      recebido.push(props);
+      return <p>conteúdo do produto</p>;
+    };
+    const manifesto = { ...crmExperience, contextoDaConversa: Encaixe };
+    renderizar(<ContextoDaConversa conversa={conversa()} janelaExpiraEm={null} />, manifesto);
+    expect(screen.getByText('conteúdo do produto')).toBeInTheDocument();
+    expect(recebido.at(-1)).toEqual({ contactId: CONTATO, conversationId: CONVERSA });
+
+    // mesmo que o DTO trouxesse um contato, a RAI não o passa adiante
+    renderizar(
+      <ContextoDaConversa
+        conversa={conversa({ senderStatus: 'unidentified', contactName: null })}
+        janelaExpiraEm={null}
+      />,
+      manifesto,
+    );
+    expect(recebido.at(-1)).toEqual({ contactId: null, conversationId: CONVERSA });
+  });
+
+  it('sem encaixe no manifesto (o CRM), o painel é o de sempre', () => {
+    sessao(['conversations:read']);
+    renderizar(<ContextoDaConversa conversa={conversa()} janelaExpiraEm={null} />);
+    expect(crmExperience.contextoDaConversa).toBeUndefined();
+    expect(screen.getByRole('complementary', { name: 'Contexto da conversa' })).toBeInTheDocument();
   });
 
   it('o canal externo mostra o medidor da janela', () => {

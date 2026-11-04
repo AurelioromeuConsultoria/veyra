@@ -214,6 +214,10 @@ export class ConversationsService {
       ...(input.status === 'all' ? {} : { status: input.status }),
       ...(input.assigneeMembershipId ? { assigneeMembershipId: input.assigneeMembershipId } : {}),
       ...(input.contactId ? { contactId: input.contactId } : {}),
+      // "A identificar" (ADR-062, adendo 1, item 3): só ESTREITA. Vai num AND à
+      // parte de propósito — no mesmo nível, a chave `senderStatus` do filtro
+      // substituiria a do C13 acima e devolveria a RAI a quem não pode vê-la
+      ...(input.senderStatus ? { AND: [{ senderStatus: input.senderStatus }] } : {}),
       ...(cursor
         ? {
             OR: [

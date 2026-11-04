@@ -88,7 +88,18 @@ export type ExperienceManifest = {
    * `admin`, `member`, `guest`): uma chave de vertical aqui não tem efeito
    */
   papeis?: Readonly<Record<string, string>>;
+  /**
+   * Encaixe do painel de contexto da conversa (ADR-062, adendo 1, item 5): o
+   * Core o desenha DENTRO do painel, sem conhecer o conteúdo; o produto decide
+   * o que mostrar, com as próprias chaves, e devolve `null` quando não há nada
+   * para quem pergunta. Recebe só o que a conversa já expõe: o contato (nunca o
+   * da RAI, que chega `null`) e o id da conversa.
+   */
+  contextoDaConversa?: ComponentType<ContextoDaConversaProps>;
 };
+
+/** O que o encaixe do painel de contexto recebe do Core. */
+export type ContextoDaConversaProps = { contactId: string | null; conversationId: string };
 
 /**
  * Os termos que as telas COMPARTILHADAS mostram e que um produto pode trocar

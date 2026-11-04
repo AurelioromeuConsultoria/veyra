@@ -69,6 +69,13 @@ export const listConversationsSchema = z.object({
   status: z.enum(['open', 'pending', 'closed', 'all']).default('open'),
   assigneeMembershipId: z.string().uuid().optional(),
   contactId: z.string().uuid().optional(),
+  /**
+   * "A identificar" (ADR-062, adendo 1, item 3): só os valores que o DTO já
+   * expõe. O filtro só ESTREITA o conjunto que a pessoa já vê — sem
+   * `contacts:write` a RAI não existe para ela (C13), e `unidentified` devolve
+   * a lista vazia, igual à de quem não tem nenhuma RAI.
+   */
+  senderStatus: conversationSenderSchema.optional(),
   cursor: z.string().max(200).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(30),
 });

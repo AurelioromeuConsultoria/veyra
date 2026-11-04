@@ -24,7 +24,7 @@ import {
   WandSparkles,
   X,
 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { AiPanel, AiSeal } from '../components/ui/ai';
 import { Avatar } from '../components/ui/avatar';
@@ -143,6 +143,43 @@ export function DispatchBadge({
   );
 }
 
+type Recorte = 'todas' | 'minhas' | 'identificar';
+
+/** O nome da primeira pílula: o status escolhido, no plural da lista. */
+const ROTULO_DA_LISTA: Record<'open' | 'pending' | 'closed' | 'all', string> = {
+  open: 'Abertas',
+  pending: 'Pendentes',
+  closed: 'Fechadas',
+  all: 'Todas',
+};
+
+/** Uma pílula do recorte: botão de alternância, com o estado no `aria-pressed`. */
+function Pilula({
+  ativa,
+  onClick,
+  children,
+}: {
+  ativa: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={ativa}
+      onClick={onClick}
+      className={clsx(
+        'inline-flex h-[30px] items-center rounded-full px-3 text-[12.5px] transition-colors duration-150',
+        ativa
+          ? 'bg-frame font-semibold text-frame-fg'
+          : 'border border-border bg-surface text-foreground/80 hover:bg-surface-2',
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
 export function InboxPage() {
   // o nome da tela vem do produto (ADR-055): "Conversas" na clínica
   const titulo = useTermo('conversas');
@@ -181,6 +218,12 @@ export function InboxPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const deepLink = searchParams.get('c');
   const [status, setStatus] = useState<'open' | 'pending' | 'closed' | 'all'>('open');
+  /**
+   * O recorte da lista (ADR-062, adendo 1, item 3), DENTRO do status escolhido:
+   * todas, "Minhas" (a membership ativa como responsável) ou "A identificar"
+   * (a RAI). Os dois só estreitam o que o servidor já entrega a esta pessoa.
+   */
+  const [recortePedido, setRecorte] = useState<Recorte>('todas');
   const [selectedId, setSelectedId] = useState<string | null>(deepLink);
   /** id vindo de fora que ainda não foi localizado na lista carregada */
   const [linking, setLinking] = useState<string | null>(deepLink);
@@ -217,12 +260,39 @@ export function InboxPage() {
     );
   }, [deepLink, setSearchParams]);
 
-  const listParams = { status, limit: 50 };
+  const minhaMembership = user?.activeMembership?.membershipId ?? null;
+  // o recorte que a sessão não sustenta (sem membership, ou sem poder decidir o
+  // remetente) volta a "todas": a pílula dele nem aparece
+  const recorte: Recorte =
+    (recortePedido === 'minhas' && !minhaMembership) ||
+    (recortePedido === 'identificar' && !canIdentify)
+      ? 'todas'
+      : recortePedido;
+  const baseParams = { status, limit: 50 };
+  const listParams = {
+    ...baseParams,
+    ...(recorte === 'minhas' && minhaMembership ? { assigneeMembershipId: minhaMembership } : {}),
+    ...(recorte === 'identificar' ? { senderStatus: 'unidentified' } : {}),
+  };
   const conversations = useQuery({
     queryKey: ['conversations', listParams],
     queryFn: () => api.get<ConversationPageDto>(`/api/conversations${toQuery(listParams)}`),
     placeholderData: keepPreviousData,
   });
+  /**
+   * A contagem da primeira pílula: a lista do status, sem recorte. Com o recorte
+   * "todas" é a MESMA consulta (mesma chave) da lista: nenhum pedido a mais. Sem
+   * dado anterior de propósito: a contagem do status antigo não fica sob o rótulo
+   * novo. Com mais de uma página, "50+".
+   */
+  const doStatus = useQuery({
+    queryKey: ['conversations', baseParams],
+    queryFn: () => api.get<ConversationPageDto>(`/api/conversations${toQuery(baseParams)}`),
+  });
+  const contagem =
+    doStatus.data && !doStatus.isPlaceholderData
+      ? `${doStatus.data.items.length}${doStatus.data.nextCursor ? '+' : ''}`
+      : null;
   const items = conversations.data?.items ?? [];
   const selected = items.find((c) => c.id === selectedId) ?? null;
   /** remetente a identificar: a IA não usa esta conversa (o servidor recusa) */
@@ -237,12 +307,13 @@ export function InboxPage() {
    */
   useEffect(() => {
     if (!linking || !conversations.isSuccess) return;
-    if (items.some((c) => c.id === linking) || status === 'all') {
+    if (items.some((c) => c.id === linking) || (status === 'all' && recorte === 'todas')) {
       setLinking(null);
       return;
     }
     setStatus('all');
-  }, [linking, conversations.isSuccess, items, status]);
+    setRecorte('todas');
+  }, [linking, conversations.isSuccess, items, status, recorte]);
 
   /** resumo já GRAVADO da conversa: aparece sem custar um run novo */
   const savedSummary = useQuery({
@@ -583,6 +654,31 @@ export function InboxPage() {
             <option value="all">Todas</option>
           </Select>
         </header>
+        <div
+          role="group"
+          aria-label="Recorte da lista"
+          className="flex flex-wrap gap-1.5 border-b border-border px-5 py-2.5"
+        >
+          <Pilula ativa={recorte === 'todas'} onClick={() => setRecorte('todas')}>
+            {ROTULO_DA_LISTA[status]}
+            {contagem !== null ? (
+              <>
+                {' · '}
+                <span className="num">{contagem}</span>
+              </>
+            ) : null}
+          </Pilula>
+          {minhaMembership ? (
+            <Pilula ativa={recorte === 'minhas'} onClick={() => setRecorte('minhas')}>
+              Minhas
+            </Pilula>
+          ) : null}
+          {canIdentify ? (
+            <Pilula ativa={recorte === 'identificar'} onClick={() => setRecorte('identificar')}>
+              A identificar
+            </Pilula>
+          ) : null}
+        </div>
 
         {canWrite ? (
           <form
@@ -690,7 +786,7 @@ export function InboxPage() {
             <li>
               <EmptyState
                 title="Nenhuma conversa aqui."
-                hint="Troque o filtro de status ou abra uma conversa nova."
+                hint="Troque o filtro ou abra uma conversa nova."
               />
             </li>
           ) : null}

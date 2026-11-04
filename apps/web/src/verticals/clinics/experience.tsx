@@ -18,6 +18,7 @@ import type { ExperienceManifest, SettingsSection } from '../../lib/experience';
 import { NAV_GROUPS, type NavGroup, type NavItem } from '../../lib/nav';
 import { alcanca, hasPermission } from '../../lib/session';
 import { buscaDeInteressados, buscaDePacientes } from './busca';
+import { ContextoClinicoDaConversa } from './ContextoClinicoDaConversa';
 import { clinicsRoutes } from './index';
 import {
   CLINICS_AGENDA_PATH,
@@ -242,4 +243,6 @@ export const clinicsExperience: ExperienceManifest = {
   linguagem: { conversas: 'Conversas', funil: 'Funil de captação' },
   // o Member padrão é a recepção da clínica (ADR-056): só o nome na tela
   papeis: { member: 'Recepção' },
+  // o contexto clínico no painel das Conversas (ADR-062, adendo 1, item 5)
+  contextoDaConversa: ContextoClinicoDaConversa,
 };
