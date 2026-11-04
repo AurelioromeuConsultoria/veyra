@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { Button } from '../components/ui/button';
 import { Input, Select } from '../components/ui/input';
 import { TagBadge } from '../components/ui/tag-badge';
-import { EmptyState, Panel } from '../components/ui/page';
+import { EmptyState, PageBody, PageHeader, Panel } from '../components/ui/page';
 import { api, ApiError } from '../lib/api';
 import { hasPermission, useSession } from '../lib/session';
 
@@ -38,12 +38,17 @@ export function TagsPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="shrink-0 border-b border-border bg-surface px-6 py-3.5">
-        <h1 className="text-display-md">Tags</h1>
-        <p className="num text-data text-muted-fg">{tags.data?.length ?? 0} no total</p>
-      </header>
+      <PageHeader
+        title="Tags"
+        meta={
+          <>
+            As etiquetas que organizam os contatos ·{' '}
+            <span className="num">{tags.data?.length ?? 0}</span> no total
+          </>
+        }
+      />
 
-      <div className="min-h-0 flex-1 overflow-auto p-6">
+      <PageBody>
         {canWrite ? (
           <form
             className="mb-6 flex items-end gap-2"
@@ -88,19 +93,19 @@ export function TagsPage() {
           <table className="w-full border-collapse text-body-sm">
             <thead>
               <tr className="border-b border-border bg-surface-2/50">
-                <th className="py-2 text-left eyebrow text-muted-fg">Tag</th>
-                <th className="py-2 text-left eyebrow text-muted-fg">Em uso</th>
+                <th className="px-5 py-2.5 text-left eyebrow text-muted-fg">Tag</th>
+                <th className="px-5 py-2.5 text-left eyebrow text-muted-fg">Em uso</th>
                 <th />
               </tr>
             </thead>
             <tbody>
               {(tags.data ?? []).map((tag) => (
                 <tr key={tag.id} className="border-b border-border/60 last:border-b-0">
-                  <td className="py-2">
+                  <td className="px-5 py-2.5">
                     <TagBadge name={tag.name} color={tag.color} />
                   </td>
-                  <td className="py-2 num text-data text-muted-fg">{tag.usageCount}</td>
-                  <td className="py-2 text-right">
+                  <td className="px-5 py-2.5 num text-data text-muted-fg">{tag.usageCount}</td>
+                  <td className="px-5 py-2.5 text-right">
                     {canWrite ? (
                       <Button
                         variant="ghost"
@@ -129,7 +134,7 @@ export function TagsPage() {
             </tbody>
           </table>
         </Panel>
-      </div>
+      </PageBody>
     </div>
   );
 }

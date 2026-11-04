@@ -9,6 +9,7 @@ import { Button } from '../../../components/ui/button';
 import { Drawer } from '../../../components/ui/drawer';
 import { Field, Input } from '../../../components/ui/input';
 import { EmptyState, Panel } from '../../../components/ui/page';
+import { StatusChip } from '../../../components/ui/status';
 import { api, ApiError } from '../../../lib/api';
 import { formatCents } from '../../../lib/format';
 import { hasPermission, useSession } from '../../../lib/session';
@@ -103,8 +104,10 @@ export function ServicesTab() {
                 <td className="px-5 py-3 num text-data">
                   {service.priceCents === null ? '—' : formatCents(service.priceCents)}
                 </td>
-                <td className="px-5 py-3 text-muted-fg">
-                  {service.archivedAt ? 'Arquivado' : 'Ativo'}
+                <td className="px-5 py-3">
+                  <StatusChip tom={service.archivedAt ? 'done' : 'confirmed'}>
+                    {service.archivedAt ? 'Arquivado' : 'Ativo'}
+                  </StatusChip>
                 </td>
                 <td className="px-5 py-3 text-right">
                   {canManage ? (

@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { UsageMetricDto, UsageOverviewDto } from '@veyra/contracts';
 import { clsx } from 'clsx';
 import { PageBody, PageHeader, Panel, PanelHeader } from '../components/ui/page';
+import { StatusChip } from '../components/ui/status';
 import { api } from '../lib/api';
 
 const dateFormat = new Intl.DateTimeFormat('pt-BR', { dateStyle: 'medium' });
@@ -94,15 +95,11 @@ export function UsagePage() {
               return (
                 <li
                   key={metric.metric}
-                  className="border-b border-border/70 px-4 py-3 last:border-b-0"
+                  className="border-b border-border/70 px-5 py-3.5 last:border-b-0"
                 >
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-body-sm font-medium">{metric.label}</span>
-                    {!metric.enforced ? (
-                      <span className="eyebrow rounded-sm border border-border px-1 py-px text-muted-fg">
-                        não cobrada
-                      </span>
-                    ) : null}
+                  <div className="flex items-center gap-2">
+                    <span className="text-[14px] font-semibold">{metric.label}</span>
+                    {!metric.enforced ? <StatusChip tom="neutral">não cobrada</StatusChip> : null}
                     <span className="num ml-auto text-data text-foreground">
                       {metric.used === null ? (
                         /* valor monetário omitido pelo servidor: mostramos

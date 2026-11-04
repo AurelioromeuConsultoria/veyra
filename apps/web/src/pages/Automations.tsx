@@ -1,11 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AutomationDto, AutomationExecutionDto, AutomationTrigger } from '@veyra/contracts';
 import { clsx } from 'clsx';
-import { Plus, Trash2, Workflow } from 'lucide-react';
+import { Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '../components/ui/button';
 import { Field, Input, Select } from '../components/ui/input';
-import { EmptyState, Panel } from '../components/ui/page';
+import { EmptyState, PageBody, PageHeader, Panel, PanelHeader } from '../components/ui/page';
+import { StatusChip, type Tom } from '../components/ui/status';
 import { api, ApiError } from '../lib/api';
 
 const dateTimeFormat = new Intl.DateTimeFormat('pt-BR', {
@@ -27,6 +28,13 @@ const statusLabels: Record<string, string> = {
   executed: 'Executada',
   skipped: 'Ignorada',
   failed: 'Falhou',
+};
+
+/** A cor do resultado (ADR-062): executada é o verde; falha, o vermelho; ignorada, neutra. */
+const TOM_DA_EXECUCAO: Record<string, Tom> = {
+  executed: 'confirmed',
+  skipped: 'neutral',
+  failed: 'missed',
 };
 
 export function AutomationsPage() {
@@ -80,17 +88,12 @@ export function AutomationsPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-surface px-6 py-3.5">
-        <Workflow size={15} className="text-muted-fg" />
-        <div>
-          <h1 className="text-display-md">Automações</h1>
-          <p className="text-data text-muted-fg">
-            Quando algo acontece, crie a tarefa certa — catálogo fechado, sem código.
-          </p>
-        </div>
-      </header>
+      <PageHeader
+        title="Automações"
+        meta="Quando algo acontece, crie a tarefa certa — catálogo fechado, sem código."
+      />
 
-      <div className="min-h-0 flex-1 overflow-auto p-6">
+      <PageBody>
         <form
           className="mb-6 flex max-w-3xl flex-wrap items-end gap-2"
           onSubmit={(e) => {
@@ -163,14 +166,16 @@ export function AutomationsPage() {
           {(automations.data ?? []).map((automation) => (
             <li
               key={automation.id}
-              className={clsx(
-                'flex items-start gap-3 rounded-md border p-3',
-                automation.enabled ? 'border-border' : 'border-border/60 opacity-60',
-              )}
+              className="flex items-center gap-3 rounded-card border border-border bg-surface px-4 py-3"
             >
-              <div className="min-w-0 flex-1">
-                <p className="text-body-sm font-medium">{automation.name}</p>
-                <p className="mt-0.5 text-xs text-muted-fg">
+              <div className={clsx('min-w-0 flex-1', !automation.enabled && 'opacity-70')}>
+                <p className="flex flex-wrap items-center gap-2 text-[14px] font-semibold">
+                  {automation.name}
+                  <StatusChip tom={automation.enabled ? 'confirmed' : 'done'}>
+                    {automation.enabled ? 'Ligada' : 'Desligada'}
+                  </StatusChip>
+                </p>
+                <p className="mt-0.5 text-[13px] text-muted-fg">
                   {triggerLabels[automation.trigger]} → criar “{automation.actionConfig.title}”
                   {automation.actionConfig.dueInDays > 0
                     ? ` em ${automation.actionConfig.dueInDays} dia(s)`
@@ -200,13 +205,13 @@ export function AutomationsPage() {
           ) : null}
         </ul>
 
-        <h2 className="mb-2 eyebrow text-muted-fg">Execuções recentes</h2>
         <Panel className="max-w-3xl">
+          <PanelHeader title="Execuções recentes" />
           <table className="w-full border-collapse text-body-sm">
             <thead>
               <tr className="border-b border-border bg-surface-2/50">
                 {['Quando', 'Automação', 'Resultado'].map((header) => (
-                  <th key={header} className="py-2 text-left eyebrow text-muted-fg">
+                  <th key={header} className="px-5 py-2.5 text-left eyebrow text-muted-fg">
                     {header}
                   </th>
                 ))}
@@ -215,20 +220,17 @@ export function AutomationsPage() {
             <tbody>
               {(executions.data ?? []).map((execution) => (
                 <tr key={execution.id} className="border-b border-border/60 last:border-b-0">
-                  <td className="whitespace-nowrap py-1.5 num text-data text-muted-fg">
+                  <td className="whitespace-nowrap px-5 py-2.5 num text-data text-muted-fg">
                     {dateTimeFormat.format(new Date(execution.createdAt))}
                   </td>
-                  <td className="py-1.5">{execution.automationName}</td>
-                  <td className="py-1.5">
-                    <span
-                      className={clsx(
-                        'text-xs',
-                        execution.status === 'executed' ? 'text-positive' : 'text-muted-fg',
-                      )}
-                    >
+                  <td className="px-5 py-2.5">{execution.automationName}</td>
+                  <td className="px-5 py-2.5">
+                    <StatusChip tom={TOM_DA_EXECUCAO[execution.status] ?? 'neutral'}>
                       {statusLabels[execution.status]}
-                      {execution.reason ? ` · ${execution.reason}` : ''}
-                    </span>
+                    </StatusChip>
+                    {execution.reason ? (
+                      <span className="ml-2 text-[13px] text-muted-fg">{execution.reason}</span>
+                    ) : null}
                   </td>
                 </tr>
               ))}
@@ -245,7 +247,7 @@ export function AutomationsPage() {
             </tbody>
           </table>
         </Panel>
-      </div>
+      </PageBody>
     </div>
   );
 }

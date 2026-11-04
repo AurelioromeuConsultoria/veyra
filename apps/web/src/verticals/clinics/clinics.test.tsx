@@ -479,6 +479,30 @@ describe('liberação para IA — porta, lista, conceder e revogar', () => {
     expect(screen.queryByRole('link', { name: /^Privacidade e IA/ })).toBeNull();
   });
 
+  it('as Configurações vêm em grupos (ADR-062), na ordem do manifesto, e o grupo sem seção ao alcance não aparece', async () => {
+    mockApi({
+      'GET /api/auth/me': {
+        body: usuario(['clinics:catalog:read', 'members:read', 'contacts:read']),
+      },
+      'GET /api/clinics/status': { body: { active: true } },
+    });
+    renderizar(<SettingsPage />, '/settings');
+    await screen.findByRole('link', { name: /^Clínica/ });
+    expect(screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)).toEqual([
+      'Clínica',
+      'Pessoas e acesso',
+      'Dados',
+    ]);
+    // cada linha leva à seção; os destinos extras ficam ao lado, sem link dentro de link
+    expect(screen.getByRole('link', { name: /^Equipe/ })).toHaveAttribute('href', '/settings/team');
+    expect(screen.getByRole('link', { name: /^Tags$/ })).toHaveAttribute('href', '/tags');
+    expect(screen.getByRole('link', { name: /^Campos$/ })).toHaveAttribute(
+      'href',
+      '/settings/fields',
+    );
+    expect(screen.queryByRole('heading', { name: 'Conta' })).toBeNull();
+  });
+
   it('"Privacidade e IA" exige as DUAS chaves da rota: só `restriction:manage`, sem `contacts:read`, não aparece', async () => {
     mockApi({
       'GET /api/auth/me': { body: usuario(['clinics:restriction:manage']) },

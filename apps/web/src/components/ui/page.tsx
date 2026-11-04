@@ -10,24 +10,91 @@ export function PageHeader({
   eyebrow,
   title,
   meta,
+  abas,
   children,
 }: {
   eyebrow?: string;
   title: string;
   meta?: ReactNode;
+  /** as abas da tela, coladas no pé do cabeçalho (ADR-062): uma faixa só, sem filete duplo */
+  abas?: ReactNode;
   children?: ReactNode;
 }) {
   return (
-    <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-3 border-b border-border bg-surface px-7 py-5">
-      <div className="mr-auto min-w-0">
-        {eyebrow ? <p className="mb-1 text-[13px] text-muted-fg">{eyebrow}</p> : null}
-        <h1 className="truncate font-display text-[26px] font-semibold leading-tight tracking-[-0.02em]">
-          {title}
-        </h1>
-        {meta ? <div className="mt-1 text-[14px] text-muted-fg">{meta}</div> : null}
+    <header
+      className={clsx('shrink-0 border-b border-border bg-surface px-7', abas ? 'pt-5' : 'py-5')}
+    >
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
+        <div className="mr-auto min-w-0">
+          {eyebrow ? <p className="mb-1 text-[13px] text-muted-fg">{eyebrow}</p> : null}
+          <h1 className="truncate font-display text-[26px] font-semibold leading-tight tracking-[-0.02em]">
+            {title}
+          </h1>
+          {meta ? <div className="mt-1 text-[14px] text-muted-fg">{meta}</div> : null}
+        </div>
+        {children}
       </div>
-      {children}
+      {abas ? <div className="mt-3.5">{abas}</div> : null}
     </header>
+  );
+}
+
+/**
+ * O estilo de UMA aba no pé do cabeçalho: o filete de 2px no acento marca a
+ * atual; as demais ficam no secundário. Serve à aba-botão (`role="tab"`) e à
+ * aba-link (navegação entre telas irmãs).
+ */
+export function classeDaAba(atual: boolean): string {
+  return clsx(
+    '-mb-px inline-flex items-center border-b-2 pb-3 pt-2 text-[14px] transition-colors duration-150',
+    atual
+      ? 'border-accent font-semibold text-foreground'
+      : 'border-transparent text-muted-fg hover:text-foreground',
+  );
+}
+
+/**
+ * Cartão de número (ADR-062): rótulo em sans, o número grande em display com
+ * algarismos tabulares, e a legenda que diz de onde ele vem. O rótulo é o
+ * `dt`; o número e as legendas, `dd` — quem envolve o cartão é um `dl`.
+ */
+export function NumeroGrande({
+  rotulo,
+  valor,
+  legenda,
+  tom = 'neutro',
+  className,
+  children,
+  ...rest
+}: {
+  rotulo: ReactNode;
+  valor: ReactNode;
+  legenda?: ReactNode;
+  /** só a cor de estado que o número já significa (falta = `missed`); nunca para enfeitar */
+  tom?: 'neutro' | 'missed';
+  className?: string;
+  children?: ReactNode;
+} & React.HTMLAttributes<HTMLDivElement>) {
+  return (
+    <div
+      className={clsx(
+        'flex flex-col gap-1.5 rounded-card border border-border bg-surface px-5 py-[18px]',
+        className,
+      )}
+      {...rest}
+    >
+      <dt className="text-[13px] text-muted-fg">{rotulo}</dt>
+      <dd
+        className={clsx(
+          'font-display text-[34px] font-semibold leading-none tracking-[-0.02em] tabular-nums',
+          tom === 'missed' && 'text-state-missed-fg',
+        )}
+      >
+        {valor}
+      </dd>
+      {legenda ? <dd className="text-[13px] text-muted-fg">{legenda}</dd> : null}
+      {children}
+    </div>
   );
 }
 

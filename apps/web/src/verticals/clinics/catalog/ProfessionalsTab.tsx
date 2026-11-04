@@ -11,7 +11,9 @@ import { useState } from 'react';
 import { Button } from '../../../components/ui/button';
 import { Drawer } from '../../../components/ui/drawer';
 import { Field, Input, Select } from '../../../components/ui/input';
+import { Avatar } from '../../../components/ui/avatar';
 import { EmptyState, Panel } from '../../../components/ui/page';
+import { StatusChip } from '../../../components/ui/status';
 import { api, ApiError } from '../../../lib/api';
 import { hasPermission, useSession } from '../../../lib/session';
 import {
@@ -148,7 +150,12 @@ export function ProfessionalsTab() {
           <tbody>
             {(professionals.data ?? []).map((professional) => (
               <tr key={professional.id} className="border-b border-border/60 last:border-b-0">
-                <td className="px-5 py-3">{professional.name}</td>
+                <td className="px-5 py-3">
+                  <span className="flex items-center gap-3">
+                    <Avatar nome={professional.name} chave={professional.id} />
+                    <span className="font-medium">{professional.name}</span>
+                  </span>
+                </td>
                 <td className="px-5 py-3 text-muted-fg">{contaLegivel(professional)}</td>
                 <td className="max-w-xs truncate px-4 py-2 text-muted-fg">
                   {professional.serviceIds
@@ -159,8 +166,10 @@ export function ProfessionalsTab() {
                 <td className="px-5 py-3 text-data text-muted-fg">
                   {horariosResumo(professional) || '—'}
                 </td>
-                <td className="px-5 py-3 text-muted-fg">
-                  {professional.archivedAt ? 'Arquivado' : 'Ativo'}
+                <td className="px-5 py-3">
+                  <StatusChip tom={professional.archivedAt ? 'done' : 'confirmed'}>
+                    {professional.archivedAt ? 'Arquivado' : 'Ativo'}
+                  </StatusChip>
                 </td>
                 <td className="px-5 py-3 text-right">
                   {canManage ? (

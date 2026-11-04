@@ -8,10 +8,12 @@ import {
 } from '@veyra/contracts';
 import { Copy, UserPlus } from 'lucide-react';
 import { useMemo, useState, type ReactNode } from 'react';
+import { Avatar } from '../components/ui/avatar';
 import { Button } from '../components/ui/button';
 import { Drawer } from '../components/ui/drawer';
 import { Field, Input, Select } from '../components/ui/input';
 import { EmptyState, PageBody, PageHeader, Panel, PanelHeader } from '../components/ui/page';
+import { StatusChip, type Tom } from '../components/ui/status';
 import { api, ApiError } from '../lib/api';
 import { useNomeDoPapel } from '../lib/experience';
 import { hasPermission, useSession } from '../lib/session';
@@ -28,6 +30,13 @@ const ESTADO: Record<MemberDto['status'], string> = {
   active: 'Ativo',
   suspended: 'Suspenso',
   removed: 'Removido',
+};
+
+/** A cor do estado (ADR-062): ativo é o verde; suspenso pede atenção; removido é passado. */
+const TOM_DO_ESTADO: Record<MemberDto['status'], Tom> = {
+  active: 'confirmed',
+  suspended: 'pending',
+  removed: 'done',
 };
 
 /** O papel cabe nas permissões de quem opera? Só orientação: o servidor confere. */
@@ -170,14 +179,25 @@ export function TeamPage() {
                 return (
                   <tr key={m.membershipId} className="border-b border-border/60 last:border-b-0">
                     <td className="px-5 py-3">
-                      <span className="font-medium">{m.name || m.email}</span>
-                      {sou ? <span className="ml-2 text-data-sm text-muted-fg">(você)</span> : null}
-                      <span className="block num text-data-sm text-muted-fg">{m.email}</span>
+                      <span className="flex items-center gap-3">
+                        <Avatar nome={m.name || m.email} chave={m.userId} />
+                        <span className="min-w-0">
+                          <span className="font-medium">{m.name || m.email}</span>
+                          {sou ? (
+                            <span className="ml-2 text-data-sm text-muted-fg">(você)</span>
+                          ) : null}
+                          <span className="block num text-data-sm text-muted-fg">{m.email}</span>
+                        </span>
+                      </span>
                     </td>
                     <td className="px-5 py-3">
-                      {nomeDoPapel({ name: m.roleName, systemKey: m.roleSystemKey })}
+                      <StatusChip tom="neutral">
+                        {nomeDoPapel({ name: m.roleName, systemKey: m.roleSystemKey })}
+                      </StatusChip>
                     </td>
-                    <td className="px-5 py-3 text-data">{ESTADO[m.status]}</td>
+                    <td className="px-5 py-3">
+                      <StatusChip tom={TOM_DO_ESTADO[m.status]}>{ESTADO[m.status]}</StatusChip>
+                    </td>
                     <td className="px-5 py-3 num text-data text-muted-fg">{data(m.createdAt)}</td>
                     <td className="px-5 py-3 text-right">
                       {!podeGerir || !papeis.data ? null : sou ? (
@@ -251,7 +271,9 @@ export function TeamPage() {
                       <tr key={c.id} className="border-b border-border/60 last:border-b-0">
                         <td className="px-5 py-3 num text-data">{c.email}</td>
                         <td className="px-5 py-3">
-                          {nomeDoPapel({ name: c.roleName, systemKey: c.roleSystemKey })}
+                          <StatusChip tom="neutral">
+                            {nomeDoPapel({ name: c.roleName, systemKey: c.roleSystemKey })}
+                          </StatusChip>
                         </td>
                         <td className="px-5 py-3 text-data text-muted-fg">
                           {c.issuedByProvisioning
@@ -260,11 +282,14 @@ export function TeamPage() {
                               ? (nomeDoMembro.get(c.createdByMembershipId) ?? 'Ex-membro')
                               : '—'}
                         </td>
-                        <td className="px-5 py-3 text-data">
+                        <td className="px-5 py-3">
+                          {/* vencido é o vermelho de "falta ou vencido"; aguardando, o âmbar */}
                           {expirado ? (
-                            <span className="text-warning">Expirou em {dataHora(c.expiresAt)}</span>
+                            <StatusChip tom="missed">Expirou em {dataHora(c.expiresAt)}</StatusChip>
                           ) : (
-                            <>Aguardando aceite até {dataHora(c.expiresAt)}</>
+                            <StatusChip tom="pending">
+                              Aguardando aceite até {dataHora(c.expiresAt)}
+                            </StatusChip>
                           )}
                         </td>
                         <td className="px-5 py-3 text-right">
@@ -394,9 +419,9 @@ function NovoConvite({
         {criado ? (
           <div
             data-testid="link-do-convite"
-            className="rounded-md border border-accent/40 bg-accent/5 p-3"
+            className="rounded-card border border-accent/40 bg-accent/5 p-4"
           >
-            <p className="text-xs font-medium uppercase tracking-wider text-accent">
+            <p className="text-[14px] font-semibold text-accent">
               Link do convite para {criado.email}: copie agora
             </p>
             <p className="mt-1 text-data text-muted-fg">

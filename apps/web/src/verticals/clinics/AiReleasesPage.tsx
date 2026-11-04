@@ -64,7 +64,7 @@ export function ClinicsAiReleasesPage() {
     }[efetivo];
     return (
       <div className="flex h-full flex-col">
-        <PageHeader eyebrow="Clínica" title="Liberação para IA" />
+        <PageHeader title="Liberação para IA" />
         <EmptyState title={mensagem.title} hint={mensagem.hint} />
       </div>
     );
@@ -92,15 +92,14 @@ function ReleasesReady() {
   return (
     <div className="flex h-full flex-col">
       <PageHeader
-        eyebrow="Clínica"
         title="Liberação para IA"
         meta="Contatos sem relação clínica que a inteligência pode ler."
       >
-        <Button variant="primary" size="sm" onClick={() => setGranting(true)}>
+        <Button variant="primary" onClick={() => setGranting(true)}>
           <Plus size={14} /> Liberar contato
         </Button>
       </PageHeader>
-      <div className="min-h-0 flex-1 overflow-auto p-6">
+      <div className="min-h-0 flex-1 overflow-auto p-7">
         <div className="mb-4 max-w-3xl space-y-1.5 text-body-sm text-muted-fg">
           <p>
             Com o Clinics ativo, a IA não lê conversas nem dados de nenhum contato. Libere apenas

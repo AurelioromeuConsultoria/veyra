@@ -1493,6 +1493,43 @@ describe('taxa de faltas', () => {
     const resumo = await screen.findByLabelText('Taxa de faltas');
     expect(within(resumo).getByText(taxa)).toBeInTheDocument();
     expect(within(resumo).getByText(detalhe)).toBeInTheDocument();
+    // fora da conta, à parte, cada um no seu cartão; a próxima ação só com pendência
+    expect(within(resumo).getByText('Passados sem desfecho').nextSibling).toHaveTextContent(
+      String(dado.pendingPast),
+    );
+    expect(within(resumo).getByText('Cancelados').nextSibling).toHaveTextContent(
+      String(dado.canceled),
+    );
+    const resolver = within(resumo).queryByRole('link', { name: 'Resolver na agenda' });
+    if (dado.pendingPast > 0) expect(resolver).toHaveAttribute('href', '/clinics/agenda');
+    else expect(resolver).toBeNull();
+  });
+
+  it('as abas dos Indicadores: as irmãs do menu ao alcance do papel, com a atual marcada', async () => {
+    mockApi({
+      'GET /api/auth/me': { body: usuario(RECEPCAO) },
+      ...catalogo,
+      'GET /api/clinics/metrics/no-show': {
+        body: {
+          from: '2030-10-06',
+          to: '2030-11-05',
+          unitId: U,
+          attended: 1,
+          noShow: 0,
+          rate: 0,
+          pendingPast: 0,
+          canceled: 0,
+        },
+      },
+    });
+    renderizar(<ClinicsNoShowPage />, '/clinics/no-show');
+    const abas = within(await screen.findByRole('navigation', { name: 'Abas de Indicadores' }));
+    expect(abas.getAllByRole('link').map((l) => l.textContent)).toEqual(['Faltas', 'Envios']);
+    expect(abas.getByRole('link', { name: 'Faltas' })).toHaveAttribute('aria-current', 'page');
+    expect(abas.getByRole('link', { name: 'Envios' })).toHaveAttribute(
+      'href',
+      '/clinics/outreach-metrics',
+    );
   });
 
   it('a RECARGA que falha: nenhum número antigo', async () => {
@@ -1518,6 +1555,8 @@ describe('taxa de faltas', () => {
     });
     renderizar(<ClinicsNoShowPage />, '/clinics/no-show');
     expect(await screen.findByText('25 %')).toBeInTheDocument();
+    // o período por extenso fica junto dos números (ADR-062)
+    expect(screen.getByTestId('periodo-das-faltas')).toHaveTextContent(/^De \d\d\/\d\d\/\d{4} a /);
     falhar = true;
     recarregar();
     expect(await screen.findByRole('alert')).toHaveTextContent('Falhou');

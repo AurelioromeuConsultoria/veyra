@@ -27,6 +27,12 @@ export type SettingsSection = {
   permissions?: readonly string[];
   /** outros destinos da mesma seção ("Etiquetas e campos": as Tags e os Campos) */
   destinos?: readonly { to: string; label: string }[];
+  /**
+   * o grupo da página de configurações ("Pessoas e acesso", "Dados"), ADR-062.
+   * Só apresentação: os grupos aparecem na ordem da primeira seção de cada um,
+   * e o grupo sem nenhuma seção ao alcance do papel não aparece.
+   */
+  grupo?: string;
 };
 
 /**

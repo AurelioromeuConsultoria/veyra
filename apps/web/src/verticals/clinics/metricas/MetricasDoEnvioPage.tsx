@@ -13,12 +13,13 @@ import {
 import { useState, type ReactNode } from 'react';
 import { AvisoDeEnvioSimulado } from '../../../components/envio-simulado';
 import { Field, Input, Select } from '../../../components/ui/input';
-import { PageHeader, Panel } from '../../../components/ui/page';
+import { EmptyState, PageHeader, Panel } from '../../../components/ui/page';
 import { api, ApiError, toQuery } from '../../../lib/api';
 import { hasPermission, useSession } from '../../../lib/session';
-import { PortaDaClinica } from '../continuidade';
+import { dataCurta, PortaDaClinica } from '../continuidade';
 import { MOTIVO_DA_ETAPA, useEnvioSimuladoDaClinica } from '../envios/rotulos';
 import { taxaLegivel } from '../NoShowPage';
+import { useAbasDosIndicadores } from './AbasDosIndicadores';
 
 /**
  * As métricas do envio (F4.4; ADR-048 adendos 8 e 10): o funil da
@@ -61,23 +62,41 @@ function MetricasReady() {
     queryKey: ['clinics', 'catalog', 'units'],
     queryFn: () => api.get<ClinicsUnitDto[]>('/api/clinics/units'),
   });
-  if (unidades.isError) {
-    return (
-      <p role="alert" className="p-6 text-data text-negative">
-        Não foi possível carregar as unidades.
-      </p>
-    );
-  }
-  if (!unidades.data) return <p className="p-6 text-body-sm text-muted-fg">Carregando…</p>;
-  if (unidades.data.length === 0) {
-    return (
-      <div className="flex h-full flex-col">
-        <PageHeader eyebrow="Clínica" title="Métricas do envio" />
-        <p className="p-6 text-body-sm text-muted-fg">Nenhuma unidade ativa.</p>
-      </div>
-    );
-  }
-  return <Metricas unidades={unidades.data} />;
+  if (!unidades.isError && unidades.data && unidades.data.length > 0)
+    return <Metricas unidades={unidades.data} />;
+  // a carga, o erro e o vazio moram DENTRO da página, sob o cabeçalho (ADR-062)
+  return (
+    <div className="flex h-full flex-col">
+      <CabecalhoDasMetricas />
+      {unidades.isError ? (
+        <p role="alert" className="p-7 text-[13.5px] text-negative">
+          Não foi possível carregar as unidades.
+        </p>
+      ) : !unidades.data ? (
+        <p className="p-7 text-[13.5px] text-muted-fg">Carregando…</p>
+      ) : (
+        <EmptyState
+          title="Nenhuma unidade ativa."
+          hint="As métricas são contadas por unidade. Cadastre a unidade nas Configurações, em Clínica."
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * O cabeçalho dos indicadores (ADR-062): o título e as abas irmãs. O grupo
+ * ("Indicadores") já está no rastro do cabeçalho do produto: sem eco aqui.
+ */
+function CabecalhoDasMetricas() {
+  const abas = useAbasDosIndicadores();
+  return (
+    <PageHeader
+      title="Métricas do envio"
+      meta="Pelo início do agendamento, em datas locais da unidade. Associação, não causa."
+      abas={abas}
+    />
+  );
 }
 
 function Metricas({ unidades }: { unidades: ClinicsUnitDto[] }) {
@@ -96,12 +115,8 @@ function Metricas({ unidades }: { unidades: ClinicsUnitDto[] }) {
 
   return (
     <div className="flex h-full flex-col">
-      <PageHeader
-        eyebrow="Clínica"
-        title="Métricas do envio"
-        meta="Pelo início do agendamento, em datas locais da unidade. Associação, não causa."
-      />
-      <div className="min-h-0 flex-1 space-y-4 overflow-auto p-6">
+      <CabecalhoDasMetricas />
+      <div className="min-h-0 flex-1 space-y-5 overflow-auto p-7">
         <AvisoDeEnvioSimulado simulado={simulado} />
         <div className="flex flex-wrap items-end gap-3">
           {unidades.length > 1 ? (
@@ -134,17 +149,24 @@ function Metricas({ unidades }: { unidades: ClinicsUnitDto[] }) {
           </Field>
         </div>
         {!pronto ? (
-          <p className="text-data text-muted-fg">
+          <p className="text-[13.5px] text-muted-fg">
             Escolha a unidade e um período em que o início venha antes do fim.
           </p>
         ) : (
           <>
+            {/* o período por extenso, com o último dia INCLUÍDO: o "até" exclusivo
+                do filtro não vira dúvida na hora de ler os números */}
+            <p className="text-[13.5px] text-muted-fg" data-testid="periodo-das-metricas">
+              De <span className="num">{dataCurta(periodo.de)}</span> a{' '}
+              <span className="num">{dataCurta(somarDias(periodo.ate, -1))}</span>, pelo início do
+              agendamento.
+            </p>
             <Funil consulta={consulta} simulado={simulado} />
             {lePipelines ? (
               <Conversao consulta={consulta} />
             ) : (
               <Panel>
-                <p className="p-5 text-data text-muted-fg" data-testid="conversao-sem-acesso">
+                <p className="p-5 text-[13.5px] text-muted-fg" data-testid="conversao-sem-acesso">
                   A conversão exige ler os pipelines.
                 </p>
               </Panel>
@@ -170,8 +192,8 @@ function Bloco({
 }) {
   return (
     <Panel>
-      <section aria-label={rotulo} className="space-y-4 p-5">
-        <h2 className="font-display text-[17px] font-semibold">{titulo}</h2>
+      <section aria-label={rotulo} className="space-y-5 px-5 pb-5 pt-4">
+        <h2 className="font-display text-[17px] font-semibold tracking-[-0.01em]">{titulo}</h2>
         {children}
       </section>
     </Panel>
@@ -180,20 +202,37 @@ function Bloco({
 
 function Erro({ erro, padrao }: { erro: unknown; padrao: string }) {
   return (
-    <p role="alert" className="text-data text-negative">
+    <p role="alert" className="text-[13.5px] text-negative">
       {erro instanceof ApiError ? erro.message : padrao}
     </p>
   );
 }
 
-function Numero({ rotulo, valor, nota }: { rotulo: string; valor: string; nota?: string }) {
+/**
+ * Um número do bloco (ADR-062): rótulo em sans, o número em display com
+ * algarismos tabulares e a legenda logo abaixo. Dentro do painel, sem cartão
+ * dentro de cartão: o respiro separa um número do outro.
+ */
+function Numero({
+  rotulo,
+  valor,
+  nota,
+  ajuda,
+  ...rest
+}: {
+  rotulo: string;
+  valor: string;
+  nota?: string;
+  ajuda?: string;
+} & React.HTMLAttributes<HTMLDivElement>) {
   return (
-    <div>
-      <dt className="eyebrow text-muted-fg">{rotulo}</dt>
-      <dd className="num mt-1 font-display text-[32px] font-semibold leading-none tracking-[-0.02em]">
+    <div className="flex flex-col gap-1.5" {...rest}>
+      <dt className="text-[13px] text-muted-fg">{rotulo}</dt>
+      <dd className="font-display text-[28px] font-semibold leading-none tracking-[-0.02em] tabular-nums">
         {valor}
       </dd>
-      {nota ? <dd className="text-data text-muted-fg">{nota}</dd> : null}
+      {nota ? <dd className="text-[13px] text-muted-fg">{nota}</dd> : null}
+      {ajuda ? <dd className="text-[12.5px] text-muted-fg">{ajuda}</dd> : null}
     </div>
   );
 }
@@ -209,14 +248,7 @@ function Etapa({
 }) {
   const { valor, nota } = etapaLegivel(etapa);
   return (
-    <div data-status={etapa.status}>
-      <dt className="eyebrow text-muted-fg">{rotulo}</dt>
-      <dd className="num mt-1 font-display text-[32px] font-semibold leading-none tracking-[-0.02em]">
-        {valor}
-      </dd>
-      <dd className="text-data text-muted-fg">{nota}</dd>
-      {ajuda ? <dd className="text-data text-muted-fg">{ajuda}</dd> : null}
-    </div>
+    <Numero data-status={etapa.status} rotulo={rotulo} valor={valor} nota={nota} ajuda={ajuda} />
   );
 }
 
@@ -245,10 +277,10 @@ function Funil({ consulta, simulado }: { consulta: Consulta; simulado: boolean |
       {funil.isError ? (
         <Erro erro={funil.error} padrao="Não foi possível calcular o funil." />
       ) : null}
-      {funil.isPending ? <p className="text-data text-muted-fg">Calculando…</p> : null}
+      {funil.isPending ? <p className="text-[13.5px] text-muted-fg">Calculando…</p> : null}
       {f ? (
         <>
-          <dl className="grid gap-4 sm:grid-cols-3">
+          <dl className="grid gap-x-6 gap-y-5 sm:grid-cols-3">
             <Numero
               rotulo="Agendamentos"
               valor={String(f.base)}
@@ -277,7 +309,7 @@ function Funil({ consulta, simulado }: { consulta: Consulta; simulado: boolean |
             />
             <Numero rotulo="Sem envio" valor={String(semEnvio)} />
           </dl>
-          <dl className="grid gap-4 border-t border-border pt-4 sm:grid-cols-3">
+          <dl className="grid gap-x-6 gap-y-5 border-t border-border pt-5 sm:grid-cols-3">
             <Etapa
               rotulo="Entregues"
               etapa={f.delivered}
@@ -294,9 +326,9 @@ function Funil({ consulta, simulado }: { consulta: Consulta; simulado: boolean |
               ajuda="Confirmação registrada depois do envio e antes do início."
             />
           </dl>
-          <div className="space-y-1 border-t border-border pt-4">
-            <p className="eyebrow text-muted-fg">Faltas por grupo (associação, não causa)</p>
-            <dl className="grid gap-4 sm:grid-cols-3">
+          <div className="space-y-3 border-t border-border pt-5">
+            <h3 className="text-[14px] font-semibold">Faltas por grupo (associação, não causa)</h3>
+            <dl className="grid gap-x-6 gap-y-5 sm:grid-cols-3">
               <Numero rotulo="Faltas com envio" valor={faltaLegivel(f.noShowBySendGroup.sent)} />
               <Numero
                 rotulo="Faltas nos incertos"
@@ -336,7 +368,7 @@ function Conversao({ consulta }: { consulta: Consulta }) {
   const c = conversao.isError ? null : (conversao.data ?? null);
   return (
     <Bloco titulo="Conversão" rotulo="Conversão">
-      <p className="text-data text-muted-fg">
+      <p className="text-[13.5px] text-muted-fg">
         As oportunidades do pipeline criadas no período que tiveram um agendamento vinculado, por
         vínculo válido, criado depois delas e atendido na janela. O estado da oportunidade (ganha,
         perdida ou aberta) não muda a conta. A base é a do pipeline; a unidade só define o fuso das
@@ -360,7 +392,7 @@ function Conversao({ consulta }: { consulta: Consulta }) {
       ) : null}
       {c ? (
         <>
-          <dl className="grid gap-4 sm:grid-cols-3">
+          <dl className="grid gap-x-6 gap-y-5 sm:grid-cols-3">
             <Numero
               rotulo="Taxa"
               valor={taxaLegivel(c.rate)}
@@ -372,7 +404,7 @@ function Conversao({ consulta }: { consulta: Consulta }) {
             />
             <Numero rotulo="Janela" valor={`${c.windowDays} dias`} />
           </dl>
-          <p className="text-data" data-testid="situacao-da-conversao">
+          <p className="text-[13.5px]" data-testid="situacao-da-conversao">
             {SITUACAO_DA_JANELA[c.status]}
           </p>
         </>
@@ -390,7 +422,7 @@ function Reativacao({ consulta }: { consulta: Consulta }) {
   const r = reativacao.isError ? null : (reativacao.data ?? null);
   return (
     <Bloco titulo="Retorno depois da reativação" rotulo="Retorno depois da reativação">
-      <p className="text-data text-muted-fg">
+      <p className="text-[13.5px] text-muted-fg">
         Pacientes com reativação enviada no período que voltaram a ser atendidos na janela.
         Associação temporal, não causa; a soma de períodos não é um total de pacientes.
       </p>
@@ -399,7 +431,7 @@ function Reativacao({ consulta }: { consulta: Consulta }) {
       ) : null}
       {r ? (
         <>
-          <dl className="grid gap-4 sm:grid-cols-3">
+          <dl className="grid gap-x-6 gap-y-5 sm:grid-cols-3">
             <Numero
               rotulo="Taxa"
               valor={taxaLegivel(r.rate)}
@@ -416,7 +448,7 @@ function Reativacao({ consulta }: { consulta: Consulta }) {
             />
             <Numero rotulo="Janela" valor={`${r.windowDays} dias`} />
           </dl>
-          <p className="text-data" data-testid="situacao-da-reativacao">
+          <p className="text-[13.5px]" data-testid="situacao-da-reativacao">
             {SITUACAO_DA_JANELA[r.status]}
           </p>
         </>

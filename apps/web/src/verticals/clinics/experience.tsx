@@ -42,7 +42,8 @@ function iconeDoCore(to: string): NavItem['icon'] {
 
 /**
  * As seções das Configurações da clínica (ADR-055, adendo 3, item 6), cada uma
- * com TODAS as chaves da rota dela.
+ * com TODAS as chaves da rota dela. A ordem e os grupos são os do redesenho
+ * (ADR-062): Clínica, Pessoas e acesso, Dados e Conta.
  */
 const CONFIGURACOES: readonly SettingsSection[] = [
   {
@@ -51,6 +52,7 @@ const CONFIGURACOES: readonly SettingsSection[] = [
     description: 'Unidade, serviços, profissionais e horários.',
     icon: ClipboardList,
     permission: 'clinics:catalog:read',
+    grupo: 'Clínica',
   },
   SECOES_DO_CORE.equipe,
   {
@@ -61,13 +63,7 @@ const CONFIGURACOES: readonly SettingsSection[] = [
     // a tela e a rota exigem as duas (a pendência da E-2, adendo 4)
     permission: 'clinics:restriction:manage',
     permissions: ['contacts:read'],
-  },
-  {
-    ...SECOES_DO_CORE.webhooks,
-    label: 'Integrações',
-    description: 'Webhooks para outros sistemas.',
-    icon: Plug,
-    destinos: [{ to: SECOES_DO_CORE.webhooks.to, label: 'Webhooks' }],
+    grupo: 'Pessoas e acesso',
   },
   {
     to: SECOES_DO_CORE.tags.to,
@@ -75,13 +71,22 @@ const CONFIGURACOES: readonly SettingsSection[] = [
     description: 'Tags e campos personalizados dos contatos.',
     icon: SECOES_DO_CORE.tags.icon,
     permission: 'contacts:read',
+    grupo: 'Dados',
     destinos: [
       { to: SECOES_DO_CORE.tags.to, label: 'Tags' },
       { to: SECOES_DO_CORE.campos.to, label: 'Campos' },
     ],
   },
-  SECOES_DO_CORE.uso,
   SECOES_DO_CORE.auditoria,
+  SECOES_DO_CORE.uso,
+  {
+    ...SECOES_DO_CORE.webhooks,
+    label: 'Integrações',
+    description: 'Webhooks para outros sistemas.',
+    icon: Plug,
+    grupo: 'Conta',
+    destinos: [{ to: SECOES_DO_CORE.webhooks.to, label: 'Webhooks' }],
+  },
 ];
 
 /**

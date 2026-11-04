@@ -13,6 +13,7 @@ export const SECOES_DO_CORE = {
     description: 'Membros, papéis, convites e o acesso de cada pessoa.',
     icon: UserCog,
     permission: 'members:read',
+    grupo: 'Pessoas e acesso',
   },
   tags: {
     to: '/tags',
@@ -20,6 +21,7 @@ export const SECOES_DO_CORE = {
     description: 'As etiquetas que organizam os contatos.',
     icon: Tags,
     permission: 'contacts:read',
+    grupo: 'Dados',
   },
   campos: {
     to: '/settings/fields',
@@ -27,6 +29,7 @@ export const SECOES_DO_CORE = {
     description: 'Os campos customizados dos contatos.',
     icon: Settings2,
     permission: 'contacts:read',
+    grupo: 'Dados',
   },
   automacoes: {
     to: '/settings/automations',
@@ -34,6 +37,7 @@ export const SECOES_DO_CORE = {
     description: 'Regras que agem quando algo acontece.',
     icon: Workflow,
     permission: 'automations:manage',
+    grupo: 'Automação e integrações',
   },
   webhooks: {
     to: '/settings/webhooks',
@@ -41,6 +45,7 @@ export const SECOES_DO_CORE = {
     description: 'Integrações que recebem os eventos do workspace.',
     icon: Webhook,
     permission: 'webhooks:manage',
+    grupo: 'Automação e integrações',
   },
   uso: {
     to: '/settings/usage',
@@ -48,6 +53,7 @@ export const SECOES_DO_CORE = {
     description: 'O plano aplicado, o consumo e os limites.',
     icon: Gauge,
     permission: 'workspace:read',
+    grupo: 'Conta',
   },
   auditoria: {
     to: '/audit',
@@ -55,6 +61,7 @@ export const SECOES_DO_CORE = {
     description: 'A trilha de quem alterou o quê.',
     icon: ScrollText,
     permission: 'audit:read',
+    grupo: 'Dados',
   },
 } satisfies Record<string, SettingsSection>;
 

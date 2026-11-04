@@ -10,9 +10,10 @@ import {
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Field, Input, Select } from '../../components/ui/input';
-import { PageHeader, Panel } from '../../components/ui/page';
+import { EmptyState, NumeroGrande, PageHeader } from '../../components/ui/page';
 import { api, ApiError, toQuery } from '../../lib/api';
-import { PortaDaClinica } from './continuidade';
+import { dataCurta, PortaDaClinica } from './continuidade';
+import { useAbasDosIndicadores } from './metricas/AbasDosIndicadores';
 import { CLINICS_AGENDA_PATH } from './nav';
 
 /**
@@ -45,26 +46,26 @@ function FaltasReady() {
     queryKey: ['clinics', 'catalog', 'units'],
     queryFn: () => api.get<ClinicsUnitDto[]>('/api/clinics/units'),
   });
-  if (unidades.isError) {
-    return (
-      <div className="flex h-full flex-col">
-        <PageHeader eyebrow="Clínica" title="Faltas" />
-        <p role="alert" className="p-6 text-data text-negative">
+  if (!unidades.isError && unidades.data && unidades.data.length > 0)
+    return <Faltas unidades={unidades.data} />;
+  // a carga, o erro e o vazio moram DENTRO da página, sob o cabeçalho (ADR-062)
+  return (
+    <div className="flex h-full flex-col">
+      <CabecalhoDasFaltas />
+      {unidades.isError ? (
+        <p role="alert" className="p-7 text-[13.5px] text-negative">
           Não foi possível carregar as unidades.
         </p>
-      </div>
-    );
-  }
-  if (!unidades.data) return <p className="p-6 text-body-sm text-muted-fg">Carregando…</p>;
-  if (unidades.data.length === 0) {
-    return (
-      <div className="flex h-full flex-col">
-        <PageHeader eyebrow="Clínica" title="Faltas" />
-        <p className="p-6 text-body-sm text-muted-fg">Nenhuma unidade ativa.</p>
-      </div>
-    );
-  }
-  return <Faltas unidades={unidades.data} />;
+      ) : !unidades.data ? (
+        <p className="p-7 text-[13.5px] text-muted-fg">Carregando…</p>
+      ) : (
+        <EmptyState
+          title="Nenhuma unidade ativa."
+          hint="As faltas são contadas por unidade. Cadastre a unidade nas Configurações, em Clínica."
+        />
+      )}
+    </div>
+  );
 }
 
 function Faltas({ unidades }: { unidades: ClinicsUnitDto[] }) {
@@ -109,12 +110,8 @@ function Faltas({ unidades }: { unidades: ClinicsUnitDto[] }) {
 
   return (
     <div className="flex h-full flex-col">
-      <PageHeader
-        eyebrow="Clínica"
-        title="Faltas"
-        meta="Faltas sobre atendidos + faltas, pelo início do agendamento."
-      />
-      <div className="min-h-0 flex-1 space-y-4 overflow-auto p-6">
+      <CabecalhoDasFaltas />
+      <div className="min-h-0 flex-1 space-y-5 overflow-auto p-7">
         <div className="flex flex-wrap items-end gap-3">
           {unidades.length > 1 ? (
             <Field label="Unidade">
@@ -177,43 +174,70 @@ function Faltas({ unidades }: { unidades: ClinicsUnitDto[] }) {
               : 'Não foi possível calcular a taxa de faltas.'}
           </p>
         ) : null}
-        {pronto && taxa.isPending ? <p className="text-data text-muted-fg">Calculando…</p> : null}
+        {pronto && taxa.isPending ? (
+          <p className="text-[13.5px] text-muted-fg">Calculando…</p>
+        ) : null}
         {dado ? (
-          <Panel>
-            <dl aria-label="Taxa de faltas" className="grid gap-4 p-5 sm:grid-cols-2">
-              <div>
-                <dt className="eyebrow text-muted-fg">Taxa de faltas</dt>
-                <dd className="num mt-1 font-display text-[40px] font-semibold leading-none tracking-[-0.02em] text-state-missed-fg">
-                  {taxaLegivel(dado.rate)}
-                </dd>
-                <dd className="text-data text-muted-fg">
-                  {dado.rate === null
+          <section className="space-y-2.5">
+            {/* o período por extenso, com o último dia INCLUÍDO: o "até" exclusivo
+                do filtro não vira dúvida na hora de ler o número */}
+            <p className="text-[13.5px] text-muted-fg" data-testid="periodo-das-faltas">
+              De <span className="num">{dataCurta(periodo.de)}</span> a{' '}
+              <span className="num">{dataCurta(somarDias(periodo.ate, -1))}</span>, pelo início do
+              agendamento
+              {profissional || servico ? ', com os filtros acima' : ''}.
+            </p>
+            <dl aria-label="Taxa de faltas" className="grid gap-3.5 sm:grid-cols-3">
+              <NumeroGrande
+                rotulo="Taxa de faltas"
+                valor={taxaLegivel(dado.rate)}
+                tom={dado.noShow > 0 ? 'missed' : 'neutro'}
+                legenda={
+                  dado.rate === null
                     ? 'Nenhum atendido nem falta no período.'
-                    : `${dado.noShow} ${dado.noShow === 1 ? 'falta' : 'faltas'} em ${denominador} (atendidos + faltas)`}
-                </dd>
-              </div>
-              <div>
-                <dt className="eyebrow text-muted-fg">Fora da conta</dt>
-                <dd className="text-data">
-                  {dado.pendingPast} {dado.pendingPast === 1 ? 'passado' : 'passados'} sem desfecho
-                  {dado.pendingPast > 0 ? (
-                    <>
-                      {' '}
-                      ·{' '}
-                      <Link to={CLINICS_AGENDA_PATH} className="underline">
-                        resolver na agenda
-                      </Link>
-                    </>
-                  ) : null}
-                </dd>
-                <dd className="text-data">
-                  {dado.canceled} {dado.canceled === 1 ? 'cancelado' : 'cancelados'}
-                </dd>
-              </div>
+                    : `${dado.noShow} ${dado.noShow === 1 ? 'falta' : 'faltas'} em ${denominador} (atendidos + faltas)`
+                }
+              />
+              <NumeroGrande
+                rotulo="Passados sem desfecho"
+                valor={String(dado.pendingPast)}
+                legenda="Ainda marcados, confirmados ou chegados: fora da conta até o registro."
+              >
+                {dado.pendingPast > 0 ? (
+                  <dd>
+                    <Link
+                      to={CLINICS_AGENDA_PATH}
+                      className="text-[13.5px] font-semibold text-accent hover:underline"
+                    >
+                      Resolver na agenda
+                    </Link>
+                  </dd>
+                ) : null}
+              </NumeroGrande>
+              <NumeroGrande
+                rotulo="Cancelados"
+                valor={String(dado.canceled)}
+                legenda="À parte: o cancelado não é falta nem atendimento."
+              />
             </dl>
-          </Panel>
+          </section>
         ) : null}
       </div>
     </div>
+  );
+}
+
+/**
+ * O cabeçalho dos indicadores (ADR-062): o título e as abas irmãs. O grupo
+ * ("Indicadores") já está no rastro do cabeçalho do produto: sem eco aqui.
+ */
+function CabecalhoDasFaltas() {
+  const abas = useAbasDosIndicadores();
+  return (
+    <PageHeader
+      title="Faltas"
+      meta="Faltas sobre atendidos + faltas, pelo início do agendamento."
+      abas={abas}
+    />
   );
 }

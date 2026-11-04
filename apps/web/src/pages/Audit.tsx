@@ -2,7 +2,8 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import type { AuditEntryDto, AuditPageDto } from '@veyra/contracts';
 import { useState } from 'react';
 import { Select } from '../components/ui/input';
-import { EmptyState, Panel } from '../components/ui/page';
+import { Avatar } from '../components/ui/avatar';
+import { EmptyState, PageBody, PageHeader, Panel } from '../components/ui/page';
 import { api, toQuery } from '../lib/api';
 
 const dateTimeFormat = new Intl.DateTimeFormat('pt-BR', {
@@ -49,13 +50,10 @@ export function AuditPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-surface px-6 py-3.5">
-        <div className="mr-auto">
-          <h1 className="text-display-md">Auditoria</h1>
-          <p className="text-data text-muted-fg">
-            Registro append-only de quem alterou o quê — só campos auditáveis.
-          </p>
-        </div>
+      <PageHeader
+        title="Auditoria"
+        meta="Registro append-only de quem alterou o quê — só campos auditáveis."
+      >
         <Select
           size="sm"
           value={entityType}
@@ -69,15 +67,15 @@ export function AuditPage() {
             </option>
           ))}
         </Select>
-      </header>
+      </PageHeader>
 
-      <div className="min-h-0 flex-1 overflow-auto p-6">
+      <PageBody>
         <Panel>
           <table className="w-full border-collapse text-body-sm">
             <thead>
               <tr className="border-b border-border bg-surface-2/50">
                 {['Quando', 'Quem', 'Ação', 'Entidade', 'Mudança'].map((header) => (
-                  <th key={header} className="eyebrow px-5 py-3 text-left text-muted-fg">
+                  <th key={header} className="eyebrow px-5 py-2.5 text-left text-muted-fg">
                     {header}
                   </th>
                 ))}
@@ -86,20 +84,30 @@ export function AuditPage() {
             <tbody>
               {items.map((entry) => (
                 <tr key={entry.id} className="border-b border-border/60 last:border-b-0">
-                  <td className="whitespace-nowrap px-5 py-1.5 num text-data text-muted-fg">
+                  <td className="whitespace-nowrap px-5 py-2.5 num text-data text-muted-fg">
                     {dateTimeFormat.format(new Date(entry.createdAt))}
                   </td>
-                  <td className="px-5 py-3">
-                    {entry.actorLabel ?? '—'}
-                    {entry.actorType !== 'user' ? (
-                      <span className="ml-1 text-data-sm text-muted-fg">({entry.actorType})</span>
-                    ) : null}
+                  <td className="px-5 py-2.5">
+                    <span className="inline-flex items-center gap-2">
+                      {/* rosto só para pessoa: sistema e integração não têm iniciais */}
+                      {entry.actorType === 'user' && entry.actorLabel ? (
+                        <Avatar nome={entry.actorLabel} tamanho="sm" />
+                      ) : null}
+                      <span>
+                        {entry.actorLabel ?? '—'}
+                        {entry.actorType !== 'user' ? (
+                          <span className="ml-1 text-data-sm text-muted-fg">
+                            ({entry.actorType})
+                          </span>
+                        ) : null}
+                      </span>
+                    </span>
                   </td>
-                  <td className="px-5 py-3 num text-data">{entry.action}</td>
-                  <td className="px-5 py-3">
+                  <td className="px-5 py-2.5 num text-data">{entry.action}</td>
+                  <td className="px-5 py-2.5">
                     {entityLabels[entry.entityType] ?? entry.entityType}
                   </td>
-                  <td className="max-w-md truncate px-5 py-1.5 text-muted-fg" title={diff(entry)}>
+                  <td className="max-w-md truncate px-5 py-2.5 text-muted-fg" title={diff(entry)}>
                     {diff(entry)}
                   </td>
                 </tr>
@@ -117,7 +125,7 @@ export function AuditPage() {
             </tbody>
           </table>
         </Panel>
-      </div>
+      </PageBody>
     </div>
   );
 }

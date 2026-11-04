@@ -5,7 +5,8 @@ import { Copy, Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { Button } from '../components/ui/button';
 import { Field, Input } from '../components/ui/input';
-import { EmptyState, Panel } from '../components/ui/page';
+import { EmptyState, PageBody, PageHeader, Panel } from '../components/ui/page';
+import { StatusChip, type Tom } from '../components/ui/status';
 import { api, ApiError } from '../lib/api';
 
 const allEvents = webhookEventSchema.options;
@@ -14,6 +15,13 @@ const statusLabels: Record<string, string> = {
   active: 'Ativo',
   paused: 'Pausado',
   disabled: 'Desativado',
+};
+
+/** A cor do estado (ADR-062): ativo é o verde de "confirmado"; o resto pede atenção. */
+const statusTons: Record<string, Tom> = {
+  active: 'confirmed',
+  paused: 'pending',
+  disabled: 'missed',
 };
 
 export function WebhooksPage() {
@@ -55,20 +63,18 @@ export function WebhooksPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="shrink-0 border-b border-border bg-surface px-6 py-3.5">
-        <h1 className="text-display-md">Webhooks</h1>
-        <p className="text-data text-muted-fg">
-          Entrega assinada (HMAC), com retry e pausa automática após falhas.
-        </p>
-      </header>
+      <PageHeader
+        title="Webhooks"
+        meta="Entrega assinada (HMAC), com retry e pausa automática após falhas."
+      />
 
-      <div className="min-h-0 flex-1 overflow-auto p-6">
+      <PageBody>
         {freshSecret ? (
-          <div className="mb-5 rounded-md border border-accent/40 bg-accent/5 p-3">
-            <p className="text-xs font-medium uppercase tracking-wider text-accent">
-              Segredo de assinatura — copie agora
+          <div className="mb-5 max-w-4xl rounded-card border border-accent/40 bg-accent/5 p-4">
+            <p className="text-[14px] font-semibold text-accent">
+              Segredo de assinatura: copie agora
             </p>
-            <p className="mt-1 text-xs text-muted-fg">
+            <p className="mt-1 text-[13px] text-muted-fg">
               Ele não será exibido de novo. Use para validar o header{' '}
               <code className="font-mono">x-veyra-signature</code>.
             </p>
@@ -155,7 +161,10 @@ export function WebhooksPage() {
             <thead>
               <tr className="border-b border-border bg-surface-2/50">
                 {['URL', 'Eventos', 'Status', 'Falhas', ''].map((header, i) => (
-                  <th key={`${header}-${i}`} className="py-2 text-left eyebrow text-muted-fg">
+                  <th
+                    key={`${header}-${i}`}
+                    className="px-5 py-2.5 text-left eyebrow text-muted-fg"
+                  >
                     {header}
                   </th>
                 ))}
@@ -164,20 +173,19 @@ export function WebhooksPage() {
             <tbody>
               {(webhooks.data ?? []).map((webhook) => (
                 <tr key={webhook.id} className="border-b border-border/60 last:border-b-0">
-                  <td className="max-w-xs truncate py-2 num text-data">{webhook.url}</td>
-                  <td className="py-2 text-xs text-muted-fg">{webhook.events.join(', ')}</td>
-                  <td className="py-2">
-                    <span
-                      className={clsx(
-                        'text-xs',
-                        webhook.status === 'active' ? 'text-positive' : 'text-warning',
-                      )}
-                    >
-                      {statusLabels[webhook.status]}
-                    </span>
+                  <td className="max-w-xs truncate px-5 py-2.5 num text-data">{webhook.url}</td>
+                  <td className="px-5 py-2.5 num text-data-sm text-muted-fg">
+                    {webhook.events.join(', ')}
                   </td>
-                  <td className="py-2 num text-data text-muted-fg">{webhook.failureCount}</td>
-                  <td className="py-2 text-right">
+                  <td className="px-5 py-2.5">
+                    <StatusChip tom={statusTons[webhook.status] ?? 'neutral'}>
+                      {statusLabels[webhook.status]}
+                    </StatusChip>
+                  </td>
+                  <td className="px-5 py-2.5 num text-data text-muted-fg">
+                    {webhook.failureCount}
+                  </td>
+                  <td className="whitespace-nowrap px-5 py-2.5 text-right">
                     <Button size="sm" variant="ghost" onClick={() => toggle.mutate(webhook)}>
                       {webhook.status === 'active' ? 'Pausar' : 'Reativar'}
                     </Button>
@@ -207,7 +215,7 @@ export function WebhooksPage() {
             </tbody>
           </table>
         </Panel>
-      </div>
+      </PageBody>
     </div>
   );
 }

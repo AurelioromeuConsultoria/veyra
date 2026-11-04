@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { Button } from '../components/ui/button';
 import { Drawer } from '../components/ui/drawer';
 import { Field, Input, Select } from '../components/ui/input';
-import { EmptyState, Panel } from '../components/ui/page';
+import { EmptyState, PageBody, PageHeader, Panel } from '../components/ui/page';
 import { api, ApiError } from '../lib/api';
 import { hasPermission, useSession } from '../lib/session';
 
@@ -55,21 +55,18 @@ export function CustomFieldsPage() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-surface px-6 py-3.5">
-        <div className="mr-auto">
-          <h1 className="text-display-md">Campos personalizados</h1>
-          <p className="text-data text-muted-fg">
-            Estenda contatos e empresas sem tocar no modelo — a base dos verticais.
-          </p>
-        </div>
+      <PageHeader
+        title="Campos personalizados"
+        meta="O que é próprio da sua operação, na ficha de contatos e empresas."
+      >
         {canManage ? (
-          <Button variant="primary" size="sm" onClick={() => setOpen(true)}>
+          <Button variant="primary" onClick={() => setOpen(true)}>
             <Plus size={14} /> Novo campo
           </Button>
         ) : null}
-      </header>
+      </PageHeader>
 
-      <div className="min-h-0 flex-1 overflow-auto p-6">
+      <PageBody>
         <Panel>
           <table className="w-full border-collapse text-body-sm">
             <thead>
@@ -133,7 +130,7 @@ export function CustomFieldsPage() {
             </tbody>
           </table>
         </Panel>
-      </div>
+      </PageBody>
 
       <Drawer open={open} onOpenChange={setOpen} title="Novo campo personalizado">
         <FieldForm

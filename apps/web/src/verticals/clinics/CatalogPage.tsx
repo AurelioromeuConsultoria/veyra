@@ -1,6 +1,5 @@
-import { clsx } from 'clsx';
 import { useSearchParams } from 'react-router-dom';
-import { EmptyState, PageHeader } from '../../components/ui/page';
+import { classeDaAba, EmptyState, PageHeader } from '../../components/ui/page';
 import { useClinicsAccess } from './access';
 import { ProfessionalsTab } from './catalog/ProfessionalsTab';
 import { ServicesTab } from './catalog/ServicesTab';
@@ -41,7 +40,7 @@ export function ClinicsCatalogPage() {
     }[access];
     return (
       <div className="flex h-full flex-col">
-        <PageHeader eyebrow="Clínica" title="Catálogo" />
+        <PageHeader title="Catálogo" />
         <EmptyState title={mensagem.title} hint={mensagem.hint} />
       </div>
     );
@@ -57,41 +56,34 @@ function CatalogReady() {
 
   return (
     <div className="flex h-full flex-col">
+      {/* o rastro do cabeçalho já diz "Configurações › Clínica": sem eco no título (ADR-062) */}
       <PageHeader
-        eyebrow="Clínica"
         title="Catálogo"
         meta="Serviços, profissionais e horários de atendimento da clínica."
+        abas={
+          <div role="tablist" aria-label="Partes do catálogo" className="flex gap-6">
+            {TABS.map((t) => (
+              <button
+                key={t.key}
+                type="button"
+                role="tab"
+                id={`aba-${t.key}`}
+                aria-controls="painel-catalogo"
+                aria-selected={tab === t.key}
+                onClick={() => setParams({ aba: t.key }, { replace: true })}
+                className={classeDaAba(tab === t.key)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        }
       />
-      <div
-        role="tablist"
-        aria-label="Partes do catálogo"
-        className="flex gap-1 border-b border-border bg-surface px-6"
-      >
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            role="tab"
-            id={`aba-${t.key}`}
-            aria-controls="painel-catalogo"
-            aria-selected={tab === t.key}
-            onClick={() => setParams({ aba: t.key }, { replace: true })}
-            className={clsx(
-              '-mb-px border-b-2 px-3 py-2 text-body-sm transition-colors',
-              tab === t.key
-                ? 'border-accent font-medium text-foreground'
-                : 'border-transparent text-muted-fg hover:text-foreground',
-            )}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
       <div
         role="tabpanel"
         id="painel-catalogo"
         aria-labelledby={`aba-${tab}`}
-        className="min-h-0 flex-1 overflow-auto p-6"
+        className="min-h-0 flex-1 overflow-auto p-7"
       >
         {tab === 'servicos' ? <ServicesTab /> : null}
         {tab === 'profissionais' ? <ProfessionalsTab /> : null}
