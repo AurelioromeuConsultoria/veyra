@@ -2850,3 +2850,27 @@ O usuário entra e troca para o workspace Demonstração. Depois:
   - a decisão clínica nos retornos.
 
   Pela integração (`clinics-care-scope`, 16 cenários), pelo web e pelo e2e, e pelo CI verde.
+
+### A F5.3b no ar (2026-11-04)
+
+- **A publicação:** `62ff3f9`, pelo job `Staging` do run 41853049568, com os quatro jobs verdes.
+  - Inclui `5df01a5` (a F5.3b, ADR-061 adendos 2 e 3), `5618cd6` (o adendo 4) e `62ff3f9`.
+  - **O primeiro CI**, do `5618cd6` (run 41848845119), falhou em 1 de 1338 testes. O teste do livro da F5.3a contava as linhas de todas as chaves, e passou a contar só a dele. Nada foi publicado com a falha.
+  - Sem migration e sem variável nova.
+- **Conferido no `demo`,** pela sessão do Owner, só com leituras:
+  - **A chave `clinics:patient-content:read`:** concedida pelo preenchimento automático a Owner (36 → 37 chaves), Admin (35 → 36) e "Recepção e atendimento" (23 → 24).
+  - **Os outros papéis:** Member (20), Guest (7) e Profissional (5) ficaram como estavam, sem a chave. Member e Profissional têm `clinics:schedule:read`; o Guest não tem.
+  - **A paciente "Gabriela Demonstração":** não tem notas nem tarefas, e a timeline dela tem só "criou o contato". Nada foi criado para a conferência.
+- **NÃO conferido no `demo`:**
+  - a ficha vista pela recepção (Member). O `demo` não tem uma conta com esse papel;
+  - a regra uniforme do Guest.
+- **Validado pelos testes, e não no `demo`:**
+  - "Conteúdo restrito" para a recepção e o interessado normal;
+  - a regra uniforme para quem não tem a agenda, também só com a chave da leitura;
+  - a desativação;
+  - o workspace sem o Clinics;
+  - a corrida entre mover a tarefa e converter o contato;
+  - a automação da mesma linha;
+  - a recusa da exclusão em cascata.
+
+  Pela integração (`clinics-patient-content`, 20 cenários), pelo web e pelo CI verde.
