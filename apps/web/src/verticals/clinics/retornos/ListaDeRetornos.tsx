@@ -48,6 +48,20 @@ export interface FiltrosDeRetorno {
 /** O teto que a tela pede (o servidor aceita até 200): mais que isso, avisa. */
 export const TETO_DOS_RETORNOS = 100;
 
+/**
+ * A consulta da lista de retornos. Exportada para o resumo da ficha ler a MESMA
+ * consulta (a mesma chave): nenhum pedido a mais, e as duas partes concordam.
+ */
+export function useRetornos(filtros: FiltrosDeRetorno) {
+  return useQuery({
+    queryKey: [...RETURNS_KEY, 'list', filtros],
+    queryFn: () =>
+      api.get<ClinicsReturnDto[]>(
+        `/api/clinics/returns${toQuery({ ...filtros, limit: TETO_DOS_RETORNOS + 1 })}`,
+      ),
+  });
+}
+
 type Acao =
   | { kind: 'vincular'; retorno: ClinicsReturnDto }
   | { kind: 'atribuir'; retorno: ClinicsReturnDto }
@@ -81,13 +95,7 @@ export function ListaDeRetornos({
     queryKey: ['clinics', 'catalog', 'units'],
     queryFn: () => api.get<ClinicsUnitDto[]>('/api/clinics/units'),
   });
-  const retornos = useQuery({
-    queryKey: [...RETURNS_KEY, 'list', filtros],
-    queryFn: () =>
-      api.get<ClinicsReturnDto[]>(
-        `/api/clinics/returns${toQuery({ ...filtros, limit: TETO_DOS_RETORNOS + 1 })}`,
-      ),
-  });
+  const retornos = useRetornos(filtros);
   const fusoDe = (unitId: string) => unidades.data?.find((u) => u.id === unitId)?.timezone ?? null;
   const desvincular = useMutation({
     mutationFn: (id: string) => api.post(`/api/clinics/returns/${id}/unlink`),

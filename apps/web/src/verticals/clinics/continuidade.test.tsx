@@ -1,7 +1,7 @@
 import { QueryClientProvider, type QueryClient } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { vi } from 'vitest';
 import { ExperienceProvider } from '../../lib/experience';
 import { clinicsExperience } from './experience';
@@ -892,6 +892,9 @@ describe('ficha do paciente', () => {
     expect(await screen.findByRole('heading', { name: 'Paciente Fictícia' })).toBeInTheDocument();
     expect(await screen.findByRole('region', { name: 'Retornos do paciente' })).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Pacotes do paciente' })).toBeNull();
+    // nem a aba nem o resumo dos pacotes
+    expect(screen.queryByRole('tab', { name: 'Pacotes' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Pacotes ativos' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Novo retorno' })).toBeNull();
     await waitFor(() =>
       expect(chamadas.some((c) => c.chave.includes('/api/clinics/returns'))).toBe(true),
@@ -1081,6 +1084,122 @@ describe('ficha do paciente', () => {
   });
 });
 
+describe('ficha do paciente — abas e resumo (ADR-062)', () => {
+  const ficha = (permissoes: string[], extra: Record<string, Rota> = {}) =>
+    mockApi({
+      'GET /api/auth/me': { body: usuario(permissoes) },
+      ...catalogo,
+      [`GET /api/clinics/patients/${PAC}`]: {
+        body: { id: PAC, name: 'Paciente Fictícia', createdAt: '2030-01-01T00:00:00Z' },
+      },
+      'GET /api/clinics/returns': { body: [retorno()] },
+      ...extra,
+    });
+  /** a URL da tela, para conferir o `?aba=` sem perder o `?id=` */
+  function Endereco() {
+    return <output data-testid="endereco">{useLocation().search}</output>;
+  }
+
+  it('só as abas que a pessoa pode ver; a primeira abre; as setas trocam, e a URL guarda a aba sem perder o id', async () => {
+    ficha(PROFISSIONAL, { 'GET /api/clinics/packages': { body: [pacote(P1)] } });
+    renderizar(
+      <>
+        <ClinicsPatientPage />
+        <Endereco />
+      </>,
+      `/clinics/patient?id=${PAC}`,
+    );
+    const abas = await screen.findAllByRole('tab');
+    // sem contato vinculado, nem notas nem contato
+    expect(abas.map((a) => a.textContent)).toEqual(['Pacotes', 'Retornos']);
+    const pacotes = screen.getByRole('tab', { name: 'Pacotes' });
+    expect(pacotes).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tabpanel')).toHaveAccessibleName('Pacotes');
+    expect(await screen.findByRole('region', { name: 'Pacotes do paciente' })).toBeInTheDocument();
+
+    fireEvent.keyDown(pacotes, { key: 'ArrowRight' });
+    const retornos = screen.getByRole('tab', { name: 'Retornos' });
+    expect(retornos).toHaveAttribute('aria-selected', 'true');
+    expect(retornos).toHaveFocus();
+    expect(screen.getByRole('region', { name: 'Retornos do paciente' })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Pacotes do paciente' })).toBeNull();
+    const busca = new URLSearchParams(screen.getByTestId('endereco').textContent ?? '');
+    expect(busca.get('id')).toBe(PAC);
+    expect(busca.get('aba')).toBe('retornos');
+    // a seta passa do fim e volta ao começo
+    fireEvent.keyDown(retornos, { key: 'ArrowRight' });
+    expect(screen.getByRole('tab', { name: 'Pacotes' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('`?aba=pacotes` sem `care:read` cai na primeira aba, e nenhuma consulta a pacotes sai', async () => {
+    const chamadas = ficha(RECEPCAO, { 'GET /api/clinics/packages': { body: [pacote(P1)] } });
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}&aba=pacotes`);
+    expect(await screen.findByRole('tab', { name: 'Retornos' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(await screen.findByRole('region', { name: 'Retornos do paciente' })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(chamadas.some((c) => c.chave.includes('/api/clinics/returns'))).toBe(true),
+    );
+    expect(aPacotes(chamadas)).toEqual([]);
+  });
+
+  it('o resumo: os retornos pendentes (o vencido marcado) e os pacotes ATIVOS com as sessões; a mesma consulta da aba', async () => {
+    const chamadas = ficha(PROFISSIONAL, {
+      'GET /api/clinics/returns': {
+        body: [
+          retorno({ overdue: true, dueDate: '2030-10-01' }),
+          retorno({ id: 'r2', status: 'done', serviceName: 'Peeling', serviceId: S2 }),
+        ],
+      },
+      'GET /api/clinics/packages': {
+        body: [
+          pacote(P1),
+          pacote(P2, { status: 'completed', consumedSessions: 10, remainingSessions: 0 }),
+        ],
+      },
+    });
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    const resumo = await screen.findByRole('complementary', { name: 'Resumo do paciente' });
+    const pendentes = within(resumo).getByRole('region', { name: 'Retornos pendentes' });
+    expect(await within(pendentes).findByText('Limpeza')).toBeInTheDocument();
+    expect(within(pendentes).getByText('01/10/2030')).toBeInTheDocument();
+    expect(within(pendentes).getByText('Vencido')).toBeInTheDocument();
+    // o concluído não é pendente
+    expect(within(pendentes).queryByText('Peeling')).toBeNull();
+
+    const ativos = within(resumo).getByRole('region', { name: 'Pacotes ativos' });
+    expect(
+      await within(ativos).findByRole('img', { name: '3 de 10 sessões usadas' }),
+    ).toBeInTheDocument();
+    expect(within(ativos).getAllByRole('listitem')).toHaveLength(1);
+    // aba e resumo dividem a consulta: um pedido de pacotes só
+    expect(aPacotes(chamadas)).toHaveLength(1);
+
+    // "Ver retornos" leva à aba
+    fireEvent.click(within(resumo).getByRole('button', { name: 'Ver retornos' }));
+    expect(screen.getByRole('tab', { name: 'Retornos' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('a falha dos pacotes no resumo não mostra dado antigo', async () => {
+    let falhar = false;
+    ficha(PROFISSIONAL, {
+      'GET /api/clinics/packages': () =>
+        falhar ? { status: 500, body: { message: 'x' } } : { body: [pacote(P1)] },
+    });
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    const ativos = await screen.findByRole('region', { name: 'Pacotes ativos' });
+    expect(
+      await within(ativos).findByRole('img', { name: '3 de 10 sessões usadas' }),
+    ).toBeInTheDocument();
+    falhar = true;
+    recarregar();
+    expect(await within(ativos).findByText('Pacotes indisponíveis agora.')).toBeInTheDocument();
+    expect(within(ativos).queryByRole('img')).toBeNull();
+  });
+});
+
 describe('ficha do paciente — notas e tarefas (F5.3b)', () => {
   const CONTATO = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e31';
   const CHAVE = 'clinics:patient-content:read';
@@ -1119,7 +1238,11 @@ describe('ficha do paciente — notas e tarefas (F5.3b)', () => {
     });
   const aConteudo = (chamadas: { chave: string }[]) =>
     chamadas.filter((c) => /\/api\/(tasks|notes)/.test(c.chave));
-  const regiao = () => screen.findByRole('region', { name: 'Notas e tarefas do paciente' });
+  // as notas ficam na aba delas (ADR-062): abrir a aba e achar a seção
+  const regiao = async () => {
+    fireEvent.click(await screen.findByRole('tab', { name: 'Notas e tarefas' }));
+    return screen.findByRole('region', { name: 'Notas e tarefas do paciente' });
+  };
 
   it('a recepção (com tasks:read, sem a chave): "Conteúdo restrito" e NENHUMA consulta a notas ou tarefas', async () => {
     const chamadas = ficha([...RECEPCAO, 'tasks:read']);
@@ -1157,6 +1280,7 @@ describe('ficha do paciente — notas e tarefas (F5.3b)', () => {
     renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
     expect(await screen.findByRole('region', { name: 'Retornos do paciente' })).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Notas e tarefas do paciente' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: 'Notas e tarefas' })).toBeNull();
     expect(aConteudo(chamadas)).toEqual([]);
   });
 });

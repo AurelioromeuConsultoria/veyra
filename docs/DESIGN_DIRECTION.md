@@ -63,6 +63,7 @@ A direção "Mineral" foi revista a pedido do usuário. As regras abaixo **preva
 - **Mono só para dado:** hora, data, número e identificador. Rótulo, cabeçalho de tabela e título de seção ficam em sans. O `eyebrow` mono em caixa alta não é mais rótulo.
 - **Avatar com iniciais,** com cor estável por pessoa.
 - **Cada tela abre com a próxima ação.** A carga nunca ocupa a tela inteira: a moldura aparece primeiro.
+- **Abas** (`components/ui/tabs.tsx`): padrão WAI-ARIA com setas, Home e End; a aba ativa vai na URL (`?aba=`), sem tirar os outros parâmetros. Só existem as abas que a pessoa pode ver, e a aba fechada não é montada, então não consulta nada. A ficha do paciente usa abas para o corpo e um resumo ao lado. O resumo usa só as consultas que a ficha já faz, com as mesmas chaves.
 
 ## 4. Cor — paleta fechada e disciplina
 

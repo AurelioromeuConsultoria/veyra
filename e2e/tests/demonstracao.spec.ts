@@ -56,6 +56,8 @@ test.describe('A demonstração: o envio da clínica de ponta a ponta, simulado'
       await login(page, OWNER_DEMO, 'Pacientes');
       await page.getByRole('link', { name: PACIENTE_DEMO }).click();
       await expect(page.getByRole('heading', { name: PACIENTE_DEMO, level: 1 })).toBeVisible();
+      // o contato e o consentimento ficam na aba Contato da ficha (ADR-062)
+      await page.getByRole('tab', { name: 'Contato' }).click();
       const secao = page.getByTestId('consentimentos-do-contato');
       await expect(secao).toContainText(NUMERO_DEMO);
       await secao.getByLabel('Canal do consentimento').selectOption({ label: CANAL_DEMO });

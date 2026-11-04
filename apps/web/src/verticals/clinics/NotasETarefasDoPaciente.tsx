@@ -42,7 +42,7 @@ export function NotasETarefasDoPaciente({ contactId }: { contactId: string }) {
   );
   return (
     <section aria-label="Notas e tarefas do paciente" className="space-y-2">
-      <h2 className="text-display-sm">Notas e tarefas</h2>
+      <h2 className="font-display text-[17px] font-semibold tracking-[-0.01em]">Notas e tarefas</h2>
       {!leConteudo || recusado ? (
         <Panel className="p-4 text-body-sm">
           <p className="font-medium">Conteúdo restrito</p>

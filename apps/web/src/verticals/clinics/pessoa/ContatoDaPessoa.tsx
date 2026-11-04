@@ -61,7 +61,7 @@ export function ContatoDaPessoa({ contactId }: { contactId: string }) {
   return (
     <section aria-label="Contato" className="space-y-4">
       <div className="flex items-center justify-between">
-        <h2 className="text-display-sm">Contato</h2>
+        <h2 className="font-display text-[17px] font-semibold tracking-[-0.01em]">Contato</h2>
         {/* a edição congela o contato como está na tela: só com ele carregado sem
             erro e sem releitura em andamento (a base não é um cache velho) */}
         {editaContato && contato.data && !contato.isError && !contato.isFetching ? (
