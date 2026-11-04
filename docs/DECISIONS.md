@@ -10710,3 +10710,13 @@ O que o canvas mostra como conceito, sem suporte no produto, NÃO entra sem deci
 **Alternativas.** Endpoints novos dedicados para a ficha e a Semana: duplicariam a autorização de campo do `appointments`. Montar as séries de faltas no web com uma chamada por semana ou por profissional: N chamadas e a conta espalhada. Mostrar o contexto clínico no Core: viola o Core sem verticais. Executar a remarcação direto pela IA: viola a regra de que ação externa é proposta.
 
 **Consequências.** A parte A mexe em consultas que leem dados de pacientes e na lista de conversas: os testes de isolamento e de conteúdo protegido acompanham cada rota. A parte B cria um ponto de extensão e uma capacidade de IA: pede evals, `reviewer` e `security`.
+
+**Resultado da parte A (2026-11-04).** Publicada no staging com o `a9552e3` (CI verde, `Staging` conferido), depois de `reviewer` e `security`: agendamentos por paciente e por intervalo, Semana, faltas agrupadas, filtros "Minhas" e "A identificar", contexto clínico por composição e a ficha com próximo horário, atendimentos, consentimento, Origem e atalhos.
+
+**A parte B, trocada (decisão do usuário, 2026-11-04: "pode seguir com a 3").** A sugestão "Remarcar" com IA não roda no Clinics: todo agendamento é de um paciente, e paciente é sempre restrito para a IA, com ou sem liberação (ADR-048 adendo 3 e §6.3, SECURITY §7-C.10). Com as travas aprovadas, ela seria recusada em todo caso; liberar a IA sobre dado de paciente pede ADR próprio, consentimento específico e avaliação jurídica, e mexe no B1. No lugar:
+
+- **"Remarcar" como sugestão determinística, sem IA.** No contexto clínico da conversa, o próximo agendamento do paciente e 2 a 3 horários livres do mesmo profissional e serviço, calculados pelo serviço de agenda no servidor. O clique remarca pela rota que já existe (`POST /api/clinics/appointments/:id/reschedule`), com `clinics:schedule:write` e a auditoria dela.
+- **Leitura dos horários livres:** com `clinics:schedule:read`, a mesma chave que já mostra a agenda inteira do profissional; nenhuma permissão nova, nenhum dado vai para provedor de IA, sem migration e sem E9.
+- **Rótulo "Sugestão", sem o selo de IA:** ninguém usou IA, e rotular como IA seria proveniência falsa.
+- **O limite:** sem ler o texto, ela não detecta o pedido; aparece sempre que o paciente tem agendamento futuro remarcável e quem olha pode escrever na agenda. O gatilho pelo texto (palavras como "remarcar") fica para depois.
+- O desenho do E9 e da migration do `AiProposalType` (o valor genérico `extension_action` e a coluna da chave) fica registrado aqui e só entra se a IA sobre dado de paciente for decidida.
