@@ -209,7 +209,7 @@ Política obrigatória para `FileObject`:
           - quem tem as duas chaves opera como sempre.
         - **A repetição com a mesma chave** (contato, oportunidade, tarefa e registro de mensagem, este com os anexos e o marcador reprojetados) devolve a resposta guardada com a máscara de hoje, ou a recusa, sem executar de novo (adendo 6).
         - **O marcador da mídia restrita** é o genérico `[anexo]`, que não revela o tipo.
-        - **Em aberto (adendo 6, item 3):** a mídia antiga de uma conversa de paciente rejeitada por quem tem as chaves e depois identificada como interessado volta a abrir. A preservação depende de decisão do usuário.
+        - **A mídia histórica (adendo 6, item 3):** rejeitar ou desfazer o remetente de uma conversa de paciente com mídia, mesmo com o download pendente, é recusado a todos os papéis, preservando o remetente, o número e o arquivo. **Pendência obrigatória antes do piloto:** o procedimento seguro para corrigir uma atribuição errada.
         - **Ficam na F5.3d:** a trilha (`file.*` com `fileName`, `deal.*` com `title`), a busca e a exportação.
       - **A desativação do Clinics** tira de todos as chaves do vertical, mas a presença fica. Até a reativação, todos, inclusive o Owner, ficam na regra uniforme, e ninguém exclui contatos. Reativar só recompõe as permissões aplicáveis (a matriz nos papéis de sistema). A política de exclusão de pacientes é pendência do B3.
       - **Ainda abertos (F5.3d):** a busca, a exportação e a trilha. Os anexos e a mídia, os campos personalizados e o título da oportunidade passaram para a F5.3c, abaixo.

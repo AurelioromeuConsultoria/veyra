@@ -530,24 +530,133 @@ describe('Clinics — mídia, campos e título de pacientes (integração, F5.3c
       paciente,
     );
     expect((await midiaVista(recepcao, conversa, arquivo)).download).toBe(404);
-    // quem tem as chaves rejeita; a RAI fica na dúvida (restrita) para a recepção…
-    await post(`/api/conversations/${conversa}/sender/reject`, owner, {
-      removeNumber: false,
-    }).expect(201);
-    expect((await midiaVista(recepcao, conversa, arquivo)).download).toBe(404);
-    // …que não a identifica como um contato novo (o paciente é candidato do número)
-    const novo = await post(`/api/conversations/${conversa}/sender/identify`, recepcao, {
+    // a recepção também não identifica uma RAI do número como um contato novo
+    // (o paciente é candidato) — mas como o próprio paciente, sim
+    const rai = await conversaDoNumero(null, await subir());
+    const novo = await post(`/api/conversations/${rai}/sender/identify`, recepcao, {
       newContact: { name: 'Outra pessoa' },
     }).expect(403);
     expect(novo.body.message).toMatch(/Conteúdo restrito/);
-    expect((await midiaVista(recepcao, conversa, arquivo)).download).toBe(404);
-    // identificar como o próprio paciente segue possível — e a mídia, restrita
-    await post(`/api/conversations/${conversa}/sender/identify`, recepcao, {
+    await post(`/api/conversations/${rai}/sender/identify`, recepcao, {
       contactId: paciente,
     }).expect(201);
-    expect((await midiaVista(recepcao, conversa, arquivo)).download).toBe(404);
     // desfazer a identificação (feita por pessoa) também é recusado à recepção
-    await post(`/api/conversations/${conversa}/sender/unidentify`, recepcao).expect(403);
+    await post(`/api/conversations/${rai}/sender/unidentify`, recepcao).expect(403);
+  });
+
+  it('mídia histórica (adendo 6): a conversa de paciente com mídia não volta à RAI para NENHUM papel — remetente, número e arquivo preservados', async () => {
+    await comNumero(paciente);
+    const arquivo = await subir();
+    const conversa = await conversaDoNumero(paciente, arquivo);
+    for (const removeNumber of [false, true]) {
+      const r = await post(`/api/conversations/${conversa}/sender/reject`, owner, {
+        removeNumber,
+      }).expect(409);
+      expect(r.body.message).toMatch(/não pode voltar a remetente a identificar/);
+    }
+    const depois = await prisma.raw.conversation.findFirst({ where: { id: conversa } });
+    expect(depois).toMatchObject({ contactId: paciente, senderStatus: 'identified' });
+    expect((await prisma.raw.contact.findFirst({ where: { id: paciente } }))?.phones).toEqual([
+      NUMERO,
+    ]);
+    expect(await prisma.raw.fileObject.count({ where: { id: arquivo } })).toBe(1);
+    expect((await midiaVista(owner, conversa, arquivo)).download).toBe(200);
+
+    // desfazer: a RAI com mídia identificada como o paciente por quem tem as chaves
+    const rai = await conversaDoNumero(null, await subir());
+    await post(`/api/conversations/${rai}/sender/identify`, owner, { contactId: paciente }).expect(
+      201,
+    );
+    await post(`/api/conversations/${rai}/sender/unidentify`, owner).expect(409);
+    expect((await prisma.raw.conversation.findFirst({ where: { id: rai } }))?.contactId).toBe(
+      paciente,
+    );
+  });
+
+  it('mídia histórica (adendo 6): o download ainda pendente também bloqueia; sem mídia, quem tem as chaves rejeita como sempre', async () => {
+    await comNumero(paciente);
+    const canal = await prisma.raw.channel.create({
+      data: { workspaceId: ws.workspaceId, type: 'whatsapp', name: 'WhatsApp pendente' },
+    });
+    const pendente = await prisma.raw.conversation.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        channelId: canal.id,
+        contactId: paciente,
+        externalAddress: NUMERO,
+        senderStatus: 'identified',
+      },
+    });
+    const msg = await prisma.raw.message.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        conversationId: pendente.id,
+        channelId: canal.id,
+        direction: 'inbound',
+        authorType: 'contact',
+        body: '[audio]',
+      },
+    });
+    // a mídia chegou, mas o download não aconteceu: sem arquivo nem anexo
+    await prisma.raw.inboundMedia.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        messageId: msg.id,
+        providerMediaId: 'midia-pendente',
+        mimeType: 'audio/ogg',
+      },
+    });
+    await post(`/api/conversations/${pendente.id}/sender/reject`, owner, {
+      removeNumber: false,
+    }).expect(409);
+    // a conversa do paciente SEM mídia: rejeitar segue possível a quem tem as chaves
+    const canal2 = await prisma.raw.channel.create({
+      data: { workspaceId: ws.workspaceId, type: 'whatsapp', name: 'WhatsApp texto' },
+    });
+    const soTexto = await prisma.raw.conversation.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        channelId: canal2.id,
+        contactId: paciente,
+        externalAddress: NUMERO,
+        senderStatus: 'identified',
+      },
+    });
+    await post(`/api/conversations/${soTexto.id}/sender/reject`, owner, {
+      removeNumber: false,
+    }).expect(201);
+    // a conversa do INTERESSADO com mídia: fora do bloqueio, rejeitar segue
+    await enviar('patch', `/api/contacts/${interessado}`, owner, {
+      phones: ['+5511955554444'],
+    }).expect(200);
+    const canal3 = await prisma.raw.channel.create({
+      data: { workspaceId: ws.workspaceId, type: 'whatsapp', name: 'WhatsApp interessado' },
+    });
+    const doInteressado = await prisma.raw.conversation.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        channelId: canal3.id,
+        contactId: interessado,
+        externalAddress: '+5511955554444',
+        senderStatus: 'identified',
+      },
+    });
+    const msgI = await prisma.raw.message.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        conversationId: doInteressado.id,
+        channelId: canal3.id,
+        direction: 'inbound',
+        authorType: 'contact',
+        body: '[image]',
+      },
+    });
+    await prisma.raw.messageAttachment.create({
+      data: { workspaceId: ws.workspaceId, messageId: msgI.id, fileObjectId: await subir() },
+    });
+    await post(`/api/conversations/${doInteressado.id}/sender/reject`, owner, {
+      removeNumber: false,
+    }).expect(201);
   });
 
   it('RAI: número compartilhado com um paciente — a recepção não identifica a conversa com mídia como o interessado; quem tem as chaves, sim', async () => {

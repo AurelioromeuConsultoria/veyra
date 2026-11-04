@@ -70,6 +70,10 @@ const MENSAGEM_MUDOU = 'A conversa acabou de mudar. Recarregue e tente de novo.'
  * estão, e a auditoria não é apagada. Só a ATRIBUIÇÃO ao contato, que nas
  * mensagens novas vem da conversa (C12).
  */
+/** A recusa de levar à RAI a conversa protegida com mídia (ADR-061, adendo 6). */
+export const MENSAGEM_MIDIA_PROTEGIDA =
+  'Esta conversa tem mídia de um contato protegido e não pode voltar a remetente a identificar. A correção de uma atribuição errada ainda não está disponível.';
+
 @Injectable()
 export class ConversationSenderService {
   constructor(
@@ -247,6 +251,32 @@ export class ConversationSenderService {
     if (comMidia > 0) throw new ForbiddenException(CONTEUDO_RESTRITO);
   }
 
+  /**
+   * A MÍDIA HISTÓRICA de uma conversa protegida (ADR-061, adendo 6): a
+   * proteção é derivada do contato ATUAL da conversa, e nada guarda de quem ela
+   * era quando a mídia chegou. Levar à RAI a conversa de um contato protegido
+   * que tem mídia — anexada ou ainda pendente de download — e depois
+   * identificá-la como outro reabriria essa mídia. Por isso, em workspace
+   * sujeito, desfazer e rejeitar são recusados a TODOS os papéis nessa
+   * conversa, antes de qualquer mudança: o remetente, o número e o arquivo
+   * ficam como estão. Quem não pode saber quem é protegido já recebeu, antes,
+   * a recusa uniforme. O procedimento seguro para corrigir uma atribuição
+   * errada é pendência obrigatória antes do piloto.
+   */
+  private async exigirSemMidiaProtegida(
+    db: Db,
+    conversationId: string,
+    contactId: string,
+  ): Promise<void> {
+    if (!(await this.protegido.contatoProtegido(contactId, db))) return;
+    const midia =
+      (await db.messageAttachment.count({
+        where: { message: { conversationId } },
+      } as never)) +
+      (await db.inboundMedia.count({ where: { message: { conversationId } } } as never));
+    if (midia > 0) throw new ConflictException(MENSAGEM_MIDIA_PROTEGIDA);
+  }
+
   private async levarARai(
     auth: AuthContext,
     antes: ConversaDoRemetente,
@@ -268,6 +298,7 @@ export class ConversationSenderService {
      * `uniforme`, a recusa vale para toda pessoa — igual para todos.
      */
     await this.protegido.exigirAlvoVisivel(auth, { contactId: antes.contactId });
+    await this.exigirSemMidiaProtegida(this.prisma.db, antes.id, antes.contactId as string);
     const saida = tirarNumero
       ? await this.contacts.saidaDoNumero(antes.contactId as string, this.enderecoDe(antes), regiao)
       : null;
@@ -280,6 +311,7 @@ export class ConversationSenderService {
         }
         // de novo, sob as travas do contato: a conversão concorrente é vista
         await this.protegido.exigirAlvoVisivel(auth, { contactId: conversa.contactId }, tx);
+        await this.exigirSemMidiaProtegida(tx, conversa.id, conversa.contactId as string);
         const anterior = conversa.contactId as string;
         const endereco = this.enderecoDe(conversa);
         const candidatos = (await this.classificar(tx, endereco)).length;

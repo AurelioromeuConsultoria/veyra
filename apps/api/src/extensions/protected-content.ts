@@ -162,6 +162,25 @@ export class ProtectedContentService {
   }
 
   /**
+   * O contato é protegido por alguma extensão sujeita neste workspace,
+   * INDEPENDENTE de quem pede (das chaves dele)? Para as regras que valem para
+   * todos os papéis — a mídia histórica de uma conversa protegida (ADR-061,
+   * adendo 6). Fora de workspace sujeito, nunca.
+   */
+  async contatoProtegido(contactId: string, db: Db = this.prisma.db): Promise<boolean> {
+    for (const p of this.providers) {
+      // primeiro pelo `db` de quem chama (a transação): só o contato que casa
+      // com o filtro pede a consulta de presença — sem abrir conexões em
+      // paralelo enquanto a transação segura as travas, no caso comum
+      const n = await db.contact.count({
+        where: { AND: [{ id: contactId }, p.contactFilter()] },
+      } as never);
+      if (n > 0 && (await p.appliesToWorkspace())) return true;
+    }
+    return false;
+  }
+
+  /**
    * Quem pede NÃO pode saber quem é protegido (o `uniforme`): uma decisão que
    * dependeria da classificação é recusada para toda pessoa (adendos 3 e 5).
    */
