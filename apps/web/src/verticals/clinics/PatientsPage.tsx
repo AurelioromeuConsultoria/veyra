@@ -3,6 +3,7 @@ import type { ContactDto, Paginated } from '@veyra/contracts';
 import type { ClinicsPatientDto } from '@veyra/contracts/verticals/clinics';
 import { UserPlus } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { Avatar } from '../../components/ui/avatar';
 import { Link } from 'react-router-dom';
 import { Button } from '../../components/ui/button';
 import { Drawer } from '../../components/ui/drawer';
@@ -114,11 +115,11 @@ function PatientsReady() {
           </p>
         ) : null}
         <Panel>
-          <table className="w-full border-collapse text-body-sm">
+          <table className="w-full border-collapse text-[14px]">
             <thead>
-              <tr className="border-b border-border bg-surface-2/50">
+              <tr className="border-b border-border">
                 {['Paciente', 'Desde'].map((h) => (
-                  <th key={h} className="eyebrow px-4 py-2 text-left text-muted-fg">
+                  <th key={h} className="eyebrow px-5 py-3 text-left text-muted-fg">
                     {h}
                   </th>
                 ))}
@@ -127,12 +128,16 @@ function PatientsReady() {
             <tbody>
               {linhas.map((p) => (
                 <tr key={p.id} className="border-b border-border/60 last:border-b-0">
-                  <td className="px-4 py-2">
-                    <Link className="underline" to={fichaDoPaciente(p.id)}>
+                  <td className="px-5 py-2.5">
+                    <Link
+                      className="flex items-center gap-3 font-semibold hover:underline"
+                      to={fichaDoPaciente(p.id)}
+                    >
+                      <Avatar nome={p.name} chave={p.id} tamanho="sm" />
                       {p.name}
                     </Link>
                   </td>
-                  <td className="px-4 py-2 num text-data text-muted-fg">
+                  <td className="px-5 py-2.5 num text-[12.5px] text-muted-fg">
                     {fullStamp(p.createdAt)}
                   </td>
                 </tr>

@@ -9,7 +9,9 @@ import type {
 import { createClinicsPackageSchema } from '@veyra/contracts/verticals/clinics';
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
+import { Avatar } from '../../components/ui/avatar';
 import { Button } from '../../components/ui/button';
+import { StatusChip } from '../../components/ui/status';
 import { Drawer } from '../../components/ui/drawer';
 import { Field, Input, Select } from '../../components/ui/input';
 import { EmptyState, PageHeader, Panel } from '../../components/ui/page';
@@ -24,7 +26,7 @@ import {
   quandoLocal,
 } from './continuidade';
 import { reaisToCents } from './format';
-import { CLINICS_PATIENTS_PATH } from './nav';
+import { CLINICS_AGENDA_PATH, CLINICS_PATIENTS_PATH } from './nav';
 import { NotasETarefasDoPaciente } from './NotasETarefasDoPaciente';
 import { ListaDeRetornos } from './retornos/ListaDeRetornos';
 import { SessoesDoPacote } from './SessoesDoPacote';
@@ -83,12 +85,35 @@ function FichaReady() {
 
   return (
     <div className="flex h-full flex-col">
-      <PageHeader eyebrow="Clínica · Paciente" title={paciente.data.name}>
-        <Link className="text-data underline" to={CLINICS_PATIENTS_PATH}>
-          Todos os pacientes
-        </Link>
-      </PageHeader>
-      <div className="min-h-0 flex-1 space-y-6 overflow-auto p-6">
+      {/* o cabeçalho da PESSOA (ADR-062): quem é, desde quando, e as ações */}
+      <header className="flex shrink-0 flex-wrap items-center gap-x-5 gap-y-3 border-b border-border bg-surface px-7 py-6">
+        <Avatar nome={paciente.data.name} chave={paciente.data.id} tamanho="xl" />
+        <div className="min-w-0 flex-1">
+          <h1 className="truncate font-display text-[28px] font-semibold leading-tight tracking-[-0.02em]">
+            {paciente.data.name}
+          </h1>
+          <p className="mt-1.5 flex flex-wrap items-center gap-2 text-[13px] text-muted-fg">
+            <StatusChip tom="accent">
+              Paciente desde {new Date(paciente.data.createdAt).toLocaleDateString('pt-BR')}
+            </StatusChip>
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Link
+            to={CLINICS_PATIENTS_PATH}
+            className="inline-flex h-10 items-center rounded-control border border-border-strong bg-surface px-4 text-[14px] font-medium hover:bg-surface-2"
+          >
+            Todos os pacientes
+          </Link>
+          <Link
+            to={CLINICS_AGENDA_PATH}
+            className="inline-flex h-10 items-center rounded-control border border-accent bg-accent px-4 text-[14px] font-semibold text-accent-fg hover:bg-accent-hover"
+          >
+            Abrir a agenda
+          </Link>
+        </div>
+      </header>
+      <div className="min-h-0 flex-1 space-y-7 overflow-auto p-7">
         <section aria-label="Retornos do paciente" className="space-y-2">
           <div className="flex items-center justify-between">
             <h2 className="text-display-sm">Retornos</h2>
