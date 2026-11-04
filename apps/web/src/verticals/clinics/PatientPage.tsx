@@ -16,7 +16,7 @@ import { StatusChip, type Tom } from '../../components/ui/status';
 import { Abas, idDaAba, idDoPainel, type Aba } from '../../components/ui/tabs';
 import { Drawer } from '../../components/ui/drawer';
 import { Field, Input, Select } from '../../components/ui/input';
-import { EmptyState, PageHeader, Panel, PanelHeader } from '../../components/ui/page';
+import { EmptyState, PageHeader, Panel } from '../../components/ui/page';
 import { api, ApiError } from '../../lib/api';
 import { formatCents } from '../../lib/format';
 import { alcanca, hasPermission, useSession } from '../../lib/session';
@@ -241,11 +241,15 @@ function CartaoDoResumo({
 }) {
   return (
     <Panel aria-label={titulo}>
-      <PanelHeader title={titulo} meta={meta}>
-        <Button size="sm" variant="ghost" onClick={onVer}>
+      {/* cabeçalho compacto: a coluna do resumo é estreita, e o cabeçalho
+          padrão quebrava o "Ver …" para uma segunda linha */}
+      <header className="flex items-center gap-2 border-b border-border py-2.5 pl-5 pr-3">
+        <h2 className="min-w-0 truncate font-display text-[15px] font-semibold">{titulo}</h2>
+        {meta ? <span className="text-[13px] text-muted-fg">{meta}</span> : null}
+        <Button size="sm" variant="ghost" className="ml-auto shrink-0" onClick={onVer}>
           {verRotulo}
         </Button>
-      </PanelHeader>
+      </header>
       {children}
     </Panel>
   );

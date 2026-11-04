@@ -20,9 +20,9 @@ export function Drawer({
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 bg-foreground/25" />
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-foreground/25" />
         <Dialog.Content
-          className="fixed inset-y-0 right-0 flex w-full max-w-md flex-col border-l border-border bg-surface shadow-float focus:outline-none"
+          className="fixed inset-y-0 right-0 z-50 flex w-full max-w-md flex-col border-l border-border bg-surface shadow-float focus:outline-none"
           aria-describedby={undefined}
           onCloseAutoFocus={onCloseAutoFocus}
         >
