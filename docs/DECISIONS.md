@@ -10659,3 +10659,28 @@ O que o canvas mostra como conceito, sem suporte no produto, NÃO entra sem deci
 - **Testes:** os testes de interface e os e2e que dependem de textos ou rótulos mudam junto com cada tela.
 - **Modo escuro:** mantém a paleta noturna própria. A moldura no escuro usa o mesmo verde mais profundo.
 - **Documentação:** o `DESIGN_DIRECTION.md` é atualizado no mesmo commit.
+
+### ADR-062, adendo 1 — O que o canvas pedia além do web (2026-11-04)
+
+**Status:** APROVADO pelo usuário em 2026-11-04 ("pode fazer os itens que dependem de API e aceito as novas sugestões"). A parte A é implementada já; a parte B entra como entrega própria, com revisão de `reviewer` e `security` antes do push.
+
+**Contexto.** O redesenho no web (ADR-062) deixou de fora o que o produto não sustentava: o próximo horário e o histórico na ficha, os atalhos "Agendar" e "Enviar mensagem", as faltas por semana e por profissional com a comparação, o contexto clínico nas Conversas, e os cinco conceitos que pediam decisão (sugestão "Remarcar" da IA, visão Semana, consentimento no cabeçalho da ficha, Origem do contato, filtros "Minhas" e "A identificar"). O levantamento mostrou que a Origem (`Contact.source`) e o filtro por responsável (`assigneeMembershipId`) já existem; o resto pede API.
+
+**Decisão — parte A (sem IA, sem migration).** Nenhuma permissão nova; cada leitura usa a chave que já governa o mesmo dado.
+
+1. **Agendamentos por paciente e por intervalo.** `GET /api/clinics/appointments` aceita, além de `date`, `patientId` e um intervalo `from`/`to` (datas locais, no máximo 31 dias), com a mesma permissão (`clinics:schedule:read`) e a mesma autorização de campo (atendimento só para quem lê atendimento, alcance clínico do D8). Serve à ficha (próximo horário e a aba de atendimentos) e à visão **Semana** da Agenda.
+2. **Faltas agrupadas.** `GET /api/clinics/metrics/no-show` aceita `groupBy=week|professional` e devolve a série, com a mesma conta e a mesma permissão. A comparação com o período anterior é a mesma consulta, no intervalo anterior, feita pelo web.
+3. **"A identificar" e "Minhas".** A lista de conversas do Core aceita `senderStatus=unidentified`; "Minhas" é o filtro de responsável que já existe, com a membership ativa. O filtro só estreita o conjunto que a pessoa já vê: a resposta uniforme do E8 não muda.
+4. **Cabeçalho da ficha.** O estado do consentimento aparece só com `consents:read` (a mesma regra do painel de consentimento); a Origem, com `contacts:read`. "Agendar" abre a Agenda com o paciente já escolhido (`clinics:schedule:write`); "Enviar mensagem" abre a conversa do contato pela lista que já filtra por `contactId`, ou cria uma (`conversations:write`).
+5. **Contexto clínico nas Conversas, por composição.** O manifesto de experiência do web (E5, ADR-055) ganha um encaixe opcional para o painel de contexto da conversa. O Core o desenha sem conhecer o conteúdo; o Clinics o preenche (próximo horário, retornos pendentes, pacotes ativos, link da ficha), cada bloco com a sua permissão. Sem `clinics:schedule:read` (a chave que revela quem é paciente), o encaixe não mostra nada, igual para paciente e não paciente.
+
+**Decisão — parte B (a sugestão "Remarcar" da IA).**
+
+- Na conversa de um paciente, a IA pode propor remarcar um agendamento: ela identifica o pedido, o agendamento futuro do paciente e horários livres, e cria uma `AiProposal` pendente. O botão "Remarcar" é a aprovação humana: executa a remarcação pelo serviço de agendamentos, com as permissões de quem aprova (`clinics:schedule:write` e `intelligence:approve`), idempotência e auditoria. Nenhuma mensagem sai para o paciente por conta da IA.
+- Valem as mesmas travas do rascunho de resposta: consentimento de conteúdo de conversa, `AiUseGuard`, conteúdo protegido (E8) e a liberação por contato. Onde a IA não lê a conversa, a sugestão não existe.
+- O Core não conhece o Clinics: a capacidade entra por um ponto de extensão novo (**E9 — capacidades de IA do vertical**). O vertical registra prompt versionado, ferramentas sobre os serviços dele e o executor da proposta; o Core roda com o mesmo `AiRun` (versão, contexto mínimo, tokens, custo, resultado) e a mesma fila de aprovação. O desenho do E9 vai para o `ARCHITECTURE.md` na entrega.
+- O B1 continua aberto (ADR-061 adendo 7): a sugestão não muda nenhuma condição do piloto.
+
+**Alternativas.** Endpoints novos dedicados para a ficha e a Semana: duplicariam a autorização de campo do `appointments`. Montar as séries de faltas no web com uma chamada por semana ou por profissional: N chamadas e a conta espalhada. Mostrar o contexto clínico no Core: viola o Core sem verticais. Executar a remarcação direto pela IA: viola a regra de que ação externa é proposta.
+
+**Consequências.** A parte A mexe em consultas que leem dados de pacientes e na lista de conversas: os testes de isolamento e de conteúdo protegido acompanham cada rota. A parte B cria um ponto de extensão e uma capacidade de IA: pede evals, `reviewer` e `security`.
