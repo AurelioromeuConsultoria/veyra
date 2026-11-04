@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { BusinessOutboundReason } from '../../business-outbound';
 
 export * from './local-time';
+export * from './free-slots';
 
 /**
  * Contratos do vertical Veyra Clinics (ADR-048). Expostos pelo subpath
@@ -409,6 +410,24 @@ export const clinicsAppointmentStatusSchema = z.enum([
 ]);
 export type ClinicsAppointmentStatus = z.infer<typeof clinicsAppointmentStatusSchema>;
 
+/**
+ * Os estados que OCUPAM o horário do profissional: os mesmos do EXCLUDE
+ * `ClinicsAppointment_no_overlap` no banco (cancelado e falta liberam). Um
+ * teste de integração confere a lista contra a definição da constraint.
+ */
+export const CLINICS_OCCUPYING_STATUSES = [
+  'scheduled',
+  'confirmed',
+  'arrived',
+  'attended',
+] as const satisfies readonly ClinicsAppointmentStatus[];
+
+/** Os estados de onde a remarcação parte (ADR-048 adendo 4, item 6). */
+export const CLINICS_RESCHEDULABLE_STATUSES = [
+  'scheduled',
+  'confirmed',
+] as const satisfies readonly ClinicsAppointmentStatus[];
+
 /** Motivo de cancelamento, por LISTA FECHADA: sem "outro" e sem texto livre. */
 export const clinicsCancelReasonSchema = z.enum([
   'patient_request',
@@ -477,6 +496,50 @@ export const rescheduleClinicsAppointmentSchema = z
   })
   .strict();
 export type RescheduleClinicsAppointmentInput = z.infer<typeof rescheduleClinicsAppointmentSchema>;
+
+/**
+ * Os próximos inícios livres para remarcar um agendamento (ADR-062 adendo 1,
+ * parte B, a sugestão "Remarcar" sem IA): o MESMO profissional, a MESMA
+ * duração registrada (a que a remarcação sem `serviceId` conserva), dentro do
+ * expediente e sem sobreposição, a partir de AGORA pelo relógio do banco e até
+ * `CLINICS_RESCHEDULE_HORIZON_DAYS` dias locais da unidade à frente.
+ */
+export const CLINICS_RESCHEDULE_HORIZON_DAYS = 14;
+export const CLINICS_RESCHEDULE_OPTIONS_MAX = 5;
+export const clinicsRescheduleOptionsQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(CLINICS_RESCHEDULE_OPTIONS_MAX).default(3),
+  })
+  .strict();
+export type ClinicsRescheduleOptionsQuery = z.infer<typeof clinicsRescheduleOptionsQuerySchema>;
+
+/**
+ * Um início livre. `localDate`, `localStart` e `utcOffset` vão como estão no
+ * corpo de `POST /appointments/:id/reschedule` (`date`, `time`, `utcOffset`).
+ */
+export interface ClinicsRescheduleOptionDto {
+  /** instantes ISO (UTC) — a verdade */
+  startsAt: string;
+  endsAt: string;
+  /** leitura na hora local da UNIDADE */
+  localDate: string;
+  localStart: string;
+  localEnd: string;
+  /** só na hora que se REPETE na mudança de horário */
+  utcOffset?: string;
+}
+
+/** Nenhum dado de paciente: só o agendamento pedido e horários livres. */
+export interface ClinicsRescheduleOptionsDto {
+  appointmentId: string;
+  professionalId: string;
+  unitId: string;
+  timezone: string;
+  /** a duração registrada do agendamento, em minutos */
+  durationMin: number;
+  /** até `limit`, em ordem de início; vazia = nenhum horário no horizonte */
+  options: ClinicsRescheduleOptionDto[];
+}
 
 /**
  * A troca do profissional de um horário em que o paciente JÁ CHEGOU (a

@@ -16,6 +16,7 @@ import type { ClinicsPermissionKey } from '@veyra/contracts/verticals/clinics';
 import {
   changeClinicsAppointmentProfessionalSchema,
   changeClinicsAppointmentStatusSchema,
+  clinicsRescheduleOptionsQuerySchema,
   createClinicsAppointmentSchema,
   listClinicsAppointmentsSchema,
   recordClinicsAttendanceSchema,
@@ -24,6 +25,8 @@ import {
   type ChangeClinicsAppointmentStatusInput,
   type ClinicsAppointmentDto,
   type ClinicsAttendanceDto,
+  type ClinicsRescheduleOptionsDto,
+  type ClinicsRescheduleOptionsQuery,
   type CreateClinicsAppointmentInput,
   type ListClinicsAppointmentsInput,
   type RecordClinicsAttendanceInput,
@@ -96,6 +99,21 @@ export class ClinicsAppointmentsController {
     @Body(new ZodPipe(rescheduleClinicsAppointmentSchema)) body: RescheduleClinicsAppointmentInput,
   ): Promise<ClinicsAppointmentDto> {
     return this.appointments.reschedule(auth, id, body);
+  }
+
+  /**
+   * A sugestão "Remarcar" sem IA (ADR-062 adendo 1, parte B): os próximos
+   * inícios livres do mesmo profissional, com a duração registrada. Com
+   * `clinics:schedule:read`, a chave que já mostra a agenda inteira do
+   * profissional; remarcar continua exigindo `clinics:schedule:write`.
+   */
+  @RequireClinicsPermissions('clinics:schedule:read')
+  @Get('appointments/:id/reschedule-options')
+  rescheduleOptions(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Query(new ZodPipe(clinicsRescheduleOptionsQuerySchema)) query: ClinicsRescheduleOptionsQuery,
+  ): Promise<ClinicsRescheduleOptionsDto> {
+    return this.appointments.opcoesDeRemarcacao(id, query);
   }
 
   @RequireClinicsPermissions('clinics:schedule:write')

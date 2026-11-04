@@ -11,13 +11,22 @@ import type {
   ClinicsAppointmentDto,
   ClinicsAppointmentStatus,
   ClinicsCancelReason,
+  ClinicsRescheduleOptionDto,
+  ClinicsRescheduleOptionsDto,
+  ClinicsRescheduleOptionsQuery,
   CreateClinicsAppointmentInput,
   ListClinicsAppointmentsInput,
   RescheduleClinicsAppointmentInput,
 } from '@veyra/contracts/verticals/clinics';
 import {
+  CLINICS_OCCUPYING_STATUSES,
+  CLINICS_RESCHEDULABLE_STATUSES,
+  CLINICS_RESCHEDULE_HORIZON_DAYS,
   deslocamentoEmMinutos,
+  encaixeNoExpediente,
   horaLocal,
+  horariosLivres,
+  inicioDoDiaLocal,
   resolverHoraLocal,
   somarDias,
 } from '@veyra/contracts/verticals/clinics'; // valores (o bloco acima é só de tipos)
@@ -30,6 +39,7 @@ import {
   type ExecutorDeTransacao,
 } from '../../../content-use/restriction-changes';
 import { PrismaService, type Db } from '../../../prisma/prisma.service';
+import { agoraDoBanco } from '../../../prisma/relogio-do-banco';
 import { alcanca, type AlcanceClinico } from '../care/clinics-care-scope';
 import { chaveDoAgendamento } from '../outreach/clinics-outreach.precondition';
 import { ValidadeDosPedidos } from '../outreach/clinics-outreach.validity';
@@ -70,7 +80,10 @@ const ORIGENS: Record<ChangeClinicsAppointmentStatusInput['to'], ClinicsAppointm
   no_show: ['scheduled', 'confirmed'],
 };
 
-const REMARCAVEIS: ClinicsAppointmentStatus[] = ['scheduled', 'confirmed'];
+const REMARCAVEIS: ClinicsAppointmentStatus[] = [...CLINICS_RESCHEDULABLE_STATUSES];
+/** Os estados que ocupam o horário: os do EXCLUDE no banco. */
+const OCUPAM: ClinicsAppointmentStatus[] = [...CLINICS_OCCUPYING_STATUSES];
+const MENSAGEM_NAO_REMARCAVEL = 'Só agendamento marcado ou confirmado pode ser remarcado';
 
 /** As mensagens chegam à tela: o estado em português, nunca o enum. */
 export const ROTULO: Record<ClinicsAppointmentStatus, string> = {
@@ -273,7 +286,7 @@ export class ClinicsAppointmentsService {
           data: { updatedAt: new Date() },
         } as never);
         if (count === 0) {
-          throw new ConflictException('Só agendamento marcado ou confirmado pode ser remarcado');
+          throw new ConflictException(MENSAGEM_NAO_REMARCAVEL);
         }
         const atual = (await tx.clinicsAppointment.findFirst({
           where: { id },
@@ -333,6 +346,120 @@ export class ClinicsAppointmentsService {
       }),
     );
     return this.ler(id, timezone);
+  }
+
+  /**
+   * Os próximos inícios livres para remarcar um agendamento (ADR-062 adendo 1,
+   * parte B: a sugestão "Remarcar" sem IA). Só leitura, e pela MESMA regra da
+   * remarcação, para a sugestão nunca oferecer o que ela recusaria:
+   *
+   * - o agendamento: do workspace (404 uniforme), em estado remarcável (409,
+   *   a mensagem da remarcação) e FUTURO pelo relógio do banco (409);
+   * - a unidade ativa e o catálogo (`unidade` e `catalogo`, os mesmos
+   *   auxiliares e as mesmas recusas da remarcação);
+   * - a duração REGISTRADA, que a remarcação sem `serviceId` conserva;
+   * - o expediente pela função pura `encaixeNoExpediente`, a mesma que a
+   *   remarcação usa (via `horariosLivres`, a mesma da tela da Agenda);
+   * - a sobreposição pelos estados do EXCLUDE, de QUALQUER paciente e unidade
+   *   do profissional, fora o próprio agendamento (a remarcação o move).
+   *
+   * Não reserva nada: entre a sugestão e o clique, o horário pode ser tomado,
+   * e a remarcação responde 409 pelo banco. Nenhum dado de paciente sai.
+   */
+  async opcoesDeRemarcacao(
+    id: string,
+    query: ClinicsRescheduleOptionsQuery,
+  ): Promise<ClinicsRescheduleOptionsDto> {
+    const atual = (await this.prisma.db.clinicsAppointment.findFirst({
+      where: { id },
+      select: {
+        id: true,
+        professionalId: true,
+        serviceId: true,
+        unitId: true,
+        startsAt: true,
+        endsAt: true,
+        status: true,
+      },
+    })) as unknown as Omit<AppointmentRow, 'patientId' | 'cancelReason'> | null;
+    if (!atual) throw new NotFoundException('Agendamento não encontrado');
+    if (!REMARCAVEIS.includes(atual.status)) {
+      throw new ConflictException(MENSAGEM_NAO_REMARCAVEL);
+    }
+    // UMA leitura do relógio do banco (ADR-049): "futuro" e "a partir de agora"
+    const agora = await agoraDoBanco(this.prisma);
+    if (atual.startsAt.getTime() <= agora.getTime()) {
+      throw new ConflictException(
+        'Este horário já começou: a sugestão de remarcação é só para agendamento futuro',
+      );
+    }
+    const unidade = await this.unidade(this.prisma.db, atual.unitId);
+    await this.catalogo(this.prisma.db, atual.professionalId, atual.serviceId);
+    const duracaoMin = (atual.endsAt.getTime() - atual.startsAt.getTime()) / 60_000;
+    const intervalos = (await this.prisma.db.clinicsWorkingHours.findMany({
+      where: { professionalId: atual.professionalId, unitId: unidade.id },
+      select: { weekday: true, startMinute: true, endMinute: true },
+    })) as unknown as { weekday: number; startMinute: number; endMinute: number }[];
+    // o horizonte: hoje e os dias seguintes, em datas LOCAIS da unidade
+    const hoje = horaLocal(agora, unidade.timezone).data;
+    const fimDoHorizonte = inicioDoDiaLocal(
+      somarDias(hoje, CLINICS_RESCHEDULE_HORIZON_DAYS),
+      unidade.timezone,
+    );
+    // o que ocupa o profissional no horizonte (com folga de um dia para o fim
+    // do último atendimento), em qualquer unidade, como o EXCLUDE
+    const ocupados = (await this.prisma.db.clinicsAppointment.findMany({
+      where: {
+        professionalId: atual.professionalId,
+        id: { not: id },
+        status: { in: OCUPAM },
+        endsAt: { gt: agora },
+        startsAt: { lt: new Date(fimDoHorizonte.getTime() + 86_400_000) },
+      },
+      select: { startsAt: true, endsAt: true },
+      orderBy: [{ startsAt: 'asc' }, { id: 'asc' }],
+      take: TETO_DO_INTERVALO + 1,
+    } as never)) as unknown as { startsAt: Date; endsAt: Date }[];
+    // acima do teto, recusa: uma sugestão com ocupados cortados poderia
+    // oferecer um horário tomado
+    if (ocupados.length > TETO_DO_INTERVALO) {
+      throw new UnprocessableEntityException(
+        'A agenda deste profissional está cheia demais para sugerir horários.',
+      );
+    }
+    const options: ClinicsRescheduleOptionDto[] = [];
+    for (let d = 0; d < CLINICS_RESCHEDULE_HORIZON_DAYS && options.length < query.limit; d++) {
+      const data = somarDias(hoje, d);
+      for (const opcao of horariosLivres({
+        data,
+        timezone: unidade.timezone,
+        duracaoMin,
+        intervalos,
+        ocupados,
+      })) {
+        // a partir de agora; o horário atual não é remarcação
+        if (opcao.inicio.getTime() <= agora.getTime()) continue;
+        if (opcao.inicio.getTime() === atual.startsAt.getTime()) continue;
+        const fim = new Date(opcao.inicio.getTime() + duracaoMin * 60_000);
+        options.push({
+          startsAt: opcao.inicio.toISOString(),
+          endsAt: fim.toISOString(),
+          localDate: data,
+          localStart: opcao.hora,
+          localEnd: horaLocal(fim, unidade.timezone).hora,
+          ...(opcao.utcOffset ? { utcOffset: opcao.utcOffset } : {}),
+        });
+        if (options.length >= query.limit) break;
+      }
+    }
+    return {
+      appointmentId: atual.id,
+      professionalId: atual.professionalId,
+      unitId: unidade.id,
+      timezone: unidade.timezone,
+      durationMin: duracaoMin,
+      options,
+    };
   }
 
   /**
@@ -524,21 +651,22 @@ export class ClinicsAppointmentsService {
     startsAt: Date,
     endsAt: Date,
   ): Promise<void> {
+    // a MESMA função pura da sugestão de remarcação e da tela da Agenda
     const inicioLocal = horaLocal(startsAt, unidade.timezone);
-    const fimLocal = horaLocal(endsAt, unidade.timezone);
-    let fimMinuto: number;
-    if (fimLocal.data === inicioLocal.data) fimMinuto = fimLocal.minutoDoDia;
-    else if (fimLocal.data === somarDias(inicioLocal.data, 1) && fimLocal.minutoDoDia === 0)
-      fimMinuto = 1440;
-    else throw new BadRequestException('O atendimento precisa começar e terminar no mesmo dia');
     const intervalos = (await tx.clinicsWorkingHours.findMany({
       where: { professionalId, unitId: unidade.id, weekday: inicioLocal.diaDaSemana },
-      select: { startMinute: true, endMinute: true },
-    })) as unknown as { startMinute: number; endMinute: number }[];
-    const cabe = intervalos.some(
-      (i) => i.startMinute <= inicioLocal.minutoDoDia && fimMinuto <= i.endMinute,
-    );
-    if (!cabe) {
+      select: { weekday: true, startMinute: true, endMinute: true },
+    })) as unknown as { weekday: number; startMinute: number; endMinute: number }[];
+    const encaixe = encaixeNoExpediente({
+      inicio: startsAt,
+      fim: endsAt,
+      timezone: unidade.timezone,
+      intervalos,
+    });
+    if (encaixe === 'dia') {
+      throw new BadRequestException('O atendimento precisa começar e terminar no mesmo dia');
+    }
+    if (encaixe === 'fora') {
       throw new BadRequestException(
         'Fora do expediente do profissional (na hora local da unidade)',
       );

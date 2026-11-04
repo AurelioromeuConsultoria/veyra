@@ -30,7 +30,7 @@ describe('horários livres — a mesma regra do servidor', () => {
       data: '2030-11-04',
       timezone: 'America/Sao_Paulo',
       duracaoMin: 30,
-      intervalos: [{ unitId: U, weekday: 1, startMinute: 487, endMinute: 600 }],
+      intervalos: [{ weekday: 1, startMinute: 487, endMinute: 600 }],
       ocupados: [],
     });
     expect(opcoes[0].hora).toBe('08:15');

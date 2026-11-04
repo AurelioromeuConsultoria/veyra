@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import {
   CLINICS_APPOINTMENTS_MAX_RANGE_DAYS,
+  CLINICS_RESCHEDULABLE_STATUSES,
   horaLocal,
   somarDias,
   type ClinicsAppointmentStatus,
@@ -21,6 +22,7 @@ import { PACKAGES_KEY, dataCurta } from './continuidade';
 import { useAgendamentosDoPaciente } from './ficha/AtendimentosDoPaciente';
 import { fichaDoPaciente } from './nav';
 import { TETO_DOS_RETORNOS, useRetornos } from './retornos/ListaDeRetornos';
+import { SugestaoDeRemarcacao } from './SugestaoDeRemarcacao';
 
 /**
  * O contexto clínico no painel das Conversas (ADR-062, adendo 1, item 5): o
@@ -35,7 +37,9 @@ import { TETO_DOS_RETORNOS, useRetornos } from './retornos/ListaDeRetornos';
  * - a ficha: as chaves da porta da ficha (agenda e catálogo);
  * - o próximo horário e os retornos pendentes: a agenda;
  * - os pacotes ativos: o atendimento (`clinics:care:read`), com o alcance
- *   clínico do D8 decidido no servidor.
+ *   clínico do D8 decidido no servidor;
+ * - a sugestão "Remarcar" sem IA (ADR-062 adendo 1, parte B): quem escreve na
+ *   agenda (`clinics:schedule:write`), com o próximo agendamento remarcável.
  *
  * As consultas usam as MESMAS chaves de cache da ficha e da agenda: abrir a
  * ficha depois não pede de novo, e uma mudança lá se reflete aqui.
@@ -79,9 +83,11 @@ export function ContextoClinicoDaConversa({ contactId }: ContextoDaConversaProps
   }
   const abreFicha = hasPermission(user, 'clinics:catalog:read');
   const lePacotes = hasPermission(user, 'clinics:care:read');
+  const remarca = hasPermission(user, 'clinics:schedule:write');
   return (
     <section aria-label="Contexto clínico" className="flex flex-col gap-3">
       <ProximoHorario pacienteId={paciente.id} />
+      {remarca ? <Remarcacao pacienteId={paciente.id} /> : null}
       <RetornosPendentes pacienteId={paciente.id} />
       {lePacotes ? <PacotesAtivos pacienteId={paciente.id} /> : null}
       {abreFicha ? (
@@ -137,21 +143,32 @@ function hojeNoNavegador(): string {
  */
 const DIAS_A_FRENTE = CLINICS_APPOINTMENTS_MAX_RANGE_DAYS - 1;
 
-function ProximoHorario({ pacienteId }: { pacienteId: string }) {
-  // a janela começa ONTEM porque o fuso do navegador pode estar um dia à frente
-  // do da unidade. São 31 dias: ontem, hoje e os 29 seguintes, ou seja, os
-  // próximos 30 dias contando hoje (no fuso do navegador, que pode diferir do
-  // da unidade em um dia na borda final). O que já terminou sai pelo instante.
+/**
+ * Os horários do paciente na janela do bloco. A janela começa ONTEM porque o
+ * fuso do navegador pode estar um dia à frente do da unidade. São 31 dias:
+ * ontem, hoje e os 29 seguintes, ou seja, os próximos 30 dias contando hoje
+ * (no fuso do navegador, que pode diferir do da unidade em um dia na borda
+ * final). A MESMA consulta (e a mesma chave) da ficha: qualquer erro, inclusive
+ * um 400, aparece como indisponível.
+ */
+function useHorariosDaJanela(pacienteId: string) {
   const hoje = hojeNoNavegador();
   const de = somarDias(hoje, -1);
   const ate = somarDias(de, CLINICS_APPOINTMENTS_MAX_RANGE_DAYS - 1);
-  // a MESMA consulta (e a mesma chave) da ficha: qualquer erro, inclusive um
-  // 400, aparece como indisponível
-  const horarios = useAgendamentosDoPaciente(pacienteId, de, ate);
+  return useAgendamentosDoPaciente(pacienteId, de, ate);
+}
+
+/** Em ordem de início. */
+const porInicio = (a: { startsAt: string }, b: { startsAt: string }) =>
+  Date.parse(a.startsAt) - Date.parse(b.startsAt);
+
+function ProximoHorario({ pacienteId }: { pacienteId: string }) {
+  const horarios = useHorariosDaJanela(pacienteId);
+  // o que já terminou sai pelo instante
   const agora = Date.now();
   const proximo = (horarios.data ?? [])
     .filter((a) => ESTADOS_DO_PROXIMO.includes(a.status) && Date.parse(a.endsAt) > agora)
-    .sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt))[0];
+    .sort(porInicio)[0];
   return (
     <Bloco titulo="Próximo horário">
       {horarios.isError ? (
@@ -178,6 +195,27 @@ function ProximoHorario({ pacienteId }: { pacienteId: string }) {
       )}
     </Bloco>
   );
+}
+
+/**
+ * A sugestão de remarcação (só montada com `clinics:schedule:write`): o
+ * próximo agendamento que AINDA não começou e está marcado ou confirmado, o
+ * mesmo critério do servidor (que confere de novo pelo relógio do banco). Sem
+ * ele, ou com a agenda indisponível (o bloco do próximo horário já diz), nada.
+ */
+function Remarcacao({ pacienteId }: { pacienteId: string }) {
+  const horarios = useHorariosDaJanela(pacienteId);
+  const agora = Date.now();
+  const remarcavel = (horarios.isError ? [] : (horarios.data ?? []))
+    .filter(
+      (a) =>
+        (CLINICS_RESCHEDULABLE_STATUSES as readonly string[]).includes(a.status) &&
+        Date.parse(a.startsAt) > agora,
+    )
+    .sort(porInicio)[0];
+  if (!remarcavel) return null;
+  // a chave pelo agendamento: outro paciente (outra conversa) começa do zero
+  return <SugestaoDeRemarcacao key={remarcavel.id} agendamento={remarcavel} />;
 }
 
 function RetornosPendentes({ pacienteId }: { pacienteId: string }) {
