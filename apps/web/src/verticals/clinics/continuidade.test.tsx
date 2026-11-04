@@ -1081,6 +1081,86 @@ describe('ficha do paciente', () => {
   });
 });
 
+describe('ficha do paciente — notas e tarefas (F5.3b)', () => {
+  const CONTATO = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e31';
+  const CHAVE = 'clinics:patient-content:read';
+  const ficha = (permissoes: string[], extra: Record<string, Rota> = {}) =>
+    mockApi({
+      'GET /api/auth/me': { body: usuario(permissoes) },
+      ...catalogo,
+      [`GET /api/clinics/patients/${PAC}`]: {
+        body: {
+          id: PAC,
+          name: 'Paciente Fictícia',
+          contactId: CONTATO,
+          createdAt: '2030-01-01T00:00:00Z',
+        },
+      },
+      'GET /api/clinics/returns': { body: [] },
+      'GET /api/tasks': {
+        body: {
+          items: [{ id: 't1', title: 'Ligar sobre o retorno', status: 'open', dueAt: null }],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        },
+      },
+      'GET /api/notes': {
+        body: [
+          {
+            id: 'n1',
+            body: 'Prefere à tarde (fictício)',
+            authorName: 'Ana',
+            createdAt: '2030-01-02T12:00:00Z',
+          },
+        ],
+      },
+      ...extra,
+    });
+  const aConteudo = (chamadas: { chave: string }[]) =>
+    chamadas.filter((c) => /\/api\/(tasks|notes)/.test(c.chave));
+  const regiao = () => screen.findByRole('region', { name: 'Notas e tarefas do paciente' });
+
+  it('a recepção (com tasks:read, sem a chave): "Conteúdo restrito" e NENHUMA consulta a notas ou tarefas', async () => {
+    const chamadas = ficha([...RECEPCAO, 'tasks:read']);
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    expect(within(await regiao()).getByText('Conteúdo restrito')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(chamadas.some((c) => c.chave.includes('/api/clinics/returns'))).toBe(true),
+    );
+    expect(aConteudo(chamadas)).toEqual([]);
+    expect(screen.queryByText('Ligar sobre o retorno')).toBeNull();
+  });
+
+  it('com tasks:read e a chave: as tarefas e as notas do paciente, pelo contato dele', async () => {
+    const chamadas = ficha([...RECEPCAO, 'tasks:read', CHAVE]);
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    const r = await regiao();
+    expect(await within(r).findByText('Ligar sobre o retorno')).toBeInTheDocument();
+    expect(within(r).getByText('Prefere à tarde (fictício)')).toBeInTheDocument();
+    expect(within(r).queryByText('Conteúdo restrito')).toBeNull();
+    expect(aConteudo(chamadas).every((c) => c.chave.includes(`contactId=${CONTATO}`))).toBe(true);
+  });
+
+  it('o servidor recusa (a chave retirada no meio da sessão): "Conteúdo restrito", sem conteúdo', async () => {
+    ficha([...RECEPCAO, 'tasks:read', CHAVE], {
+      'GET /api/notes': { status: 403, body: { message: 'Conteúdo restrito' } },
+    });
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    const r = await regiao();
+    expect(await within(r).findByText('Conteúdo restrito')).toBeInTheDocument();
+    expect(within(r).queryByText('Ligar sobre o retorno')).toBeNull();
+  });
+
+  it('sem tasks:read, a seção não existe (a chave sozinha não concede nada)', async () => {
+    const chamadas = ficha([...RECEPCAO, CHAVE]);
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    expect(await screen.findByRole('region', { name: 'Retornos do paciente' })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Notas e tarefas do paciente' })).toBeNull();
+    expect(aConteudo(chamadas)).toEqual([]);
+  });
+});
+
 describe('retornos', () => {
   it('a recepção vê o cancelado SEM motivo (a projeção do servidor) e só os motivos operacionais', async () => {
     mockApi({

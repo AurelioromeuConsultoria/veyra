@@ -251,6 +251,9 @@ describe('G4 — a validação do conjunto: matriz uso × mudança, recuperaçã
   const noWorkspace = <T>(fn: () => Promise<T>, workspaceId = ws): Promise<T> =>
     cls.run(() => {
       cls.set('workspaceId', workspaceId);
+      // o papel da dona, como num pedido real: sem ele, toda permissão é negada
+      // (falha fechada) e o conteúdo de pessoas fica oculto (ADR-061, adendo 3)
+      cls.set('roleId', fixture.roles.owner);
       return fn();
     });
   const ate = async (condicao: () => Promise<boolean>, descricao: string) => {

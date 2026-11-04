@@ -131,6 +131,9 @@ describe('G2 — mudanças de restrição e aprovações na primitiva de travas 
   const noWorkspace = <T>(fn: () => Promise<T>): Promise<T> =>
     cls.run(() => {
       cls.set('workspaceId', ws);
+      // o papel da dona, como num pedido real: sem ele, toda permissão é negada
+      // (falha fechada) e o conteúdo de pessoas fica oculto (ADR-061, adendo 3)
+      cls.set('roleId', fixture.roles.owner);
       return fn();
     });
 

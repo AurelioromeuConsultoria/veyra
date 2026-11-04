@@ -16,6 +16,7 @@ import { AuditService } from '../audit/audit.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { AuthContext } from '../common/decorators';
 import { MudancasDeRestricao, type OpcoesDaTransacao } from '../content-use/restriction-changes';
+import { ProtectedContentService } from '../extensions/protected-content';
 import type { Prisma } from '../generated/prisma/client';
 import { PipelinesService } from '../pipelines/pipelines.service';
 import { PrismaService, type Db } from '../prisma/prisma.service';
@@ -58,6 +59,7 @@ export class DealsService {
     private readonly audit: AuditService,
     private readonly outbox: OutboxService,
     private readonly restricao: MudancasDeRestricao,
+    private readonly protegido: ProtectedContentService,
   ) {}
 
   async board(pipelineId?: string): Promise<BoardDto> {
@@ -214,6 +216,12 @@ export class DealsService {
             ? null
             : new Date(input.expectedCloseDate),
     };
+    // ANTES da transação: quem não pode mexer no conteúdo do contato atual é
+    // recusado sem pegar trava nenhuma, e o modo do pedido fica calculado fora
+    // da conexão da transação (revisão do adendo 3). Sob a trava, de novo, abaixo
+    if (trocaContato) {
+      await this.protegido.exigirAlvoVisivel(auth, { contactId: existing.contactId });
+    }
     const corpo = async (tx: Db) => {
       if (trocaContato) {
         await this.restricao.porContato(tx, {
@@ -234,6 +242,11 @@ export class DealsService {
             'A oportunidade mudou enquanto era alterada; tente de novo em instantes.',
           );
         }
+        // tirar a oportunidade de um contato de conteúdo protegido levaria as
+        // notas e tarefas dela junto, para quem não as lê (ADR-061, adendo 2):
+        // só com a chave. Lido SOB a trava do contato, a mesma de quem o torna
+        // protegido: a conversão que comitou antes é vista aqui
+        await this.protegido.exigirAlvoVisivel(auth, { contactId: existing.contactId }, tx);
         // o contato novo, sob a trava exclusiva dele: uma exclusão que comitou
         // antes é vista aqui
         if (
@@ -291,8 +304,13 @@ export class DealsService {
       where: { id },
     })) as unknown as DealRow | null;
     if (!existing) throw new NotFoundException('Oportunidade não encontrada');
+    // antes da transação (sem prender a conexão dela), e de novo dentro
+    await this.protegido.exigirAlvoVisivel(auth, { dealId: id });
     const db = this.prisma.db as unknown as TxRunner;
     await db.$transaction(async (tx) => {
+      // apagar a oportunidade apaga as notas e as tarefas dela (cascade): de um
+      // contato de conteúdo protegido, só com a chave (ADR-061, adendo 2)
+      await this.protegido.exigirAlvoVisivel(auth, { dealId: id }, tx);
       // ajuste #8: exclusão é SÓ AuditLog — uma Activity ligada ao Deal morreria
       // no cascade e não deixaria histórico útil
       await this.audit.record(tx, auth.workspaceId as string, 'deal.deleted', {

@@ -25,6 +25,7 @@ import {
 } from './continuidade';
 import { reaisToCents } from './format';
 import { CLINICS_PATIENTS_PATH } from './nav';
+import { NotasETarefasDoPaciente } from './NotasETarefasDoPaciente';
 import { ListaDeRetornos } from './retornos/ListaDeRetornos';
 import { SessoesDoPacote } from './SessoesDoPacote';
 import { ContatoDaPessoa } from './pessoa/ContatoDaPessoa';
@@ -100,6 +101,9 @@ function FichaReady() {
           <ListaDeRetornos filtros={{ patientId: id }} mostrarPaciente={false} />
         </section>
         {lePacotes ? <PacotesDoPaciente pacienteId={id} /> : null}
+        {paciente.data.contactId ? (
+          <NotasETarefasDoPaciente contactId={paciente.data.contactId} />
+        ) : null}
         {/* o paciente continua na captação: o contato, o consentimento, as
             conversas e as oportunidades, cada um com as suas chaves */}
         {paciente.data.contactId ? <ContatoDaPessoa contactId={paciente.data.contactId} /> : null}

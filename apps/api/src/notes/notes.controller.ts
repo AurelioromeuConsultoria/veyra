@@ -16,8 +16,11 @@ export class NotesController {
 
   @RequirePermissions('tasks:read')
   @Get()
-  list(@Query(new ZodPipe(listNotesSchema)) query: ListNotesInput): Promise<NoteDto[]> {
-    return this.notes.list(query);
+  list(
+    @CurrentAuth() auth: AuthContext,
+    @Query(new ZodPipe(listNotesSchema)) query: ListNotesInput,
+  ): Promise<NoteDto[]> {
+    return this.notes.list(auth, query);
   }
 
   @RequirePermissions('tasks:write')

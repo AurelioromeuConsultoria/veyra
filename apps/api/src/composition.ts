@@ -1,6 +1,7 @@
 import type { ExtensionsOptions } from './extensions/extensions.module';
 import { ClinicsContentRestriction } from './verticals/clinics/clinics-content-restriction';
 import { ClinicsExperienceAvailability } from './verticals/clinics/clinics-experience';
+import { ClinicsProtectedContent } from './verticals/clinics/clinics-protected-content';
 import { clinicsExtension } from './verticals/clinics/clinics.extension';
 import { ClinicsOutreachPrecondition } from './verticals/clinics/outreach/clinics-outreach.precondition';
 
@@ -15,6 +16,8 @@ import { ClinicsOutreachPrecondition } from './verticals/clinics/outreach/clinic
 export const COMPOSITION: ExtensionsOptions = {
   extensions: [clinicsExtension],
   contentRestrictionProviders: [ClinicsContentRestriction],
+  // as notas e tarefas de pacientes (ADR-061, adendo 2, F5.3b)
+  protectedContentProviders: [ClinicsProtectedContent],
   // a pré-condição do envio do negócio (E7): o pedido de envio da clínica (F4.2)
   outboundPreconditionProviders: [ClinicsOutreachPrecondition],
   // a experiência da clínica (ADR-055): vale só com o vertical ativo

@@ -277,17 +277,40 @@ export class AutomationsService {
 
       const config = createTaskConfigSchema.parse(rawConfig);
       const dueAt = new Date(Date.now() + config.dueInDays * 24 * 60 * 60 * 1000);
-      const title = this.renderTitle(config.title, payload);
+      /**
+       * A tarefa criada por um evento de TAREFA fica com o contato e a
+       * oportunidade da tarefa de origem: o `{{title}}` dela é conteúdo de
+       * quem ela é, e a proteção das notas e tarefas (E8, ADR-061 adendo 2)
+       * segue esses vínculos. Sem a origem (apagada antes de o evento rodar),
+       * não se sabe de quem era: o título dela não é copiado (falha fechada).
+       */
+      let alvo: { contactId?: string; dealId?: string } = {
+        contactId:
+          typeof payload.id === 'string' && event.eventType.startsWith('contact.')
+            ? payload.id
+            : undefined,
+      };
+      let dados = payload;
+      if (event.eventType.startsWith('task.') && typeof payload.id === 'string') {
+        // `prisma.raw` (a transação do worker, cross-workspace): filtro explícito
+        const origem = await tx.task.findFirst({
+          where: { workspaceId: event.workspaceId, id: payload.id },
+          select: { contactId: true, dealId: true },
+        });
+        if (origem) {
+          alvo = { contactId: origem.contactId ?? undefined, dealId: origem.dealId ?? undefined };
+        } else {
+          dados = { ...payload, title: '' };
+        }
+      }
+      const title = this.renderTitle(config.title, dados) || 'Tarefa da automação';
       const taskId = await this.tasks.createWithin(
         tx as unknown as Db,
         event.workspaceId,
         {
           title,
           dueAt: dueAt.toISOString(),
-          contactId:
-            typeof payload.id === 'string' && event.eventType.startsWith('contact.')
-              ? payload.id
-              : undefined,
+          ...alvo,
           priority: 'normal',
         },
         // ator SYSTEM: automação não é pessoa nem IA. `user` com membership

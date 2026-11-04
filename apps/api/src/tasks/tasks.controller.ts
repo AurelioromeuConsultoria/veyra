@@ -30,8 +30,11 @@ export class TasksController {
 
   @RequirePermissions('tasks:read')
   @Get()
-  list(@Query(new ZodPipe(listTasksSchema)) query: ListTasksInput): Promise<Paginated<TaskDto>> {
-    return this.tasks.list(query);
+  list(
+    @CurrentAuth() auth: AuthContext,
+    @Query(new ZodPipe(listTasksSchema)) query: ListTasksInput,
+  ): Promise<Paginated<TaskDto>> {
+    return this.tasks.list(auth, query);
   }
 
   @RequirePermissions('tasks:write')
@@ -56,8 +59,11 @@ export class TasksController {
 
   @RequirePermissions('tasks:write')
   @Delete(':id')
-  async remove(@Param('id', new ParseUUIDPipe()) id: string): Promise<{ ok: true }> {
-    await this.tasks.remove(id);
+  async remove(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<{ ok: true }> {
+    await this.tasks.remove(auth, id);
     return { ok: true };
   }
 }

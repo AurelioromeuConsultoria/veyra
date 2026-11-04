@@ -1,3 +1,4 @@
+import { ProtectedContentService } from '../extensions/protected-content';
 import {
   BadRequestException,
   ConflictException,
@@ -47,14 +48,34 @@ export class TasksService {
     private readonly activities: ActivitiesService,
     private readonly outbox: OutboxService,
     private readonly restricao: MudancasDeRestricao,
+    private readonly protegido: ProtectedContentService,
   ) {}
 
-  async list(input: ListTasksInput): Promise<Paginated<TaskDto>> {
+  /**
+   * As tarefas. O conteúdo de contato PROTEGIDO (ADR-061, adendo 2) só sai para
+   * quem tem a chave da extensão: a lista pedida PARA ele é 403 "Conteúdo
+   * restrito", e nas outras ele não entra — nem no total. Quem nem sabe quem é
+   * protegido (adendo 3) recebe a lista sem nada de pessoa: vazia para todo
+   * contato, pelo mesmo filtro.
+   */
+  async list(auth: AuthContext, input: ListTasksInput): Promise<Paginated<TaskDto>> {
+    // 403 só para quem já sabe quem é protegido; o vazio sai do filtro abaixo
+    await this.protegido.listaDoAlvo(auth, {
+      contactId: input.contactId,
+      dealId: input.dealId,
+    });
     const where = {
-      ...(input.status === 'all' ? {} : { status: input.status }),
-      ...(input.assigneeMembershipId ? { assigneeMembershipId: input.assigneeMembershipId } : {}),
-      ...(input.contactId ? { contactId: input.contactId } : {}),
-      ...(input.dealId ? { dealId: input.dealId } : {}),
+      AND: [
+        {
+          ...(input.status === 'all' ? {} : { status: input.status }),
+          ...(input.assigneeMembershipId
+            ? { assigneeMembershipId: input.assigneeMembershipId }
+            : {}),
+          ...(input.contactId ? { contactId: input.contactId } : {}),
+          ...(input.dealId ? { dealId: input.dealId } : {}),
+        },
+        await this.protegido.visivel(auth),
+      ],
     };
     const [total, rows] = await Promise.all([
       this.prisma.db.task.count({ where } as never),
@@ -79,6 +100,11 @@ export class TasksService {
 
   async create(auth: AuthContext, input: CreateTaskInput): Promise<TaskDto> {
     await this.validateReferences(input);
+    // quem não lê o conteúdo protegido não escreve nele
+    await this.protegido.exigirAlvoVisivel(auth, {
+      contactId: input.contactId,
+      dealId: input.dealId,
+    });
     const db = this.prisma.db as unknown as TxRunner;
     const id = await db.$transaction((tx) =>
       this.createWithin(tx, auth.workspaceId as string, input, {
@@ -154,11 +180,17 @@ export class TasksService {
   }
 
   async update(auth: AuthContext, id: string, input: UpdateTaskInput): Promise<TaskDto> {
+    // a protegida, para quem não tem a chave, é como inexistente
     const existing = (await this.prisma.db.task.findFirst({
-      where: { id },
-    })) as unknown as TaskRow | null;
+      where: { AND: [{ id }, await this.protegido.visivel(auth)] },
+    } as never)) as unknown as TaskRow | null;
     if (!existing) throw new NotFoundException('Tarefa não encontrada');
     await this.validateReferences(input);
+    // e não se leva uma tarefa para um contato protegido sem a chave
+    await this.protegido.exigirAlvoVisivel(auth, {
+      contactId: input.contactId ?? undefined,
+      dealId: input.dealId ?? undefined,
+    });
 
     const completing = input.status === 'done' && existing.status === 'open';
     // trocar o contato OU o deal muda de quem é o conteúdo da tarefa para o
@@ -193,6 +225,18 @@ export class TasksService {
           throw new ConflictException(
             'A tarefa mudou enquanto era alterada; tente de novo em instantes.',
           );
+        }
+        // o titular de AGORA, sob as travas (as mesmas de quem torna alguém
+        // paciente): a tarefa que passou a ser protegida no meio não sai da
+        // proteção levada por quem não tem a chave (ADR-061, adendo 2)
+        if (
+          await this.protegido.alvoOculto(
+            auth,
+            { contactId: existing.contactId, dealId: existing.dealId },
+            tx,
+          )
+        ) {
+          throw new NotFoundException('Tarefa não encontrada');
         }
         // o contato e o deal novos, sob as travas: uma exclusão que comitou
         // antes é vista aqui
@@ -273,8 +317,10 @@ export class TasksService {
     return contatos;
   }
 
-  async remove(id: string): Promise<void> {
-    const { count } = await this.prisma.db.task.deleteMany({ where: { id } });
+  async remove(auth: AuthContext, id: string): Promise<void> {
+    const { count } = await this.prisma.db.task.deleteMany({
+      where: { AND: [{ id }, await this.protegido.visivel(auth)] },
+    } as never);
     if (count === 0) throw new NotFoundException('Tarefa não encontrada');
   }
 

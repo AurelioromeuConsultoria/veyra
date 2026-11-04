@@ -6,9 +6,7 @@ import type {
   RestrictionSubject,
 } from '../../extensions/content-restriction';
 import { PrismaService } from '../../prisma/prisma.service';
-import { CLINICS_MODELS } from './clinics.extension';
-
-type Delegate = { findFirst: (args: unknown) => Promise<unknown> };
+import { temLinhaDoVertical } from './clinics-presence';
 
 /**
  * Porta REAL do E6 para o Clinics (ADR-048 §6.4, ADR-047 §4 "ciclo de vida da
@@ -46,7 +44,7 @@ export class ClinicsContentRestriction implements ContentRestrictionProvider {
       const settings = (await db.clinicsSettings.findFirst({
         select: { status: true },
       })) as { status: string } | null;
-      const present = settings !== null || (await this.hasVerticalData());
+      const present = settings !== null || (await temLinhaDoVertical(this.prisma));
       if (!present) return subjects.map(() => false);
       // só `ai` tem liberação no MVP. ALLOWLIST, não "webhook é restrito": um
       // consumidor novo do Core nasce restrito aqui, sem herdar a liberação de IA
@@ -81,25 +79,5 @@ export class ClinicsContentRestriction implements ContentRestrictionProvider {
         (subject) => subject === null || patients.has(subject) || !released.has(subject),
       );
     });
-  }
-
-  /**
-   * Alguma linha de algum modelo do vertical, neste workspace. As consultas
-   * saem EM PARALELO (ADR-048 adendo 2, item 8): o caso comum é o workspace
-   * SEM o Clinics, em que todas são feitas; em série, a latência crescia com
-   * cada modelo novo. Qualquer erro rejeita — nunca vira "ausente".
-   */
-  private async hasVerticalData(): Promise<boolean> {
-    const delegates = this.prisma.db as unknown as Record<string, Delegate>;
-    const achados = await Promise.all(
-      // `async`: até um erro SÍNCRONO de um delegate vira rejeição tratada, sem
-      // deixar as consultas irmãs sem dono
-      CLINICS_MODELS.map(async (model) =>
-        delegates[model.charAt(0).toLowerCase() + model.slice(1)].findFirst({
-          select: { id: true },
-        }),
-      ),
-    );
-    return achados.some((linha) => linha !== null);
   }
 }

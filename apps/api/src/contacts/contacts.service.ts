@@ -13,6 +13,7 @@ import type {
   UpdateContactInput,
 } from '@veyra/contracts';
 import { ClsService } from 'nestjs-cls';
+import { ProtectedContentService } from '../extensions/protected-content';
 import { ActivitiesService } from '../activities/activities.service';
 import { UsageService } from '../usage/usage.service';
 import { AuditService } from '../audit/audit.service';
@@ -79,6 +80,7 @@ export class ContactsService {
     private readonly travas: TravasDeIdentidade,
     private readonly files: FilesService,
     private readonly cls: ClsService,
+    private readonly protegido: ProtectedContentService,
   ) {}
 
   /**
@@ -524,6 +526,10 @@ export class ContactsService {
       where: { id },
     })) as unknown as ContactRow | null;
     if (!existing) throw new NotFoundException('Contato não encontrado');
+    // excluir apaga as notas da pessoa, e a recusa do contato protegido (409)
+    // denunciaria a classificação: quem nem sabe quem é protegido não exclui
+    // contato nenhum (ADR-061, adendo 3)
+    await this.protegido.exigirPessoasVisiveis(auth);
     const contactsLimit = await this.usage.prepareConsume(auth.workspaceId as string, 'contacts');
     // a mídia recebida do titular sai com ele, e devolve o armazenamento
     const storageLimit = await this.usage.prepareConsume(

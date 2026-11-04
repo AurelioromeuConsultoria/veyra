@@ -27,6 +27,8 @@ export const CLINICS_PERMISSION_CATALOG = {
     'Registrar atendimento realizado, consumir sessão, criar e encerrar pacote, gerar retorno',
   'clinics:care:all':
     'Ver, registrar e corrigir os atendimentos de TODOS os profissionais; sem ela, só os do profissional vinculado à conta (soma-se a care:read e care:write, sem conceder nada sozinha)',
+  'clinics:patient-content:read':
+    'Ler as notas e tarefas de quem é paciente (soma-se a tasks:read e tasks:write, sem conceder nada sozinha)',
   'clinics:restriction:manage':
     'Liberar um contato para uso de IA como sem relação com o Clinics, ou desfazer a liberação',
 } as const;

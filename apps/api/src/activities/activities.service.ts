@@ -115,7 +115,13 @@ export class ActivitiesService {
     target: { contactId?: string; dealId?: string },
     limit: number,
     rawCursor?: string,
-    options: { includeDealEvents?: boolean } = {},
+    options: {
+      includeDealEvents?: boolean;
+      /** exclui as atividades de nota e tarefa de contato protegido (ADR-061) */
+      conteudoVisivel?: Record<string, unknown>;
+      /** o alvo tem conteúdo protegido para quem pede: a resposta diz isso */
+      conteudoRestrito?: boolean;
+    } = {},
   ): Promise<ActivityPageDto> {
     /**
      * A timeline do contato (ADR-052, C12): o que tem `contactId` gravado (o
@@ -153,6 +159,7 @@ export class ActivitiesService {
       AND: [
         targetWhere,
         visibilityWhere,
+        options.conteudoVisivel ?? {},
         cursor
           ? {
               OR: [
@@ -186,6 +193,7 @@ export class ActivitiesService {
         rows.length > limit && last
           ? encodeCursor({ occurredAt: last.occurredAt, id: last.id })
           : null,
+      ...(options.conteudoRestrito ? { restrictedContent: true as const } : {}),
     };
   }
 

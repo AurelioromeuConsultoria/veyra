@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import type { CreateNoteInput, ListNotesInput, NoteDto } from '@veyra/contracts';
 import { ActivitiesService } from '../activities/activities.service';
 import { AuthContext } from '../common/decorators';
+import { ProtectedContentService } from '../extensions/protected-content';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 
 type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
@@ -21,16 +22,28 @@ export class NotesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly activities: ActivitiesService,
+    private readonly protegido: ProtectedContentService,
   ) {}
 
-  async list(input: ListNotesInput): Promise<NoteDto[]> {
+  /**
+   * As notas de um alvo. O conteúdo de contato PROTEGIDO (ADR-061, adendo 2)
+   * só sai para quem tem a chave da extensão: a lista pedida PARA ele é 403
+   * "Conteúdo restrito", e nas outras (empresa, oportunidade) ele não entra.
+   * Quem nem sabe quem é protegido (adendo 3) recebe vazia a de toda pessoa.
+   */
+  async list(auth: AuthContext, input: ListNotesInput): Promise<NoteDto[]> {
+    // 403 só para quem já sabe quem é protegido; o vazio sai do filtro abaixo
+    await this.protegido.listaDoAlvo(auth, {
+      contactId: input.contactId,
+      dealId: input.dealId,
+    });
     const where = input.contactId
       ? { contactId: input.contactId }
       : input.companyId
         ? { companyId: input.companyId }
         : { dealId: input.dealId };
     const rows = (await this.prisma.db.note.findMany({
-      where,
+      where: { AND: [where, await this.protegido.visivel(auth)] },
       orderBy: { createdAt: 'desc' },
       take: 100,
     } as never)) as unknown as NoteRow[];
@@ -40,6 +53,11 @@ export class NotesService {
   async create(auth: AuthContext, input: CreateNoteInput): Promise<NoteDto> {
     if (!auth.membershipId) throw new BadRequestException('Sessão sem workspace ativo');
     await this.validateTargets(input);
+    // quem não lê o conteúdo protegido não escreve nele
+    await this.protegido.exigirAlvoVisivel(auth, {
+      contactId: input.contactId,
+      dealId: input.dealId,
+    });
     const db = this.prisma.db as unknown as TxRunner;
     const id = await db.$transaction(async (tx) => {
       const note = await tx.note.create({
@@ -67,9 +85,10 @@ export class NotesService {
   }
 
   async remove(auth: AuthContext, id: string): Promise<void> {
+    // o protegido, para quem não tem a chave, é como inexistente
     const existing = (await this.prisma.db.note.findFirst({
-      where: { id },
-    })) as unknown as NoteRow | null;
+      where: { AND: [{ id }, await this.protegido.visivel(auth)] },
+    } as never)) as unknown as NoteRow | null;
     if (!existing) throw new NotFoundException('Nota não encontrada');
     const db = this.prisma.db as unknown as TxRunner;
     await db.$transaction(async (tx) => {

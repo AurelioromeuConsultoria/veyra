@@ -55,4 +55,10 @@ export interface ActivityPageDto {
   items: ActivityDto[];
   /** cursor da próxima página; null = fim */
   nextCursor: string | null;
+  /**
+   * o alvo tem conteúdo protegido (notas e tarefas) que quem pede não lê
+   * (ADR-061, adendo 2): as atividades dele não saem, e a tela diz "Conteúdo
+   * restrito". Só aparece quando `true`; nunca diz quantas são
+   */
+  restrictedContent?: true;
 }

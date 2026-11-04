@@ -213,17 +213,21 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
 - **Na ficha:** "Sessões" em cada pacote, com quem o consome e as correções.
 - **Os testes:** os de interface e o E2E do fluxo completo.
 
-  3. **F5.3 — Privacidade e acesso clínico (B1 e D8).** **ADR-061: a direção foi aprovada em 2026-11-03, com ajustes.** A **F5.3a (D8)** está em commit local:
+  3. **F5.3 — Privacidade e acesso clínico (B1 e D8).** **ADR-061: a direção foi aprovada em 2026-11-03, com ajustes.** A **F5.3a (D8)**:
      - o `Profissional` lê, registra e corrige só os próprios atendimentos;
      - o pacote é do paciente, e o saldo é compartilhado;
      - sem vínculo, não há acesso clínico;
      - a chave `clinics:care:all` chega aos papéis pelo livro, sem comando;
      - a cobertura é a troca do profissional na remarcação.
 
-     A F5.3b, a F5.3c e a F5.3d esperam as precisões do adendo 1. Uma proposta concreta, com as decisões de operação, as jurídicas e o trabalho técnico separados:
-     - quem vê conversas, notas, arquivos, metadados e atendimentos;
-     - o que a recepção precisa consultar;
-     - se o profissional vê todos os atendimentos ou só os próprios;
+     A F5.3a e a cobertura depois da chegada estão publicadas (`6d1dd4f`). A **F5.3b (notas e tarefas de pacientes, adendo 2)** está em commit local:
+     - sem `clinics:patient-content:read`, as notas e as tarefas de quem é paciente não saem em nenhum caminho (listas, acesso direto, criação, timeline, troca de contato da oportunidade);
+     - a recepção vê "Conteúdo restrito" na ficha; o interessado que não é paciente segue como antes;
+     - a chave chega a Owner, Admin e "Recepção e atendimento" pelo livro, sem comando.
+     - quem não pode saber quem é paciente (sem `clinics:schedule:read`) recebe a regra uniforme do adendo 3: as notas e as tarefas de toda pessoa ficam ocultas, e as escritas que as tocariam são recusadas, igual para paciente e interessado.
+
+     A F5.3c (anexos, campos, título da oportunidade e a mídia do WhatsApp, com a decisão da mídia antes) e a F5.3d (busca, exportação e auditoria) seguem. O B1 continua aberto. As precisões que ainda faltam:
+     - quem vê conversas, arquivos e metadados de pacientes;
      - como busca, exportação, auditoria e vínculos deixam de revelar conteúdo oculto.
 
      Nenhum bloqueio é levantado e nenhuma visibilidade muda por inferência.

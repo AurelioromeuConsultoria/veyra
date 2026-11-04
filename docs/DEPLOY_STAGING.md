@@ -198,12 +198,14 @@ docker ps --format '{{.Names}}' | grep -i veyra
   `clinics sync-roles` (§7.1). A entrega que precisar deles diz isso no pedido
   de push.
 - **As chaves novas do Clinics nos papéis que já existem** (desde a F5.3a,
-  ADR-061) não precisam de comando. A API as concede sozinha, pelo livro
+  ADR-061: `clinics:care:all` e, desde a F5.3b, `clinics:patient-content:read`)
+  não precisam de comando. A API as concede sozinha, pelo livro
   `PermissionBackfill`: uma vez logo depois da subida e de hora em hora. O
   catálogo global também é atualizado nessa passada. A conferência fica na
   trilha de auditoria (`role.permission_backfilled`, ator
   `clinics-backfill`). Entre a subida e a primeira passada, poucos segundos,
-  quem coordena vê só os próprios atendimentos ou nenhum: falha fechada.
+  quem coordena vê só os próprios atendimentos ou nenhum, e as notas e
+  tarefas de pacientes saem como "Conteúdo restrito": falha fechada.
 - **Nunca clique em Deploy no painel fora de uma janela.** O deploy do painel
   vira a base, e a guarda deixa de ver uma migration que ele tenha publicado
   sem aplicar.
@@ -2819,3 +2821,22 @@ O usuário entra e troca para o workspace Demonstração. Depois:
   - **a ficha:** "0 de 5" e 5 restantes. Em "Sessões", nenhuma sessão consumida, e a correção de 19:16, "de este pacote para avulso · Escolha errada no registro".
 
   A pendência da janela está fechada.
+
+### A F5.3a e a cobertura depois da chegada no ar (2026-11-04)
+
+- **A publicação:** `6d1dd4f`, pelo job `Staging` do run 41831592642, com a saúde 200.
+  - Inclui `12a1910` (o ADR-061), `6334cd8` (a F5.3a), `59b290d` (a cobertura depois da chegada) e `6d1dd4f` (o e2e do catálogo).
+  - **O primeiro CI**, do `6334cd8` (run 41741225575), falhou no e2e do catálogo: o teste procurava o texto antigo do aviso do vínculo. Nada foi publicado com a falha.
+- **Conferido no `demo`,** pela sessão do Owner, antes e depois do deploy:
+  - **A chave `clinics:care:all`:** concedida pelo preenchimento automático a Owner (35 → 36 chaves), Admin (34 → 35) e "Recepção e atendimento" (22 → 23). Profissional, Member e Guest ficaram como estavam.
+  - **As memberships:** iguais (o mesmo Owner ativo), sem sessão encerrada.
+  - **O atendimento da Gabriela, das 16:00 de 03/11:** no alcance do Owner na agenda.
+- **NÃO conferido no `demo`:** o percurso com uma conta `Profissional`. O `demo` não tem essa conta, e o percurso é opcional (decisão do usuário).
+- **Validado pelos testes, e não no `demo`:**
+  - o alcance "próprios" e o sem vínculo;
+  - a troca concorrente, nas duas ordens;
+  - a cobertura depois da chegada;
+  - o livro (a revogação respeitada);
+  - a decisão clínica nos retornos.
+
+  Pela integração (`clinics-care-scope`, 16 cenários), pelo web e pelo e2e, e pelo CI verde.

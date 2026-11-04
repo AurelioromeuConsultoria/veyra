@@ -45,7 +45,13 @@ export const CLINICS_ROLE_GRANTS: Readonly<Record<string, readonly ClinicsPermis
   // atendimentos (ADR-061, D8): quem coordena a agenda vê a clínica inteira; o
   // `Profissional`, só os próprios
   [CLINICS_RECEPTION_CARE_SYSTEM_KEY]: [
-    ...new Set([...RECEPCAO, ...ATENDIMENTO, 'clinics:care:all' as const]),
+    ...new Set([
+      ...RECEPCAO,
+      ...ATENDIMENTO,
+      'clinics:care:all' as const,
+      // as notas e tarefas de pacientes (ADR-061, adendo 2): quem tem o CRM e o atendimento
+      'clinics:patient-content:read' as const,
+    ]),
   ],
 };
 

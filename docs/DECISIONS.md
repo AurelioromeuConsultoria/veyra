@@ -10297,3 +10297,100 @@ O B1 só se considera levantado depois da F5.3d, com o `reviewer` e o `security`
   - **A trilha:** `clinics.appointment.professional_changed`, com o anterior, o novo e quem trocou.
   - **A tela:** "Trocar profissional" no cartão do horário "Chegou", na Agenda, com a escolha entre quem faz o serviço.
   - **Os testes:** as duas ordens, forçadas pela trava, as verificações, e a tela (a recepção troca; o Profissional não vê).
+
+**Adendo 2 — a F5.3b: notas e tarefas de pacientes (2026-11-04), antes do código.** Autorizada pelo usuário até o commit local.
+
+1. **A porta do Core: o conteúdo protegido por contato (E8).** É um ponto de extensão novo, ao lado do E6 e independente dele, e entra na tabela da `ARCHITECTURE` §6. A extensão declara duas coisas:
+   - **um filtro sobre o contato,** opaco para o Core: quais contatos têm conteúdo protegido. No Clinics, é o contato que TEM perfil de paciente;
+   - **a chave do catálogo DELA** que libera a leitura: `clinics:patient-content:read`.
+
+   O Core aplica o filtro nas próprias consultas, com total e paginação corretos, e confere a chave. Ele continua sem conhecer o vertical. Sem extensão composta, nada é protegido (Core puro).
+
+2. **A regra:**
+   - **A chave se SOMA à permissão do recurso** (`tasks:read`, `tasks:write`) e nunca concede acesso sozinha.
+   - **Independe da liberação para IA:** o filtro é "é paciente", não a restrição da E6. Um interessado que ainda não é paciente segue com o acesso que as permissões já dão.
+   - **É derivada a cada pedido,** sem cache: no instante em que um interessado vira paciente, as notas e tarefas dele deixam de ser servidas a quem não tem a chave.
+3. **O que é "de paciente":**
+   - **a nota ou a tarefa:** cujo contato é paciente, ou cuja oportunidade é de um paciente;
+   - **a atividade da timeline sobre nota e tarefa** (`note_*`, `task_*`, que levam o título da tarefa): cujo contato, oportunidade ou tarefa é de paciente.
+   - **As notas de empresa** não são de pessoa e ficam como estão.
+4. **Os caminhos, todos no servidor, para quem não tem a chave:**
+   - **listas** (`GET /tasks`, a tela Tarefas, o Hoje, `GET /notes` de empresa ou oportunidade): o protegido não entra, nem no total;
+   - **a lista pedida PARA um paciente** (`?contactId=` ou `?dealId=` de paciente): 403 "Conteúdo restrito";
+   - **o acesso direto por id** (editar, concluir, apagar): 404, como inexistente;
+   - **a criação** (nota ou tarefa) para um paciente: 403. Quem não lê não escreve ali;
+   - **a timeline:** as atividades de nota e tarefa de paciente não saem. A resposta diz que há conteúdo restrito, sem contar.
+   - **Busca:** o Core não busca no texto de notas nem de tarefas; a busca do Clinics é por nome.
+   - **Notificações:** não existe notificação de nota nem de tarefa (só agenda e conversa).
+   - **Prévias:** a timeline e o Hoje, cobertos acima.
+
+   Nenhum desses caminhos fica aberto até a F5.3d.
+
+5. **Quem tem a chave:**
+   - Owner e Admin, que recebem todas as chaves do Clinics, e "Recepção e atendimento";
+   - na ativação, pela matriz;
+   - nos workspaces já ativos, pelo mesmo livro da F5.3a (adendo 1, item 5), sem comando, com `contacts:read` como pré-requisito e a avaliação única por papel.
+
+   A "Recepção" (Member) e o `Profissional` não a têm. A recepção trabalha pela agenda e pelas conversas, e na ficha do paciente vê "Conteúdo restrito".
+
+6. **A desativação do Clinics** tira as chaves do vertical, inclusive esta. Os pacientes continuam pacientes, e o conteúdo deles fica protegido para todos até a reativação. É a mesma regra conservadora da E6 ("desativar não levanta a restrição").
+7. **Fora da F5.3b:** os anexos, os campos personalizados, o título da oportunidade e a mídia do WhatsApp (F5.3c, com a decisão da mídia antes), e a busca, a exportação e a auditoria (F5.3d). O B1 continua aberto.
+8. **Dois caminhos achados na implementação:**
+   - **Mudar o contato de uma oportunidade de paciente** (`PATCH /deals/:id` com outro `contactId` ou `null`) levaria as notas e as tarefas dela junto, para fora da proteção. Sem a chave, isso dá 403 "Conteúdo restrito". A conferência roda dentro da transação, depois da trava do contato (`porContato`), que é a mesma de quem torna alguém paciente. Levar uma oportunidade PARA um paciente continua livre, porque protege.
+   - **A automação e a proposta aprovada da IA** criam tarefas por `createWithin`, sem a conferência da chave. A automação não tem pessoa, e a proposta mostra o título a quem aprova antes de criar. A IA continua sob a E6 para pacientes.
+   - **A automação disparada por uma tarefa** (`task.created`, `task.completed`) copiava o `{{title}}` para uma tarefa sem vínculo, fora da proteção (revisão de segurança da F5.3b). Agora a tarefa criada herda o contato e a oportunidade da tarefa de origem. Sem a origem, apagada antes de o evento rodar, o título dela não é copiado. O `{{title}}` de um evento de oportunidade é o título da oportunidade, que fica na F5.3c.
+   - **Apagar a oportunidade de um paciente** apaga as notas e as tarefas dela em cascata, e por isso exige a chave (403 "Conteúdo restrito"). A conferência roda na transação da exclusão, sem a trava do contato: a corrida com a conversão só pode apagar, não revelar.
+   - **O contato de um paciente não pode ser excluído** (a FK de `ClinicsPatient` é `NoAction`), então a exclusão não solta as tarefas dele.
+   - **Trocar o contato ou a oportunidade de uma tarefa** confere de novo, sob as travas do contato, que o titular de agora não ficou protegido no meio. Se ficou, o pedido dá 404 (revisão da F5.3b).
+   - **Limites aceitos para a demonstração fictícia, pendentes antes do uso real:**
+     - concluir ou editar uma tarefa sem trocar o titular, e apagar uma nota, conferem a proteção fora de trava. Um pedido que já tinha lido o conteúdo pode concluir logo depois de o interessado virar paciente;
+     - a marca `restrictedContent` da timeline só acende quando o próprio alvo é paciente. Na timeline de um interessado ou de uma empresa, uma tarefa ligada a uma oportunidade de paciente é omitida sem o aviso. Nada vaza; só falta o aviso.
+9. **O custo no Core puro:** com a porta composta, quem não tem a chave paga um filtro a mais sobre o perfil de paciente nas listas de notas, de tarefas e da timeline, mesmo num workspace sem Clinics. Num workspace sem pacientes o filtro não exclui nada.
+
+**Resultado da implementação (commit local, 2026-11-04):**
+
+- **Validado pelos testes:**
+  - a integração `clinics-patient-content`, com 8 cenários: a recepção, o acesso direto, a oportunidade (inclusive a troca de contato e a exclusão), a automação sobre a tarefa de um paciente, a timeline, a conversão de interessado em paciente e o livro;
+  - os specs existentes que tocam notas, tarefas, atividades e a troca de contato da oportunidade;
+  - o web: a região "Notas e tarefas" na ficha e o aviso da timeline;
+  - o e2e da continuidade.
+- **Não conferido no `demo`:** nada desta entrega foi publicado.
+
+**Adendo 3 — quem não pode identificar pacientes (2026-11-04), antes do código.** Decisão do usuário sobre o bloqueio da revisão de segurança da F5.3b. Pela regra do adendo 2, quem tinha só permissões do Core, como o Guest, deduzia quem é paciente: pelo 403 de `GET /tasks?contactId=`, pela marca da timeline e pela recusa de apagar a oportunidade. A SECURITY proíbe essa dedução, e a regra dela é mantida.
+
+1. **Quem pode saber que um contato é paciente:** quem tem a chave que a extensão declara para isso (`revealKey`). No Clinics, é `clinics:schedule:read`, a mesma da lista de pacientes e da agenda.
+2. **Os três modos, por pedido:**
+   - **com a chave do conteúdo** (`clinics:patient-content:read`): nada é ocultado. As permissões de cada recurso continuam valendo;
+   - **sem a chave do conteúdo, com a `revealKey`** (a Recepção): o adendo 2, sem mudança. O paciente aparece como "Conteúdo restrito", e as notas e as tarefas dos interessados seguem as permissões;
+   - **sem as duas, num workspace sujeito à proteção:** a regra uniforme, abaixo.
+3. **O workspace sujeito à proteção** é a PRESENÇA do vertical, a mesma regra da E6: há `ClinicsSettings` em qualquer status, ou qualquer linha de qualquer modelo do vertical. O workspace que nunca ativou o Clinics e não tem dado dele fica com o CRM de sempre. A extensão responde pela porta (`appliesToWorkspace`). Um erro na consulta rejeita o pedido e nunca vira "ausente".
+4. **A regra uniforme** vale para as notas e as tarefas ligadas a uma pessoa: pelo contato, ou pela oportunidade que tem contato. O tratamento é o mesmo para o paciente e para o interessado:
+   - **listas:** elas não entram, nem no total. A lista pedida para um contato, ou para uma oportunidade com contato, responde 200 vazia;
+   - **acesso por id** (editar, concluir, apagar): 404;
+   - **timeline:** as atividades de nota e tarefa não saem. A marca `restrictedContent` acende para TODO contato e toda oportunidade com contato, de modo que ela não distingue ninguém;
+   - **escritas recusadas com o mesmo 403 "Conteúdo restrito":** criar uma nota ou uma tarefa para uma pessoa; levar uma tarefa até uma pessoa; trocar ou limpar o contato de uma oportunidade que tem contato; apagar uma oportunidade que tem contato; e **excluir um contato**. A exclusão de um paciente respondia 409, e a de um interessado, 200: o resultado denunciava a classificação, e a exclusão apaga as notas da pessoa.
+   - **o que não tem pessoa segue as permissões de sempre:** a tarefa sem alvo, a nota de empresa, a oportunidade sem contato e os demais campos de uma oportunidade com contato.
+5. **A consequência é intencional:** nesse workspace, o Guest e o papel personalizado sem `clinics:schedule:read` perdem o acesso às notas e às tarefas também dos interessados.
+6. **A desativação** tira de todos as chaves do vertical, mas a presença fica. Até a reativação, todos ficam na regra uniforme, inclusive o Owner. Isso inclui não excluir contatos.
+7. **A corrida entre mover a tarefa e converter o contato:** a conferência sob a trava do contato (a revisão do adendo 2) é a garantia. A integração força a ordem: a conversão comita enquanto a troca espera a trava, e a troca responde 404, sem efeito.
+8. **O custo:** quem não tem a chave do conteúdo paga a consulta de presença, uma vez por pedido. Num workspace sem o vertical, ela roda em paralelo por todos os modelos do vertical, como na E6.
+9. **Fora deste adendo:** as outras superfícies que podem revelar a classificação a quem não tem a `revealKey` ficam na F5.3c e na F5.3d. São as conversas, os arquivos, os campos personalizados, o título da oportunidade, a busca, a exportação e a trilha. O B1 continua aberto.
+
+**Resultado do adendo 3 (commit local, 2026-11-04):**
+
+- **Validado pelos testes,** na integração `clinics-patient-content` (13 cenários):
+  - **a comparação:** um operador sem leitura da agenda recebe as mesmas respostas, nas leituras e nas oito escritas, para um paciente e um interessado com dados equivalentes;
+  - **o que não tem pessoa** segue normal;
+  - **a desativação:** Owner e Recepção na regra uniforme;
+  - **o workspace sem o Clinics:** o mesmo papel tem o CRM de sempre;
+  - **a corrida** entre mover a tarefa e converter o contato.
+
+  Os specs existentes de exclusão de contato, presença (E6), notas, tarefas, oportunidades e automações também passaram.
+
+- **O ajuste nos testes:** dois specs do Clinics que chamam os serviços direto (G2 e G4) passaram a pôr no CLS o papel da dona, como num pedido real. Sem o papel, a permissão é negada (falha fechada), e agora isso inclui a regra uniforme.
+- **Não conferido no `demo`:** nada desta entrega foi publicado.
+- **A revisão de segurança do delta aprovou com ressalvas, todas opcionais.** A recusa da troca e da exclusão da oportunidade foi antecipada para antes da transação, sem prender trava nem conexão; a reconferência sob a trava continua. As demais ficam como pendência antes do uso real:
+  - **a nota com mais de um alvo:** o contrato aceita contato, empresa e oportunidade juntos. Excluir a empresa, ou excluir um interessado, apaga em cascata uma nota que também é de paciente, sem a chave. Não revela a classificação; só destrói. Só pela API direta;
+  - **a automação de tarefa:** ela herda o vínculo atual da tarefa de origem, mas o `{{title}}` vem do evento. Se alguém com a chave renomear a tarefa e tirar o contato antes de o job rodar, a tarefa criada fica sem pessoa e com o título antigo;
+  - **a exclusão de contato com o Clinics desativado:** ninguém exclui, nem para atender a um pedido do titular (LGPD). O caminho é reativar o Clinics para atender ao pedido;
+  - **para a F5.3c e a F5.3d:** a automação de evento de oportunidade copia o título da oportunidade; as atividades `message_*` aparecem na timeline; a oportunidade ainda ligada a um agendamento recusa a exclusão (409). Esta revela um vínculo clínico passado, não a classificação atual.

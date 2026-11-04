@@ -1,5 +1,5 @@
 import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { nomeDePapelComoSeLe } from '@veyra/contracts';
+import { nomeDePapelComoSeLe, type PermissionKey } from '@veyra/contracts';
 import {
   CLINICS_PERMISSION_CATALOG,
   CLINICS_PROFESSIONAL_SYSTEM_KEY,
@@ -74,12 +74,19 @@ const ACTOR_DO_PREENCHIMENTO = { type: 'system' as const, id: 'clinics-backfill'
  */
 const PREENCHIMENTOS: readonly {
   chave: ClinicsPermissionKey;
-  preRequisito: ClinicsPermissionKey;
+  /** a chave que o papel já precisa ter (do vertical ou do Core) */
+  preRequisito: ClinicsPermissionKey | PermissionKey;
   papeis: readonly string[];
 }[] = [
   {
     chave: 'clinics:care:all',
     preRequisito: 'clinics:care:read',
+    papeis: ['owner', 'admin', CLINICS_RECEPTION_CARE_SYSTEM_KEY],
+  },
+  // as notas e tarefas de pacientes (ADR-061, adendo 2, F5.3b)
+  {
+    chave: 'clinics:patient-content:read',
+    preRequisito: 'contacts:read',
     papeis: ['owner', 'admin', CLINICS_RECEPTION_CARE_SYSTEM_KEY],
   },
 ];

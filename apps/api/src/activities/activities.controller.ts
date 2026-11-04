@@ -1,3 +1,4 @@
+import { ProtectedContentService } from '../extensions/protected-content';
 import { Controller, ForbiddenException, Get, Query } from '@nestjs/common';
 import { ActivityPageDto, ListActivitiesInput, listActivitiesSchema } from '@veyra/contracts';
 import { PermissionsService } from '../auth/permissions.service';
@@ -17,6 +18,7 @@ export class ActivitiesController {
   constructor(
     private readonly activities: ActivitiesService,
     private readonly permissions: PermissionsService,
+    private readonly protegido: ProtectedContentService,
   ) {}
 
   @RequirePermissions('contacts:read')
@@ -34,7 +36,15 @@ export class ActivitiesController {
       query.cursor,
       // eventos de oportunidade só aparecem na timeline do contato para quem
       // pode ver pipeline — o filtro é aplicado na projeção
-      { includeDealEvents: await this.permissions.has(auth, 'pipelines:read') },
+      {
+        includeDealEvents: await this.permissions.has(auth, 'pipelines:read'),
+        // as atividades de nota e tarefa de contato protegido (ADR-061, adendo 2)
+        conteudoVisivel: await this.protegido.atividadeVisivel(auth),
+        conteudoRestrito: await this.protegido.alvoOculto(auth, {
+          contactId: query.contactId,
+          dealId: query.dealId,
+        }),
+      },
     );
   }
 }

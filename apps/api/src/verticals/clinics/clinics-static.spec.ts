@@ -226,6 +226,8 @@ describe('Clinics — garantias estáticas (ADR-047, ADR-048)', () => {
         'clinics:care:write',
         // o alcance de todos os atendimentos (ADR-061, D8)
         'clinics:care:all',
+        // as notas e tarefas de pacientes (ADR-061, adendo 2)
+        'clinics:patient-content:read',
       ].sort(),
     );
     // a soma da recepção e do atendimento PADRÃO do vertical, mais o alcance "todos"
@@ -235,12 +237,17 @@ describe('Clinics — garantias estáticas (ADR-047, ADR-048)', () => {
           ...CLINICS_ROLE_GRANTS.member,
           ...CLINICS_ROLE_GRANTS[CLINICS_PROFESSIONAL_SYSTEM_KEY],
           'clinics:care:all',
+          'clinics:patient-content:read',
         ]),
       ].sort(),
     );
     // o Profissional e a recepção NÃO têm o alcance "todos" (D8)
     expect(CLINICS_ROLE_GRANTS[CLINICS_PROFESSIONAL_SYSTEM_KEY]).not.toContain('clinics:care:all');
     expect(CLINICS_ROLE_GRANTS.member).not.toContain('clinics:care:all');
+    // a recepção e o Profissional NÃO leem notas e tarefas de pacientes (ADR-061, adendo 2)
+    for (const k of [CLINICS_PROFESSIONAL_SYSTEM_KEY, 'member']) {
+      expect(CLINICS_ROLE_GRANTS[k]).not.toContain('clinics:patient-content:read');
+    }
     // sem a gestão de equipe e de papéis, sem a liberação para IA e sem a auditoria
     for (const ausente of [
       'members:manage',

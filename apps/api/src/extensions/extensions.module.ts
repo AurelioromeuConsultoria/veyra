@@ -16,13 +16,24 @@ import {
   OutboundPreconditionService,
   type OutboundPreconditionProvider,
 } from './outbound-precondition';
+import { PermissionsService } from '../auth/permissions.service';
 import { PermissionCatalogCheck } from './permission-catalog.check';
+import {
+  PROTECTED_CONTENT_PROVIDERS,
+  ProtectedContentService,
+  type ProtectedContentProvider,
+} from './protected-content';
 import { EXTENSION_REGISTRY, composeRegistry } from './registry';
 
 export interface ExtensionsOptions {
   extensions: readonly CoreExtension[];
   /** implementações da porta do E6, com injeção de dependência normal */
   contentRestrictionProviders?: readonly Type<ContentRestrictionProvider>[];
+  /**
+   * o conteúdo protegido por contato (ADR-061, adendo 2): quais contatos têm
+   * notas e tarefas protegidas, e a chave que libera a leitura
+   */
+  protectedContentProviders?: readonly Type<ProtectedContentProvider>[];
   /**
    * implementações da porta do E7 (a pré-condição do envio do negócio, F4.1c-3),
    * uma por prefixo de origem
@@ -49,6 +60,7 @@ export class ExtensionsModule {
     const providerClasses = [...(options.contentRestrictionProviders ?? [])];
     const precondicoes = [...(options.outboundPreconditionProviders ?? [])];
     const disponibilidades = [...(options.experienceAvailabilityProviders ?? [])];
+    const protegidos = [...(options.protectedContentProviders ?? [])];
     return {
       module: ExtensionsModule,
       imports: [DiscoveryModule],
@@ -75,6 +87,15 @@ export class ExtensionsModule {
           inject: disponibilidades,
         },
         ExperienceService,
+        ...protegidos,
+        {
+          provide: PROTECTED_CONTENT_PROVIDERS,
+          useFactory: (...instances: ProtectedContentProvider[]) => instances,
+          inject: protegidos,
+        },
+        // sem estado (Prisma e CLS): a mesma conferência de chave do guard
+        PermissionsService,
+        ProtectedContentService,
         PermissionCatalogCheck,
       ],
       exports: [
@@ -82,6 +103,7 @@ export class ExtensionsModule {
         ContentRestrictionService,
         OutboundPreconditionService,
         ExperienceService,
+        ProtectedContentService,
       ],
     };
   }
