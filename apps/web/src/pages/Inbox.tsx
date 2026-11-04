@@ -27,6 +27,7 @@ import {
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { AiPanel, AiSeal } from '../components/ui/ai';
+import { Avatar } from '../components/ui/avatar';
 import { Button } from '../components/ui/button';
 import { Drawer } from '../components/ui/drawer';
 import { Input, Select, Textarea } from '../components/ui/input';
@@ -553,9 +554,11 @@ export function InboxPage() {
   return (
     <div className="flex h-full">
       {/* ── lista densa ─────────────────────────────────────────────────── */}
-      <div className="flex w-[19.5rem] shrink-0 flex-col border-r border-border bg-surface">
-        <header className="flex items-center gap-2 border-b border-border px-4 py-3.5">
-          <h1 className="mr-auto text-display-sm">{titulo}</h1>
+      <div className="flex w-[21rem] shrink-0 flex-col border-r border-border bg-surface">
+        <header className="flex items-center gap-2 border-b border-border px-5 py-4">
+          <h1 className="mr-auto font-display text-[20px] font-semibold tracking-[-0.01em]">
+            {titulo}
+          </h1>
           <Select
             size="sm"
             value={status}
@@ -571,14 +574,14 @@ export function InboxPage() {
 
         {canWrite ? (
           <form
-            className="flex gap-1.5 border-b border-border px-3 py-2"
+            className="flex gap-1.5 border-b border-border px-4 py-3"
             onSubmit={(e) => {
               e.preventDefault();
               if (subject.trim()) createConversation.mutate();
             }}
           >
             <Input
-              className="h-8 text-data"
+              className="h-9 text-[13.5px]"
               placeholder="Nova conversa…"
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
@@ -621,7 +624,7 @@ export function InboxPage() {
                   }}
                   aria-current={ativa}
                   className={clsx(
-                    'relative w-full border-b border-border/70 py-2.5 pl-4 pr-3 text-left transition-colors duration-150',
+                    'relative flex w-full gap-3 border-b border-border/70 py-3 pl-5 pr-4 text-left transition-colors duration-150',
                     ativa ? 'bg-surface-2' : 'hover:bg-surface-2/60',
                   )}
                 >
@@ -632,33 +635,40 @@ export function InboxPage() {
                       ativa ? 'bg-accent' : 'bg-transparent',
                     )}
                   />
-                  <div className="flex items-baseline gap-2">
-                    <span className="min-w-0 flex-1 truncate text-body-sm font-medium">
-                      {titulo}
-                    </span>
-                    {/* UM carimbo de tempo, relativo: data completa competia
+                  {/* a RAI não tem rosto: quem é ainda não se sabe */}
+                  <Avatar
+                    nome={rai ? null : (conversation.contactName ?? conversation.subject)}
+                    chave={conversation.contactId ?? conversation.id}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline gap-2">
+                      <span className="min-w-0 flex-1 truncate text-[14px] font-semibold">
+                        {titulo}
+                      </span>
+                      {/* UM carimbo de tempo, relativo: data completa competia
                         com o nome do contato */}
-                    <span className="num shrink-0 text-data-sm text-muted-fg">
-                      {relativeStamp(conversation.lastMessageAt)}
-                    </span>
-                  </div>
-                  {legenda ? (
-                    <p className="mt-0.5 truncate text-data text-muted-fg">{legenda}</p>
-                  ) : null}
-                  <div className="mt-1.5 flex items-center gap-1.5">
-                    {conversation.channelType !== 'internal' ? (
-                      <span className="eyebrow rounded-sm bg-surface-2 px-1 py-px text-muted-fg">
-                        {conversation.channelType}
+                      <span className="num shrink-0 text-[11.5px] text-muted-fg">
+                        {relativeStamp(conversation.lastMessageAt)}
                       </span>
+                    </div>
+                    {legenda ? (
+                      <p className="mt-0.5 truncate text-[13px] text-muted-fg">{legenda}</p>
                     ) : null}
-                    {/* janela na LINHA serve triagem: quem está perto de fechar
+                    <div className="mt-1.5 flex items-center gap-1.5">
+                      {conversation.channelType !== 'internal' ? (
+                        <span className="eyebrow rounded-sm bg-surface-2 px-1 py-px text-muted-fg">
+                          {conversation.channelType}
+                        </span>
+                      ) : null}
+                      {/* janela na LINHA serve triagem: quem está perto de fechar
                         é quem precisa de resposta agora */}
-                    <WindowChip expiresAt={conversation.windowExpiresAt} />
-                    {conversation.status !== 'open' ? (
-                      <span className="eyebrow ml-auto text-muted-fg">
-                        {statusLabels[conversation.status]}
-                      </span>
-                    ) : null}
+                      <WindowChip expiresAt={conversation.windowExpiresAt} />
+                      {conversation.status !== 'open' ? (
+                        <span className="eyebrow ml-auto text-muted-fg">
+                          {statusLabels[conversation.status]}
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
                 </button>
               </li>
@@ -678,14 +688,18 @@ export function InboxPage() {
       {/* ── conversa ────────────────────────────────────────────────────── */}
       {selected ? (
         <div className="flex min-w-0 flex-1 flex-col">
-          <header className="flex items-center gap-3 border-b border-border bg-surface px-6 py-3">
+          <header className="flex min-h-16 items-center gap-3 border-b border-border bg-surface px-6 py-3">
+            <Avatar
+              nome={selectedRai ? null : (selected.contactName ?? selected.subject)}
+              chave={selected.contactId ?? selected.id}
+            />
             <div className="mr-auto min-w-0">
-              <h2 className="truncate text-display-sm">
+              <h2 className="truncate text-[15px] font-semibold">
                 {selectedRai
                   ? 'Remetente a identificar'
                   : (selected.contactName ?? selected.subject ?? 'Conversa')}
               </h2>
-              <p className="mt-0.5 flex items-center gap-2 truncate text-data text-muted-fg">
+              <p className="mt-0.5 flex items-center gap-2 truncate text-[12.5px] text-muted-fg">
                 {selected.contactName && selected.subject ? (
                   <span className="truncate">{selected.subject}</span>
                 ) : null}
@@ -817,12 +831,10 @@ export function InboxPage() {
                 return (
                   <div key={group.key} className="space-y-2">
                     {novoDia ? (
-                      <div className="flex items-center gap-3 pb-1 pt-2">
-                        <span aria-hidden className="h-px flex-1 bg-border" />
-                        <span className="eyebrow text-muted-fg">
+                      <div className="flex justify-center pb-1 pt-2">
+                        <span className="rounded-full bg-surface-2 px-2.5 py-0.5 text-[12px] text-muted-fg">
                           {dayLabel(group.messages[0].createdAt)}
                         </span>
-                        <span aria-hidden className="h-px flex-1 bg-border" />
                       </div>
                     ) : null}
                     <div
@@ -854,24 +866,34 @@ export function InboxPage() {
                           <div
                             title={fullStamp(message.createdAt)}
                             className={clsx(
-                              'min-w-24 rounded-card border px-3.5 py-2.5',
+                              'min-w-24 rounded-[14px] border px-3.5 py-2.5',
                               saida
-                                ? 'rounded-br-sm border-accent/25 bg-accent/8'
-                                : 'rounded-bl-sm border-border bg-surface shadow-raised',
+                                ? 'rounded-br-[4px] border-accent bg-accent text-accent-fg'
+                                : 'rounded-bl-[4px] border-border bg-surface',
                               // proveniência: filete de cobre à esquerda do que a IA escreveu
                               daIa && 'border-l-2 border-l-ai',
                             )}
                           >
                             {/* React escapa por padrão: corpo de mensagem nunca vira HTML */}
-                            <p className="whitespace-pre-wrap text-body-sm">{message.body}</p>
+                            <p className="whitespace-pre-wrap text-[14px] leading-[1.45]">
+                              {message.body}
+                            </p>
                             {message.attachments.length > 0 ? (
-                              <ul className="mt-2 space-y-1 border-t border-border/70 pt-2">
+                              <ul
+                                className={clsx(
+                                  'mt-2 space-y-1 border-t pt-2',
+                                  saida ? 'border-accent-fg/25' : 'border-border/70',
+                                )}
+                              >
                                 {message.attachments.map((file, i) =>
                                   file.restricted ? (
                                     // a mídia protegida (ADR-061, adendo 5): sem nome nem link
                                     <li
                                       key={`restrito-${i}`}
-                                      className="flex items-center gap-1.5 text-data text-muted-fg"
+                                      className={clsx(
+                                        'flex items-center gap-1.5 text-data',
+                                        saida ? 'text-accent-fg/80' : 'text-muted-fg',
+                                      )}
                                     >
                                       <Paperclip size={11} />
                                       <span>Anexo restrito</span>
@@ -880,12 +902,20 @@ export function InboxPage() {
                                     <li key={file.fileObjectId}>
                                       {/* download passa pelo endpoint autorizado, nunca por URL pública */}
                                       <a
-                                        className="flex items-center gap-1.5 text-data text-accent hover:underline"
+                                        className={clsx(
+                                          'flex items-center gap-1.5 text-data hover:underline',
+                                          saida ? 'text-accent-fg' : 'text-accent',
+                                        )}
                                         href={`/api/files/${file.fileObjectId}/content`}
                                       >
                                         <Paperclip size={11} />
                                         <span className="truncate">{file.fileName}</span>
-                                        <span className="num text-data-sm text-muted-fg">
+                                        <span
+                                          className={clsx(
+                                            'num text-data-sm',
+                                            saida ? 'text-accent-fg/75' : 'text-muted-fg',
+                                          )}
+                                        >
                                           {Math.ceil(file.sizeBytes / 1024)} kB
                                         </span>
                                       </a>
@@ -1044,7 +1074,7 @@ export function InboxPage() {
 
           {canWrite ? (
             <form
-              className="border-t border-border bg-surface px-6 py-3"
+              className="border-t border-border bg-surface px-6 py-3.5"
               onSubmit={(e) => {
                 e.preventDefault();
                 // MESMO predicado do botão: os campos de parâmetro estão dentro
