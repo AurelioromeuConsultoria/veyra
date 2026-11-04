@@ -12,6 +12,7 @@ import { AuditService } from '../audit/audit.service';
 import { AuthContext } from '../common/decorators';
 import { OutboxService } from '../outbox/outbox.service';
 import { PermissionsService } from '../auth/permissions.service';
+import { ProtectedContentService } from '../extensions/protected-content';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { UsageService } from '../usage/usage.service';
 import { UnsupportedFileError, assertAllowedFile, extensionOf } from './file-type';
@@ -55,6 +56,7 @@ export class FilesService {
     private readonly usage: UsageService,
     @Inject(STORAGE_DRIVER) private readonly storage: StorageDriver,
     private readonly permissions: PermissionsService,
+    private readonly protegido: ProtectedContentService,
   ) {}
 
   /**
@@ -69,9 +71,32 @@ export class FilesService {
    */
   private async acessiveis(auth: AuthContext, fileIds: string[]): Promise<Set<string>> {
     if (fileIds.length === 0) return new Set();
+    const { vinculos, restritos } = await this.vinculosDe(fileIds);
+    if (vinculos.size === 0 && restritos.size === 0) return new Set(fileIds);
+    const [leConversas, veRai, protegidas] = await Promise.all([
+      this.permissions.has(auth, 'conversations:read'),
+      this.permissions.has(auth, 'contacts:write'),
+      this.protegidasDe(auth, fileIds, vinculos, restritos),
+    ]);
+    return new Set(
+      fileIds.filter((id) => {
+        if (protegidas.has(id)) return false;
+        const conversas = vinculos.get(id);
+        if (!conversas) return !restritos.has(id) || leConversas;
+        if (!leConversas) return false;
+        return conversas.every((c) => c.senderStatus !== 'unidentified' || veRai);
+      }),
+    );
+  }
+
+  /** As conversas a que cada arquivo está ligado (anexo ou mídia recebida), e os marcados. */
+  private async vinculosDe(fileIds: string[]): Promise<{
+    vinculos: Map<string, { senderStatus: string; contactId: string | null }[]>;
+    restritos: Set<string>;
+  }> {
     const selecao = {
       fileObjectId: true,
-      message: { select: { conversation: { select: { senderStatus: true } } } },
+      message: { select: { conversation: { select: { senderStatus: true, contactId: true } } } },
     } as const;
     const [anexos, midias, marcados] = await Promise.all([
       this.prisma.db.messageAttachment.findMany({
@@ -88,30 +113,62 @@ export class FilesService {
       } as never),
     ]);
     const restritos = new Set((marcados as unknown as { id: string }[]).map((m) => m.id));
-    const vinculos = new Map<string, string[]>();
+    const vinculos = new Map<string, { senderStatus: string; contactId: string | null }[]>();
     for (const vinculo of [...anexos, ...midias] as unknown as {
       fileObjectId: string | null;
-      message: { conversation: { senderStatus: string } };
+      message: { conversation: { senderStatus: string; contactId: string | null } };
     }[]) {
       if (!vinculo.fileObjectId) continue;
       vinculos.set(vinculo.fileObjectId, [
         ...(vinculos.get(vinculo.fileObjectId) ?? []),
-        vinculo.message.conversation.senderStatus,
+        vinculo.message.conversation,
       ]);
     }
-    if (vinculos.size === 0 && restritos.size === 0) return new Set(fileIds);
-    const [leConversas, veRai] = await Promise.all([
-      this.permissions.has(auth, 'conversations:read'),
-      this.permissions.has(auth, 'contacts:write'),
-    ]);
+    return { vinculos, restritos };
+  }
+
+  /**
+   * A MÍDIA DE CONVERSA PROTEGIDA (E8; ADR-061, adendo 5): o arquivo ligado a
+   * QUALQUER conversa de um contato oculto para quem pede (o protegido pela
+   * extensão no `restrito`; qualquer pessoa no `uniforme`), ou de remetente a identificar,
+   * ou marcado `conversationRestricted` sem vínculo (não se sabe de quem é) —
+   * estes dois pela regra conservadora da dúvida. Derivada a cada leitura: o
+   * contato que passa a ser protegido, a identificação ou o desfazer valem já no pedido
+   * seguinte, e um vínculo protegido protege o arquivo em todo lugar. Sem a
+   * porta, ou no `livre`, nada aqui (o Core de sempre).
+   */
+  private async protegidasDe(
+    auth: AuthContext,
+    fileIds: string[],
+    vinculos: Map<string, { senderStatus: string; contactId: string | null }[]>,
+    restritos: Set<string>,
+  ): Promise<Set<string>> {
+    if (!(await this.protegido.duvidaOculta(auth))) return new Set();
+    const ocultos = await this.protegido.contatosOcultos(
+      auth,
+      [...vinculos.values()].flat().map((c) => c.contactId),
+    );
     return new Set(
       fileIds.filter((id) => {
-        const remetentes = vinculos.get(id);
-        if (!remetentes) return !restritos.has(id) || leConversas;
-        if (!leConversas) return false;
-        return remetentes.every((status) => status !== 'unidentified' || veRai);
+        const conversas = vinculos.get(id);
+        if (!conversas) return restritos.has(id);
+        return conversas.some(
+          (c) =>
+            c.senderStatus === 'unidentified' || (c.contactId !== null && ocultos.has(c.contactId)),
+        );
       }),
     );
+  }
+
+  /**
+   * Os arquivos, dentre `fileIds`, que quem lê NÃO abre por serem mídia
+   * protegida (adendo 5): na mensagem eles saem como "Anexo restrito". Só a
+   * regra do E8 — a dos anexos de conversa (ADR-052) segue como sempre foi.
+   */
+  async midiaProtegida(auth: AuthContext, fileIds: string[]): Promise<Set<string>> {
+    if (fileIds.length === 0) return new Set();
+    const { vinculos, restritos } = await this.vinculosDe(fileIds);
+    return this.protegidasDe(auth, fileIds, vinculos, restritos);
   }
 
   /**

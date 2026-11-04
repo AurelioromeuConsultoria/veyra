@@ -10408,7 +10408,7 @@ O B1 só se considera levantado depois da F5.3d, com o `reviewer` e o `security`
    - **No modo uniforme**, oculto é tudo o que tem pessoa, então a recusa não distingue paciente de interessado.
    - **A conferência roda duas vezes:** antes da transação e de novo dentro dela, o que reduz a janela sem fechá-la. Ficam como limites, porque só apagam e não revelam:
      - **a conversão concorrente de OUTRO contato,** que torna oculta uma nota entre a conferência e o `DELETE`;
-     - **a inserção concorrente,** por quem tem a chave, de uma nota (ou tarefa) com um alvo oculto entre a conferência e o `DELETE`. Nada trava a linha da empresa ou da oportunidade, e a trava do contato (`FOR NO KEY UPDATE`) não conflita com a conferência de FK da inserção. Fechar exigiria travar a linha-mãe com `FOR UPDATE` antes da conferência; fica como pendência antes do uso real.
+     - **a inserção concorrente,** por quem tem a chave, de uma nota (ou tarefa) com um alvo oculto entre a conferência e o `DELETE`. Nada trava a linha da empresa ou da oportunidade, e a trava do contato (`FOR NO KEY UPDATE`) não conflita com a conferência de FK da inserção. Fechar exigiria travar a linha-mãe com `FOR UPDATE` antes da conferência. **Reclassificada pelo usuário (2026-11-04) como pendência de INTEGRIDADE antes do piloto:** a exclusão concorrente ainda pode causar perda de conteúdo protegido.
    - **A criação de notas com mais de um alvo não mudou:** restringi-la deixaria as antigas expostas, e a recusa da cascata as cobre.
 4. **O roteiro da desativação:** reativar o Clinics só recompõe as permissões aplicáveis. São a matriz padrão nos papéis de sistema e o livro. As chaves de papéis personalizados não voltam. A exclusão de pacientes continua recusada, e a política dela é pendência do B3 (`DEPLOY_STAGING`, ativação do Clinics).
 5. **Sem migration, e o CRM do workspace que nunca teve o Clinics não muda:** nada é oculto ali, e as conferências novas não recusam nada.
@@ -10422,3 +10422,79 @@ O B1 só se considera levantado depois da F5.3d, com o `reviewer` e o `security`
   - a recusa da cascata igual para paciente e interessado sem a agenda.
   - **depois da revisão de segurança do delta,** mais três: as condições da automação sobre a linha atual; a automação de tarefa inalterada no workspace sem o Clinics; e a oportunidade só com uma tarefa oculta. São 20 cenários no total.
 - **Os specs existentes** de exclusão de empresa, contato e oportunidade, de automações, de consentimentos, de uso e das guardas do Clinics passam.
+
+**Adendo 5 — a F5.3c: mídia das conversas, campos personalizados e título da oportunidade (2026-11-04), antes do código.** O usuário decidiu a mídia do WhatsApp e autorizou até o commit local. A regra é a do E8 (adendos 2 a 4), com os mesmos três modos por pedido:
+
+- **livre:** com as duas chaves, ou num workspace sem a presença do vertical;
+- **restrito:** com a chave da agenda e sem a do conteúdo, como a recepção;
+- **uniforme:** sem a chave da agenda.
+
+O workspace que nunca teve o Clinics fica sempre no modo livre, com o comportamento de antes.
+
+1. **A mídia das conversas.** O mapa mostra um único caminho de bytes, `GET /files/:id/content`, e um único DTO de metadados, `MessageDto.attachments`. Não existem miniatura, legenda guardada, URL assinada nem vídeo.
+   - **Quando a mídia é protegida:** quando o arquivo está ligado, como anexo ou mídia recebida, a QUALQUER conversa que seja:
+     - de um contato oculto para quem pede: no restrito, o paciente; no uniforme, qualquer pessoa;
+     - ou de remetente a identificar (RAI): a regra conservadora, enquanto há dúvida.
+
+     O arquivo marcado `conversationRestricted` e sem vínculo também é protegido, porque não se sabe de quem é.
+
+   - **Os mesmos critérios se somam** à regra atual dos anexos de conversa (ADR-052): `conversations:read`, `contacts:write` na RAI e as permissões da rota.
+   - **O texto da conversa continua visível.** O corpo da mensagem de mídia é o marcador `[image]`, `[document]` ou `[audio]`.
+   - **Na mensagem**, o anexo protegido vira `{ restricted: true }`, sem id, nome, tipo nem tamanho. A tela mostra "Anexo restrito". Um anexo protegido não aparece de outro jeito para quem não o abre.
+   - **Baixar, listar e excluir** um arquivo protegido respondem como se ele não existisse: 404 e fora da lista.
+   - **Anexar o id de um arquivo protegido** a outra mensagem dá 400 "Arquivo inválido", como hoje para o que não se vê. Por isso anexar em outro lugar não cria atalho.
+   - **A derivação é a cada leitura.** Identificar o remetente, desfazer o vínculo ou converter um interessado em paciente vale a partir da próxima leitura, e a mídia anterior entra junto.
+   - **Um vínculo protegido basta** para proteger o arquivo em todas as conversas a que ele está ligado.
+   - **No modo uniforme**, toda mídia de conversa com pessoa ou de RAI é protegida, para paciente e para interessado. A resposta e a apresentação são iguais.
+   - **A trilha de auditoria** (`file.*` com `fileName`) fica na F5.3d.
+2. **Os campos personalizados do contato.** A empresa não é pessoa e fica como está.
+   - **O contato oculto** (paciente no restrito; qualquer pessoa no uniforme) sai com `customFields: {}` e a marca `customFieldsRestricted: true`, na lista, na leitura e nas respostas da criação e da edição.
+   - **Mudar os campos** de um contato oculto dá 403 "Conteúdo restrito". Editar o nome e os outros dados continua normal, e acrescentar um telefone também. Tirar um número de um contato oculto dá 403 (resultado, abaixo).
+   - **A criação** grava os campos informados, e a resposta segue a regra de leitura. Quem cria conhece o que digitou.
+   - **A resposta guardada para repetição** (`Idempotency-Key`) volta só para a mesma membership que a criou.
+   - Os valores não vão para automação, IA, webhook nem template (mapa). Nada muda ali.
+3. **O título da oportunidade de um contato oculto.**
+   - **Leitura:** sai como `title: ""` com `titleRestricted: true`, no quadro, na leitura por id, na lista do contato e nas respostas da criação, da edição e do movimento. Valor, estágio e estado continuam visíveis.
+   - **Edição:** mudar o título de uma oportunidade oculta dá 403. Os outros campos continuam editáveis, e a tela não envia o título que não mostra.
+   - **Criação:** criar uma oportunidade para um contato oculto continua possível, e a resposta segue a regra.
+   - **Timeline:** `deal_created` e `deal_updated` de uma oportunidade oculta saem sem o `title` do payload, e a marca `restrictedContent` acende.
+   - **Vínculos de agendamento do Clinics** (`dealTitle` e `deal-options`): seguem a mesma regra, porque todas as oportunidades ali são do paciente. As opções trazem o valor e o estágio (revisão), e a tela as distingue pelo valor, pelo estágio e pela data. O vínculo atual aparece como "Conteúdo restrito".
+   - **Automação de `deal.created`:** num workspace sujeito, ela usa a regra da mesma linha (adendo 4, item 2). O título, o valor, a moeda, o contato e as condições vêm da oportunidade de agora, e a tarefa criada fica ligada a ela e ao contato. Assim, o `{{title}}` de uma oportunidade de paciente nasce numa tarefa protegida. Sem a origem, o título não é copiado. No workspace que nunca teve o Clinics, a automação é a de sempre.
+   - **Webhooks:** já estão sob a E6. **Auditoria** (`deal.*`, `task.created_by_automation`): fica na F5.3d.
+4. **A porta do E8 ganha leituras por lote,** para o Core aplicar a regra sem saber por que o contato é protegido:
+   - os contatos ocultos dentre uns ids;
+   - as oportunidades ocultas;
+   - "a dúvida é conservadora?", verdadeiro fora do modo livre.
+5. **Pendências registradas:**
+   - **a corrida de inserção na cascata** (adendo 4, item 3) é pendência de integridade antes do piloto;
+   - **a trilha, a busca e a exportação** ficam na F5.3d, depois da qual se faz a conferência transversal do B1.
+
+**Resultado do adendo 5 (commit local, 2026-11-04):**
+
+- **Validado pelos testes:**
+  - **a integração `clinics-patient-media-fields`,** com 10 cenários:
+    - a mídia vista pela recepção, a conversão, a RAI e a regra uniforme;
+    - os campos vistos pela recepção e pela regra uniforme;
+    - o título visto pela recepção e pela regra uniforme, e a automação;
+    - o workspace sem o Clinics;
+  - **o vínculo de agendamento,** no spec comercial do Clinics;
+  - **os specs existentes** de arquivos, conversas, canais, contatos, empresas, oportunidades, automações, IA, uso e guardas do Clinics;
+  - **o web e os e2e** da experiência, dos envios e da continuidade.
+- **A revisão de segurança bloqueou, e o bloqueio foi corrigido.** A recepção conseguia rejeitar ou desfazer o remetente de uma conversa de paciente, que virava RAI, e depois identificá-la como um contato novo. A mídia do paciente abria. Os primeiros testes simulavam a identificação no banco e não viam o caminho. A correção, dentro da regra do usuário (identificar ou desfazer não cria atalho):
+  - **desfazer e rejeitar** exigem que o contato atual da conversa não seja oculto para quem pede. A conferência roda antes e de novo sob as travas, e a recusa é 403 "Conteúdo restrito". No modo uniforme, a recusa vale para toda pessoa.
+    - **A consequência:** um papel sem as duas chaves não leva à RAI a conversa de um paciente, e no modo uniforme não leva nenhuma;
+  - **identificar uma RAI com mídia** como um contato que não é oculto, quando algum candidato do número é oculto (o número compartilhado com um paciente), também é recusado com 403.
+    - Identificar como o próprio protegido continua possível, e a mídia segue protegida. Quem tem as duas chaves identifica como sempre;
+  - **tirar um número de um contato oculto** também dá 403. A conferência roda antes e de novo sob a trava da linha. Sem isso, a RAI daquele número ficaria sem ele entre os candidatos (segunda conferência do `security`). Acrescentar um número continua livre. No modo uniforme, a recusa vale para toda pessoa;
+  - **no modo uniforme, a RAI com mídia não é identificada** por quem pede, qualquer que seja o candidato, de forma igual para todos. A identificação tiraria a conversa da dúvida para OUTRO papel, a recepção, que sabe quem é paciente;
+  - **o modo é calculado antes da transação** da identificação, para não segurar uma conexão do pool com as travas presas;
+  - **os testes agora usam as rotas reais** de rejeitar, identificar e desfazer, e a mudança de telefone. A simulação no banco ficou só para a derivação.
+- **Limites registrados na revisão, além dos de escrita abaixo:**
+  - **o histórico de execuções das automações** (`automations:manage`): uma condição sobre `title`, cruzada com o executado ou pulado, pode deixar deduzir o título de uma oportunidade de paciente. Exige uma permissão administrativa, e fica para a conferência transversal da F5.3d;
+  - **o título histórico na timeline:** a máscara segue o contato ATUAL da oportunidade. Se alguém com as chaves move a oportunidade de um paciente para um interessado, os títulos antigos voltam a aparecer;
+  - **a reclassificação por quem tem as chaves:** Owner, Admin ou "Recepção e atendimento" podem rejeitar a conversa de um paciente tirando o número dele. Depois, a recepção pode identificar a RAI como um contato novo e ver a mídia. É uma decisão de quem lê o conteúdo, não um atalho. Fica escrita aqui como limite;
+  - **a corrida entre identificar uma RAI e converter em paciente outro candidato do mesmo número:** a conferência da identificação roda sob as travas do número, não sob a do contato que é convertido. É estreita e fica registrada.
+- **Não conferido no `demo`:** nada desta entrega foi publicado.
+- **Limites registrados na revisão, que só escrevem e não revelam:**
+  - a recusa de mudar o título de uma oportunidade, ou os campos de um contato, é conferida fora de trava. Uma conversão em paciente concorrente pode deixar gravar o título ou o campo novo, e a resposta já sai mascarada;
+  - o aviso da timeline acende também quando só o título de uma oportunidade foi omitido. Por isso o texto é genérico: "parte do que aconteceu aqui".

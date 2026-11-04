@@ -1104,7 +1104,10 @@ export type SetClinicsAppointmentDealInput = z.infer<typeof setClinicsAppointmen
 export interface ClinicsAppointmentDealDto {
   appointmentId: string;
   dealId: string | null;
+  /** `null` também quando `dealTitleRestricted` */
   dealTitle: string | null;
+  /** o título é conteúdo protegido para quem lê (ADR-061, adendo 5) */
+  dealTitleRestricted?: true;
   /** o deal ainda é do contato do paciente; `null` sem vínculo */
   valid: boolean | null;
 }
@@ -1112,7 +1115,12 @@ export interface ClinicsAppointmentDealDto {
 /** Um deal que pode ser vinculado: do mesmo contato do paciente. */
 export interface ClinicsDealOptionDto {
   id: string;
+  /** vazio quando `titleRestricted` */
   title: string;
+  titleRestricted?: true;
+  /** para distinguir as opções quando o título é restrito (ADR-061, adendo 5) */
+  amountCents: number;
+  stageName: string;
   pipelineId: string;
   createdAt: string;
 }

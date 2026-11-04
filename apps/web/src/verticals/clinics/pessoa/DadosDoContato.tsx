@@ -115,8 +115,9 @@ export function DadosDoContato({
       // vai (aqui também as etiquetas e os campos). Reenviar a lista antiga
       // tiraria um número acrescentado por outra pessoa enquanto a tela estava
       // aberta — e tirar um número revoga o consentimento dele
+      // os campos protegidos não se leem nem se reescrevem (ADR-061, adendo 5)
       const alterados = Object.fromEntries(
-        lista
+        (base.customFieldsRestricted ? [] : lista)
           .filter((d) => !igual(valorDe(valores, d.key), valorDe(base.customFields, d.key)))
           .map((d) => [d.key, valorDe(valores, d.key) ?? null]),
       );
@@ -208,6 +209,10 @@ export function DadosDoContato({
         </div>
       ) : !defs ? (
         <p className="text-data text-muted-fg">Carregando os campos personalizados…</p>
+      ) : base?.customFieldsRestricted ? (
+        defs.length > 0 ? (
+          <p className="text-data text-muted-fg">Campos personalizados: Conteúdo restrito.</p>
+        ) : null
       ) : (
         defs.map((def) => (
           <CustomFieldInput

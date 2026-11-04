@@ -62,6 +62,49 @@ export class DealsService {
     private readonly protegido: ProtectedContentService,
   ) {}
 
+  /**
+   * O título de uma oportunidade de contato OCULTO para quem pede (E8; ADR-061,
+   * adendo 5) sai vazio, com a marca. Valor, estágio e estado seguem.
+   */
+  async mascarar(auth: AuthContext, dtos: DealDto[]): Promise<DealDto[]> {
+    const ocultos = await this.protegido.contatosOcultos(
+      auth,
+      dtos.map((d) => d.contactId),
+    );
+    if (ocultos.size === 0) return dtos;
+    return dtos.map((d) =>
+      d.contactId && ocultos.has(d.contactId)
+        ? { ...d, title: '', titleRestricted: true as const }
+        : d,
+    );
+  }
+
+  /** As leituras que SAEM para quem pede: com a máscara (adendo 5). */
+  async boardPara(auth: AuthContext, pipelineId?: string): Promise<BoardDto> {
+    const board = await this.board(pipelineId);
+    const todos = await this.mascarar(
+      auth,
+      board.columns.flatMap((c) => c.deals),
+    );
+    const porId = new Map(todos.map((d) => [d.id, d]));
+    return {
+      ...board,
+      columns: board.columns.map((c) => ({
+        ...c,
+        deals: c.deals.map((d) => porId.get(d.id) ?? d),
+      })),
+    };
+  }
+
+  async ler(auth: AuthContext, id: string): Promise<DealDto> {
+    const [dto] = await this.mascarar(auth, [await this.get(id)]);
+    return dto;
+  }
+
+  async listaDoContato(auth: AuthContext, contactId: string): Promise<DealDto[]> {
+    return this.mascarar(auth, await this.listByContact(contactId));
+  }
+
   async board(pipelineId?: string): Promise<BoardDto> {
     const id = pipelineId ?? (await this.pipelines.resolveDefault());
     const pipeline = (await this.prisma.db.pipeline.findFirst({
@@ -186,7 +229,7 @@ export class DealsService {
       );
       return deal.id;
     });
-    return this.get(id);
+    return this.ler(auth, id);
   }
 
   async update(auth: AuthContext, id: string, input: UpdateDealInput): Promise<DealDto> {
@@ -194,6 +237,11 @@ export class DealsService {
       where: { id },
     })) as unknown as DealRow | null;
     if (!existing) throw new NotFoundException('Oportunidade não encontrada');
+    // o título de uma oportunidade oculta não se lê, então não se muda
+    // (adendo 5); valor, estágio e os outros campos seguem editáveis
+    if (input.title !== undefined) {
+      await this.protegido.exigirAlvoVisivel(auth, { contactId: existing.contactId });
+    }
     await this.validateReferences(input);
     // trocar o contato muda a TITULARIDADE do conteúdo do deal para o webhook
     // (ADR-047 adendo 6 §6): protege o contato antigo, o novo e o próprio deal
@@ -296,7 +344,7 @@ export class DealsService {
     };
     const db = this.prisma.db as unknown as TxRunner;
     await (trocaContato ? this.restricao.naTransacaoInterativa(db, corpo) : db.$transaction(corpo));
-    return this.get(id);
+    return this.ler(auth, id);
   }
 
   async remove(auth: AuthContext, id: string): Promise<void> {
@@ -445,7 +493,7 @@ export class DealsService {
         }
       }
     });
-    return this.get(dealId);
+    return this.ler(auth, dealId);
   }
 
   // ── internos ───────────────────────────────────────────────────────────────

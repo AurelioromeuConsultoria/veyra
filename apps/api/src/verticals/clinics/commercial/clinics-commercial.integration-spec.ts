@@ -574,6 +574,50 @@ describe('F4.3 — o vínculo com o deal e as métricas do envio (integração)'
     expect(await prisma.raw.clinicsAppointmentDeal.count()).toBe(0);
   });
 
+  it('F5.3c: o título da oportunidade do paciente no vínculo e nas opções só sai com as duas chaves', async () => {
+    const { contato, paciente } = await novoPaciente('Ana Ficticia', '+5511988880001');
+    const ag = await agendar(paciente, '09:00');
+    const deal = await novoDeal('Pacote facial', contato);
+    await enviar('put', `/api/clinics/appointments/${ag}/deal`, owner, { dealId: deal }).expect(
+      200,
+    );
+    // a recepção: agenda e funil, sem a chave do conteúdo
+    const recepcao = await comChaves('recepcao@veyra.test', [
+      'clinics:schedule:read',
+      'clinics:schedule:write',
+      'pipelines:read',
+    ]);
+    expect((await get(`/api/clinics/appointments/${ag}/deal`, recepcao).expect(200)).body).toEqual({
+      appointmentId: ag,
+      dealId: deal,
+      dealTitle: null,
+      dealTitleRestricted: true,
+      valid: true,
+    });
+    const opcoes = (await get(`/api/clinics/appointments/${ag}/deal-options`, recepcao).expect(200))
+      .body as { id: string; title: string; titleRestricted?: true }[];
+    expect(opcoes).toEqual([
+      expect.objectContaining({
+        id: deal,
+        title: '',
+        titleRestricted: true,
+        amountCents: expect.any(Number),
+        stageName: expect.any(String),
+      }),
+    ]);
+    expect(JSON.stringify(opcoes)).not.toMatch(/facial/);
+    // com as duas chaves, o título
+    const comConteudo = await comChaves('conteudo@veyra.test', [
+      'clinics:schedule:read',
+      'clinics:schedule:write',
+      'pipelines:read',
+      'clinics:patient-content:read',
+    ]);
+    expect(
+      (await get(`/api/clinics/appointments/${ag}/deal`, comConteudo).expect(200)).body.dealTitle,
+    ).toBe('Pacote facial');
+  });
+
   it('as permissões e o isolamento do vínculo', async () => {
     const { contato, paciente } = await novoPaciente('Ana Ficticia', '+5511988880001');
     const ag = await agendar(paciente, '09:00');

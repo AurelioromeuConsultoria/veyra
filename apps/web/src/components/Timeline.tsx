@@ -14,7 +14,8 @@ function describe(activity: ActivityDto): string {
     case 'contact_created':
       return `criou o contato ${p.name ?? ''}`;
     case 'deal_created':
-      return `criou a oportunidade ${p.title ?? ''}`;
+      // sem o título quando ele é conteúdo protegido (ADR-061, adendo 5)
+      return p.title ? `criou a oportunidade ${p.title}` : 'criou uma oportunidade';
     case 'deal_stage_changed':
       return `moveu de ${p.fromStage} para ${p.toStage}`;
     case 'deal_won':
@@ -48,7 +49,7 @@ export function Timeline({ contactId, dealId }: { contactId?: string; dealId?: s
   // (ADR-061, adendo 2): a timeline diz que há conteúdo restrito, sem dizer qual
   const restrito = activities.data.restrictedContent ? (
     <p className="text-data text-muted-fg">
-      Conteúdo restrito: as notas e tarefas daqui não aparecem para o seu acesso.
+      Conteúdo restrito: parte do que aconteceu aqui não aparece para o seu acesso.
     </p>
   ) : null;
   if (activities.data.items.length === 0) {

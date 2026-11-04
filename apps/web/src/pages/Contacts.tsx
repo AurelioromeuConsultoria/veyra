@@ -479,7 +479,8 @@ export function ContactForm({
         ownerMembershipId: values.ownerMembershipId || null,
         source: values.source || null,
         tagIds,
-        customFields: customValues,
+        // os campos protegidos não se leem nem se reescrevem (ADR-061, adendo 5)
+        ...(contact?.customFieldsRestricted ? {} : { customFields: customValues }),
       };
       if (contact) {
         return api.patch<ContactDto>(`/api/contacts/${contact.id}`, {
@@ -574,15 +575,19 @@ export function ContactForm({
         onChange={setTagIds}
       />
 
-      {fieldDefs.map((def) => (
-        <CustomFieldInput
-          key={def.id}
-          def={def}
-          value={customValues[def.key]}
-          disabled={!canWrite}
-          onChange={(value) => setCustomValues((v) => ({ ...v, [def.key]: value }))}
-        />
-      ))}
+      {contact?.customFieldsRestricted && fieldDefs.length > 0 ? (
+        <p className="text-data text-muted-fg">Campos personalizados: Conteúdo restrito.</p>
+      ) : (
+        fieldDefs.map((def) => (
+          <CustomFieldInput
+            key={def.id}
+            def={def}
+            value={customValues[def.key]}
+            disabled={!canWrite}
+            onChange={(value) => setCustomValues((v) => ({ ...v, [def.key]: value }))}
+          />
+        ))
+      )}
 
       {error ? (
         <p role="alert" className="text-body-sm text-negative">

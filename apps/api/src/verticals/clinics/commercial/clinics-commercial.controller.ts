@@ -48,14 +48,20 @@ export class ClinicsCommercialController {
 
   @RequireClinicsPermissions('pipelines:read', 'clinics:schedule:read')
   @Get('appointments/:id/deal')
-  ler(@Param('id', new ParseUUIDPipe()) id: string): Promise<ClinicsAppointmentDealDto> {
-    return this.vinculos.ler(id);
+  ler(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<ClinicsAppointmentDealDto> {
+    return this.vinculos.ler(auth, id);
   }
 
   @RequireClinicsPermissions('pipelines:read', 'clinics:schedule:write')
   @Get('appointments/:id/deal-options')
-  opcoes(@Param('id', new ParseUUIDPipe()) id: string): Promise<ClinicsDealOptionDto[]> {
-    return this.vinculos.opcoes(id);
+  opcoes(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<ClinicsDealOptionDto[]> {
+    return this.vinculos.opcoes(auth, id);
   }
 
   @RequireClinicsPermissions('pipelines:read', 'clinics:schedule:write')

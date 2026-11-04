@@ -368,7 +368,7 @@ export class ConversationsService {
       const row = (await this.prisma.db.message.findFirst({
         where: { id: messageId },
       })) as unknown as MessageRow;
-      const [dto] = await this.toMessageDtos([row], conversation);
+      const [dto] = await this.toMessageDtos(auth, [row], conversation);
       return dto;
     }
 
@@ -442,7 +442,7 @@ export class ConversationsService {
     const row = (await this.prisma.db.message.findFirst({
       where: { id },
     })) as unknown as MessageRow;
-    const [dto] = await this.toMessageDtos([row], conversation);
+    const [dto] = await this.toMessageDtos(auth, [row], conversation);
     return dto;
   }
 
@@ -473,7 +473,7 @@ export class ConversationsService {
     const page = rows.slice(0, input.limit);
     const last = page[page.length - 1];
     return {
-      items: await this.toMessageDtos(page, conversation),
+      items: await this.toMessageDtos(auth, page, conversation),
       nextCursor:
         rows.length > input.limit && last
           ? encodeCursor({ at: last.createdAt, id: last.id })
@@ -760,13 +760,17 @@ export class ConversationsService {
    * identificar".
    */
   private async toMessageDtos(
+    auth: AuthContext,
     rows: MessageRow[],
     conversa: Pick<ConversationRow, 'contactId'>,
   ): Promise<MessageDto[]> {
     const [memberNames, contactNames, attachments, dispatches] = await Promise.all([
       this.resolveMemberNames(rows.map((r) => r.authorMembershipId)),
       this.resolveContactNames([...rows.map((r) => r.authorContactId), conversa.contactId]),
-      this.resolveAttachments(rows.map((r) => r.id)),
+      this.resolveAttachments(
+        auth,
+        rows.map((r) => r.id),
+      ),
       this.resolveDispatches(rows.map((r) => r.id)),
     ]);
     return rows.map((row) => ({
@@ -808,6 +812,7 @@ export class ConversationsService {
   }
 
   private async resolveAttachments(
+    auth: AuthContext,
     messageIds: string[],
   ): Promise<Map<string, MessageAttachmentDto[]>> {
     if (messageIds.length === 0) return new Map();
@@ -825,10 +830,16 @@ export class ConversationsService {
       scanStatus: 'pending' | 'clean' | 'quarantined';
     }[];
     const byId = new Map(files.map((f) => [f.id, f]));
+    // a mídia protegida (E8; ADR-061, adendo 5): nem id, nome, tipo ou tamanho
+    const protegidas = await this.files.midiaProtegida(auth, [...byId.keys()]);
     const result = new Map<string, MessageAttachmentDto[]>();
     for (const link of links) {
       const file = byId.get(link.fileObjectId);
       if (!file) continue;
+      if (protegidas.has(file.id)) {
+        result.set(link.messageId, [...(result.get(link.messageId) ?? []), { restricted: true }]);
+        continue;
+      }
       result.set(link.messageId, [
         ...(result.get(link.messageId) ?? []),
         {

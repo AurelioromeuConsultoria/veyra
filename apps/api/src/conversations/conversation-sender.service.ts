@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -17,6 +18,7 @@ import { chaveDeCoincidencia, coincidencia } from '../contacts/phone-identity';
 import { TravasDeIdentidade } from '../content-use/identity-locks';
 import { MudancasDeRestricao, type OpcoesDaTransacao } from '../content-use/restriction-changes';
 import { LimpezaDeConteudoDaConversa } from '../intelligence-persistence/conversation-cleanup';
+import { CONTEUDO_RESTRITO, ProtectedContentService } from '../extensions/protected-content';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { UsageService } from '../usage/usage.service';
 
@@ -79,6 +81,7 @@ export class ConversationSenderService {
     private readonly usage: UsageService,
     private readonly audit: AuditService,
     private readonly limpeza: LimpezaDeConteudoDaConversa,
+    private readonly protegido: ProtectedContentService,
   ) {}
 
   /** C13: ver (e operar) conversa RAI exige `contacts:write`, além da conversa. */
@@ -114,6 +117,9 @@ export class ConversationSenderService {
       throw new BadRequestException('O remetente desta conversa já está identificado');
     }
     const escolhido = 'contactId' in input ? input.contactId : null;
+    // o modo da proteção calculado FORA da transação (guardado por pedido): as
+    // consultas dele não seguram uma conexão enquanto as travas estão presas
+    await this.protegido.duvidaOculta(auth);
     const regiao = await this.contacts.regiaoDoWorkspace(workspaceId);
     const contactsLimit = escolhido
       ? null
@@ -148,6 +154,7 @@ export class ConversationSenderService {
             contactsLimit,
           );
         }
+        await this.exigirIdentificacaoSemAtalho(tx, auth, conversa.id, contactId, classificados);
         /**
          * O único "uma conversa aberta por (canal, contato, número)": a anterior
          * do contato com este número é encerrada, com trilha, sem tocar
@@ -202,6 +209,44 @@ export class ConversationSenderService {
     await this.levarARai(auth, antes, 'conversation.sender_rejected', input.removeNumber);
   }
 
+  /**
+   * Identificar uma RAI como um contato que NÃO é oculto para quem pede, quando
+   * algum candidato do número é oculto e a conversa tem mídia, abriria uma
+   * mídia que pode ser do contato protegido (o número compartilhado; E8,
+   * ADR-061, adendo 5): recusado com "Conteúdo restrito". Identificar como o
+   * próprio protegido segue possível (a mídia continua protegida), e quem tem
+   * as chaves identifica como sempre. No `uniforme`, a RAI com mídia não é
+   * identificada (igual para todo candidato): o contato escolhido sairia da
+   * dúvida para OUTRO papel, que sabe quem é protegido.
+   */
+  private async exigirIdentificacaoSemAtalho(
+    tx: Db,
+    auth: AuthContext,
+    conversationId: string,
+    contactId: string,
+    classificados: readonly { id: string }[],
+  ): Promise<void> {
+    if (!(await this.protegido.duvidaOculta(auth))) return;
+    // no `uniforme`, quem identifica não sabe quem é protegido: a RAI com mídia
+    // não é identificada por ele, qualquer que seja o candidato (igual para
+    // todos); sem isso, a identificação abriria a mídia para OUTRO papel
+    const semClassificacao = await this.protegido.semClassificacao(auth);
+    if (!semClassificacao) {
+      const ocultos = await this.protegido.contatosOcultos(
+        auth,
+        [contactId, ...classificados.map((c) => c.id)],
+        tx,
+      );
+      if (ocultos.has(contactId) || !classificados.some((c) => ocultos.has(c.id))) return;
+    }
+    const comMidia =
+      (await tx.messageAttachment.count({
+        where: { message: { conversationId } },
+      } as never)) +
+      (await tx.inboundMedia.count({ where: { message: { conversationId } } } as never));
+    if (comMidia > 0) throw new ForbiddenException(CONTEUDO_RESTRITO);
+  }
+
   private async levarARai(
     auth: AuthContext,
     antes: ConversaDoRemetente,
@@ -216,6 +261,13 @@ export class ConversationSenderService {
      * a chave do próprio número; o telefone com ramal tem outra. Os telefones
      * lidos aqui são conferidos de novo sob as travas.
      */
+    /**
+     * Levar a RAI a conversa de um contato oculto para quem pede, e depois
+     * identificá-la como outro, abriria a mídia dele (E8; ADR-061, adendo 5):
+     * desfazer e rejeitar exigem que o contato atual não seja oculto. No
+     * `uniforme`, a recusa vale para toda pessoa — igual para todos.
+     */
+    await this.protegido.exigirAlvoVisivel(auth, { contactId: antes.contactId });
     const saida = tirarNumero
       ? await this.contacts.saidaDoNumero(antes.contactId as string, this.enderecoDe(antes), regiao)
       : null;
@@ -226,6 +278,8 @@ export class ConversationSenderService {
         if (conversa.senderStatus !== 'identified' || conversa.contactId !== antes.contactId) {
           throw new ConflictException(MENSAGEM_MUDOU);
         }
+        // de novo, sob as travas do contato: a conversão concorrente é vista
+        await this.protegido.exigirAlvoVisivel(auth, { contactId: conversa.contactId }, tx);
         const anterior = conversa.contactId as string;
         const endereco = this.enderecoDe(conversa);
         const candidatos = (await this.classificar(tx, endereco)).length;

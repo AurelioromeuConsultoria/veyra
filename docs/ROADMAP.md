@@ -226,7 +226,14 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
      - a chave chega a Owner, Admin e "Recepção e atendimento" pelo livro, sem comando.
      - quem não pode saber quem é paciente (sem `clinics:schedule:read`) recebe a regra uniforme do adendo 3: as notas e as tarefas de toda pessoa ficam ocultas, e as escritas que as tocariam são recusadas, igual para paciente e interessado.
 
-     A F5.3c (anexos, campos, título da oportunidade e a mídia do WhatsApp, com a decisão da mídia antes) e a F5.3d (busca, exportação e auditoria) seguem. O B1 continua aberto. As precisões que ainda faltam:
+     A F5.3b está publicada (`62ff3f9`). A **F5.3c (adendo 5)** está em commit local:
+     - a mídia das conversas de paciente é "Anexo restrito" para a recepção, e o texto da conversa segue;
+     - a RAI é conservadora;
+     - os campos personalizados e o título da oportunidade do paciente saem restritos em todos os caminhos, inclusive na automação;
+     - quem não tem a agenda recebe a regra uniforme;
+     - o workspace sem o Clinics fica como sempre.
+
+     A F5.3d (busca, exportação e auditoria) segue, com a conferência transversal do B1, que continua aberto. As precisões que ainda faltam:
      - quem vê conversas, arquivos e metadados de pacientes;
      - como busca, exportação, auditoria e vínculos deixam de revelar conteúdo oculto.
 

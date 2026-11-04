@@ -32,14 +32,20 @@ export class DealsController {
 
   @RequirePermissions('pipelines:read')
   @Get('board')
-  board(@Query(new ZodPipe(listDealsSchema)) query: ListDealsInput): Promise<BoardDto> {
-    return this.deals.board(query.pipelineId);
+  board(
+    @CurrentAuth() auth: AuthContext,
+    @Query(new ZodPipe(listDealsSchema)) query: ListDealsInput,
+  ): Promise<BoardDto> {
+    return this.deals.boardPara(auth, query.pipelineId);
   }
 
   @RequirePermissions('pipelines:read')
   @Get(':id')
-  get(@Param('id', new ParseUUIDPipe()) id: string): Promise<DealDto> {
-    return this.deals.get(id);
+  get(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<DealDto> {
+    return this.deals.ler(auth, id);
   }
 
   @RequirePermissions('deals:write')

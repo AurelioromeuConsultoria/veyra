@@ -39,7 +39,13 @@ export type ListDealsInput = z.infer<typeof listDealsSchema>;
 
 export interface DealDto {
   id: string;
+  /** vazio quando `titleRestricted` */
   title: string;
+  /**
+   * o título é conteúdo protegido para quem lê (ADR-061, adendo 5): sai vazio,
+   * e a tela mostra "Conteúdo restrito". Só aparece quando `true`
+   */
+  titleRestricted?: true;
   pipelineId: string;
   stageId: string;
   contactId: string | null;

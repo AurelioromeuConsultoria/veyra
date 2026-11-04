@@ -100,7 +100,13 @@ export interface ContactDto {
   ownerName: string | null;
   source: string | null;
   tags: { id: string; name: string; color: string }[];
+  /** vazio quando `customFieldsRestricted` */
   customFields: CustomFieldValues;
+  /**
+   * os valores são conteúdo protegido para quem lê (ADR-061, adendo 5): saem
+   * vazios, e mudá-los é recusado. Só aparece quando `true`
+   */
+  customFieldsRestricted?: true;
   createdAt: string;
   updatedAt: string;
 }

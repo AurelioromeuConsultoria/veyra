@@ -57,3 +57,14 @@ describe('Timeline', () => {
     expect(screen.queryByText(/Conteúdo restrito/)).toBeNull();
   });
 });
+
+describe('Timeline — título restrito da oportunidade (ADR-061, adendo 5)', () => {
+  it('deal_created sem o título no payload: "criou uma oportunidade", sem título nenhum', async () => {
+    comResposta({
+      items: [{ ...criado, id: 'a2', type: 'deal_created', payload: { amountCents: 100 } }],
+      nextCursor: null,
+      restrictedContent: true,
+    });
+    expect(await screen.findByText(/criou uma oportunidade/)).toBeInTheDocument();
+  });
+});

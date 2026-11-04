@@ -39,15 +39,19 @@ export class ContactsController {
   @RequirePermissions('contacts:read')
   @Get()
   list(
+    @CurrentAuth() auth: AuthContext,
     @Query(new ZodPipe(listContactsSchema)) query: ListContactsInput,
   ): Promise<Paginated<ContactDto>> {
-    return this.contacts.list(query);
+    return this.contacts.list(auth, query);
   }
 
   @RequirePermissions('contacts:read')
   @Get(':id')
-  get(@Param('id', new ParseUUIDPipe()) id: string): Promise<ContactDto> {
-    return this.contacts.get(id);
+  get(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<ContactDto> {
+    return this.contacts.ler(auth, id);
   }
 
   /**
@@ -57,9 +61,12 @@ export class ContactsController {
    */
   @RequirePermissions('contacts:read', 'pipelines:read')
   @Get(':id/deals')
-  async listDeals(@Param('id', new ParseUUIDPipe()) id: string): Promise<DealDto[]> {
+  async listDeals(
+    @CurrentAuth() auth: AuthContext,
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<DealDto[]> {
     await this.contacts.get(id);
-    return this.dealsService.listByContact(id);
+    return this.dealsService.listaDoContato(auth, id);
   }
 
   @RequirePermissions('contacts:write')

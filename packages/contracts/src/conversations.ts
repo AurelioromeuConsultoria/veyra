@@ -188,13 +188,24 @@ export interface SendPolicyDto {
   templates: MessageTemplateDto[];
 }
 
-export interface MessageAttachmentDto {
+export interface MessageAttachmentFileDto {
+  restricted?: undefined;
   fileObjectId: string;
   fileName: string;
   mimeType: string;
   sizeBytes: number;
   scanStatus: 'pending' | 'clean' | 'quarantined';
 }
+
+/**
+ * O anexo que quem lê não pode abrir (ADR-061, adendo 5): sem id, nome, tipo
+ * nem tamanho. A tela mostra "Anexo restrito"; o texto da mensagem segue.
+ */
+export interface MessageAttachmentRestrictedDto {
+  restricted: true;
+}
+
+export type MessageAttachmentDto = MessageAttachmentFileDto | MessageAttachmentRestrictedDto;
 
 /**
  * Estado do despacho em canal externo. `unknown_after_dispatch` e

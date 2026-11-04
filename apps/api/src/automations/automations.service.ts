@@ -261,9 +261,12 @@ export class AutomationsService {
     // a regra da mesma linha vale onde há conteúdo protegido (E8): num
     // workspace que nunca teve a extensão, o comportamento de sempre — o
     // título e as condições do evento, sem vínculo herdado
+    // (tarefas: adendo 4; `deal.created`, o que leva o título da oportunidade:
+    // adendo 5)
+    const deTarefa = event.eventType.startsWith('task.');
+    const deOportunidade = event.eventType === 'deal.created';
     const mesmaLinha =
-      event.eventType.startsWith('task.') &&
-      (await this.protegido.workspaceSujeito(event.workspaceId));
+      (deTarefa || deOportunidade) && (await this.protegido.workspaceSujeito(event.workspaceId));
     await this.prisma.raw.$transaction(async (tx) => {
       /**
        * A tarefa criada por um evento de TAREFA fica com o contato e a
@@ -283,7 +286,23 @@ export class AutomationsService {
             : undefined,
       };
       let dados = payload;
-      if (mesmaLinha && typeof payload.id === 'string') {
+      if (mesmaLinha && deOportunidade && typeof payload.id === 'string') {
+        // a oportunidade de AGORA: o título, o valor e o contato da mesma linha;
+        // a tarefa nasce ligada a ela (e ao contato), protegida como ela
+        const origem = await tx.deal.findFirst({
+          where: { workspaceId: event.workspaceId, id: payload.id },
+          select: { id: true, contactId: true, title: true, amountCents: true, currency: true },
+        });
+        dados = origem
+          ? {
+              ...payload,
+              title: origem.title,
+              amountCents: origem.amountCents,
+              currency: origem.currency,
+            }
+          : { ...payload, title: '' };
+        if (origem) alvo = { dealId: origem.id, contactId: origem.contactId ?? undefined };
+      } else if (mesmaLinha && typeof payload.id === 'string') {
         // `prisma.raw` (a transação do worker, cross-workspace): filtro explícito
         const origem = await tx.task.findFirst({
           where: { workspaceId: event.workspaceId, id: payload.id },
@@ -295,6 +314,9 @@ export class AutomationsService {
         } else {
           dados = { ...payload, title: '' };
         }
+      } else if (mesmaLinha) {
+        // sem a origem identificável, o título do evento não é usado (falha fechada)
+        dados = { ...payload, title: '' };
       }
       const matches = conditions.every((condition) => this.matches(condition, dados));
       try {

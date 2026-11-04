@@ -1,3 +1,4 @@
+import { formatCents } from '../../../lib/format';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   ClinicsAppointmentDealDto,
@@ -80,7 +81,9 @@ export function VinculoComOportunidade({
           <>
             {/* o vínculo sem efeito volta sem o título: a oportunidade é de outro contato */}
             <p className="text-body-sm font-medium">
-              {v.dealTitle ?? 'Oportunidade de outro contato'}
+              {v.dealTitleRestricted
+                ? 'Conteúdo restrito'
+                : (v.dealTitle ?? 'Oportunidade de outro contato')}
             </p>
             {v.valid === false ? (
               <p role="note" className="text-data text-negative">
@@ -120,7 +123,9 @@ export function VinculoComOportunidade({
                 ?.filter((o) => o.id !== v.dealId)
                 .map((o) => (
                   <option key={o.id} value={o.id}>
-                    {o.title} · criada em {new Date(o.createdAt).toLocaleDateString('pt-BR')}
+                    {o.titleRestricted ? 'Conteúdo restrito' : o.title} ·{' '}
+                    {formatCents(o.amountCents)} · {o.stageName} · criada em{' '}
+                    {new Date(o.createdAt).toLocaleDateString('pt-BR')}
                   </option>
                 ))}
             </Select>

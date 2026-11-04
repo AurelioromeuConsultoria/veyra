@@ -60,6 +60,15 @@ function decodeCursor(raw: string): Cursor {
   return { occurredAt, id };
 }
 
+/** Os eventos de oportunidade que levam o título dela no payload (ADR-061, adendo 5). */
+const TIPOS_COM_TITULO_DO_DEAL: ReadonlySet<string> = new Set(['deal_created', 'deal_updated']);
+
+function semCampo(payload: ActivityDto['payload'], campo: string): ActivityDto['payload'] {
+  const copia = { ...(payload as Record<string, unknown>) };
+  delete copia[campo];
+  return copia as ActivityDto['payload'];
+}
+
 @Injectable()
 export class ActivitiesService {
   constructor(private readonly prisma: PrismaService) {}
@@ -121,6 +130,12 @@ export class ActivitiesService {
       conteudoVisivel?: Record<string, unknown>;
       /** o alvo tem conteúdo protegido para quem pede: a resposta diz isso */
       conteudoRestrito?: boolean;
+      /**
+       * as oportunidades, dentre as dos eventos, de título oculto para quem
+       * pede (ADR-061, adendo 5): o `title` sai do payload, e a resposta diz
+       * que há conteúdo restrito
+       */
+      titulosOcultos?: (dealIds: string[]) => Promise<Set<string>>;
     } = {},
   ): Promise<ActivityPageDto> {
     /**
@@ -178,14 +193,26 @@ export class ActivitiesService {
 
     const page = rows.slice(0, limit);
     const actorNames = await this.resolveActorNames(page.map((row) => row.actorMembershipId));
-    const items: ActivityDto[] = page.map((row) => ({
-      id: row.id,
-      type: row.type as ActivityType,
-      actorType: row.actorType,
-      actorName: row.actorMembershipId ? (actorNames.get(row.actorMembershipId) ?? null) : null,
-      payload: row.payload as ActivityDto['payload'],
-      occurredAt: row.occurredAt.toISOString(),
-    }));
+    const comTitulo = page.filter(
+      (row) => TIPOS_COM_TITULO_DO_DEAL.has(row.type) && row.dealId !== null,
+    );
+    const ocultos =
+      options.titulosOcultos && comTitulo.length > 0
+        ? await options.titulosOcultos(comTitulo.map((row) => row.dealId as string))
+        : new Set<string>();
+    const items: ActivityDto[] = page.map((row) => {
+      const payload = row.payload as ActivityDto['payload'];
+      const semTitulo =
+        TIPOS_COM_TITULO_DO_DEAL.has(row.type) && row.dealId !== null && ocultos.has(row.dealId);
+      return {
+        id: row.id,
+        type: row.type as ActivityType,
+        actorType: row.actorType,
+        actorName: row.actorMembershipId ? (actorNames.get(row.actorMembershipId) ?? null) : null,
+        payload: semTitulo ? semCampo(payload, 'title') : payload,
+        occurredAt: row.occurredAt.toISOString(),
+      };
+    });
     const last = page[page.length - 1];
     return {
       items,
@@ -193,7 +220,7 @@ export class ActivitiesService {
         rows.length > limit && last
           ? encodeCursor({ occurredAt: last.occurredAt, id: last.id })
           : null,
-      ...(options.conteudoRestrito ? { restrictedContent: true as const } : {}),
+      ...(options.conteudoRestrito || ocultos.size > 0 ? { restrictedContent: true as const } : {}),
     };
   }
 

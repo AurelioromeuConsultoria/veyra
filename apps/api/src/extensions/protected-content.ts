@@ -119,6 +119,65 @@ export class ProtectedContentService {
   }
 
   /**
+   * Os contatos, dentre `ids`, cujo conteúdo é oculto para quem pede (ADR-061,
+   * adendo 5): no `restrito`, os protegidos; no `uniforme`, todos (toda pessoa);
+   * no `livre`, nenhum. Para o Core aplicar a regra a um lote (mídia, campos,
+   * títulos) sem saber POR QUE o contato é protegido.
+   */
+  async contatosOcultos(
+    auth: AuthContext,
+    ids: readonly (string | null | undefined)[],
+    db: Db = this.prisma.db,
+  ): Promise<Set<string>> {
+    const unicos = [...new Set(ids.filter((id): id is string => Boolean(id)))];
+    if (unicos.length === 0) return new Set();
+    const modo = await this.modo(auth);
+    if (modo.tipo === 'livre') return new Set();
+    if (modo.tipo === 'uniforme') return new Set(unicos);
+    const rows = (await db.contact.findMany({
+      where: { AND: [{ id: { in: unicos } }, modo.oculto] },
+      select: { id: true },
+    } as never)) as unknown as { id: string }[];
+    return new Set(rows.map((r) => r.id));
+  }
+
+  /** As oportunidades, dentre `ids`, de contato oculto para quem pede (adendo 5). */
+  async oportunidadesOcultas(
+    auth: AuthContext,
+    ids: readonly string[],
+    db: Db = this.prisma.db,
+  ): Promise<Set<string>> {
+    const unicos = [...new Set(ids)];
+    if (unicos.length === 0 || !(await this.duvidaOculta(auth))) return new Set();
+    const rows = (await db.deal.findMany({
+      where: { id: { in: unicos } },
+      select: { id: true, contactId: true },
+    } as never)) as unknown as { id: string; contactId: string | null }[];
+    const ocultos = await this.contatosOcultos(
+      auth,
+      rows.map((r) => r.contactId),
+      db,
+    );
+    return new Set(rows.filter((r) => r.contactId && ocultos.has(r.contactId)).map((r) => r.id));
+  }
+
+  /**
+   * Quem pede NÃO pode saber quem é protegido (o `uniforme`): uma decisão que
+   * dependeria da classificação é recusada para toda pessoa (adendos 3 e 5).
+   */
+  async semClassificacao(auth: AuthContext): Promise<boolean> {
+    return (await this.modo(auth)).tipo === 'uniforme';
+  }
+
+  /**
+   * Na dúvida sobre de quem é o conteúdo (remetente a identificar, arquivo sem
+   * vínculo), a regra é conservadora: oculto fora do `livre` (adendo 5).
+   */
+  async duvidaOculta(auth: AuthContext): Promise<boolean> {
+    return (await this.modo(auth)).tipo !== 'livre';
+  }
+
+  /**
    * O `where` que EXCLUI de uma lista de notas ou tarefas o que é oculto para
    * quem pede: pelo contato ou pela oportunidade dele. `{}`: nada a excluir.
    */
@@ -231,7 +290,7 @@ export class ProtectedContentService {
   }
 
   /**
-   * Excluir um contato apaga as notas dele, e a recusa do paciente (409)
+   * Excluir um contato apaga as notas dele, e a recusa do contato protegido (409)
    * denunciaria a classificação: no `uniforme`, 403 para todo contato.
    */
   async exigirPessoasVisiveis(auth: AuthContext): Promise<void> {

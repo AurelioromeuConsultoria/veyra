@@ -93,11 +93,16 @@ export function ContatoDaPessoa({ contactId }: { contactId: string }) {
                 ))}
               </p>
             ) : null}
-            <CamposPreenchidos
-              valores={contato.data.customFields}
-              definicoes={definicoes.data}
-              falhou={definicoes.isError}
-            />
+            {contato.data.customFieldsRestricted ? (
+              // os valores protegidos (ADR-061, adendo 5)
+              <p className="text-data text-muted-fg">Campos personalizados: Conteúdo restrito.</p>
+            ) : (
+              <CamposPreenchidos
+                valores={contato.data.customFields}
+                definicoes={definicoes.data}
+                falhou={definicoes.isError}
+              />
+            )}
           </>
         )}
       </Panel>
@@ -144,7 +149,11 @@ export function ContatoDaPessoa({ contactId }: { contactId: string }) {
             <ul className="space-y-1">
               {(oportunidades.data ?? []).map((d) => (
                 <li key={d.id} className="text-body-sm">
-                  {d.title}{' '}
+                  {d.titleRestricted ? (
+                    <span className="italic text-muted-fg">Conteúdo restrito</span>
+                  ) : (
+                    d.title
+                  )}{' '}
                   <span className="num text-data text-muted-fg">
                     · {ESTADO_DA_OPORTUNIDADE[d.status]} · {formatCents(d.amountCents)}
                   </span>

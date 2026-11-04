@@ -44,6 +44,8 @@ export class ActivitiesController {
           contactId: query.contactId,
           dealId: query.dealId,
         }),
+        // o título das oportunidades de contato oculto (adendo 5)
+        titulosOcultos: (dealIds) => this.protegido.oportunidadesOcultas(auth, dealIds),
       },
     );
   }

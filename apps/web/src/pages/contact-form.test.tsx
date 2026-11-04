@@ -89,3 +89,38 @@ it('trocar o primeiro telefone mantém o segundo', async () => {
   expect(enviados[0]).toMatchObject({ phones: ['+55 21 99999-0000', '+55 11 91234-5678'] });
   expect(enviados[0]).not.toHaveProperty('emails');
 });
+
+it('campos personalizados restritos (ADR-061, adendo 5): a tela diz "Conteúdo restrito" e salvar não os envia', async () => {
+  const enviados = corpos();
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <ContactForm
+        contact={{ ...CONTATO, customFields: {}, customFieldsRestricted: true }}
+        tags={[]}
+        companies={[]}
+        members={[]}
+        fieldDefs={[
+          {
+            id: '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e42',
+            entityType: 'contact',
+            key: 'alergias',
+            label: 'Alergias',
+            type: 'text',
+            options: [],
+            required: false,
+            position: 0,
+          } as never,
+        ]}
+        canWrite
+        onDone={vi.fn()}
+      />
+    </QueryClientProvider>,
+  );
+  expect(screen.getByText(/Campos personalizados: Conteúdo restrito/)).toBeInTheDocument();
+  expect(screen.queryByLabelText('Alergias')).toBeNull();
+  fireEvent.change(screen.getByLabelText('Nome'), { target: { value: 'Ana Renomeada' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Salvar' }));
+  await waitFor(() => expect(enviados).toHaveLength(1));
+  expect(enviados[0]).toMatchObject({ name: 'Ana Renomeada' });
+  expect(enviados[0]).not.toHaveProperty('customFields');
+});

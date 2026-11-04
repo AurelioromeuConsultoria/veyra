@@ -14,6 +14,7 @@ import {
   MudancasDeRestricao,
   type ExecutorDeTransacao,
 } from '../../../content-use/restriction-changes';
+import { ProtectedContentService } from '../../../extensions/protected-content';
 import { PrismaService, type Db } from '../../../prisma/prisma.service';
 
 /** Os deals que a lista de escolha mostra: o teto é defesa. */
@@ -42,9 +43,14 @@ export class ClinicsDealLinksService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly restricao: MudancasDeRestricao,
+    private readonly protegido: ProtectedContentService,
   ) {}
 
-  async ler(appointmentId: string): Promise<ClinicsAppointmentDealDto> {
+  /**
+   * O título de oportunidade de paciente é conteúdo protegido (E8; ADR-061,
+   * adendo 5): sem as duas chaves, sai vazio, com a marca.
+   */
+  async ler(auth: AuthContext, appointmentId: string): Promise<ClinicsAppointmentDealDto> {
     const contactId = await this.contatoDoPaciente(this.prisma.db, appointmentId);
     const vinculo = (await this.prisma.db.clinicsAppointmentDeal.findFirst({
       where: { appointmentId },
@@ -57,19 +63,48 @@ export class ClinicsDealLinksService {
     })) as { title: string; contactId: string | null } | null;
     const valid = !!deal && deal.contactId === contactId;
     // o deal que mudou de contato não aparece como vínculo válido: só a referência
+    if (valid && (await this.protegido.contatosOcultos(auth, [contactId])).size > 0) {
+      return {
+        appointmentId,
+        dealId: vinculo.dealId,
+        dealTitle: null,
+        dealTitleRestricted: true,
+        valid,
+      };
+    }
     return { appointmentId, dealId: vinculo.dealId, dealTitle: valid ? deal.title : null, valid };
   }
 
   /** Os deals do MESMO contato do paciente, em qualquer pipeline. */
-  async opcoes(appointmentId: string): Promise<ClinicsDealOptionDto[]> {
+  async opcoes(auth: AuthContext, appointmentId: string): Promise<ClinicsDealOptionDto[]> {
     const contactId = await this.contatoDoPaciente(this.prisma.db, appointmentId);
     const deals = (await this.prisma.db.deal.findMany({
       where: { contactId },
-      select: { id: true, title: true, pipelineId: true, createdAt: true },
+      select: {
+        id: true,
+        title: true,
+        pipelineId: true,
+        createdAt: true,
+        amountCents: true,
+        stage: { select: { name: true } },
+      },
       orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
       take: TETO_DE_OPCOES,
-    })) as { id: string; title: string; pipelineId: string; createdAt: Date }[];
-    return deals.map((d) => ({ ...d, createdAt: d.createdAt.toISOString() }));
+    } as never)) as unknown as {
+      id: string;
+      title: string;
+      pipelineId: string;
+      createdAt: Date;
+      amountCents: number;
+      stage: { name: string };
+    }[];
+    const oculto = (await this.protegido.contatosOcultos(auth, [contactId])).size > 0;
+    return deals.map(({ stage, ...d }) => ({
+      ...d,
+      stageName: stage.name,
+      ...(oculto ? { title: '', titleRestricted: true as const } : {}),
+      createdAt: d.createdAt.toISOString(),
+    }));
   }
 
   /** Vincular ou trocar. Repetir o mesmo deal não muda nada nem audita de novo. */
@@ -115,7 +150,7 @@ export class ClinicsDealLinksService {
         after: { appointmentId, dealId },
       });
     });
-    return this.ler(appointmentId);
+    return this.ler(auth, appointmentId);
   }
 
   /** Desvincular. Sem vínculo, nada muda. */
@@ -139,7 +174,7 @@ export class ClinicsDealLinksService {
         after: null,
       });
     });
-    return this.ler(appointmentId);
+    return this.ler(auth, appointmentId);
   }
 
   private mudancas(): ExecutorDeTransacao {

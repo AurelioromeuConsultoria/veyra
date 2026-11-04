@@ -103,7 +103,7 @@ export class ContactsService {
     return workspace.phoneRegion;
   }
 
-  async list(input: ListContactsInput): Promise<Paginated<ContactDto>> {
+  async list(auth: AuthContext, input: ListContactsInput): Promise<Paginated<ContactDto>> {
     const where = {
       status: input.status,
       ...(input.companyId ? { companyId: input.companyId } : {}),
@@ -129,11 +129,32 @@ export class ContactsService {
       } as never) as unknown as Promise<ContactRow[]>,
     ]);
     return {
-      items: await this.toDtos(rows),
+      items: await this.mascarar(auth, await this.toDtos(rows)),
       total,
       page: input.page,
       pageSize: input.pageSize,
     };
+  }
+
+  /**
+   * A leitura que SAI para quem pede: os campos personalizados de um contato
+   * oculto (E8; ADR-061, adendo 5) saem vazios, com a marca. `get` é a leitura
+   * interna (existência, sinais), sem saída.
+   */
+  async ler(auth: AuthContext, id: string): Promise<ContactDto> {
+    const [dto] = await this.mascarar(auth, [await this.get(id)]);
+    return dto;
+  }
+
+  private async mascarar(auth: AuthContext, dtos: ContactDto[]): Promise<ContactDto[]> {
+    const ocultos = await this.protegido.contatosOcultos(
+      auth,
+      dtos.map((d) => d.id),
+    );
+    if (ocultos.size === 0) return dtos;
+    return dtos.map((d) =>
+      ocultos.has(d.id) ? { ...d, customFields: {}, customFieldsRestricted: true as const } : d,
+    );
   }
 
   async get(id: string): Promise<ContactDto> {
@@ -208,7 +229,7 @@ export class ContactsService {
         return contact.id;
       },
     );
-    return this.get(id);
+    return this.ler(auth, id);
   }
 
   /**
@@ -411,6 +432,21 @@ export class ContactsService {
   async update(auth: AuthContext, id: string, input: UpdateContactInput): Promise<ContactDto> {
     const existing = await this.prisma.db.contact.findFirst({ where: { id } });
     if (!existing) throw new NotFoundException('Contato não encontrado');
+    // os campos de um contato oculto não se leem, então não se mudam (adendo 5);
+    // os outros dados seguem editáveis
+    if (input.customFields !== undefined) {
+      await this.protegido.exigirAlvoVisivel(auth, { contactId: id });
+    }
+    /**
+     * Tirar um número de um contato oculto deixaria a RAI daquele número sem
+     * ele entre os candidatos — e a mídia dela poderia ser identificada como
+     * de outro (o atalho do adendo 5). Acrescentar segue livre (só protege).
+     * Conferido aqui e de novo sob a trava da linha, abaixo.
+     */
+    const telefonesLidos = (existing as unknown as { phones: string[] }).phones;
+    const tiraNumero =
+      input.phones !== undefined && telefonesLidos.some((t) => !input.phones!.includes(t));
+    if (tiraNumero) await this.protegido.exigirAlvoVisivel(auth, { contactId: id });
     const contactsLimit = await this.usage.prepareConsume(auth.workspaceId as string, 'contacts');
     await this.validateReferences(input);
     const validated = input.customFields
@@ -448,6 +484,7 @@ export class ContactsService {
         if (input.phones && !mesmosTelefones(atual.phones, telefonesAntes)) {
           throw new ConflictException(MENSAGEM_TELEFONE_MUDOU);
         }
+        if (tiraNumero) await this.protegido.exigirAlvoVisivel(auth, { contactId: id }, tx);
         await tx.contact.updateMany({
           where: { id },
           data: {
@@ -507,7 +544,7 @@ export class ContactsService {
         }
       },
     );
-    return this.get(id);
+    return this.ler(auth, id);
   }
 
   /**

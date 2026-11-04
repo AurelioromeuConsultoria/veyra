@@ -866,21 +866,32 @@ export function InboxPage() {
                             <p className="whitespace-pre-wrap text-body-sm">{message.body}</p>
                             {message.attachments.length > 0 ? (
                               <ul className="mt-2 space-y-1 border-t border-border/70 pt-2">
-                                {message.attachments.map((file) => (
-                                  <li key={file.fileObjectId}>
-                                    {/* download passa pelo endpoint autorizado, nunca por URL pública */}
-                                    <a
-                                      className="flex items-center gap-1.5 text-data text-accent hover:underline"
-                                      href={`/api/files/${file.fileObjectId}/content`}
+                                {message.attachments.map((file, i) =>
+                                  file.restricted ? (
+                                    // a mídia protegida (ADR-061, adendo 5): sem nome nem link
+                                    <li
+                                      key={`restrito-${i}`}
+                                      className="flex items-center gap-1.5 text-data text-muted-fg"
                                     >
                                       <Paperclip size={11} />
-                                      <span className="truncate">{file.fileName}</span>
-                                      <span className="num text-data-sm text-muted-fg">
-                                        {Math.ceil(file.sizeBytes / 1024)} kB
-                                      </span>
-                                    </a>
-                                  </li>
-                                ))}
+                                      <span>Anexo restrito</span>
+                                    </li>
+                                  ) : (
+                                    <li key={file.fileObjectId}>
+                                      {/* download passa pelo endpoint autorizado, nunca por URL pública */}
+                                      <a
+                                        className="flex items-center gap-1.5 text-data text-accent hover:underline"
+                                        href={`/api/files/${file.fileObjectId}/content`}
+                                      >
+                                        <Paperclip size={11} />
+                                        <span className="truncate">{file.fileName}</span>
+                                        <span className="num text-data-sm text-muted-fg">
+                                          {Math.ceil(file.sizeBytes / 1024)} kB
+                                        </span>
+                                      </a>
+                                    </li>
+                                  ),
+                                )}
                               </ul>
                             ) : null}
                           </div>

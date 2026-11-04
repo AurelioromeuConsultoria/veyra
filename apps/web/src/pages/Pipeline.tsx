@@ -298,7 +298,7 @@ function Column({
             <article
               tabIndex={0}
               draggable={canWrite}
-              aria-label={`${deal.title}, ${column.stageName}`}
+              aria-label={`${deal.titleRestricted ? 'Conteúdo restrito' : deal.title}, ${column.stageName}`}
               onDragStart={(e) => {
                 e.dataTransfer.setData('text/plain', deal.id);
                 onDragStateChange(true);
@@ -325,7 +325,12 @@ function Column({
                   : 'border-border hover:border-border-strong',
               )}
             >
-              <p className="text-body-sm font-medium">{deal.title}</p>
+              {deal.titleRestricted ? (
+                // o título de oportunidade de pessoa protegida (ADR-061, adendo 5)
+                <p className="text-body-sm italic text-muted-fg">Conteúdo restrito</p>
+              ) : (
+                <p className="text-body-sm font-medium">{deal.title}</p>
+              )}
               {(deal.contactName ?? deal.companyName) ? (
                 <p className="mt-0.5 truncate text-data text-muted-fg">
                   {deal.contactName ?? deal.companyName}
@@ -376,7 +381,9 @@ function DealForm({
   const form = useForm<DealFormValues>({
     resolver: zodResolver(dealFormSchema),
     defaultValues: {
-      title: deal?.title ?? '',
+      // o título protegido não se lê nem se reescreve: o campo fica travado e
+      // não vai no pedido (ADR-061, adendo 5)
+      title: deal?.titleRestricted ? 'Conteúdo restrito' : (deal?.title ?? ''),
       amount: deal ? String(deal.amountCents / 100) : '',
       contactId: deal?.contactId ?? '',
     },
@@ -386,7 +393,7 @@ function DealForm({
   const save = useMutation({
     mutationFn: (values: DealFormValues) => {
       const payload = {
-        title: values.title,
+        ...(deal?.titleRestricted ? {} : { title: values.title }),
         amountCents: Math.round(Number(values.amount.replace(',', '.') || 0) * 100),
         contactId: values.contactId || null,
       };
@@ -413,7 +420,11 @@ function DealForm({
         noValidate
       >
         <Field label="Título" error={form.formState.errors.title?.message}>
-          <Input autoFocus {...form.register('title')} disabled={!canWrite} />
+          <Input
+            autoFocus
+            {...form.register('title')}
+            disabled={!canWrite || Boolean(deal?.titleRestricted)}
+          />
         </Field>
         <Field label="Valor (R$)">
           <Input inputMode="decimal" {...form.register('amount')} disabled={!canWrite} />
