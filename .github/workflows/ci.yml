@@ -61,9 +61,16 @@ jobs:
       - run: pnpm --filter @veyra/api prisma:deploy
       - run: pnpm build
 
+  # Os testes de integração rodam em série (um banco, truncado entre casos) e
+  # eram o caminho crítico do CI (~12 min). Divididos em partes, cada uma num
+  # runner com o SEU Postgres: o isolamento entre testes não muda (ADR-058,
+  # adendo 1). Unitários, web, seed e check:fk rodam uma vez, na parte 1.
   test:
-    name: Testes
+    name: Testes (${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        shard: [1, 2, 3, 4]
     services:
       postgres:
         image: postgres:17-alpine
@@ -89,20 +96,29 @@ jobs:
       - run: pnpm --filter @veyra/contracts build
       - run: pnpm --filter @veyra/api prisma:generate
       - run: pnpm --filter @veyra/api test
-      - run: pnpm --filter @veyra/api test:integration
+        if: matrix.shard == 1
+      - run: pnpm --filter @veyra/api test:integration --shard=${{ matrix.shard }}/4
       - name: seed do catálogo de permissões (contra o banco de teste migrado)
+        if: matrix.shard == 1
         run: pnpm --filter @veyra/api prisma:seed
         env:
           DATABASE_URL: postgresql://veyra:veyra_ci@localhost:5432/veyra_test
       - name: check:fk (valida o SCHEMA; scan de dados vale contra staging/prod)
+        if: matrix.shard == 1
         run: pnpm --filter @veyra/api check:fk
         env:
           DATABASE_URL: postgresql://veyra:veyra_ci@localhost:5432/veyra_test
       - run: pnpm --filter @veyra/web test
+        if: matrix.shard == 1
 
+  # O E2E também em partes, cada uma com o seu Postgres e a sua pilha
+  # (ADR-058, adendo 1): os specs já não dependem da ordem entre arquivos.
   e2e:
-    name: E2E (Playwright)
+    name: E2E (${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        shard: [1, 2]
     services:
       postgres:
         image: postgres:17-alpine
@@ -127,7 +143,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @veyra/api prisma:generate
       - run: pnpm exec playwright install --with-deps chromium
-      - run: pnpm test:e2e
+      - run: pnpm build
+      - run: pnpm exec playwright test --shard=${{ matrix.shard }}/2
 
   # ADR-058: a entrega publicada vai ao staging DEPOIS dos quatro jobs verdes.
   # O Auto Deploy do Coolify fica em "Manual deployments only"; quem publica é

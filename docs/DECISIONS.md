@@ -9837,6 +9837,22 @@ Os dois valiam para deploys manuais pelo painel. A publicação comum agora segu
 - **O segundo run** é o primeiro com a base vinda de um deploy do próprio job, pela API. Ele prova o registro e o `is_webhook` falso no Coolify real.
 - **O primeiro run, em 2026-11-03** (run 41651171010): os quatro jobs verdes, a base `df94fb5` confirmada pela `STAGING_BASE`, o `8db9851` publicado e conferido no Coolify às 14:31 UTC, a saúde 200 e o registro `success` no `staging-conferido`. A `STAGING_BASE` foi apagada em seguida. O segundo run ainda não aconteceu.
 
+### ADR-058, adendo 1 — O CI em partes paralelas (2026-11-04)
+
+**Status:** APROVADO pelo usuário em 2026-11-04 ("preciso de agilidade").
+
+**Contexto.** Do push ao staging levava de 18 a 20 minutos. O caminho crítico era o job `Testes`: a integração da API roda em série (`--runInBand`, um banco truncado entre casos) e levava uns 12 minutos. O E2E variou de 4 a 12 minutos, também em série (`workers: 1`, banco semeado compartilhado).
+
+**Decisão.**
+
+- `Testes` vira uma matriz de 4 partes (`jest --shard=N/4`). Cada parte roda num runner com o SEU Postgres, então o isolamento entre testes é o mesmo de antes: dentro da parte continua em série. Unitários da API, testes do web, seed do catálogo e `check:fk` rodam uma vez, na parte 1.
+- `E2E` vira uma matriz de 2 partes (`playwright test --shard=N/2`), cada uma com o seu Postgres e a sua pilha.
+- Nada deixa de rodar, e o `Staging (ponta)` continua esperando todos os jobs (`needs` espera a matriz inteira).
+
+**Alternativas.** Pular a suíte da API quando o push só muda o web: mais rápido, mas o gate do staging passaria a depender de um filtro de caminhos que pode errar. Paralelizar dentro de um banco só: exige reescrever o isolamento dos testes. Ficam fora.
+
+**Consequências.** Mais minutos de runner por push, menos tempo de relógio. A meta estimada é de 7 a 8 minutos do push ao staging. Se um spec E2E depender de estado deixado por outro arquivo, a divisão expõe isso como falha: o certo é corrigir o spec, não juntar as partes.
+
 ## ADR-059 — Correção de um consumo de pacote registrado por engano (F5.2)
 
 **Status:** APROVADO pelo usuário em 2026-11-03, em duas entregas, com os ajustes do fim deste ADR ("Aprovação com ajustes"), que prevalecem sobre o texto proposto. A F5.2a está autorizada até o commit local. · **Data:** 2026-11-03

@@ -159,8 +159,8 @@ docker ps --format '{{.Names}}' | grep -i veyra
 
 **Como funciona.**
 
-- O push na `main` roda o CI: `Lint & format`, `Typecheck & build`, `Testes` e
-  `E2E`.
+- O push na `main` roda o CI: `Lint & format`, `Typecheck & build`, `Testes`
+  (em 4 partes paralelas) e `E2E` (em 2), pelo ADR-058 adendo 1.
 - Com os quatro verdes, o job `Staging (ponta)` confere se o commit ainda é a
   ponta da `main`. Só a ponta segue para o job `Staging`
   (`.github/scripts/staging-deploy.sh`), em série com os outros deploys. Um
