@@ -387,6 +387,243 @@ describe('Clinics — taxa de faltas (integração, F3.3a)', () => {
     await taxa('from=2026-01-05&to=2026-01-12').expect(400);
   });
 
+  // ── Séries (ADR-062 adendo 1, item A2) ─────────────────────────────────────
+
+  /** Só as contagens, para comparar o total com a soma da série. */
+  const contas = (b: Record<string, unknown>) => ({
+    attended: b.attended,
+    noShow: b.noShow,
+    rate: b.rate,
+    pendingPast: b.pendingPast,
+    canceled: b.canceled,
+  });
+  type Conta = { attended: number; noShow: number; pendingPast: number; canceled: number };
+  const somaDa = (itens: Conta[]) => {
+    const t = { attended: 0, noShow: 0, pendingPast: 0, canceled: 0 };
+    for (const i of itens) {
+      t.attended += i.attended;
+      t.noShow += i.noShow;
+      t.pendingPast += i.pendingPast;
+      t.canceled += i.canceled;
+    }
+    return t;
+  };
+
+  it('groupBy=week: segunda a domingo no fuso LOCAL, recortadas ao período, as vazias inclusive; a soma é o total, igual ao sem série', async () => {
+    // São Paulo, janeiro de 2026 (UTC−3, sem horário de verão). 2026-01-05 e
+    // 2026-01-12 são segundas; o período vai de uma quarta a uma quinta (exclusiva)
+    await gravar(new Date('2026-01-06T12:00:00Z'), 'no_show'); // antes do período
+    await gravar(new Date('2026-01-08T12:00:00Z'), 'attended');
+    await gravar(new Date('2026-01-09T12:00:00Z'), 'canceled');
+    // domingo 23:59 LOCAL (já segunda em UTC): ainda a semana de 05/01
+    await gravar(new Date('2026-01-12T02:59:00Z'), 'no_show', { professionalId: bia });
+    // segunda 00:00 LOCAL: a semana de 12/01
+    await gravar(new Date('2026-01-12T03:00:00Z'), 'no_show');
+    await gravar(new Date('2026-01-13T12:00:00Z'), 'attended');
+    await gravar(new Date('2026-01-14T12:00:00Z'), 'attended');
+    await gravar(new Date('2026-01-15T12:00:00Z'), 'scheduled'); // passado sem desfecho
+    await gravar(new Date('2026-01-22T03:00:00Z'), 'no_show'); // 00:00 do `to`: fora
+    const q = `from=2026-01-07&to=2026-01-22&unitId=${unitA}`;
+    const res = (await taxa(`${q}&groupBy=week`).expect(200)).body;
+    expect(res.weeks).toEqual([
+      {
+        weekStart: '2026-01-05',
+        from: '2026-01-07',
+        to: '2026-01-12',
+        attended: 1,
+        noShow: 1,
+        rate: 0.5,
+        pendingPast: 0,
+        canceled: 1,
+      },
+      {
+        weekStart: '2026-01-12',
+        from: '2026-01-12',
+        to: '2026-01-19',
+        attended: 2,
+        noShow: 1,
+        rate: 1 / 3,
+        pendingPast: 1,
+        canceled: 0,
+      },
+      {
+        weekStart: '2026-01-19',
+        from: '2026-01-19',
+        to: '2026-01-22',
+        attended: 0,
+        noShow: 0,
+        rate: null,
+        pendingPast: 0,
+        canceled: 0,
+      },
+    ]);
+    // a soma da série é o total, e o total é o mesmo da resposta sem série
+    const semSerie = (await taxa(q).expect(200)).body;
+    expect(somaDa(res.weeks)).toEqual({ attended: 3, noShow: 2, pendingPast: 1, canceled: 1 });
+    expect(contas(res)).toEqual(contas(semSerie));
+    expect(contas(res)).toEqual({ attended: 3, noShow: 2, rate: 0.4, pendingPast: 1, canceled: 1 });
+    // DTO estrito: o cabeçalho de sempre e só a série pedida
+    expect(Object.keys(res).sort()).toEqual(
+      [
+        'attended',
+        'canceled',
+        'from',
+        'noShow',
+        'pendingPast',
+        'rate',
+        'to',
+        'unitId',
+        'weeks',
+      ].sort(),
+    );
+    // com os recortes, a série segue o recorte (e a soma, o total recortado)
+    const deBia = (await taxa(`${q}&groupBy=week&professionalId=${bia}`).expect(200)).body;
+    expect(deBia.weeks.map((w: Conta) => w.noShow)).toEqual([1, 0, 0]);
+    expect(contas(deBia)).toEqual(contas((await taxa(`${q}&professionalId=${bia}`)).body));
+    // período que começa numa segunda e cabe numa semana: uma semana só, inteira
+    expect(
+      (await taxa(`from=2026-01-12&to=2026-01-19&unitId=${unitA}&groupBy=week`).expect(200)).body
+        .weeks,
+    ).toEqual([
+      expect.objectContaining({
+        weekStart: '2026-01-12',
+        from: '2026-01-12',
+        to: '2026-01-19',
+        noShow: 1,
+      }),
+    ]);
+  });
+
+  it('groupBy=week: a semana segue o início do dia LOCAL também na mudança de horário (São Paulo, 2018)', async () => {
+    // 2018-11-04 (domingo) teve 23 h: a meia-noite caiu no pulo, e o domingo
+    // começa às 03:00 UTC. A segunda 2018-11-05 começa às 02:00 UTC (−02:00)
+    await gravar(new Date('2018-11-04T03:00:00Z'), 'no_show'); // domingo 01:00: semana de 29/10
+    await gravar(new Date('2018-11-05T01:59:00Z'), 'no_show'); // domingo 23:59: semana de 29/10
+    await gravar(new Date('2018-11-05T02:00:00Z'), 'attended'); // segunda 00:00: semana de 05/11
+    const res = (
+      await taxa(`from=2018-11-01&to=2018-11-08&unitId=${unitA}&groupBy=week`).expect(200)
+    ).body;
+    expect(
+      res.weeks.map((w: Conta & { weekStart: string }) => [w.weekStart, w.noShow, w.attended]),
+    ).toEqual([
+      ['2018-10-29', 2, 0],
+      ['2018-11-05', 0, 1],
+    ]);
+  });
+
+  it('groupBy=professional: id e nome, em ordem de nome, arquivados inclusive; os passados sem desfecho pelo relógio do banco; a soma é o total', async () => {
+    await gravar(new Date('2026-01-06T12:00:00Z'), 'attended');
+    await gravar(new Date('2026-01-06T13:00:00Z'), 'attended');
+    await gravar(new Date('2026-01-07T12:00:00Z'), 'no_show');
+    await gravar(new Date('2026-01-06T12:00:00Z'), 'no_show', { professionalId: bia });
+    await gravar(new Date('2026-01-08T12:00:00Z'), 'canceled', { professionalId: bia });
+    await gravar(new Date('2026-01-09T12:00:00Z'), 'confirmed', { professionalId: bia });
+    // Bia arquivada: o histórico dela continua na série
+    await prisma.raw.clinicsProfessional.updateMany({
+      where: { workspaceId: wsA.workspaceId, id: bia },
+      data: { archivedAt: new Date('2026-02-01T00:00:00Z') },
+    });
+    const q = `from=2026-01-05&to=2026-01-12&unitId=${unitA}`;
+    const res = (await taxa(`${q}&groupBy=professional`).expect(200)).body;
+    expect(res.professionals).toEqual([
+      {
+        professionalId: ana,
+        professionalName: 'Ana Fictícia',
+        attended: 2,
+        noShow: 1,
+        rate: 1 / 3,
+        pendingPast: 0,
+        canceled: 0,
+      },
+      {
+        professionalId: bia,
+        professionalName: 'Bia Fictícia',
+        attended: 0,
+        noShow: 1,
+        rate: 1,
+        pendingPast: 1,
+        canceled: 1,
+      },
+    ]);
+    expect(somaDa(res.professionals)).toEqual({
+      attended: 2,
+      noShow: 2,
+      pendingPast: 1,
+      canceled: 1,
+    });
+    expect(contas(res)).toEqual(contas((await taxa(q).expect(200)).body));
+    expect(Object.keys(res)).not.toContain('weeks');
+    // o recorte por profissional estreita a série a ele
+    expect(
+      (await taxa(`${q}&groupBy=professional&professionalId=${ana}`).expect(200)).body
+        .professionals,
+    ).toEqual([expect.objectContaining({ professionalId: ana, noShow: 1 })]);
+    // um período sem agendamento: série vazia e o total "sem dados"
+    expect(
+      (await taxa(`from=2026-02-02&to=2026-02-09&unitId=${unitA}&groupBy=professional`).expect(200))
+        .body,
+    ).toMatchObject({ professionals: [], attended: 0, noShow: 0, rate: null });
+
+    // em volta de agora: "passado" é pelo relógio do BANCO, como no total; quem
+    // só tem horário futuro aparece, com zeros
+    const agora = await agoraNoBanco(prisma);
+    await gravar(new Date(agora - 30 * MINUTO), 'scheduled');
+    await gravar(new Date(agora + 30 * MINUTO), 'scheduled', { professionalId: bia });
+    const hoje = await hojeNoBanco(fuso);
+    const perto = `from=${somarDias(hoje, -1)}&to=${somarDias(hoje, 2)}&unitId=${unitA}`;
+    const agoraRes = (await taxa(`${perto}&groupBy=professional`).expect(200)).body;
+    expect(
+      agoraRes.professionals.map((p: Conta & { professionalId: string }) => [
+        p.professionalId,
+        p.pendingPast,
+      ]),
+    ).toEqual([
+      [ana, 1],
+      [bia, 0],
+    ]);
+    expect(contas(agoraRes)).toEqual(contas((await taxa(perto).expect(200)).body));
+    const semanaRes = (await taxa(`${perto}&groupBy=week`).expect(200)).body;
+    expect(somaDa(semanaRes.weeks).pendingPast).toBe(1);
+    expect(contas(semanaRes)).toEqual(contas(agoraRes));
+  });
+
+  it('groupBy inválido, fora da lista ou repetido: 400; o limite de período e a permissão continuam os mesmos', async () => {
+    const q = `from=2026-01-05&to=2026-01-12&unitId=${unitA}`;
+    for (const valor of ['day', 'Week', 'service', '']) {
+      await taxa(`${q}&groupBy=${valor}`).expect(400);
+    }
+    await taxa(`${q}&groupBy=week&groupBy=professional`).expect(400);
+    await taxa(`from=2025-01-01&to=2026-01-03&unitId=${unitA}&groupBy=week`).expect(400);
+    await taxa(`from=2024-01-01&to=2025-01-01&unitId=${unitA}&groupBy=week`).expect(200);
+    await taxa(`${q}&groupBy=week`, guest).expect(403);
+    await taxa(`${q}&groupBy=professional`, guest).expect(403);
+    await taxa(`${q}&groupBy=professional`, profissional).expect(200);
+  });
+
+  it('P0 nas séries: o workspace B não vê semana nem profissional de A', async () => {
+    await gravar(new Date('2026-01-06T12:00:00Z'), 'no_show');
+    await gravar(new Date('2026-01-07T12:00:00Z'), 'attended', { professionalId: bia });
+    const q = 'from=2026-01-05&to=2026-01-12';
+    await taxa(`${q}&unitId=${unitA}&groupBy=week`, ownerB).expect(404);
+    await taxa(`${q}&unitId=${unitA}&groupBy=professional`, ownerB).expect(404);
+    const semanasB = (await taxa(`${q}&groupBy=week`, ownerB).expect(200)).body;
+    expect(semanasB.weeks).toEqual([
+      expect.objectContaining({ attended: 0, noShow: 0, rate: null, canceled: 0 }),
+    ]);
+    const profsB = (await taxa(`${q}&groupBy=professional`, ownerB).expect(200)).body;
+    expect(profsB).toMatchObject({ professionals: [], attended: 0, noShow: 0 });
+    // nem pedindo o profissional de A pelo id
+    expect(
+      (await taxa(`${q}&groupBy=professional&professionalId=${ana}`, ownerB).expect(200)).body
+        .professionals,
+    ).toEqual([]);
+    expect(JSON.stringify(profsB)).not.toContain('Fictícia');
+    // e A continua vendo o que é seu
+    expect(
+      (await taxa(`${q}&unitId=${unitA}&groupBy=professional`).expect(200)).body.professionals,
+    ).toHaveLength(2);
+  });
+
   it('RBAC: da agenda (a recepção e o profissional); o guest não', async () => {
     const q = `from=2026-01-05&to=2026-01-12&unitId=${unitA}`;
     await taxa(q, recepcao).expect(200);

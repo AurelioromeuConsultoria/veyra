@@ -176,3 +176,14 @@ export function somarDias(data: string, dias: number): string {
   const [ano, mes, dia] = data.split('-').map(Number);
   return new Date(Date.UTC(ano, mes - 1, dia + dias)).toISOString().slice(0, 10);
 }
+
+/**
+ * A SEGUNDA-FEIRA da semana da data `AAAA-MM-DD` (calendário puro, sem fuso):
+ * a semana vai de segunda a domingo, como no calendário brasileiro de trabalho.
+ */
+export function segundaDaSemana(data: string): string {
+  const [ano, mes, dia] = data.split('-').map(Number);
+  const diaUtc = new Date(Date.UTC(ano, mes - 1, dia)).getUTCDay();
+  // getUTCDay: 0 = domingo … 6 = sábado; o domingo fecha a semana
+  return somarDias(data, -((diaUtc + 6) % 7));
+}

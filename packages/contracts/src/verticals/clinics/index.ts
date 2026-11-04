@@ -820,9 +820,19 @@ export interface ClinicsReturnCandidatesPageDto {
 // ── Taxa de faltas (F3.3a; ADR-048 adendo 7, item 7 e aprovação da F3.3) ─────
 
 /**
+ * O agrupamento opcional da taxa de faltas (ADR-062 adendo 1, item A2): por
+ * SEMANA (segunda a domingo, em datas locais da unidade) ou por PROFISSIONAL.
+ */
+export const CLINICS_NO_SHOW_GROUP_BY = ['week', 'professional'] as const;
+export type ClinicsNoShowGroupBy = (typeof CLINICS_NO_SHOW_GROUP_BY)[number];
+
+/**
  * Período em datas LOCAIS da unidade: `from` inclusivo, `to` EXCLUSIVO, pelo
  * INÍCIO do agendamento. Os limites são o início de cada dia local (que nem
  * sempre tem 24 horas: `inicioDoDiaLocal`). No máximo 366 dias.
+ *
+ * Com `groupBy`, a resposta traz também a série (`weeks` ou `professionals`),
+ * cada item com a MESMA conta do total; sem ele, a resposta não muda.
  */
 export const clinicsNoShowQuerySchema = z
   .object({
@@ -832,6 +842,7 @@ export const clinicsNoShowQuerySchema = z
     unitId: z.uuid().optional(),
     professionalId: z.uuid().optional(),
     serviceId: z.uuid().optional(),
+    groupBy: z.enum(CLINICS_NO_SHOW_GROUP_BY).optional(),
   })
   .strict()
   .refine((q) => q.from < q.to, { message: 'O fim do período vem depois do início', path: ['to'] })
@@ -842,7 +853,45 @@ export const clinicsNoShowQuerySchema = z
   );
 export type ClinicsNoShowQuery = z.infer<typeof clinicsNoShowQuerySchema>;
 
-/** Só AGREGADOS: nenhuma pessoa, nenhum agendamento. */
+/**
+ * A conta da taxa de faltas, igual no total e em cada item de uma série:
+ * `rate = noShow / (attended + noShow)`, `null` só sem atendidos nem faltas.
+ */
+export interface ClinicsNoShowCountsDto {
+  attended: number;
+  noShow: number;
+  /** `noShow / (attended + noShow)`, de 0 a 1; `null` = "sem dados" */
+  rate: number | null;
+  /** marcados, confirmados e chegados com início antes de agora (relógio do banco); fora da conta */
+  pendingPast: number;
+  /** à parte, fora da conta */
+  canceled: number;
+}
+
+/**
+ * Uma semana da série (`groupBy=week`): segunda a domingo, em datas LOCAIS da
+ * unidade, recortada ao período pedido. Todas as semanas que o período toca
+ * aparecem, em ordem, mesmo vazias; a soma das semanas é o total.
+ */
+export interface ClinicsNoShowWeekDto extends ClinicsNoShowCountsDto {
+  /** a segunda-feira da semana (`AAAA-MM-DD`), mesmo antes do início do período */
+  weekStart: string;
+  /** o trecho da semana dentro do período: `from` inclusivo, `to` exclusivo */
+  from: string;
+  to: string;
+}
+
+/**
+ * Um profissional da série (`groupBy=professional`): os que têm algum
+ * agendamento no período (inclusive arquivados: o histórico continua valendo),
+ * em ordem de nome. A soma dos profissionais é o total.
+ */
+export interface ClinicsNoShowProfessionalDto extends ClinicsNoShowCountsDto {
+  professionalId: string;
+  professionalName: string;
+}
+
+/** Só AGREGADOS: nenhum paciente, nenhum agendamento. */
 export interface ClinicsNoShowDto {
   from: string;
   to: string;
@@ -858,6 +907,10 @@ export interface ClinicsNoShowDto {
   pendingPast: number;
   /** à parte, fora da conta */
   canceled: number;
+  /** só com `groupBy=week` */
+  weeks?: ClinicsNoShowWeekDto[];
+  /** só com `groupBy=professional` */
+  professionals?: ClinicsNoShowProfessionalDto[];
 }
 
 // ── O envio iniciado pela clínica (F4.2, ADR-048 adendos 8 e 9) ──────────────

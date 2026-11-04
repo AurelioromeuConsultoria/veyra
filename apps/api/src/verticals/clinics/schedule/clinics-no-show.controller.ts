@@ -11,7 +11,10 @@ import { ClinicsNoShowService } from './clinics-no-show.service';
 
 /**
  * Taxa de faltas (ADR-048 adendo 7, item 7; F3.3a). Da agenda
- * (`schedule:read`), só agregados: nenhuma pessoa, nenhum agendamento.
+ * (`schedule:read`), só agregados: nenhum paciente, nenhum agendamento. Com
+ * `groupBy` (ADR-062 adendo 1, item A2), também a série por semana ou por
+ * profissional (id e nome, que a agenda já mostra a quem tem `schedule:read`),
+ * com a mesma permissão, os mesmos filtros e o mesmo limite de período.
  */
 @Controller('clinics')
 @UseGuards(ClinicsActiveGuard)

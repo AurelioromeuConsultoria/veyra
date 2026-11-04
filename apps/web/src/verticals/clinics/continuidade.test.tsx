@@ -12,6 +12,12 @@ import { ClinicsNoShowPage, taxaLegivel } from './NoShowPage';
 import { ClinicsPatientPage } from './PatientPage';
 import { ClinicsReturnsPage } from './ReturnsPage';
 import { motivosPermitidos } from './continuidade';
+import {
+  ComparacaoDaTaxa,
+  oPeriodoAnterior,
+  periodoAnterior,
+  pontosLegiveis,
+} from './metricas/SeriesDasFaltas';
 
 /**
  * As telas da continuidade (F3.3b; ADR-048 adendo 7 e as condições da
@@ -1561,5 +1567,218 @@ describe('taxa de faltas', () => {
     recarregar();
     expect(await screen.findByRole('alert')).toHaveTextContent('Falhou');
     expect(screen.queryByText('25 %')).toBeNull();
+  });
+});
+
+describe('faltas por semana, por profissional e a comparação (ADR-062 adendo 1, A2)', () => {
+  const B = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e04';
+  const conta = (attended: number, noShow: number) => ({
+    attended,
+    noShow,
+    rate: attended + noShow === 0 ? null : noShow / (attended + noShow),
+    pendingPast: 0,
+    canceled: 0,
+  });
+  const semana = (weekStart: string, attended: number, noShow: number, extra = {}) => ({
+    weekStart,
+    from: weekStart,
+    to: '',
+    ...conta(attended, noShow),
+    ...extra,
+  });
+
+  /**
+   * As três leituras da MESMA rota, separadas pelo `groupBy`: o fetch do
+   * `mockApi` responde o resto. Registra os períodos pedidos.
+   */
+  function mockFaltas(respostas: {
+    week: () => { status?: number; body: unknown };
+    professional: () => { status?: number; body: unknown };
+    anterior: () => { status?: number; body: unknown };
+  }) {
+    const chamadas = mockApi({ 'GET /api/auth/me': { body: usuario(RECEPCAO) }, ...catalogo });
+    const resto = globalThis.fetch;
+    const pedidos: URLSearchParams[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (!url.startsWith('/api/clinics/metrics/no-show')) return resto(input, init);
+        const q = new URLSearchParams(url.split('?')[1]);
+        pedidos.push(q);
+        const groupBy = q.get('groupBy');
+        const r =
+          groupBy === 'week'
+            ? respostas.week()
+            : groupBy === 'professional'
+              ? respostas.professional()
+              : respostas.anterior();
+        return new Response(JSON.stringify(r.body), {
+          status: r.status ?? 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }),
+    );
+    return { chamadas, pedidos };
+  }
+
+  const cabeca = { from: '2030-10-06', to: '2030-11-05', unitId: U };
+
+  it('a série semanal, a lista por profissional com avatar e taxa, e a queda em p.p. contra o período anterior de mesmo tamanho', async () => {
+    const { pedidos } = mockFaltas({
+      week: () => ({
+        body: {
+          ...cabeca,
+          ...conta(55, 4),
+          weeks: [
+            semana('2030-10-07', 22, 3, { from: '2030-10-09', to: '2030-10-14' }),
+            semana('2030-10-14', 33, 1, { to: '2030-10-21' }),
+            semana('2030-10-21', 0, 0, { to: '2030-10-28' }),
+          ],
+        },
+      }),
+      professional: () => ({
+        body: {
+          ...cabeca,
+          ...conta(55, 4),
+          professionals: [
+            { professionalId: ANA, professionalName: 'Dra. Ana Fictícia', ...conta(30, 1) },
+            { professionalId: B, professionalName: 'Dra. Beatriz Fictícia', ...conta(25, 3) },
+          ],
+        },
+      }),
+      anterior: () => ({ body: { ...cabeca, ...conta(41, 4) } }),
+    });
+    renderizar(<ClinicsNoShowPage />, '/clinics/no-show');
+
+    // a comparação: 4/59 ≈ 6,8 % contra 4/45 ≈ 8,9 %: caiu 2,1 p.p., em verde
+    const comparacao = await screen.findByTestId('comparacao-das-faltas');
+    await waitFor(() => expect(comparacao).toHaveTextContent(/Caiu\s*2,1 p\.p\./));
+    expect(comparacao).toHaveTextContent('↓');
+    expect(comparacao).toHaveTextContent('em relação aos 30 dias anteriores (8,9 %)');
+    expect(comparacao).toHaveClass('text-positive');
+    // o período anterior: MESMO tamanho, terminando onde o atual começa
+    const atual = pedidos.find((p) => p.get('groupBy') === 'week')!;
+    const antes = pedidos.find((p) => !p.has('groupBy'))!;
+    expect(antes.get('to')).toBe(atual.get('from'));
+    expect(periodoAnterior({ de: atual.get('from')!, ate: atual.get('to')! })).toEqual({
+      de: antes.get('from'),
+      ate: antes.get('to'),
+    });
+    expect(antes.get('unitId')).toBe(U);
+
+    // por semana: uma barra por semana, o vazio como "sem dados", o corte como parcial
+    const grafico = within(screen.getByRole('region', { name: 'Faltas por semana' })).getByRole(
+      'img',
+    );
+    expect(grafico).toHaveAccessibleName(
+      'Faltas por semana: 12 % na semana de 07/10 (parcial); 2,9 % na semana de 14/10; sem dados na semana de 21/10.',
+    );
+
+    // por profissional: avatar, nome e "faltas de atendidos + faltas · taxa"
+    const lista = within(await screen.findByRole('region', { name: 'Por profissional' }));
+    const linhas = await lista.findAllByRole('listitem');
+    expect(linhas.map((l) => l.getAttribute('aria-label'))).toEqual([
+      'Dra. Ana Fictícia: 3,2 %, 1 falta em 31 (atendidos + faltas)',
+      'Dra. Beatriz Fictícia: 10,7 %, 3 faltas em 28 (atendidos + faltas)',
+    ]);
+    expect(within(linhas[1]).getByText('3 de 28 · 10,7 %')).toBeInTheDocument();
+    expect(within(linhas[0]).getByText('AF')).toBeInTheDocument();
+  });
+
+  it('a lista por profissional que falha avisa dentro do painel e não derruba os cartões; vazia, orienta', async () => {
+    let falhar = true;
+    mockFaltas({
+      week: () => ({ body: { ...cabeca, ...conta(3, 1), weeks: [] } }),
+      professional: () =>
+        falhar
+          ? { status: 500, body: { message: 'Falhou' } }
+          : { body: { ...cabeca, ...conta(0, 0), professionals: [] } },
+      anterior: () => ({ status: 500, body: { message: 'Falhou' } }),
+    });
+    renderizar(<ClinicsNoShowPage />, '/clinics/no-show');
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Não foi possível carregar as faltas por profissional.',
+    );
+    expect(within(screen.getByLabelText('Taxa de faltas')).getByText('25 %')).toBeInTheDocument();
+    // a comparação que falha não é alerta: só diz que não deu para comparar
+    expect(await screen.findByTestId('comparacao-das-faltas')).toHaveTextContent(
+      'Não foi possível comparar com o período anterior.',
+    );
+    falhar = false;
+    recarregar();
+    const painel = within(screen.getByRole('region', { name: 'Por profissional' }));
+    expect(await painel.findByText('Nenhum agendamento no período.')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('com um profissional no filtro, a lista por profissional sai (e não é pedida)', async () => {
+    const { pedidos } = mockFaltas({
+      week: () => ({ body: { ...cabeca, ...conta(1, 1), weeks: [] } }),
+      professional: () => ({ body: { ...cabeca, ...conta(1, 1), professionals: [] } }),
+      anterior: () => ({ body: { ...cabeca, ...conta(1, 1) } }),
+    });
+    renderizar(<ClinicsNoShowPage />, '/clinics/no-show');
+    expect(await screen.findByRole('region', { name: 'Por profissional' })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Profissional'), { target: { value: ANA } });
+    await waitFor(() =>
+      expect(pedidos.some((p) => p.get('professionalId') === ANA && !p.has('groupBy'))).toBe(true),
+    );
+    expect(screen.queryByRole('region', { name: 'Por profissional' })).toBeNull();
+    expect(
+      pedidos.filter((p) => p.get('professionalId') === ANA && p.get('groupBy') === 'professional'),
+    ).toEqual([]);
+  });
+
+  it('a comparação: sobe em vermelho, igual sem seta, "sem dados" no anterior, e nada sem taxa agora', () => {
+    const anterior = (rate: number | null) => ({ ...cabeca, ...conta(0, 0), rate });
+    const { rerender } = render(
+      <dl>
+        <ComparacaoDaTaxa atual={0.1} anterior={anterior(0.05)} dias={28} />
+      </dl>,
+    );
+    const linha = () => screen.getByTestId('comparacao-das-faltas');
+    expect(linha()).toHaveTextContent('↑ Subiu 5 p.p. em relação às 4 semanas anteriores (5 %)');
+    expect(linha()).toHaveClass('text-negative');
+    rerender(
+      <dl>
+        <ComparacaoDaTaxa atual={0.1} anterior={anterior(0.1)} dias={7} />
+      </dl>,
+    );
+    expect(linha()).toHaveTextContent(/^Igual à semana anterior\.$/);
+    rerender(
+      <dl>
+        <ComparacaoDaTaxa atual={0.1} anterior={anterior(null)} dias={1} />
+      </dl>,
+    );
+    expect(linha()).toHaveTextContent('Sem dados no dia anterior para comparar.');
+    rerender(
+      <dl>
+        <ComparacaoDaTaxa atual={0.1} anterior={undefined} dias={30} />
+      </dl>,
+    );
+    expect(linha()).toHaveTextContent('Comparando com o período anterior…');
+    rerender(
+      <dl>
+        <ComparacaoDaTaxa atual={null} anterior={anterior(0.1)} dias={30} />
+      </dl>,
+    );
+    expect(screen.queryByTestId('comparacao-das-faltas')).toBeNull();
+  });
+
+  it('pontos percentuais e o período anterior por extenso', () => {
+    expect(pontosLegiveis(0.068, 0.089)).toBe('2,1 p.p.');
+    // uma diferença real pequena nunca vira "0 p.p."
+    expect(pontosLegiveis(0.1, 0.1004)).toBe('< 0,1 p.p.');
+    expect(pontosLegiveis(0.2, 0.2)).toBe('0 p.p.');
+    expect(oPeriodoAnterior(30).a).toBe('aos 30 dias anteriores');
+    expect(oPeriodoAnterior(14)).toEqual({
+      a: 'às 2 semanas anteriores',
+      em: 'nas 2 semanas anteriores',
+    });
+    expect(periodoAnterior({ de: '2030-03-01', ate: '2030-03-31' })).toEqual({
+      de: '2030-01-30',
+      ate: '2030-03-01',
+    });
   });
 });

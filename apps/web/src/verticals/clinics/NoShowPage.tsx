@@ -14,13 +14,28 @@ import { EmptyState, NumeroGrande, PageHeader } from '../../components/ui/page';
 import { api, ApiError, toQuery } from '../../lib/api';
 import { dataCurta, PortaDaClinica } from './continuidade';
 import { useAbasDosIndicadores } from './metricas/AbasDosIndicadores';
+import {
+  ComparacaoDaTaxa,
+  diasEntre,
+  FaltasPorProfissional,
+  FaltasPorSemana,
+  periodoAnterior,
+  taxaLegivel,
+} from './metricas/SeriesDasFaltas';
 import { CLINICS_AGENDA_PATH } from './nav';
+
+export { taxaLegivel };
 
 /**
  * Taxa de faltas (F3.3b; ADR-048 adendo 7, item 7 e aprovação da F3.3). Só
  * agregados. "Sem dados" (nenhum atendido nem falta) NUNCA aparece como 0 %:
  * com atendimentos e nenhuma falta, 0 % é legítimo. Os cancelados e os
  * passados sem desfecho ficam à parte, fora da conta.
+ *
+ * Com o ADR-062 adendo 1 (item A2): a série por semana, a lista por
+ * profissional e a comparação com o período anterior de mesmo tamanho. São
+ * três leituras da MESMA rota: o total com a série semanal (que dá os
+ * cartões), a série por profissional e o total do período anterior.
  */
 export function ClinicsNoShowPage() {
   return (
@@ -28,17 +43,6 @@ export function ClinicsNoShowPage() {
       <FaltasReady />
     </PortaDaClinica>
   );
-}
-
-/** A taxa na tela: `null` é "Sem dados", e só ele. */
-export function taxaLegivel(rate: number | null): string {
-  if (rate === null) return 'Sem dados';
-  const pct = rate * 100;
-  // uma taxa positiva pequena nunca aparece como o 0 % legítimo (nem a quase
-  // total como 100 %): o arredondamento não apaga a diferença
-  if (rate > 0 && pct < 0.05) return '< 0,1 %';
-  if (rate < 1 && pct >= 99.95) return '> 99,9 %';
-  return `${new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 1 }).format(pct)} %`;
 }
 
 function FaltasReady() {
@@ -90,19 +94,37 @@ function Faltas({ unidades }: { unidades: ClinicsUnitDto[] }) {
   });
   const pronto =
     unidade !== '' && periodo.de !== '' && periodo.ate !== '' && periodo.de < periodo.ate;
+  /** a mesma rota, com os mesmos filtros, num período e com uma série */
+  const apurar = (de: string, ate: string, groupBy?: 'week' | 'professional') =>
+    api.get<ClinicsNoShowDto>(
+      `/api/clinics/metrics/no-show${toQuery({
+        from: de,
+        to: ate,
+        unitId: unidade,
+        professionalId: profissional || undefined,
+        serviceId: servico || undefined,
+        groupBy,
+      })}`,
+    );
+  const filtros = [unidade, profissional, servico] as const;
   const taxa = useQuery({
-    queryKey: ['clinics', 'metrics', 'no-show', unidade, periodo, profissional, servico],
-    queryFn: () =>
-      api.get<ClinicsNoShowDto>(
-        `/api/clinics/metrics/no-show${toQuery({
-          from: periodo.de,
-          to: periodo.ate,
-          unitId: unidade,
-          professionalId: profissional || undefined,
-          serviceId: servico || undefined,
-        })}`,
-      ),
+    queryKey: ['clinics', 'metrics', 'no-show', ...filtros, periodo, 'week'],
+    queryFn: () => apurar(periodo.de, periodo.ate, 'week'),
     enabled: pronto,
+  });
+  // a lista por profissional só sem o filtro de profissional (com ele, seria
+  // uma linha repetindo os cartões)
+  const porProfissional = useQuery({
+    queryKey: ['clinics', 'metrics', 'no-show', ...filtros, periodo, 'professional'],
+    queryFn: () => apurar(periodo.de, periodo.ate, 'professional'),
+    enabled: pronto && !profissional,
+  });
+  // a comparação: a mesma consulta no período anterior de mesmo tamanho
+  const antes = pronto ? periodoAnterior(periodo) : null;
+  const anterior = useQuery({
+    queryKey: ['clinics', 'metrics', 'no-show', ...filtros, antes],
+    queryFn: () => (antes ? apurar(antes.de, antes.ate) : Promise.reject(new Error('sem período'))),
+    enabled: antes !== null,
   });
   // com erro (inclusive numa recarga), nada de número antigo
   const dado = taxa.isError ? null : (taxa.data ?? null);
@@ -197,7 +219,13 @@ function Faltas({ unidades }: { unidades: ClinicsUnitDto[] }) {
                     ? 'Nenhum atendido nem falta no período.'
                     : `${dado.noShow} ${dado.noShow === 1 ? 'falta' : 'faltas'} em ${denominador} (atendidos + faltas)`
                 }
-              />
+              >
+                <ComparacaoDaTaxa
+                  atual={dado.rate}
+                  anterior={anterior.isError ? 'erro' : anterior.data}
+                  dias={diasEntre(periodo.de, periodo.ate)}
+                />
+              </NumeroGrande>
               <NumeroGrande
                 rotulo="Passados sem desfecho"
                 valor={String(dado.pendingPast)}
@@ -220,6 +248,18 @@ function Faltas({ unidades }: { unidades: ClinicsUnitDto[] }) {
                 legenda="À parte: o cancelado não é falta nem atendimento."
               />
             </dl>
+            {/* as séries só com o total em mãos: se ele falhou, o aviso é um só */}
+            <div className="space-y-5 pt-2.5">
+              <FaltasPorSemana semanas={dado.weeks ?? []} />
+              {profissional ? null : (
+                <FaltasPorProfissional
+                  profissionais={
+                    porProfissional.data ? (porProfissional.data.professionals ?? []) : undefined
+                  }
+                  erro={porProfissional.isError}
+                />
+              )}
+            </div>
           </section>
         ) : null}
       </div>
