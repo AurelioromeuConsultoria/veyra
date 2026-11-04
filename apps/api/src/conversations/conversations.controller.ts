@@ -25,6 +25,7 @@ import { AuthContext, CurrentAuth, RequirePermissions } from '../common/decorato
 import { Idempotent } from '../common/idempotency.decorator';
 import { ZodPipe } from '../common/zod.pipe';
 import { ConversationSenderService } from './conversation-sender.service';
+import { MessageReplayGuard } from './message-replay.guard';
 import { ConversationsService } from './conversations.service';
 
 @Controller('conversations')
@@ -152,7 +153,7 @@ export class ConversationsController {
    * requisição diferente.
    */
   @RequirePermissions('conversations:write')
-  @Idempotent()
+  @Idempotent({ replayGuard: MessageReplayGuard })
   @Post(':id/messages')
   addMessage(
     @CurrentAuth() auth: AuthContext,

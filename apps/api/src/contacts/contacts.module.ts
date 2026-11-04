@@ -1,3 +1,4 @@
+import { ContactReplayGuard } from './contact-replay.guard';
 import { Module } from '@nestjs/common';
 import { CustomFieldsModule } from '../custom-fields/custom-fields.module';
 import { DealsModule } from '../deals/deals.module';
@@ -9,7 +10,7 @@ import { ContactsService } from './contacts.service';
 @Module({
   imports: [TagsModule, CustomFieldsModule, FilesModule, DealsModule],
   controllers: [ContactsController],
-  providers: [ContactsService],
+  providers: [ContactsService, ContactReplayGuard],
   exports: [ContactsService],
 })
 export class ContactsModule {}

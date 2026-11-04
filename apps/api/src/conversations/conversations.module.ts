@@ -1,3 +1,4 @@
+import { MessageReplayGuard } from './message-replay.guard';
 import { Module, forwardRef } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { ChannelsModule } from '../channels/channels.module';
@@ -18,7 +19,7 @@ import { ConversationsService } from './conversations.service';
     IntelligencePersistenceModule,
   ],
   controllers: [ConversationsController],
-  providers: [ConversationsService, ConversationSenderService],
+  providers: [ConversationsService, ConversationSenderService, MessageReplayGuard],
   exports: [ConversationsService],
 })
 export class ConversationsModule {}

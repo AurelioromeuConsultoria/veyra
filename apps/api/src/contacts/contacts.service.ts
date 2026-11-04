@@ -146,7 +146,7 @@ export class ContactsService {
     return dto;
   }
 
-  private async mascarar(auth: AuthContext, dtos: ContactDto[]): Promise<ContactDto[]> {
+  async mascarar(auth: AuthContext, dtos: ContactDto[]): Promise<ContactDto[]> {
     const ocultos = await this.protegido.contatosOcultos(
       auth,
       dtos.map((d) => d.id),

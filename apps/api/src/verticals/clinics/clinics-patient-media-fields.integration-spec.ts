@@ -97,6 +97,7 @@ describe('Clinics — mídia, campos e título de pacientes (integração, F5.3c
     workspaceId: string,
     contactId: string | null,
     fileObjectId: string,
+    body = '[image]',
   ) => {
     const canal = (await prisma.raw.channel.findFirst({ where: { workspaceId } }))!.id;
     const conversa = await prisma.raw.conversation.create({
@@ -114,7 +115,7 @@ describe('Clinics — mídia, campos e título de pacientes (integração, F5.3c
         channelId: canal,
         direction: 'inbound',
         authorType: 'contact',
-        body: '[image]',
+        body,
       },
     });
     await prisma.raw.messageAttachment.create({
@@ -188,7 +189,8 @@ describe('Clinics — mídia, campos e título de pacientes (integração, F5.3c
 
     const vistaP = await midiaVista(recepcao, cP, doPaciente);
     expect(vistaP).toEqual({
-      corpo: ['[image]'],
+      // o tipo não sai: o marcador genérico no lugar de [image]
+      corpo: ['[anexo]'],
       anexos: [[{ restricted: true }]],
       download: 404,
       naLista: false,
@@ -233,7 +235,7 @@ describe('Clinics — mídia, campos e título de pacientes (integração, F5.3c
     const rai = await conversaComMidia(ws.workspaceId, null, arquivo);
     // a recepção vê a RAI (contacts:write), mas não abre a mídia na dúvida
     expect(await midiaVista(recepcao, rai, arquivo)).toMatchObject({
-      corpo: ['[image]'],
+      corpo: ['[anexo]'],
       anexos: [[{ restricted: true }]],
       download: 404,
     });
@@ -258,12 +260,13 @@ describe('Clinics — mídia, campos e título de pacientes (integração, F5.3c
     const operador = await operadorSemAgenda(ws.workspaceId, 'sem-agenda@veyra.test');
     const doPaciente = await subir();
     const doInteressado = await subir();
-    const cP = await conversaComMidia(ws.workspaceId, paciente, doPaciente);
-    const cI = await conversaComMidia(ws.workspaceId, interessado, doInteressado);
+    // tipos diferentes (áudio no paciente, imagem no interessado): o tipo não sai
+    const cP = await conversaComMidia(ws.workspaceId, paciente, doPaciente, '[audio]');
+    const cI = await conversaComMidia(ws.workspaceId, interessado, doInteressado, '[image]');
     const vistaP = await midiaVista(operador, cP, doPaciente);
     expect(vistaP).toEqual(await midiaVista(operador, cI, doInteressado));
     expect(vistaP).toEqual({
-      corpo: ['[image]'],
+      corpo: ['[anexo]'],
       anexos: [[{ restricted: true }]],
       download: 404,
       naLista: false,
@@ -603,5 +606,205 @@ describe('Clinics — mídia, campos e título de pacientes (integração, F5.3c
       ['identificar', 403, 'Conteúdo restrito'],
       ['rejeitar', 403, 'Conteúdo restrito'],
     ]);
+  });
+
+  // ── a repetição com a mesma chave confere o acesso de agora (revisão do ed35156) ──
+  const comChave = (path: string, s: Session, chave: string, body: unknown) =>
+    request(http)
+      .post(path)
+      .set('Origin', ORIGIN)
+      .set('Cookie', s.cookieHeader)
+      .set('x-csrf-token', s.csrf)
+      .set('Idempotency-Key', chave)
+      .send(body as object);
+
+  it('replay: o interessado que virou paciente — a repetição devolve o corpo com a regra de hoje, e a operação ocorreu uma vez', async () => {
+    await post('/api/custom-fields', owner, {
+      entityType: 'contact',
+      key: 'alergias',
+      label: 'Alergias',
+      type: 'text',
+    }).expect(201);
+    const corpoDoContato = { name: 'Novo Interessado', customFields: { alergias: 'Látex' } };
+    const contatoCriado = await comChave(
+      '/api/contacts',
+      recepcao,
+      'k-contato',
+      corpoDoContato,
+    ).expect(201);
+    expect(contatoCriado.body.customFields).toEqual({ alergias: 'Látex' });
+    const novo = contatoCriado.body.id as string;
+    const corpoDoDeal = { title: 'Tratamento de acne', contactId: novo };
+    const dealCriado = await comChave('/api/deals', recepcao, 'k-deal', corpoDoDeal).expect(201);
+    expect(dealCriado.body.title).toBe('Tratamento de acne');
+    const corpoDaTarefa = { title: 'Ligar sobre a alergia', contactId: novo };
+    await comChave('/api/tasks', recepcao, 'k-tarefa', corpoDaTarefa).expect(201);
+
+    // o interessado vira paciente
+    await post('/api/clinics/patients', owner, { contactId: novo }).expect(201);
+
+    const contatoDeNovo = await comChave(
+      '/api/contacts',
+      recepcao,
+      'k-contato',
+      corpoDoContato,
+    ).expect(201);
+    expect(contatoDeNovo.headers['idempotent-replay']).toBe('true');
+    expect(contatoDeNovo.body).toMatchObject({
+      id: novo,
+      customFields: {},
+      customFieldsRestricted: true,
+    });
+    expect(JSON.stringify(contatoDeNovo.body)).not.toMatch(/Látex/);
+
+    const dealDeNovo = await comChave('/api/deals', recepcao, 'k-deal', corpoDoDeal).expect(201);
+    expect(dealDeNovo.headers['idempotent-replay']).toBe('true');
+    expect(dealDeNovo.body).toMatchObject({
+      id: dealCriado.body.id,
+      title: '',
+      titleRestricted: true,
+    });
+
+    const tarefaDeNovo = await comChave('/api/tasks', recepcao, 'k-tarefa', corpoDaTarefa).expect(
+      403,
+    );
+    expect(tarefaDeNovo.body.message).toMatch(/Conteúdo restrito/);
+
+    // uma vez só: nada foi criado de novo
+    expect(await prisma.raw.contact.count({ where: { name: 'Novo Interessado' } })).toBe(1);
+    expect(await prisma.raw.deal.count({ where: { contactId: novo } })).toBe(1);
+    expect(await prisma.raw.task.count({ where: { contactId: novo } })).toBe(1);
+  });
+
+  it('marcador: a mídia ainda não coletada (sem anexo) também não revela o tipo na conversa protegida', async () => {
+    const semAnexo = async (contactId: string | null) => {
+      const canal = (await prisma.raw.channel.findFirst({
+        where: { workspaceId: ws.workspaceId },
+      }))!.id;
+      const conversa = await prisma.raw.conversation.create({
+        data: {
+          workspaceId: ws.workspaceId,
+          channelId: canal,
+          contactId,
+          senderStatus: contactId ? 'identified' : 'unidentified',
+        },
+      });
+      await prisma.raw.message.create({
+        data: {
+          workspaceId: ws.workspaceId,
+          conversationId: conversa.id,
+          channelId: canal,
+          direction: 'inbound',
+          authorType: 'contact',
+          body: '[audio]',
+        },
+      });
+      return conversa.id;
+    };
+    const corpo = async (s: Session, c: string) =>
+      (await get(`/api/conversations/${c}/messages`, s).expect(200)).body.items.map(
+        (m: { body: string }) => m.body,
+      );
+    expect(await corpo(recepcao, await semAnexo(paciente))).toEqual(['[anexo]']);
+    expect(await corpo(recepcao, await semAnexo(null))).toEqual(['[anexo]']);
+    expect(await corpo(recepcao, await semAnexo(interessado))).toEqual(['[audio]']);
+    expect(await corpo(owner, await semAnexo(paciente))).toEqual(['[audio]']);
+  });
+
+  it('replay: o envio de mensagem com anexo, o movimento, a oportunidade que mudou de contato e quem tem as chaves', async () => {
+    // a recepção anexa um arquivo numa conversa do interessado, com chave
+    const arquivo = await subir(recepcao);
+    const conversa = await conversaComMidia(ws.workspaceId, interessado, await subir());
+    const corpoDaMensagem = { direction: 'outbound', body: 'segue', attachmentIds: [arquivo] };
+    const enviada = await comChave(
+      `/api/conversations/${conversa}/messages`,
+      recepcao,
+      'k-msg',
+      corpoDaMensagem,
+    ).expect(201);
+    expect(enviada.body.attachments[0].fileObjectId).toBe(arquivo);
+    // o movimento, com chave
+    const deal = (
+      await post('/api/deals', owner, {
+        title: 'Tratamento de acne',
+        contactId: interessado,
+      }).expect(201)
+    ).body.id as string;
+    const estagio = (await prisma.raw.stage.findFirst({
+      where: { workspaceId: ws.workspaceId, type: 'open' },
+      orderBy: { order: 'desc' },
+    }))!.id;
+    const movido = await comChave(`/api/deals/${deal}/move`, recepcao, 'k-move', {
+      stageId: estagio,
+    }).expect(201);
+    expect(movido.body.title).toBe('Tratamento de acne');
+    // o Owner cria, com chave, uma oportunidade de outro interessado
+    const outro = await contato('Outro Fictício');
+    const doOwner = await comChave('/api/deals', owner, 'k-owner', {
+      title: 'Pacote corporal',
+      contactId: outro,
+    }).expect(201);
+    // a recepção cria, com chave, uma oportunidade e uma tarefa de um terceiro
+    // que CONTINUA interessado; depois, quem tem as chaves as passa ao paciente:
+    // só o vínculo ATUAL é oculto (o guardado segue visível)
+    const terceiro = await contato('Terceiro Fictício');
+    const levada = await comChave('/api/deals', recepcao, 'k-levada', {
+      title: 'Peeling',
+      contactId: terceiro,
+    }).expect(201);
+    await enviar('patch', `/api/deals/${levada.body.id}`, owner, { contactId: paciente }).expect(
+      200,
+    );
+    const tarefaLevada = await comChave('/api/tasks', recepcao, 'k-tarefa-levada', {
+      title: 'Ligar',
+      contactId: terceiro,
+    }).expect(201);
+    await enviar('patch', `/api/tasks/${tarefaLevada.body.id}`, owner, {
+      contactId: paciente,
+    }).expect(200);
+
+    await post('/api/clinics/patients', owner, { contactId: interessado }).expect(201);
+    await post('/api/clinics/patients', owner, { contactId: outro }).expect(201);
+
+    const deNovo = await comChave(
+      `/api/conversations/${conversa}/messages`,
+      recepcao,
+      'k-msg',
+      corpoDaMensagem,
+    ).expect(201);
+    expect(deNovo.headers['idempotent-replay']).toBe('true');
+    expect(deNovo.body.attachments).toEqual([{ restricted: true }]);
+    expect(JSON.stringify(deNovo.body)).not.toMatch(/exame-|image\/png/);
+    expect(
+      await prisma.raw.message.count({ where: { conversationId: conversa, body: 'segue' } }),
+    ).toBe(1);
+
+    const movidoDeNovo = await comChave(`/api/deals/${deal}/move`, recepcao, 'k-move', {
+      stageId: estagio,
+    }).expect(201);
+    expect(movidoDeNovo.body).toMatchObject({ title: '', titleRestricted: true });
+
+    const levadaDeNovo = await comChave('/api/deals', recepcao, 'k-levada', {
+      title: 'Peeling',
+      contactId: terceiro,
+    }).expect(201);
+    expect(levadaDeNovo.body).toMatchObject({ title: '', titleRestricted: true });
+    const tarefaLevadaDeNovo = await comChave('/api/tasks', recepcao, 'k-tarefa-levada', {
+      title: 'Ligar',
+      contactId: terceiro,
+    }).expect(403);
+    expect(tarefaLevadaDeNovo.body.message).toMatch(/Conteúdo restrito/);
+    // o terceiro continua interessado: o guardado sozinho não ocultaria nada
+    expect(await prisma.raw.clinicsPatient.count({ where: { contactId: terceiro } })).toBe(0);
+
+    // quem tem as duas chaves recebe o corpo inteiro (o modo saiu pelo papel)
+    const doOwnerDeNovo = await comChave('/api/deals', owner, 'k-owner', {
+      title: 'Pacote corporal',
+      contactId: outro,
+    }).expect(201);
+    expect(doOwnerDeNovo.headers['idempotent-replay']).toBe('true');
+    expect(doOwnerDeNovo.body).toMatchObject({ id: doOwner.body.id, title: 'Pacote corporal' });
+    expect(doOwnerDeNovo.body.titleRestricted).toBeUndefined();
+    expect(await prisma.raw.deal.count({ where: { title: 'Pacote corporal' } })).toBe(1);
   });
 });

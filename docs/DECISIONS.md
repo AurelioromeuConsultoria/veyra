@@ -10498,3 +10498,22 @@ O workspace que nunca teve o Clinics fica sempre no modo livre, com o comportame
 - **Limites registrados na revisão, que só escrevem e não revelam:**
   - a recusa de mudar o título de uma oportunidade, ou os campos de um contato, é conferida fora de trava. Uma conversão em paciente concorrente pode deixar gravar o título ou o campo novo, e a resposta já sai mascarada;
   - o aviso da timeline acende também quando só o título de uma oportunidade foi omitido. Por isso o texto é genérico: "parte do que aconteceu aqui".
+
+**Adendo 6 — ajustes da revisão do `ed35156` (2026-11-04).** Pedidos pelo usuário.
+
+1. **A repetição com a mesma chave confere o acesso de agora.**
+   - **O mecanismo:** a guarda de replay ganha uma saída nova, `reproject`. Ela devolve o corpo guardado reprojetado pela regra de leitura de hoje, sem executar de novo e sem regravar.
+   - **Criar contato:** os campos personalizados são mascarados se o contato passou a ser oculto.
+   - **Criar e mover oportunidade:** o título é mascarado da mesma forma.
+   - **Criar tarefa:** se o alvo passou a ser oculto, a resposta é 403 "Conteúdo restrito", sem executar de novo.
+   - **Registrar mensagem:** os anexos que passaram a ser protegidos saem restritos, e o marcador, genérico.
+   - **O vínculo de AGORA, não o guardado:** cada guarda relê o contato atual da oportunidade, o alvo atual da tarefa e a conversa atual. A entidade que não existe mais é tratada na dúvida, de forma conservadora (revisão do `security`).
+   - **O teste cobre:**
+     - o interessado que vira paciente: a repetição devolve a máscara (ou o 403), e o banco confirma que contato, oportunidade, tarefa e mensagem foram criados uma vez só;
+     - o movimento;
+     - a oportunidade que passou a um paciente depois de criada;
+     - o caso positivo: quem tem as duas chaves recebe o corpo inteiro.
+2. **O corpo da mensagem de mídia restrita** (`[image]`, `[audio]`, `[document]`) sai como o marcador genérico `[anexo]`, para não revelar o tipo. A decisão olha também a CONVERSA (de contato oculto, ou RAI na dúvida), e não só o anexo: a mídia ainda não coletada, ou cuja coleta falhou, não tem anexo, e o tipo vazaria (revisão do `security`). Um texto de verdade fica como está.
+3. **A mídia antiga de uma conversa de paciente rejeitada e depois identificada como interessado:** DEPENDE DE DECISÃO DO USUÁRIO, e não foi implementada. A proteção hoje é derivada do contato ATUAL da conversa, e nada guarda de quem a conversa era quando a mídia chegou. Os caminhos possíveis:
+   - **sem migration:** recusar a todos, inclusive a quem tem as chaves, desfazer ou rejeitar a conversa de um contato protegido que tenha mídia. A proteção fica preservada, mas ninguém corrige uma atribuição errada dessa conversa;
+   - **com migration:** gravar em cada mensagem o contato da conversa no momento em que ela chegou. A mídia é protegida se esse contato OU o atual for oculto. Também é preciso decidir quem pode liberar a mídia de uma atribuição errada, se alguém puder.

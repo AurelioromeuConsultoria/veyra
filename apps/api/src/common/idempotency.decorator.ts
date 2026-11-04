@@ -15,8 +15,13 @@ export const IDEMPOTENT_REQUIRED_KEY = 'veyra:idempotentRequired';
  * - `{ refuse }`: quem pede não pode receber este corpo com o acesso de agora
  *   (F4.1b, ADR-052) — responde a recusa, SEM apagar e SEM executar de novo. É
  *   para a rota cujo efeito não se repete: reexecutar seria uma operação nova.
+ * - `{ reproject }`: o corpo guardado, REPROJETADO com o acesso de agora (o
+ *   conteúdo protegido do E8, ADR-061 adendo 5) — sem executar de novo e sem
+ *   regravar o guardado. A operação aconteceu uma vez; a resposta segue a
+ *   regra de leitura de hoje.
  */
-export type ReplayVerdict = 'replay' | 'discard' | 'unavailable' | { refuse: HttpException };
+export type ReplayVerdict =
+  'replay' | 'discard' | 'unavailable' | { refuse: HttpException } | { reproject: unknown };
 
 /**
  * Guarda de REPLAY: decide, no momento da repetição, se a resposta guardada

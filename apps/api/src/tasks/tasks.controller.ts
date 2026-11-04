@@ -22,6 +22,7 @@ import {
 import { AuthContext, CurrentAuth, RequirePermissions } from '../common/decorators';
 import { Idempotent } from '../common/idempotency.decorator';
 import { ZodPipe } from '../common/zod.pipe';
+import { TaskReplayGuard } from './task-replay.guard';
 import { TasksService } from './tasks.service';
 
 @Controller('tasks')
@@ -38,7 +39,7 @@ export class TasksController {
   }
 
   @RequirePermissions('tasks:write')
-  @Idempotent()
+  @Idempotent({ replayGuard: TaskReplayGuard })
   @Post()
   create(
     @CurrentAuth() auth: AuthContext,

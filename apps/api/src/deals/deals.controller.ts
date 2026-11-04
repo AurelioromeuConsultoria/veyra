@@ -24,6 +24,7 @@ import {
 import { AuthContext, CurrentAuth, RequirePermissions } from '../common/decorators';
 import { Idempotent } from '../common/idempotency.decorator';
 import { ZodPipe } from '../common/zod.pipe';
+import { DealReplayGuard } from './deal-replay.guard';
 import { DealsService } from './deals.service';
 
 @Controller('deals')
@@ -49,7 +50,7 @@ export class DealsController {
   }
 
   @RequirePermissions('deals:write')
-  @Idempotent()
+  @Idempotent({ replayGuard: DealReplayGuard })
   @Post()
   create(
     @CurrentAuth() auth: AuthContext,
@@ -75,7 +76,7 @@ export class DealsController {
    * mesmo clique conte como duas transições.
    */
   @RequirePermissions('deals:write')
-  @Idempotent()
+  @Idempotent({ replayGuard: DealReplayGuard })
   @Post(':id/move')
   move(
     @CurrentAuth() auth: AuthContext,

@@ -28,6 +28,7 @@ import {
 } from '../channels/send-policy';
 import { bloqueioAtivo, MENSAGEM_PEDIDO_DE_PARAR } from '../consents/consent-records';
 import { WhatsappSendService } from '../channels/whatsapp-send.service';
+import { ProtectedContentService } from '../extensions/protected-content';
 import { FilesService } from '../files/files.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UsageService } from '../usage/usage.service';
@@ -94,6 +95,27 @@ function decodeCursor(raw: string): Cursor {
   return { at, id };
 }
 
+/**
+ * O corpo da mensagem de mídia é o marcador do TIPO (`[image]`, `[audio]`,
+ * `[document]`, gravado pela ingestão). Com a mídia protegida (E8; ADR-061,
+ * adendos 5 e 6), nem o tipo sai: o marcador vira o genérico. A decisão olha a
+ * CONVERSA (de contato oculto, ou RAI na dúvida) e não só o anexo — a mídia
+ * ainda não coletada (ou cuja coleta falhou) não tem anexo, e o tipo vazaria.
+ * Um texto de verdade fica como está.
+ */
+const MARCADOR_DE_MIDIA = /^\[[a-z_]+\]$/;
+export const MARCADOR_GENERICO = '[anexo]';
+function corpoVisivel(
+  row: { body: string; direction: string },
+  anexos: readonly MessageAttachmentDto[],
+  conversaOculta: boolean,
+): string {
+  if (!MARCADOR_DE_MIDIA.test(row.body)) return row.body;
+  const oculta =
+    anexos.some((a) => a.restricted) || (conversaOculta && row.direction === 'inbound');
+  return oculta ? MARCADOR_GENERICO : row.body;
+}
+
 @Injectable()
 export class ConversationsService {
   constructor(
@@ -101,6 +123,7 @@ export class ConversationsService {
     private readonly activities: ActivitiesService,
     private readonly notifications: NotificationsService,
     private readonly files: FilesService,
+    private readonly protegido: ProtectedContentService,
     private readonly send: WhatsappSendService,
     private readonly usage: UsageService,
     private readonly permissions: PermissionsService,
@@ -762,9 +785,9 @@ export class ConversationsService {
   private async toMessageDtos(
     auth: AuthContext,
     rows: MessageRow[],
-    conversa: Pick<ConversationRow, 'contactId'>,
+    conversa: Pick<ConversationRow, 'contactId' | 'senderStatus'>,
   ): Promise<MessageDto[]> {
-    const [memberNames, contactNames, attachments, dispatches] = await Promise.all([
+    const [memberNames, contactNames, attachments, dispatches, conversaOculta] = await Promise.all([
       this.resolveMemberNames(rows.map((r) => r.authorMembershipId)),
       this.resolveContactNames([...rows.map((r) => r.authorContactId), conversa.contactId]),
       this.resolveAttachments(
@@ -772,6 +795,7 @@ export class ConversationsService {
         rows.map((r) => r.id),
       ),
       this.resolveDispatches(rows.map((r) => r.id)),
+      this.conversaOculta(auth, conversa),
     ]);
     return rows.map((row) => ({
       id: row.id,
@@ -784,7 +808,7 @@ export class ConversationsService {
           : row.authorType === 'contact' && conversa.contactId
             ? (contactNames.get(conversa.contactId) ?? null)
             : null,
-      body: row.body,
+      body: corpoVisivel(row, attachments.get(row.id) ?? [], conversaOculta),
       attachments: attachments.get(row.id) ?? [],
       dispatchState: (dispatches.get(row.id)?.state ?? null) as MessageDto['dispatchState'],
       dispatchError: dispatches.get(row.id)?.errorCode ?? null,
@@ -809,6 +833,48 @@ export class ConversationsService {
     return new Map(
       rows.map((row) => [row.messageId, { state: row.state, errorCode: row.errorCode }]),
     );
+  }
+
+  /** A conversa é de contato oculto para quem pede, ou RAI na dúvida (adendo 5)? */
+  private async conversaOculta(
+    auth: AuthContext,
+    conversa: Pick<ConversationRow, 'contactId' | 'senderStatus'>,
+  ): Promise<boolean> {
+    if (conversa.contactId) {
+      return (await this.protegido.contatosOcultos(auth, [conversa.contactId])).size > 0;
+    }
+    return conversa.senderStatus === 'unidentified' && (await this.protegido.duvidaOculta(auth));
+  }
+
+  /**
+   * A REPETIÇÃO do registro de mensagem (mesma `Idempotency-Key`; adendo 6):
+   * o corpo guardado com a regra de leitura de AGORA — os anexos que passaram
+   * a ser protegidos saem restritos, e o marcador, genérico. A conversa é a de
+   * agora; sem ela (excluída), a regra conservadora da dúvida.
+   */
+  async reprojetarMensagem(
+    auth: AuthContext,
+    conversationId: string,
+    guardada: MessageDto,
+  ): Promise<MessageDto> {
+    const conversa = (await this.prisma.db.conversation.findFirst({
+      where: { id: conversationId },
+      select: { contactId: true, senderStatus: true },
+    } as never)) as unknown as Pick<ConversationRow, 'contactId' | 'senderStatus'> | null;
+    const oculta = conversa
+      ? await this.conversaOculta(auth, conversa)
+      : await this.protegido.duvidaOculta(auth);
+    const ids = guardada.attachments.flatMap((a) => (a.restricted ? [] : [a.fileObjectId]));
+    const protegidas =
+      oculta && !conversa ? new Set(ids) : await this.files.midiaProtegida(auth, ids);
+    const attachments: MessageAttachmentDto[] = guardada.attachments.map((a) =>
+      a.restricted || protegidas.has(a.fileObjectId) ? { restricted: true } : a,
+    );
+    return {
+      ...guardada,
+      attachments,
+      body: corpoVisivel(guardada, attachments, oculta),
+    };
   }
 
   private async resolveAttachments(

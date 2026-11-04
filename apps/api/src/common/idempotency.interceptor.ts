@@ -233,6 +233,10 @@ export class IdempotencyInterceptor implements NestInterceptor {
       }
       const guardado = { status: existing.responseStatus ?? 200, body: existing.responseBody };
       const verdict = canReplay ? await canReplay(guardado) : 'replay';
+      if (typeof verdict === 'object' && 'reproject' in verdict) {
+        // a mesma operação, uma vez só; o corpo com a regra de leitura de hoje
+        return { replay: true, status: guardado.status, body: verdict.reproject };
+      }
       if (typeof verdict === 'object') {
         // nem devolve, nem apaga, nem executa de novo: o acesso de agora não
         // permite este corpo, e o efeito da rota não se repete (F4.1b)

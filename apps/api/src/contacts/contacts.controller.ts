@@ -27,6 +27,7 @@ import { AuthContext, CurrentAuth, RequirePermissions } from '../common/decorato
 import { Idempotent } from '../common/idempotency.decorator';
 import { ZodPipe } from '../common/zod.pipe';
 import { DealsService } from '../deals/deals.service';
+import { ContactReplayGuard } from './contact-replay.guard';
 import { ContactsService } from './contacts.service';
 
 @Controller('contacts')
@@ -70,7 +71,7 @@ export class ContactsController {
   }
 
   @RequirePermissions('contacts:write')
-  @Idempotent()
+  @Idempotent({ replayGuard: ContactReplayGuard })
   @Post()
   create(
     @CurrentAuth() auth: AuthContext,
