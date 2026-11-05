@@ -18,10 +18,16 @@ import { ApiError, api } from '../../../lib/api';
 import { hasPermission, useSession } from '../../../lib/session';
 import { ROTULO_DO_PACOTE, dataCurta } from '../continuidade';
 import { centsToReaisInput, reaisToCents } from '../format';
-import { useTentativaDoPacote, type Tentativa } from './tentativa-pendente';
+import {
+  PAYMENTS_KEY,
+  chaveDoPacote,
+  lerPacote,
+  useTemTentativa,
+  useTentativaDoPacote,
+  type Tentativa,
+} from './tentativa-pendente';
 
-/** A chave das consultas de pagamento: a lista e o painel, invalidados juntos. */
-export const PAYMENTS_KEY = ['clinics', 'package-payments'] as const;
+export { PAYMENTS_KEY };
 
 export const ROTULO_DA_FORMA: Record<ClinicsPaymentMethod, string> = {
   cash: 'Dinheiro',
@@ -126,6 +132,7 @@ export function PagamentosDoPaciente({ pacienteId }: { pacienteId: string }) {
                   <span className="block text-[13px] text-muted-fg">
                     criado em {new Date(p.createdAt).toLocaleDateString('pt-BR')}
                   </span>
+                  <SinalDePendencia packageId={p.packageId} />
                 </td>
                 <td className="px-5 py-3">
                   <StatusChip tom={TOM_DO_PACOTE[p.status]}>
@@ -185,14 +192,29 @@ export function PagamentosDoPaciente({ pacienteId }: { pacienteId: string }) {
   );
 }
 
+/**
+ * Na linha da lista: o pacote tem operação sem resultado confirmado (ou à espera
+ * da releitura). É o caminho de volta ao painel, onde só "Tentar de novo" resolve.
+ */
+function SinalDePendencia({ packageId }: { packageId: string }) {
+  if (!useTemTentativa(packageId)) return null;
+  return (
+    <span className="mt-1 block">
+      <StatusChip tom="pending">Operação pendente de confirmação</StatusChip>
+    </span>
+  );
+}
+
 type Acao = { tipo: 'registrar' } | { tipo: 'anular'; pagamento: ClinicsPackagePaymentDto } | null;
 
 type Envio = ReturnType<typeof useTentativaDoPacote>;
 
 /**
  * O painel de um pacote: o saldo, o histórico e as ações. A tentativa pendente
- * (o resultado que não chegou) vem antes de tudo: nem fechar o painel nem a
- * recarga que falha a tiram da tela — só "Tentar de novo" ou "Descartar".
+ * (o resultado que não chegou) vem antes de tudo e bloqueia o pacote: nem fechar
+ * o painel nem a recarga (que falhe ou que venha vazia) a tiram da tela — só
+ * "Tentar de novo", com a mesma chave. Com o resultado definitivo, as ações só
+ * voltam depois de o histórico e o saldo serem relidos com sucesso.
  */
 function PainelDoPacote({ packageId }: { packageId: string }) {
   const { data: user } = useSession();
@@ -201,11 +223,8 @@ function PainelDoPacote({ packageId }: { packageId: string }) {
   const [acao, setAcao] = useState<Acao>(null);
   const envio = useTentativaDoPacote(packageId);
   const detalhe = useQuery({
-    queryKey: [...PAYMENTS_KEY, 'package', packageId],
-    queryFn: () =>
-      api.get<ClinicsPackagePaymentsDto>(
-        `/api/clinics/packages/${encodeURIComponent(packageId)}/payments`,
-      ),
+    queryKey: chaveDoPacote(packageId),
+    queryFn: () => lerPacote(packageId),
   });
   // confirmado o envio, volta ao histórico com o recibo
   const acaoAtual = envio.feito ? null : acao;
@@ -221,20 +240,25 @@ function PainelDoPacote({ packageId }: { packageId: string }) {
     </p>
   ) : null;
 
-  // a tentativa pendente: na primeira confirmação, em voo, o formulário fica
-  // montado (ocupado); fora isso, a pendência toma o lugar da ação
-  if (envio.pendente && (acaoAtual === null || !envio.emVoo)) {
+  // a tentativa pendente: com a ação aberta, em voo ou relendo, o formulário
+  // fica montado (ocupado); fora isso, a pendência toma o lugar da ação
+  const formularioOcupado = acaoAtual !== null && (envio.emVoo || envio.relendo);
+  if (envio.pendente && !formularioOcupado) {
     return (
       <div className="space-y-4">
-        <TentativaPendente
-          tentativa={envio.pendente}
-          emVoo={envio.emVoo}
-          onRepetir={envio.repetir}
-          onDescartar={() => {
-            envio.descartar();
-            setAcao(null);
-          }}
-        />
+        {envio.pendente.desfecho ? (
+          <Releitura
+            falhou={envio.releituraFalhou}
+            mensagem={envio.pendente.desfecho.mensagem}
+            onRecarregar={envio.recarregar}
+          />
+        ) : (
+          <TentativaPendente
+            tentativa={envio.pendente}
+            emVoo={envio.emVoo}
+            onRepetir={envio.repetir}
+          />
+        )}
         {erroDaCarga ?? (detalhe.data ? <Resumo dados={detalhe.data} podeAnular={false} /> : null)}
       </div>
     );
@@ -302,17 +326,15 @@ function PainelDoPacote({ packageId }: { packageId: string }) {
   );
 }
 
-/** O pedido sem resultado confirmado, com a única saída de cada lado. */
+/** O pedido sem resultado confirmado, com a única saída: o mesmo pedido de novo. */
 function TentativaPendente({
   tentativa,
   emVoo,
   onRepetir,
-  onDescartar,
 }: {
   tentativa: Tentativa;
   emVoo: boolean;
   onRepetir: () => void;
-  onDescartar: () => void;
 }) {
   const titulo =
     tentativa.tipo === 'registrar'
@@ -331,19 +353,57 @@ function TentativaPendente({
         </p>
       ) : (
         <p role="alert" className="text-data">
-          O resultado não chegou: o pedido pode ter sido gravado ou não. “Tentar de novo” repete o
-          mesmo pedido e não cria outro lançamento. “Descartar” esquece este pedido; confira o
-          histórico antes de registrar de novo.
+          O resultado não chegou:{' '}
+          {tentativa.tipo === 'registrar'
+            ? 'o pagamento pode já ter sido registrado.'
+            : 'a anulação pode já ter sido gravada.'}{' '}
+          Só “Tentar de novo” confirma: repete o mesmo pedido, sem criar outro lançamento. Até lá,
+          este pacote não aceita outra operação.
         </p>
       )}
       <div className="flex gap-2">
         <Button size="sm" variant="primary" disabled={emVoo} onClick={onRepetir}>
           Tentar de novo
         </Button>
-        <Button size="sm" variant="ghost" disabled={emVoo} onClick={onDescartar}>
-          Descartar
-        </Button>
       </div>
+    </section>
+  );
+}
+
+/**
+ * O resultado definitivo chegou; as ações voltam só depois de o histórico e o
+ * saldo serem relidos com sucesso. Se a leitura falha, "Recarregar".
+ */
+function Releitura({
+  falhou,
+  mensagem,
+  onRecarregar,
+}: {
+  falhou: boolean;
+  mensagem: string;
+  onRecarregar: () => void;
+}) {
+  return (
+    <section
+      aria-label="Atualizando o histórico"
+      className="space-y-2 rounded-control border border-border bg-state-pending/40 p-3"
+    >
+      <p className="text-body-sm">Resposta recebida: {mensagem}</p>
+      {falhou ? (
+        <>
+          <p role="alert" className="text-data text-negative">
+            Não foi possível reler o histórico e o saldo. Este pacote não aceita outra operação até
+            a leitura dar certo.
+          </p>
+          <Button size="sm" variant="primary" onClick={onRecarregar}>
+            Recarregar
+          </Button>
+        </>
+      ) : (
+        <p role="status" className="text-data text-muted-fg">
+          Atualizando o histórico e o saldo…
+        </p>
+      )}
     </section>
   );
 }

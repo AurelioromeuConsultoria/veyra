@@ -19,7 +19,7 @@ import { ClinicsPatientPage } from './PatientPage';
  */
 
 type Resposta = { status?: number; body?: unknown };
-type Rota = Resposta | ((corpo: unknown) => Resposta);
+type Rota = Resposta | ((corpo: unknown) => Resposta | Promise<Resposta>);
 
 /** fetch falso por rota ("GET /api/…", prefixo mais longo vence); registra toda chamada. */
 function mockApi(rotas: Record<string, Rota>) {
@@ -37,7 +37,7 @@ function mockApi(rotas: Record<string, Rota>) {
       const definida: Rota = rota
         ? rotas[rota]
         : { status: 404, body: { message: `sem mock: ${chave}` } };
-      const resposta = typeof definida === 'function' ? definida(corpo) : definida;
+      const resposta = typeof definida === 'function' ? await definida(corpo) : definida;
       return new Response(JSON.stringify(resposta.body ?? {}), {
         status: resposta.status ?? 200,
         headers: { 'Content-Type': 'application/json' },
@@ -365,16 +365,31 @@ describe('a tentativa pendente (o resultado que não chegou)', () => {
    * cai antes; a recarga do painel pode falhar junto (`recargaFalha`).
    */
   function cenario(opcoes: { recargaFalha?: boolean } = {}) {
-    const estado = { perder: true, recargaFalha: opcoes.recargaFalha ?? false };
+    const estado: {
+      perder: boolean;
+      recargaFalha: boolean;
+      /** o histórico depois do lançamento (o servidor gravou) */
+      gravado: boolean;
+      /** a leitura do painel espera este portão, quando houver */
+      portao: Promise<void> | null;
+    } = { perder: true, recargaFalha: opcoes.recargaFalha ?? false, gravado: false, portao: null };
     const chamadas = mockApi({
       'GET /api/auth/me': { body: usuario(TUDO) },
       [`GET /api/clinics/patients/${PAC}/package-payments`]: () => {
         if (estado.recargaFalha) throw new TypeError('Failed to fetch');
         return { body: [saldo()] };
       },
-      [`GET /api/clinics/packages/${P1}/payments`]: () => {
+      [`GET /api/clinics/packages/${P1}/payments`]: async () => {
+        if (estado.portao) await estado.portao;
         if (estado.recargaFalha) throw new TypeError('Failed to fetch');
-        return { body: detalhe([pagamento()]) };
+        return {
+          body: estado.gravado
+            ? detalhe([pagamento({ id: PG2, amountCents: 60_000 }), pagamento()], {
+                receivedCents: 100_000,
+                balanceCents: 0,
+              })
+            : detalhe([pagamento()]),
+        };
       },
       [`POST /api/clinics/packages/${P1}/payments`]: () => {
         if (estado.perder) throw new TypeError('Failed to fetch');
@@ -465,28 +480,98 @@ describe('a tentativa pendente (o resultado que não chegou)', () => {
     expect(posts(chamadas)).toHaveLength(1);
   });
 
-  it('"Descartar": só então a intenção some; o próximo registro nasce com outra chave', async () => {
-    const { estado, chamadas } = cenario();
+  it('sem "Descartar": a pendência bloqueia o pacote no painel reaberto e aparece na lista; a leitura vazia do histórico não a resolve', async () => {
+    const { chamadas } = cenario();
+    renderizar(<PagamentosDoPaciente pacienteId={PAC} />);
+    let painel = await abrirPainel();
+    await confirmarRegistro(painel);
+    const pendencia = await within(painel).findByRole('region', {
+      name: 'Registro pendente de confirmação',
+    });
+    expect(within(pendencia).getByRole('alert')).toHaveTextContent(
+      /o pagamento pode já ter sido registrado\. Só “Tentar de novo” confirma/,
+    );
+    expect(within(painel).queryByRole('button', { name: 'Descartar' })).toBeNull();
+    expect(within(pendencia).getAllByRole('button')).toHaveLength(1);
+    // a lista indica o caminho de volta
+    expect(
+      within(
+        screen.getByRole('row', { name: 'Pacote de Limpeza de pele', hidden: true }),
+      ).getByText('Operação pendente de confirmação'),
+    ).toBeInTheDocument();
+
+    // o histórico relido (sem o lançamento) não resolve nada
+    await client.invalidateQueries();
+    painel = await fecharEReabrir();
+    expect(
+      await within(painel).findByRole('region', { name: 'Histórico de pagamentos' }),
+    ).toBeVisible();
+    expect(
+      within(painel).getByRole('region', { name: 'Registro pendente de confirmação' }),
+    ).toBeVisible();
+    expect(within(painel).queryByRole('button', { name: 'Registrar pagamento' })).toBeNull();
+    expect(within(painel).queryByRole('button', { name: /^Anular/ })).toBeNull();
+    expect(posts(chamadas)).toHaveLength(1);
+  });
+
+  it('resolvido o resultado, as ações só voltam depois da releitura bem-sucedida; a releitura que falha mantém o bloqueio, com "Recarregar"', async () => {
+    const { estado, chamadas } = cenario({ recargaFalha: false });
     renderizar(<PagamentosDoPaciente pacienteId={PAC} />);
     let painel = await abrirPainel();
     await confirmarRegistro(painel);
     await within(painel).findByRole('region', { name: 'Registro pendente de confirmação' });
-    fireEvent.click(within(painel).getByRole('button', { name: 'Descartar' }));
-    expect(
-      within(painel).queryByRole('region', { name: 'Registro pendente de confirmação' }),
-    ).toBeNull();
     painel = await fecharEReabrir();
-    expect(
-      await within(painel).findByRole('button', { name: 'Registrar pagamento' }),
-    ).toBeEnabled();
-    expect(within(painel).queryByRole('region', { name: /pendente de confirmação/ })).toBeNull();
+    await within(painel).findByRole('region', { name: 'Registro pendente de confirmação' });
+
+    // a resposta volta, mas a releitura falha
     estado.perder = false;
-    await confirmarRegistro(painel);
-    expect(await within(painel).findByRole('status')).toHaveTextContent(/registrado/);
-    const [primeiro, segundo] = posts(chamadas);
-    expect(segundo.headers.get('Idempotency-Key')).not.toBe(
-      primeiro.headers.get('Idempotency-Key'),
+    estado.gravado = true;
+    estado.recargaFalha = true;
+    fireEvent.click(within(painel).getByRole('button', { name: 'Tentar de novo' }));
+    const releitura = await within(painel).findByRole('region', {
+      name: 'Atualizando o histórico',
+    });
+    expect(await within(releitura).findByRole('alert')).toHaveTextContent(
+      /Não foi possível reler o histórico e o saldo/,
     );
+    expect(within(releitura).getByText(/^Resposta recebida: Pagamento de/)).toBeVisible();
+    expect(within(painel).queryByRole('button', { name: 'Registrar pagamento' })).toBeNull();
+    expect(within(painel).queryByRole('button', { name: /^Anular/ })).toBeNull();
+    expect(within(painel).queryByRole('button', { name: 'Tentar de novo' })).toBeNull();
+    // fechar e reabrir não libera: a releitura falha de novo
+    painel = await fecharEReabrir();
+    expect(await within(painel).findByRole('button', { name: 'Recarregar' })).toBeVisible();
+    expect(within(painel).queryByRole('button', { name: 'Registrar pagamento' })).toBeNull();
+
+    // a rede volta, mas a leitura demora: enquanto não chega, continua bloqueado
+    estado.recargaFalha = false;
+    let abrirPortao!: () => void;
+    estado.portao = new Promise<void>((r) => {
+      abrirPortao = r;
+    });
+    fireEvent.click(within(painel).getByRole('button', { name: 'Recarregar' }));
+    expect(await within(painel).findByText('Atualizando o histórico e o saldo…')).toHaveAttribute(
+      'role',
+      'status',
+    );
+    expect(within(painel).queryByRole('button', { name: 'Registrar pagamento' })).toBeNull();
+    abrirPortao();
+    estado.portao = null;
+    expect(
+      await within(painel).findByText(/^Pagamento de R\$\s600,00 registrado\.$/),
+    ).toHaveAttribute('role', 'status');
+    expect(within(painel).queryByRole('region', { name: /pendente de confirmação/ })).toBeNull();
+    // o histórico relido, com o lançamento; quitado, sem "Registrar" disponível
+    expect(within(painel).getByText('Pacote quitado: o recebido cobre o preço.')).toBeVisible();
+    expect(within(painel).getByRole('button', { name: 'Registrar pagamento' })).toBeDisabled();
+    expect(
+      within(
+        screen.getByRole('row', { name: 'Pacote de Limpeza de pele', hidden: true }),
+      ).queryByText('Operação pendente de confirmação'),
+    ).toBeNull();
+    const [primeiro, segundo] = posts(chamadas);
+    expect(posts(chamadas)).toHaveLength(2);
+    expect(segundo.headers.get('Idempotency-Key')).toBe(primeiro.headers.get('Idempotency-Key'));
   });
 
   it('a anulação com 5xx: pendente, sobrevive a fechar e reabrir, e repete a MESMA chave', async () => {
