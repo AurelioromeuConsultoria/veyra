@@ -10724,6 +10724,29 @@ O workspace que nunca teve o Clinics fica sempre no modo livre, com o comportame
   - **a exclusão do paciente apaga o histórico em cascata.** As atividades têm FK em cascata para o contato: excluir o paciente apaga a `event_scheduled` e as `event_linked` dele, e o evento que já tinha sido desligado dele volta a ter o texto servido. Pertence ao item 9 do adendo 7 (a política de exclusão do B3), junto dos títulos antigos;
   - **as lacunas do contador de recibos `CON-`.** O recibo do consentimento é sequencial por workspace (`ConsentReceiptCounter`). No `uniforme`, a lista não mostra os consentimentos da extensão, e as lacunas na numeração visível são um sinal fraco de que eles existem (não de quem são, porque o contador é do workspace inteiro). Fica como pendência do B1 antes do piloto.
 
+### ADR-061, adendo 9 — B1: o texto das conversas e a correção de remetente (2026-11-05)
+
+**Status:** aprovado pelo usuário em 2026-11-05 ("prossiga"), com as recomendações apresentadas. Itens 8 e 2 da lista obrigatória do adendo 7. Nenhuma permissão nova; a recepção não perde nenhuma ação.
+
+**Contexto.** O adendo 5 manteve visível o texto das conversas. Por isso, quem lê conversas sem a agenda clínica (o Guest padrão ou um papel personalizado) lê o envio do vertical, como a confirmação com data e hora, e a mensagem do próprio paciente, e deduz quem é paciente (item 8). O adendo 6, item 3, recusou a todos os papéis rejeitar ou desfazer o remetente de uma conversa de paciente com mídia, porque a proteção da mídia é derivada do contato ATUAL da conversa, e deixou como pendência um procedimento seguro para corrigir uma atribuição errada (item 2).
+
+**Decisão — item 8, o texto das conversas.**
+
+1. **No `uniforme`** (sem a chave que revela, em workspace sujeito): o texto de TODA conversa com pessoa, e de toda conversa a identificar, sai oculto, igual para paciente e não paciente. Isso vale para o corpo das mensagens e para todo lugar que mostra esse texto: prévia na lista, assunto escrito sobre a pessoa, busca, notificações e trilha, conforme o mapa da implementação. A forma é a do E8: "Conteúdo restrito", sem diferença de código, contagem ou forma entre paciente e não paciente. As escritas que tocariam essas conversas seguem a regra das notas e tarefas no `uniforme`: quem não lê não escreve.
+2. **No `restrito` e no `livre`,** o texto continua visível. A recepção, os profissionais e quem tem a agenda clínica leem o que o paciente escreve, inclusive conteúdo clínico, porque precisam disso para atender. Fica registrado como **necessidade operacional**, para a validação jurídica do item 10.
+3. **O envio, a ingestão e a IA não mudam:** o filtro é só de leitura pela pessoa. A IA já não usa conteúdo de paciente (ADR-048).
+
+**Decisão — item 2, a correção de remetente.**
+
+1. **O contato do recebimento:** cada mensagem passa a gravar o contato da conversa no momento em que chegou (migration ADITIVA, que sobe sozinha pelo ADR-058 adendo 2, com o preenchimento das mensagens existentes pelo contato atual da conversa). A mídia é protegida se o contato do recebimento OU o atual for oculto para quem pede. O resto da regra do adendo 5 não muda.
+2. **A ação "corrigir remetente":** rejeitar ou desfazer o remetente de uma conversa de paciente com mídia volta a ser possível, mas SÓ para quem tem as duas chaves da extensão (a que revela e a que libera o conteúdo) e `contacts:write`. Para os outros papéis, a recusa atual continua. Quem não pode saber quem é paciente recebe a recusa uniforme de antes.
+3. **A mídia não é liberada pela correção:** a do contato antigo continua protegida pelo contato do recebimento, mesmo depois que a conversa passa a outro contato ou volta a ser identificada. Liberar a mídia de uma atribuição errada fica fora desta decisão (pede decisão própria).
+4. **Auditoria:** a correção gera trilha com quem corrigiu, de quem para quem e quantas mídias continuaram protegidas, com a minimização de sempre.
+
+**Alternativas.** Item 8: tirar `conversations:read` dos papéis sem a agenda clínica muda papéis do Core sem necessidade; esconder só o envio do vertical deixa a mensagem do paciente revelando. Item 2: manter a recusa a todos deixa erro de atribuição sem correção nenhuma; liberar a mídia junto da correção decide quem pode desfazer uma proteção, o que o usuário não decidiu.
+
+**Consequências.** No `uniforme`, as Conversas ficam sem texto para conversas com pessoa: o Guest passa a ver só a estrutura (canal, estado, datas). A migration do item 2 é a segunda pelo caminho automático; o preenchimento é um `UPDATE` em massa, que a guarda do job não pega: por isso ele vai em migration própria, ensaiada pela skill `create-migration`, com o resultado dos dados conferido.
+
 ## ADR-062 — Redesenho visual e de UX: "Mineral" com moldura, estados e próxima ação (2026-11-04)
 
 **Status:** aprovado pelo usuário em 2026-11-04, a partir do canvas de design "Veyra Clinics — redesenho" (10 telas: Hoje, Agenda, Ficha do paciente, Conversas, Pacientes, Funil, Retornos, Indicadores, Configurações e Entrar).
