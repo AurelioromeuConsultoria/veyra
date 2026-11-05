@@ -541,6 +541,11 @@ enum ActivityType {
   message_sent
   message_received
   event_scheduled
+  /// INTERNO, fora da timeline: o vínculo (contato, oportunidade e o contato
+  /// dela no momento) que um evento da agenda passou a ter. Histórico para a
+  /// regra do conteúdo protegido (ADR-061, adendo 8): o texto escrito
+  /// enquanto o evento era de uma pessoa protegida não volta ao desligá-lo
+  event_linked
 }
 
 enum ActivityActor {

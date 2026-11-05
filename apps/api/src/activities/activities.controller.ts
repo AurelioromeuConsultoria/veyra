@@ -60,7 +60,7 @@ export class ActivitiesController {
           );
         },
         // o título dos eventos da agenda do Core ligados a pessoa oculta (adendo 8)
-        textosDeEventoOcultos: (itens) => this.protegido.textosOcultos(auth, itens),
+        textosDeEventoOcultos: (itens) => this.protegido.eventosComTextoOculto(auth, itens),
       },
     );
   }

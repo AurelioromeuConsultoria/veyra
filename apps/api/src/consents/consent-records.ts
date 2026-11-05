@@ -65,14 +65,19 @@ export async function revogarNumerosQueSairam(
       revocationReason: 'number_removed',
       activeMark: null,
     },
-    select: { id: true, receipt: true },
+    select: { id: true, receipt: true, purposeId: true },
   });
   for (const consentimento of revogados) {
     await audit.record(tx, auth.workspaceId as string, 'consent.revoked', {
       entityType: 'consent',
       entityId: consentimento.id,
       actor: audit.actorFrom(auth),
-      after: { receipt: consentimento.receipt, revocationReason: 'number_removed' },
+      // a finalidade, para a trilha (ADR-061, adendo 8, ressalvas)
+      after: {
+        purposeId: consentimento.purposeId,
+        receipt: consentimento.receipt,
+        revocationReason: 'number_removed',
+      },
     });
   }
   return revogados.length;

@@ -1,6 +1,7 @@
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { CLINICS_RECEPTION_CARE_SYSTEM_KEY } from '@veyra/contracts/verticals/clinics';
+import { ProtectedContentService } from '../../extensions/protected-content';
 import { PrismaService } from '../../prisma/prisma.service';
 import { createTestApp } from '../../../test/integration/app';
 import {
@@ -565,6 +566,214 @@ describe('Clinics — a agenda do Core sob o E8 (integração, ADR-061 adendo 8)
     expect(await prisma.raw.calendarEvent.count({ where: { workspaceId: ws.workspaceId } })).toBe(
       1,
     );
+
+    // o evento apagado: na dúvida, mascarado (a recepção), sem criar de novo
+    const outra = { 'Idempotency-Key': 'evento-apagado-1' };
+    const corpoApagado = { title: 'Bloco da manhã', startAt: iso(120), endAt: iso(150) };
+    const criado = (await post('/api/calendar/events', recepcao, corpoApagado, outra).expect(201))
+      .body;
+    await enviar('delete', `/api/calendar/events/${criado.id}`, recepcao).expect(200);
+    const doApagado = (
+      await post('/api/calendar/events', recepcao, corpoApagado, outra).expect(201)
+    ).body;
+    expect(doApagado).toMatchObject({ id: criado.id, title: RESTRITO, textRestricted: true });
+    expect(await prisma.raw.calendarEvent.count({ where: { workspaceId: ws.workspaceId } })).toBe(
+      1,
+    );
+  });
+
+  it('a repetição no uniforme dá a mesma resposta de um pedido novo (403), também do evento apagado; a falha ao decidir dá 503', async () => {
+    // um papel com a agenda clínica, que depois a perde
+    const role = await prisma.raw.role.create({
+      data: { workspaceId: ws.workspaceId, name: 'Agenda e clínica', isSystem: false },
+    });
+    await prisma.raw.rolePermission.createMany({
+      data: [
+        'workspace:read',
+        'contacts:read',
+        'calendar:read',
+        'calendar:write',
+        'clinics:schedule:read',
+      ].map((permissionKey) => ({ workspaceId: ws.workspaceId, roleId: role.id, permissionKey })),
+    });
+    const { sessao: comAgenda } = await membro(ws.workspaceId, 'gestor@veyra.test', role.id);
+    const corpo = (contactId: string | null, min: number) => ({
+      title: 'Avaliação',
+      startAt: iso(min),
+      endAt: iso(min + 30),
+      ...(contactId ? { contactId } : {}),
+    });
+    const criar = (s: Session, contactId: string | null, min: number, chave?: string) =>
+      post(
+        '/api/calendar/events',
+        s,
+        corpo(contactId, min),
+        chave ? { 'Idempotency-Key': chave } : {},
+      );
+    await criar(comAgenda, paciente, 60, 'k-p').expect(201);
+    await criar(comAgenda, interessado, 120, 'k-i').expect(201);
+    const apagado = (await criar(comAgenda, interessado, 180, 'k-apagado').expect(201)).body
+      .id as string;
+    await enviar('delete', `/api/calendar/events/${apagado}`, comAgenda).expect(200);
+    const semPessoa = (await criar(comAgenda, null, 240, 'k-sem-pessoa').expect(201)).body
+      .id as string;
+
+    // a falha ao decidir: 503, sem apagar o guardado (a repetição seguinte decide)
+    const espiao = jest
+      .spyOn(app.get(ProtectedContentService), 'eventosComTextoOculto')
+      .mockRejectedValueOnce(new Error('falha simulada'));
+    await criar(comAgenda, paciente, 60, 'k-p').expect(503);
+    espiao.mockRestore();
+
+    await prisma.raw.rolePermission.deleteMany({
+      where: { roleId: role.id, permissionKey: 'clinics:schedule:read' },
+    });
+    const semAgenda = await loginAs('gestor@veyra.test');
+    const antes = await prisma.raw.calendarEvent.count({ where: { workspaceId: ws.workspaceId } });
+    const resposta = async (contactId: string | null, min: number, chave?: string) => {
+      const x = await criar(semAgenda, contactId, min, chave);
+      return [x.status, x.body.message];
+    };
+    // o pedido novo para uma pessoa: 403; a repetição, a mesma resposta
+    const novo = await resposta(interessado, 600);
+    expect(novo).toEqual([403, RESTRITO]);
+    expect(await resposta(paciente, 60, 'k-p')).toEqual(novo);
+    expect(await resposta(interessado, 120, 'k-i')).toEqual(novo);
+    // o evento apagado: na dúvida, a mesma recusa
+    expect(await resposta(interessado, 180, 'k-apagado')).toEqual(novo);
+    // o que não tem pessoa: o corpo guardado, como um pedido novo também criaria
+    const repetido = await criar(semAgenda, null, 240, 'k-sem-pessoa').expect(201);
+    expect(repetido.body).toMatchObject({ id: semPessoa, title: 'Avaliação' });
+    expect(repetido.body.textRestricted).toBeUndefined();
+    // nada executou de novo
+    expect(await prisma.raw.calendarEvent.count({ where: { workspaceId: ws.workspaceId } })).toBe(
+      antes,
+    );
+  });
+
+  it('a oportunidade que muda de contato: o texto do evento ligado só a ela segue restrito', async () => {
+    const guest = await membro(ws.workspaceId, 'guest@veyra.test', ws.roles.guest);
+    const dealId = (
+      await post('/api/deals', owner, { title: 'Pacote', contactId: paciente }).expect(201)
+    ).body.id as string;
+    const evento = (
+      await post('/api/calendar/events', owner, {
+        ...TEXTO_DO_PACIENTE,
+        startAt: iso(60),
+        endAt: iso(90),
+        dealId,
+        organizerMembershipId: guest.membership,
+      }).expect(201)
+    ).body.id as string;
+    const lido = async (s: Session) => {
+      const porId = (await get(`/api/calendar/events/${evento}`, s).expect(200)).body;
+      const lista = (
+        await get(`/api/calendar/events?${JANELA}&status=all&dealId=${dealId}`, s).expect(200)
+      ).body;
+      return JSON.stringify([porId, lista]);
+    };
+    // o Owner leva a oportunidade para um não paciente, e depois para ninguém
+    for (const contactId of [interessado, null]) {
+      await enviar('patch', `/api/deals/${dealId}`, owner, { contactId }).expect(200);
+      for (const s of [recepcao, guest.sessao]) {
+        const texto = await lido(s);
+        expect(texto).not.toMatch(CLINICO);
+        expect(texto).toContain(RESTRITO);
+      }
+      const caixa = (await get('/api/notifications', guest.sessao).expect(200)).body;
+      expect(JSON.stringify(caixa)).not.toMatch(CLINICO);
+    }
+    // a timeline da oportunidade também
+    const timeline = (await get(`/api/activities?dealId=${dealId}`, recepcao).expect(200)).body;
+    expect(JSON.stringify(timeline)).not.toMatch(CLINICO);
+    // quem tem as chaves lê como sempre
+    expect(await lido(owner)).toMatch(CLINICO);
+  });
+
+  it('o evento ligado depois e desligado por qualquer papel: o texto do tempo da pessoa segue restrito, sem ruído na timeline', async () => {
+    const guest = await membro(ws.workspaceId, 'guest@veyra.test', ws.roles.guest);
+    const dealP = (
+      await post('/api/deals', owner, { title: 'Pacote', contactId: paciente }).expect(201)
+    ).body.id as string;
+    const semPessoa = async (min: number) =>
+      (
+        await post('/api/calendar/events', owner, {
+          title: 'Bloco',
+          startAt: iso(min),
+          endAt: iso(min + 30),
+        }).expect(201)
+      ).body.id as string;
+    const pelaPessoa = await semPessoa(60);
+    const pelaOportunidade = await semPessoa(120);
+    // a recepção liga ao paciente (pelo contato e pela oportunidade); o Owner
+    // escreve o texto clínico e desliga
+    for (const [id, ligar, desligar] of [
+      [pelaPessoa, { contactId: paciente }, { contactId: null }],
+      [pelaOportunidade, { dealId: dealP }, { dealId: null }],
+    ] as const) {
+      await enviar('patch', `/api/calendar/events/${id}`, recepcao, ligar).expect(200);
+      await enviar('patch', `/api/calendar/events/${id}`, owner, {
+        description: TEXTO_DO_PACIENTE.description,
+      }).expect(200);
+      await enviar('patch', `/api/calendar/events/${id}`, owner, desligar).expect(200);
+      const noBanco = await prisma.raw.calendarEvent.findFirstOrThrow({ where: { id } });
+      expect([noBanco.contactId, noBanco.dealId]).toEqual([null, null]);
+      for (const s of [recepcao, guest.sessao]) {
+        const lido = (await get(`/api/calendar/events/${id}`, s).expect(200)).body;
+        expect(lido).toMatchObject({ description: RESTRITO, textRestricted: true });
+        expect(JSON.stringify(lido)).not.toMatch(CLINICO);
+        const lista = (await get(`/api/calendar/events?${JANELA}&status=all`, s).expect(200)).body;
+        expect(JSON.stringify(lista)).not.toMatch(CLINICO);
+      }
+      expect((await get(`/api/calendar/events/${id}`, owner).expect(200)).body.description).toBe(
+        TEXTO_DO_PACIENTE.description,
+      );
+    }
+    // o histórico é interno: a timeline do paciente e a da oportunidade não o mostram
+    for (const filtro of [`contactId=${paciente}`, `dealId=${dealP}`]) {
+      const itens = (await get(`/api/activities?${filtro}`, owner).expect(200)).body.items as {
+        type: string;
+      }[];
+      expect(itens.map((i) => i.type)).not.toContain('event_linked');
+    }
+    expect(
+      await prisma.raw.activity.count({
+        where: { workspaceId: ws.workspaceId, type: 'event_linked' },
+      }),
+    ).toBeGreaterThan(0);
+  });
+
+  it('uniforme: editar ou apagar o evento oculto só pelo vínculo histórico é recusado igual para paciente e interessado', async () => {
+    const operador = (
+      await membro(ws.workspaceId, 'agenda-crm@veyra.test', await papelSemAgenda(ws.workspaceId))
+    ).sessao;
+    const desligado = async (contactId: string, min: number) => {
+      const id = (
+        await post('/api/calendar/events', owner, {
+          title: 'Bloco',
+          startAt: iso(min),
+          endAt: iso(min + 30),
+        }).expect(201)
+      ).body.id as string;
+      await enviar('patch', `/api/calendar/events/${id}`, owner, { contactId }).expect(200);
+      await enviar('patch', `/api/calendar/events/${id}`, owner, { contactId: null }).expect(200);
+      return id;
+    };
+    const escritas = async (id: string) =>
+      [
+        await enviar('patch', `/api/calendar/events/${id}`, operador, { title: 'outro' }),
+        await enviar('patch', `/api/calendar/events/${id}`, operador, { status: 'done' }),
+        await enviar('delete', `/api/calendar/events/${id}`, operador),
+      ].map((x) => [x.status, x.body.message]);
+    const p = await escritas(await desligado(paciente, 60));
+    const i = await escritas(await desligado(interessado, 120));
+    expect(p).toEqual(i);
+    expect(p).toEqual(Array.from({ length: 3 }, () => [403, RESTRITO]));
+    expect(
+      await prisma.raw.calendarEvent.count({
+        where: { workspaceId: ws.workspaceId, title: 'Bloco', status: 'scheduled' },
+      }),
+    ).toBe(2);
   });
 
   it('a desativação mantém a proteção: o Owner também fica no uniforme', async () => {

@@ -156,14 +156,19 @@ export async function normalizarWorkspace(
           const revogadosAqui = await tx.consent.updateManyAndReturn({
             where: { workspaceId: workspace.id, id: { in: foraDoConjunto }, activeMark: true },
             data: { revocationReason: 'number_removed', activeMark: null },
-            select: { id: true, receipt: true },
+            select: { id: true, receipt: true, purposeId: true },
           });
           for (const consentimento of revogadosAqui) {
             await audit.record(tx, workspace.id, 'consent.revoked', {
               entityType: 'consent',
               entityId: consentimento.id,
               actor: { type: 'system', id: 'cli:phones-normalize' },
-              after: { receipt: consentimento.receipt, revocationReason: 'number_removed' },
+              // a finalidade, para a trilha (ADR-061, adendo 8, ressalvas)
+              after: {
+                purposeId: consentimento.purposeId,
+                receipt: consentimento.receipt,
+                revocationReason: 'number_removed',
+              },
             });
           }
           revogados += revogadosAqui.length;

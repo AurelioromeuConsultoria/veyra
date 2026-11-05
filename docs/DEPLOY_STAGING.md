@@ -1006,6 +1006,23 @@ muda o registro da migration e não desfaz nenhum objeto.
    `ClinicsPackage_counter_matches`. Com a `clinics_package_corrections`
    aplicada, ele dá 25, e não 23.
 
+   Para a `20261104120000_activity_event_linked` (B1, ADR-061 adendo 8,
+   ressalvas da revisão), com **1 objeto**: o valor `event_linked` do tipo
+   `ActivityType`, o histórico interno dos vínculos dos eventos da agenda.
+   Nenhuma linha, coluna ou restrição muda, e a migration não usa o valor.
+   Ela sobe sozinha na API (ADR-058, adendo 2). O ensaio da falha forçada deu
+   o schema idêntico e o inventário em 0; a aplicação limpa, 1 e o
+   `migrate diff` vazio.
+
+   ```sql
+   -- inventário da 20261104120000_activity_event_linked: 0 linhas = nada
+   -- ficou; 1 = inteira
+   SELECT 'valor' AS k, e.enumlabel::text AS nome FROM pg_enum e
+     JOIN pg_type t ON t.oid = e.enumtypid
+     WHERE t.typname = 'ActivityType' AND e.enumlabel = 'event_linked'
+   ORDER BY 1, 2;
+   ```
+
    Para outra migration, monte o inventário do mesmo jeito, a partir das
    instruções do arquivo: cada `CREATE` e cada `ADD CONSTRAINT`.
 

@@ -309,7 +309,7 @@ export class ConsentsService {
           revocationOrigin: origin,
           activeMark: null,
         },
-        select: { receipt: true },
+        select: { receipt: true, purposeId: true },
       });
       if (!revogado) {
         // a cascata da exclusão do contato pode ter levado a linha
@@ -325,7 +325,14 @@ export class ConsentsService {
         entityType: 'consent',
         entityId: consentId,
         actor: this.audit.actorFrom(auth),
-        after: { receipt: revogado.receipt, revocationReason: 'manual', revocationOrigin: origin },
+        // a finalidade, para a trilha esconder a da extensão por ela, e não
+        // por uma lista de ids que cresce (ADR-061, adendo 8, ressalvas)
+        after: {
+          purposeId: revogado.purposeId,
+          receipt: revogado.receipt,
+          revocationReason: 'manual',
+          revocationOrigin: origin,
+        },
       });
     });
     return this.consentDto(consentId);
@@ -423,14 +430,18 @@ export class ConsentsService {
           revocationReason: 'stop_requested',
           activeMark: null,
         },
-        select: { id: true, receipt: true },
+        select: { id: true, receipt: true, purposeId: true },
       });
       for (const consentimento of revogados) {
         await this.audit.record(tx, workspaceId, 'consent.revoked', {
           entityType: 'consent',
           entityId: consentimento.id,
           actor: this.audit.actorFrom(auth),
-          after: { receipt: consentimento.receipt, revocationReason: 'stop_requested' },
+          after: {
+            purposeId: consentimento.purposeId,
+            receipt: consentimento.receipt,
+            revocationReason: 'stop_requested',
+          },
         });
       }
       // o cancelamento neutro (F4.1c-1): o não iniciado vai a `canceled`, o em

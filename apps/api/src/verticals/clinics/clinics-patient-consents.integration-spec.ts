@@ -295,8 +295,83 @@ describe('Clinics — a lista de consentimentos sob o E8 (integração, B1 item 
     expect(await revogacoes(comAgenda)).toEqual([daConfirmacao, lembreteP.id].sort());
   });
 
+  /**
+   * Um despacho PENDENTE de origem da extensão (`clinics.`) para o paciente:
+   * a mensagem da conversa dele, aprovada pelo envio do negócio com a
+   * finalidade da confirmação, e o despacho reservado, ainda não enviado.
+   */
+  const despachoDaExtensao = async () => {
+    const ownerMembership = (
+      await prisma.raw.membership.findFirstOrThrow({
+        where: { workspaceId: ws.workspaceId, user: { email: 'owner@veyra.test' } },
+        select: { id: true },
+      })
+    ).id;
+    const hash = (c: string) => c.repeat(64);
+    const versao = await prisma.raw.messageTemplateVersion.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        channelId: canal,
+        businessAccountId: '1098765400',
+        metaTemplateId: '5550001',
+        name: 'confirmacao_ficticia',
+        language: 'pt_BR',
+        version: 1,
+        category: 'utility',
+        parameterFormat: 'positional',
+        components: [],
+        bindings: {},
+        contentHash: hash('a'),
+      },
+    });
+    const revisao = await prisma.raw.templateReview.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        templateVersionId: versao.id,
+        purposeId: confirmacao,
+        contentHash: hash('a'),
+        reviewedByMembershipId: ownerMembership,
+      },
+    });
+    const mensagem = await prisma.raw.message.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        conversationId: conversaP,
+        channelId: canal,
+        direction: 'outbound',
+        authorType: 'system',
+        body: 'Confirmação fictícia',
+      },
+    });
+    await prisma.raw.outboundApproval.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        messageId: mensagem.id,
+        contactId: paciente,
+        number: NUM_P,
+        channelId: canal,
+        phoneNumberId: '109876540001',
+        templateVersionId: versao.id,
+        templateReviewId: revisao.id,
+        purposeId: confirmacao,
+        consentId: daConfirmacao,
+        originRef: `clinics.outreach:${randomUUID()}`,
+        originMark: true,
+        validityKeys: [],
+        expiresAt: new Date(Date.now() + 86_400_000),
+        approvalHash: hash('b'),
+        approvedByMembershipId: ownerMembership,
+      },
+    });
+    await prisma.raw.messageDispatch.create({
+      data: { workspaceId: ws.workspaceId, messageId: mensagem.id, state: 'reserved' },
+    });
+  };
+
   it('trilha: sem a agenda, o pedido de parar do paciente e o do interessado saem iguais, sem as contagens', async () => {
-    // o paciente tem um consentimento a mais (o da extensão); o interessado, não
+    // o paciente tem um consentimento a mais (o da extensão) e um despacho
+    // pendente da origem da extensão; o interessado, nenhum dos dois
+    await despachoDaExtensao();
     const pararP = (
       await post(
         `/api/contacts/${paciente}/stop`,
@@ -341,6 +416,43 @@ describe('Clinics — a lista de consentimentos sob o E8 (integração, B1 item 
       ]),
     );
     expect([comAgenda.p.consentsRevoked, comAgenda.i.consentsRevoked]).toEqual([2, 1]);
+    // o sinal que a máscara tapa: o despacho da extensão cancelado só no paciente
+    expect([comAgenda.p.dispatchesCanceled, comAgenda.i.dispatchesCanceled]).toEqual([1, 0]);
+    expect(uniforme.i.dispatchesCanceled).toBe('Conteúdo restrito');
+    // e as revogações do pedido de parar gravam a finalidade: a da extensão
+    // sai da trilha de quem não tem a agenda, a do Core fica
+    const revogadas = (
+      (await get('/api/audit?limit=100&action=consent.revoked', auditor).expect(200)).body
+        .items as { after: { purposeId?: string } }[]
+    ).map((i) => i.after.purposeId);
+    expect(revogadas).toEqual([lembrete, lembrete]);
+  });
+
+  it('trilha: as revogações antigas, sem a finalidade gravada, ainda saem pelo id; as do Core ficam', async () => {
+    // a forma de antes desta versão: a revogação sem `purposeId` no `after`
+    const lembreteP = (await doContato(owner, paciente)).find((c) => c.purposeKey === 'lembrete')!;
+    for (const consentId of [daConfirmacao, lembreteP.id]) {
+      await prisma.raw.auditLog.create({
+        data: {
+          workspaceId: ws.workspaceId,
+          action: 'consent.revoked',
+          entityType: 'consent',
+          entityId: consentId,
+          actorType: 'system',
+          after: { receipt: 'CON-000999', revocationReason: 'manual' },
+        },
+      });
+    }
+    const auditor = await papel(ws.workspaceId, 'auditor@veyra.test', [
+      'audit:read',
+      'contacts:read',
+      'consents:read',
+    ]);
+    const revogacoes = (
+      (await get('/api/audit?limit=100&action=consent.revoked', auditor).expect(200)).body
+        .items as { entityId: string }[]
+    ).map((i) => i.entityId);
+    expect(revogacoes).toEqual([lembreteP.id]);
   });
 
   it('a repetição da concessão e da revogação confere o acesso de agora: sem a agenda, o mesmo 404 de um pedido novo', async () => {

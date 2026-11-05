@@ -3,6 +3,7 @@ import { ClsService } from 'nestjs-cls';
 import type { PermissionKey } from '@veyra/contracts';
 import { PermissionsService } from '../auth/permissions.service';
 import type { AuthContext } from '../common/decorators';
+import { Prisma } from '../generated/prisma/client';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 
 /**
@@ -249,8 +250,8 @@ export class ProtectedContentService {
    * O que EXCLUI da trilha as linhas que revelam a classificação, para quem
    * NÃO pode sabê-la (o `uniforme`; adendo 7). `where`: as ações da extensão
    * (falha fechada, menos a configuração) e as linhas de um consentimento de
-   * finalidade da extensão (a revogação não grava a finalidade, e o id ligaria
-   * a linha ao contato; adendo 8, item 7), no SQL. `revela`: as linhas do
+   * finalidade da extensão (`linhasDeConsentimentoQueRevelam`; adendo 8,
+   * item 7), no SQL. `revela`: as linhas do
    * Core cuja origem ou finalidade é da extensão — conferidas linha a linha,
    * porque um filtro JSON no SQL vira NULL onde o campo falta. `tapar`: as
    * contagens que somam o que é da extensão saem como "Conteúdo restrito"
@@ -286,18 +287,8 @@ export class ProtectedContentService {
       }
     }
     if (acoes.length === 0) return null;
-    // os consentimentos de finalidade da extensão, inclusive os revogados: as
-    // linhas deles (concessão e revogação) saem da trilha pelo id
-    const consentimentos =
-      finalidades.size === 0
-        ? []
-        : ((await this.prisma.db.consent.findMany({
-            where: { purposeId: { in: [...finalidades] } },
-            select: { id: true },
-          } as never)) as unknown as { id: string }[]);
-    if (consentimentos.length > 0) {
-      acoes.push({ entityType: 'consent', entityId: { in: consentimentos.map((c) => c.id) } });
-    }
+    if (finalidades.size > 0)
+      acoes.push(...(await this.linhasDeConsentimentoQueRevelam(finalidades)));
     const campo = (lado: unknown, nome: string): unknown =>
       lado && typeof lado === 'object' ? (lado as Record<string, unknown>)[nome] : undefined;
     return {
@@ -323,6 +314,53 @@ export class ProtectedContentService {
         return { ...linha, before: lado(linha.before), after: lado(linha.after) };
       },
     };
+  }
+
+  /**
+   * As linhas da trilha de um consentimento de finalidade da extensão (a
+   * concessão e a revogação), no SQL, para a paginação ficar correta (ADR-061,
+   * adendo 8, item 7 e ressalvas da revisão):
+   * - **pela finalidade gravada** (`after.purposeId`): a concessão sempre a
+   *   grava, e a revogação também, desde as ressalvas. O `not AnyNull` vem
+   *   ANTES da igualdade: sem ele, na linha sem o campo, a igualdade daria
+   *   NULL, e o `NOT` de quem chama tiraria da trilha uma linha que não revela
+   *   nada (conferido por teste);
+   * - **pelo id, só as linhas ANTIGAS:** a revogação gravada antes, sem a
+   *   finalidade. O conjunto é fechado — nenhuma revogação nova entra nele —
+   *   e só diminui com a retenção da trilha; a lista de ids não cresce com o
+   *   uso.
+   */
+  private async linhasDeConsentimentoQueRevelam(
+    finalidades: ReadonlySet<string>,
+  ): Promise<Record<string, unknown>[]> {
+    const ids = [...finalidades];
+    const filtros: Record<string, unknown>[] = [
+      {
+        entityType: 'consent',
+        AND: [
+          { after: { path: ['purposeId'], not: Prisma.AnyNull } },
+          { OR: ids.map((id) => ({ after: { path: ['purposeId'], equals: id } })) },
+        ],
+      },
+    ];
+    const antigas = (await this.prisma.db.auditLog.findMany({
+      where: {
+        action: 'consent.revoked',
+        entityType: 'consent',
+        after: { path: ['purposeId'], equals: Prisma.AnyNull },
+      },
+      select: { entityId: true },
+      distinct: ['entityId'],
+    } as never)) as unknown as { entityId: string }[];
+    if (antigas.length === 0) return filtros;
+    const daExtensao = (await this.prisma.db.consent.findMany({
+      where: { id: { in: antigas.map((a) => a.entityId) }, purposeId: { in: ids } },
+      select: { id: true },
+    } as never)) as unknown as { id: string }[];
+    if (daExtensao.length > 0) {
+      filtros.push({ entityType: 'consent', entityId: { in: daExtensao.map((c) => c.id) } });
+    }
+    return filtros;
   }
 
   /**
@@ -416,12 +454,23 @@ export class ProtectedContentService {
   }
 
   /**
-   * Os vínculos de cada evento da agenda do Core, para `textosOcultos`: os de
-   * AGORA e os GRAVADOS na atividade `event_scheduled` da criação (a pessoa do
-   * momento em que o texto foi escrito). Assim, desligar da pessoa protegida
-   * um evento criado para ela não devolve o texto — a mesma ideia dos títulos
-   * antigos da oportunidade (adendo 7, item 4a). O evento que não existe mais
-   * fica fora do mapa (quem chama trata na dúvida).
+   * Os vínculos de cada evento da agenda do Core, para `textosOcultos`
+   * (ADR-061, adendo 8, com as ressalvas da revisão):
+   * - os de AGORA;
+   * - o HISTÓRICO gravado nas atividades do evento: a criação
+   *   (`event_scheduled`) e cada vínculo que ele passou a ter depois
+   *   (`event_linked`, com o contato da oportunidade no momento). Assim,
+   *   desligar da pessoa protegida um evento que foi dela — criado para ela ou
+   *   ligado depois, por qualquer papel — não devolve o texto escrito no
+   *   tempo dela;
+   * - de cada oportunidade entre esses vínculos, TODO contato que ela já teve
+   *   (as atividades `deal_created` e `deal_updated` gravam o contato do
+   *   momento; a mesma fonte dos títulos antigos, adendo 7, item 4a). Assim,
+   *   a oportunidade que sai do paciente (para outro contato ou para nenhum)
+   *   não devolve o texto do evento ligado só a ela. Conservador: todos os
+   *   que ela já teve, sem olhar quando o texto foi escrito.
+   * O evento que não existe mais fica fora do mapa (quem chama trata na
+   * dúvida).
    */
   async vinculosDosEventos(
     ids: readonly string[],
@@ -430,23 +479,76 @@ export class ProtectedContentService {
     const unicos = [...new Set(ids)];
     const resultado = new Map<string, Alvo[]>();
     if (unicos.length === 0) return resultado;
-    const eventos = (await db.calendarEvent.findMany({
-      where: { id: { in: unicos } },
-      select: { id: true, contactId: true, dealId: true },
-    } as never)) as unknown as { id: string; contactId: string | null; dealId: string | null }[];
-    const criacoes = (await db.activity.findMany({
-      where: { calendarEventId: { in: unicos }, type: 'event_scheduled' },
-      select: { calendarEventId: true, contactId: true, dealId: true },
-    } as never)) as unknown as {
-      calendarEventId: string;
-      contactId: string | null;
-      dealId: string | null;
-    }[];
+    const [eventos, historico] = await Promise.all([
+      db.calendarEvent.findMany({
+        where: { id: { in: unicos } },
+        select: { id: true, contactId: true, dealId: true },
+      } as never) as unknown as Promise<
+        { id: string; contactId: string | null; dealId: string | null }[]
+      >,
+      db.activity.findMany({
+        where: {
+          calendarEventId: { in: unicos },
+          type: { in: ['event_scheduled', 'event_linked'] },
+        },
+        select: { calendarEventId: true, contactId: true, dealId: true },
+      } as never) as unknown as Promise<
+        { calendarEventId: string; contactId: string | null; dealId: string | null }[]
+      >,
+    ]);
     for (const e of eventos) resultado.set(e.id, [{ contactId: e.contactId, dealId: e.dealId }]);
-    for (const c of criacoes) {
-      resultado.get(c.calendarEventId)?.push({ contactId: c.contactId, dealId: c.dealId });
+    for (const h of historico) {
+      resultado.get(h.calendarEventId)?.push({ contactId: h.contactId, dealId: h.dealId });
+    }
+    const oportunidades = [
+      ...new Set([...resultado.values()].flat().flatMap((v) => (v.dealId ? [v.dealId] : []))),
+    ];
+    if (oportunidades.length === 0) return resultado;
+    const contatosDasOportunidades = (await db.activity.findMany({
+      where: {
+        dealId: { in: oportunidades },
+        type: { in: ['deal_created', 'deal_updated'] },
+        contactId: { not: null },
+      },
+      select: { dealId: true, contactId: true },
+      distinct: ['dealId', 'contactId'],
+    } as never)) as unknown as { dealId: string; contactId: string }[];
+    for (const vinculos of resultado.values()) {
+      const dasOportunidades = new Set(vinculos.flatMap((v) => (v.dealId ? [v.dealId] : [])));
+      for (const c of contatosDasOportunidades) {
+        if (dasOportunidades.has(c.dealId)) vinculos.push({ contactId: c.contactId });
+      }
     }
     return resultado;
+  }
+
+  /**
+   * Os itens que mencionam um evento da agenda do Core (o próprio evento, a
+   * atividade `event_scheduled`, a notificação `calendar_event_scheduled`)
+   * cujo texto é oculto para quem pede (ADR-061, adendo 8): pelos vínculos do
+   * evento (`vinculosDosEventos`: os de agora e o histórico) somados aos
+   * gravados no item. `eventoId` nulo, ou o evento que não existe mais: na
+   * dúvida, oculto fora do `livre`. Sem consulta no `livre`. Devolve as
+   * chaves ocultas.
+   */
+  async eventosComTextoOculto<K>(
+    auth: AuthContext,
+    itens: readonly { chave: K; eventoId: string | null; vinculos?: readonly Alvo[] }[],
+    db: Db = this.prisma.db,
+  ): Promise<Set<K>> {
+    if (itens.length === 0 || !(await this.duvidaOculta(auth))) return new Set();
+    const doEvento = await this.vinculosDosEventos(
+      itens.flatMap((i) => (i.eventoId ? [i.eventoId] : [])),
+      db,
+    );
+    return this.textosOcultos(
+      auth,
+      itens.map((i) => {
+        const vinculos = i.eventoId ? doEvento.get(i.eventoId) : undefined;
+        return { chave: i.chave, vinculos: vinculos ? [...(i.vinculos ?? []), ...vinculos] : null };
+      }),
+      db,
+    );
   }
 
   /**

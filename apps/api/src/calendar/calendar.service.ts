@@ -1,4 +1,9 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import type {
   CalendarEventDto,
   CreateCalendarEventInput,
@@ -110,6 +115,15 @@ export class CalendarService {
           dealId: input.dealId,
         },
       });
+      // o contato da oportunidade NESTE momento, no histórico dos vínculos
+      // (ADR-061, adendo 8): a criação já grava o contato e a oportunidade
+      await this.registrarVinculos(
+        tx,
+        auth,
+        eventId,
+        { contactId: input.contactId ?? null, dealId: input.dealId ?? null },
+        { comOProprio: false },
+      );
 
       // ADR-026: notifica o organizador SÓ quando for outra pessoa — avisar
       // quem acabou de criar o próprio evento é ruído. Quando há notificação,
@@ -139,9 +153,10 @@ export class CalendarService {
     })) as unknown as EventRow | null;
     if (!existing) throw new NotFoundException('Evento não encontrado');
     await this.validateReferences(input);
-    // o evento de agora E os vínculos pedidos: tocar uma pessoa, ou levar o
-    // evento até uma, é recusado no `uniforme`
-    await this.exigirSemPessoaNoUniforme(auth, [existing, input]);
+    // no `uniforme`: o evento cujo texto é oculto (pela pessoa de agora OU do
+    // histórico) não se edita, e levá-lo até uma pessoa também é recusado
+    await this.exigirTextoVisivelNoUniforme(auth, existing);
+    await this.exigirSemPessoaNoUniforme(auth, [input]);
 
     // janela final = o que veio + o que já existia. Sem isto, mandar só um dos
     // lados poderia inverter o evento — e aí só o CHECK do banco pegaria, com
@@ -152,19 +167,34 @@ export class CalendarService {
       throw new BadRequestException('O término precisa ser depois do início');
     }
 
-    await this.prisma.db.calendarEvent.updateMany({
-      where: { id },
-      data: {
-        title: input.title,
-        description: input.description,
-        startAt,
-        endAt,
-        location: input.location,
-        status: input.status,
-        organizerMembershipId: input.organizerMembershipId,
-        contactId: input.contactId,
-        dealId: input.dealId,
-      },
+    const trocaVinculo =
+      (input.contactId !== undefined && input.contactId !== existing.contactId) ||
+      (input.dealId !== undefined && input.dealId !== existing.dealId);
+    const db = this.prisma.db as unknown as TxRunner;
+    await db.$transaction(async (tx) => {
+      await tx.calendarEvent.updateMany({
+        where: { id },
+        data: {
+          title: input.title,
+          description: input.description,
+          startAt,
+          endAt,
+          location: input.location,
+          status: input.status,
+          organizerMembershipId: input.organizerMembershipId,
+          contactId: input.contactId,
+          dealId: input.dealId,
+        },
+      });
+      if (!trocaVinculo) return;
+      // o vínculo EM VIGOR, relido da linha que a escrita travou, entra no
+      // histórico (ADR-061, adendo 8): o texto escrito enquanto o evento era
+      // da pessoa continua dela depois de desligado, por qualquer papel
+      const vigente = (await tx.calendarEvent.findFirst({
+        where: { id },
+        select: { contactId: true, dealId: true },
+      } as never)) as unknown as Pick<EventRow, 'contactId' | 'dealId'> | null;
+      if (vigente) await this.registrarVinculos(tx, auth, id, vigente, { comOProprio: true });
     });
     return this.get(auth, id);
   }
@@ -175,17 +205,71 @@ export class CalendarService {
       select: { contactId: true, dealId: true },
     } as never)) as unknown as Pick<EventRow, 'contactId' | 'dealId'> | null;
     if (!existing) throw new NotFoundException('Evento não encontrado');
-    await this.exigirSemPessoaNoUniforme(auth, [existing]);
+    await this.exigirTextoVisivelNoUniforme(auth, { id, ...existing });
     const { count } = await this.prisma.db.calendarEvent.deleteMany({ where: { id } });
     if (count === 0) throw new NotFoundException('Evento não encontrado');
   }
 
   /**
+   * O HISTÓRICO dos vínculos de um evento (ADR-061, adendo 8): uma atividade
+   * `event_linked` (interna, fora da timeline, sem texto) por vínculo que o
+   * evento passa a ter — o contato e a oportunidade dele (`comOProprio`; a
+   * criação já os grava na `event_scheduled`) e, se há oportunidade, o
+   * contato DELA neste momento, lido na transação. `vinculosDosEventos` lê
+   * esse histórico; desligar não grava nada (o vínculo anterior já está lá).
+   */
+  private async registrarVinculos(
+    tx: Db,
+    auth: AuthContext,
+    eventoId: string,
+    vinculo: { contactId: string | null; dealId: string | null },
+    opcoes: { comOProprio: boolean },
+  ): Promise<void> {
+    const vinculos: { contactId: string | null; dealId: string | null }[] = [];
+    if (opcoes.comOProprio && (vinculo.contactId || vinculo.dealId)) vinculos.push(vinculo);
+    if (vinculo.dealId) {
+      const deal = (await tx.deal.findFirst({
+        where: { id: vinculo.dealId },
+        select: { contactId: true },
+      } as never)) as unknown as { contactId: string | null } | null;
+      if (deal?.contactId && deal.contactId !== vinculo.contactId) {
+        vinculos.push({ contactId: deal.contactId, dealId: vinculo.dealId });
+      }
+    }
+    for (const v of vinculos) {
+      await this.activities.record(tx, auth.workspaceId as string, 'event_linked', {
+        actorMembershipId: auth.membershipId,
+        payload: {},
+        targets: { calendarEventId: eventoId, contactId: v.contactId, dealId: v.dealId },
+      });
+    }
+  }
+
+  /**
+   * Quem não lê não escreve (ADR-061, adendo 8): no `uniforme`, editar ou
+   * apagar um evento de texto oculto — pela pessoa de agora OU por uma do
+   * histórico dos vínculos — é recusado com 403 "Conteúdo restrito", igual
+   * para paciente e interessado. Fora do `uniforme`, nada muda (a recepção
+   * edita e apaga como antes, e a resposta segue a regra de leitura).
+   */
+  private async exigirTextoVisivelNoUniforme(
+    auth: AuthContext,
+    evento: Pick<EventRow, 'id' | 'contactId' | 'dealId'>,
+  ): Promise<void> {
+    if (!(await this.protegido.semClassificacao(auth))) return;
+    if ((await this.textosOcultos(auth, [evento])).size > 0) {
+      throw new ForbiddenException(CONTEUDO_RESTRITO);
+    }
+  }
+
+  /**
    * As escritas na agenda do Core seguem a regra das notas e tarefas no
    * `uniforme` (ADR-061, adendos 3 e 8): quem NÃO pode saber quem é protegido
-   * não cria, não edita, não religa nem apaga um evento ligado a uma pessoa
-   * (pelo contato, ou pela oportunidade com contato) — 403 "Conteúdo
-   * restrito", igual para todo contato. O que não tem pessoa segue normal.
+   * não cria um evento para uma pessoa nem leva um evento até uma (pelo
+   * contato, ou pela oportunidade com contato) — 403 "Conteúdo restrito",
+   * igual para todo contato. O evento que já é (ou foi) de uma pessoa é
+   * conferido por `exigirTextoVisivelNoUniforme`. O que não tem pessoa segue
+   * normal.
    * Fora do `uniforme`, nada muda: a recepção (`restrito`) escreve como antes
    * e a resposta segue a regra de leitura.
    */
@@ -239,20 +323,21 @@ export class CalendarService {
 
   /**
    * Os eventos, dentre `rows`, de texto oculto para quem pede: pelos vínculos
-   * de agora e pelos da criação (o evento desligado da pessoa protegida para
-   * a qual foi criado continua oculto). Sem consulta no modo `livre`.
+   * de agora e pelo histórico deles (`vinculosDosEventos`: a criação, cada
+   * vínculo posterior e os contatos que cada oportunidade já teve). O evento
+   * desligado da pessoa protegida continua oculto; o que não existe mais vai
+   * na dúvida. Sem consulta no modo `livre`.
    */
   async textosOcultos(
     auth: AuthContext,
     rows: readonly Pick<EventRow, 'id' | 'contactId' | 'dealId'>[],
   ): Promise<Set<string>> {
-    if (rows.length === 0 || !(await this.protegido.duvidaOculta(auth))) return new Set();
-    const vinculos = await this.protegido.vinculosDosEventos(rows.map((r) => r.id));
-    return this.protegido.textosOcultos(
+    return this.protegido.eventosComTextoOculto(
       auth,
       rows.map((r) => ({
         chave: r.id,
-        vinculos: [{ contactId: r.contactId, dealId: r.dealId }, ...(vinculos.get(r.id) ?? [])],
+        eventoId: r.id,
+        vinculos: [{ contactId: r.contactId, dealId: r.dealId }],
       })),
     );
   }

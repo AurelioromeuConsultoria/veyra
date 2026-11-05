@@ -9,12 +9,21 @@ import { PrismaService, type Db } from '../prisma/prisma.service';
 type AnyClient = Db | Prisma.TransactionClient;
 
 /**
+ * Tipos INTERNOS de atividade: gravados para regras do servidor e NUNCA
+ * servidos na timeline (ficam fora do contrato `ActivityType`). `event_linked`
+ * é o histórico dos vínculos de um evento da agenda (ADR-061, adendo 8): a
+ * regra do conteúdo protegido o lê; mostrá-lo seria ruído para quem usa.
+ */
+export const ATIVIDADES_INTERNAS = ['event_linked'] as const;
+type TipoDeAtividade = ActivityType | (typeof ATIVIDADES_INTERNAS)[number];
+
+/**
  * Mapa FECHADO ActivityType → schema de payload (ajuste #4): validado
  * exclusivamente aqui, com .strict() — chave extra é rejeitada. Cada timeline
  * recebe só o mínimo para exibição; NUNCA corpo de nota, e-mail ou dado
  * sensível. Tipo novo = entrada nova aqui + revisão de security.
  */
-const ACTIVITY_PAYLOADS: Record<ActivityType, z.ZodType> = {
+const ACTIVITY_PAYLOADS: Record<TipoDeAtividade, z.ZodType> = {
   contact_created: z.object({ name: z.string().max(160) }).strict(),
   deal_created: z.object({ title: z.string().max(160), amountCents: z.number().int() }).strict(),
   deal_stage_changed: z
@@ -31,6 +40,8 @@ const ACTIVITY_PAYLOADS: Record<ActivityType, z.ZodType> = {
   message_sent: z.object({}).strict(),
   message_received: z.object({}).strict(),
   event_scheduled: z.object({ title: z.string().max(200), startAt: z.string().max(40) }).strict(),
+  // só os vínculos, nas colunas: nada do texto do evento
+  event_linked: z.object({}).strict(),
 };
 
 export interface ActivityTargets {
@@ -64,11 +75,16 @@ function decodeCursor(raw: string): Cursor {
 /** Os eventos de oportunidade que levam o título dela no payload (ADR-061, adendo 5). */
 const TIPOS_COM_TITULO_DO_DEAL: ReadonlySet<string> = new Set(['deal_created', 'deal_updated']);
 
-/** Decide, pelos vínculos, quais atividades `event_scheduled` têm o texto oculto (adendo 8). */
+/**
+ * Decide quais atividades `event_scheduled` têm o texto oculto (adendo 8), pelo
+ * evento (os vínculos dele, de agora e do histórico, lidos por quem decide) e
+ * pelos gravados na própria atividade.
+ */
 type TextosDeEventoOcultos = (
   itens: {
     chave: string;
-    vinculos: { contactId: string | null; dealId: string | null }[] | null;
+    eventoId: string | null;
+    vinculos: { contactId: string | null; dealId: string | null }[];
   }[],
 ) => Promise<Set<string>>;
 
@@ -89,7 +105,7 @@ export class ActivitiesService {
   async record(
     db: AnyClient,
     workspaceId: string,
-    type: ActivityType,
+    type: TipoDeAtividade,
     options: {
       actorMembershipId: string | null;
       payload: Record<string, unknown>;
@@ -148,9 +164,10 @@ export class ActivitiesService {
         itens: { id: string; dealId: string; contactId: string | null; title: unknown }[],
       ) => Promise<Set<string>>;
       /**
-       * as atividades `event_scheduled`, dentre as dadas com os vínculos
-       * gravados nelas e os do evento de agora (`null`: o evento não existe
-       * mais), cujo texto é oculto para quem pede (ADR-061, adendo 8): o
+       * as atividades `event_scheduled`, dentre as dadas com o evento e os
+       * vínculos gravados nelas, cujo texto é oculto para quem pede (ADR-061,
+       * adendo 8; os vínculos do evento, de agora e do histórico, são lidos
+       * por quem decide, e o evento que não existe mais vai na dúvida): o
        * `title` sai como "Conteúdo restrito", e a resposta diz que há
        * conteúdo restrito
        */
@@ -171,6 +188,8 @@ export class ActivitiesService {
           ],
         }
       : { dealId: target.dealId };
+    // os tipos internos nunca saem na timeline
+    const semInternas = { type: { notIn: [...ATIVIDADES_INTERNAS] } };
     // sem pipelines:read, eventos de oportunidade (que carregam valores) não
     // entram nem na timeline do contato
     const visibilityWhere =
@@ -192,6 +211,7 @@ export class ActivitiesService {
     const where = {
       AND: [
         targetWhere,
+        semInternas,
         visibilityWhere,
         options.conteudoVisivel ?? {},
         cursor
@@ -229,7 +249,17 @@ export class ActivitiesService {
             })),
           )
         : new Set<string>();
-    const eventosOcultos = await this.eventosOcultos(page, options.textosDeEventoOcultos);
+    const eventos = page.filter((row) => row.type === 'event_scheduled');
+    const eventosOcultos =
+      options.textosDeEventoOcultos && eventos.length > 0
+        ? await options.textosDeEventoOcultos(
+            eventos.map((row) => ({
+              chave: row.id,
+              eventoId: row.calendarEventId,
+              vinculos: [{ contactId: row.contactId, dealId: row.dealId }],
+            })),
+          )
+        : new Set<string>();
     const items: ActivityDto[] = page.map((row) => {
       const payload = row.payload as ActivityDto['payload'];
       const semTitulo = TIPOS_COM_TITULO_DO_DEAL.has(row.type) && ocultasPorId.has(row.id);
@@ -257,46 +287,6 @@ export class ActivitiesService {
         ? { restrictedContent: true as const }
         : {}),
     };
-  }
-
-  /**
-   * As atividades `event_scheduled` da página cujo texto (o título do evento)
-   * é oculto para quem pede (ADR-061, adendo 8). Os vínculos de cada uma: os
-   * gravados nela (a pessoa do momento) E os do evento de agora, que pode ter
-   * sido religado; o evento que não existe mais vai na dúvida (`null`).
-   */
-  private async eventosOcultos(
-    page: {
-      id: string;
-      type: string;
-      contactId: string | null;
-      dealId: string | null;
-      calendarEventId: string | null;
-    }[],
-    textosOcultos?: TextosDeEventoOcultos,
-  ): Promise<Set<string>> {
-    const eventos = page.filter((row) => row.type === 'event_scheduled');
-    if (!textosOcultos || eventos.length === 0) return new Set();
-    const ids = eventos.map((row) => row.calendarEventId).filter((id): id is string => Boolean(id));
-    const atuais = (await this.prisma.db.calendarEvent.findMany({
-      where: { id: { in: ids } },
-      select: { id: true, contactId: true, dealId: true },
-    } as never)) as unknown as { id: string; contactId: string | null; dealId: string | null }[];
-    const porId = new Map(atuais.map((e) => [e.id, e]));
-    return textosOcultos(
-      eventos.map((row) => {
-        const atual = row.calendarEventId ? porId.get(row.calendarEventId) : undefined;
-        return {
-          chave: row.id,
-          vinculos: atual
-            ? [
-                { contactId: row.contactId, dealId: row.dealId },
-                { contactId: atual.contactId, dealId: atual.dealId },
-              ]
-            : null,
-        };
-      }),
-    );
   }
 
   private async resolveActorNames(membershipIds: (string | null)[]): Promise<Map<string, string>> {

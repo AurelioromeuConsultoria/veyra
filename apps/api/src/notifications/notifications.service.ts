@@ -114,9 +114,10 @@ export class NotificationsService {
   /**
    * As notificações de evento da agenda cujo texto é oculto para quem lê
    * (ADR-061, adendo 8). O título foi gravado no envio, então a regra é
-   * aplicada na LEITURA, pelos vínculos de AGORA do evento e pelos da criação
-   * dele: o interessado que vira paciente deixa de ter o título servido no
-   * pedido seguinte, e desligar o evento não devolve o título. O evento
+   * aplicada na LEITURA, pelos vínculos de AGORA do evento e pelo histórico
+   * deles (`vinculosDosEventos`): o interessado que vira paciente deixa de ter
+   * o título servido no pedido seguinte, e desligar o evento não devolve o
+   * título. O evento
    * que não existe mais (ou a chave fora do formato) vai na dúvida: oculto
    * fora do `livre`.
    */
@@ -127,17 +128,9 @@ export class NotificationsService {
     const deEvento = linhas
       .filter((l) => l.type === 'calendar_event_scheduled')
       .map((l) => ({ id: l.id, eventoId: EVENTO_DA_NOTIFICACAO.exec(l.dedupeKey)?.[1] ?? null }));
-    if (deEvento.length === 0 || !(await this.protegido.duvidaOculta(auth))) return new Set();
-    // os vínculos de agora e os da criação do evento (o título é o da criação)
-    const vinculos = await this.protegido.vinculosDosEventos(
-      deEvento.map((n) => n.eventoId).filter((id): id is string => id !== null),
-    );
-    return this.protegido.textosOcultos(
+    return this.protegido.eventosComTextoOculto(
       auth,
-      deEvento.map((n) => ({
-        chave: n.id,
-        vinculos: (n.eventoId ? vinculos.get(n.eventoId) : undefined) ?? null,
-      })),
+      deEvento.map((n) => ({ chave: n.id, eventoId: n.eventoId })),
     );
   }
 
