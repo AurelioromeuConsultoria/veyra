@@ -85,7 +85,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
   **Continuam pendentes, fora da engenharia:**
   - validação operacional de H1–H7 com alguém de uma clínica (a revisão do PO não conta);
   - avaliação jurídica do ADR-048 §9.2;
-  - D1 (pago/em aberto), D2 (salas), D7 (um papel por membro) e D8 (profissional vê todos os atendimentos);
+  - D1 (pago/em aberto; fechada pelo ADR-063), D2 (salas), D7 (um papel por membro) e D8 (profissional vê todos os atendimentos);
   - os bloqueios B1, B3 e B4 (o B2 foi levantado tecnicamente em 2026-10-21, ADR-048 adendo 6). Sem eles, **nenhum dado real de paciente e nenhum piloto clínico**.
 
   **Bloqueios por marco** (decisão do usuário, 2026-10-21; ADR-048 adendo 6). Não fazem parte do B2, mas bloqueiam os marcos:
@@ -251,7 +251,11 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
 
      A exceção da resposta depois do pedido de parar continua pendente. Nada deste ciclo autoriza envio real.
 
-  5. **F6 — Financeiro e administração:** fase seguinte, sem implementação. O primeiro escopo é definido depois de avaliados os fluxos atuais. Preço registrado não é pagamento recebido.
+  5. **F6 — Financeiro e administração.** Preço registrado não é pagamento recebido.
+     - **F6.1 — Pagamentos de pacotes (ADR-063; fecha a D1):** lançamentos manuais de pagamento, com anulação, autoria e data; saldo = preço congelado − recebido.
+       - **F6.1a ✅ (implementada em 2026-11-05):** Owner e Admin; a aba "Pagamentos" da ficha, as rotas, as três chaves `clinics:payments:*` e a migration `20261105150000_clinics_package_payments`.
+       - **F6.1b (a seguir):** a recepção e "Recepção e atendimento" (`read` e `write`), com a visão financeira própria e o bloco de saldo no resumo da ficha. A data do recebimento com mais de uma unidade ativa fica para decidir aqui.
+     - Fora da F6.1: cobrança de atendimento avulso, integração bancária, cartão, Pix automático, emissão fiscal, repasses, painel financeiro e devolução ao paciente.
 
 **Dependências externas:**
 

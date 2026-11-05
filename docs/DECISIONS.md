@@ -2329,6 +2329,8 @@ _Liberação e falha_
 
 **8. Preço e pagamento.** O preço do serviço e o preço congelado do pacote, em centavos, ficam **preservados como possibilidade** do modelo. Isso não constitui módulo financeiro: não há razão contábil, recebível, valor parcial nem meio de pagamento. **Marcar "pago/em aberto" continua em aberto (D1)** até a revisão do fluxo. Se for aprovado, entra como um estado simples no pacote, com ADR curto.
 
+> **Nota (2026-11-05): a D1 está FECHADA pelo ADR-063.** No lugar de um estado no pacote, lançamentos de pagamento manuais, com anulação, autoria e data; o saldo é o preço congelado menos o recebido. A F6.1a (Owner e Admin) está implementada; a F6.1b (a recepção) vem depois.
+
 **9. Exclusão e retenção de registros de atendimento.**
 
 **9.1 Decidido para agora: recusa provisória (aprovada).** As FKs do vertical para `Contact` e `ClinicsPatient` usam `NO ACTION`. **Excluir um contato que tem perfil de paciente é recusado com 409.** É um desvio consciente do ADR-022, limitado a workspaces com o Clinics e aceitável **apenas com dados fictícios**. A recusa nunca pode virar silenciosamente uma exclusão. A resposta 409 diz que o contato tem registros clínicos sob política pendente, sem expor o conteúdo desses registros.
@@ -2388,7 +2390,7 @@ _(Nota, ADR-059: desde a F5.2a, gatilhos recusam apagar `ClinicsAttendance` e `C
 
 **Em aberto:**
 
-- **D1:** marcar "pago/em aberto" no pacote. Em aberto até a revisão do fluxo.
+- **D1:** marcar "pago/em aberto" no pacote. ~~Em aberto até a revisão do fluxo.~~ **Fechada pelo ADR-063 (2026-11-05):** lançamentos de pagamento, não estado.
 - **D2:** `ClinicsRoom`. Em aberto até a revisão do fluxo (H5).
 - **D5:** política definitiva de exclusão e retenção (§9.2). Depende do jurídico.
 - **D6:** validação operacional de H1–H7 com alguém de uma clínica. A revisão do PO não a substitui.
@@ -11118,3 +11120,12 @@ O que o canvas mostra como conceito, sem suporte no produto, NÃO entra sem deci
 **Alternativas.** Um estado "pago/em aberto" no pacote (a D1 original): não cobre parcial nem histórico. Editar o lançamento: apaga a evidência do erro. Reaproveitar `clinics:care:*`: daria dinheiro ao Profissional e pacote clínico à recepção.
 
 **Consequências.** Uma migration aditiva (tabelas de pagamento e de anulação, enums), que sobe sozinha (ADR-058 adendo 2). Três chaves novas no catálogo do Clinics.
+
+**Resultado da F6.1a (2026-11-05).** Implementada ponta a ponta, só para Owner e Admin:
+
+- **Banco:** a migration `20261105150000_clinics_package_payments`, aditiva e transacional (ADR-051), com os enums `ClinicsPaymentMethod` e `ClinicsPaymentVoidReason` e as tabelas `ClinicsPackagePayment` (valor `Int` em centavos com CHECK > 0, moeda, data local `date`, forma, autor, instante do banco) e `ClinicsPackagePaymentVoid` (pagamento, motivo, autor, instante; **única** `(workspaceId, paymentId)`). FKs compostas ao pacote, ao pagamento e às memberships; índices liderados por `workspaceId`. 28 objetos (inventário no `DEPLOY_STAGING` §4). O ensaio da falha forçada deixou o schema idêntico e o inventário em 0; a aplicação limpa deu 28 e o `migrate diff` vazio. Sobe sozinha (ADR-058 adendo 2).
+- **A trava é do banco.** O módulo trava linhas por `updateMany`, mas o guarda do pacote recusa qualquer escrita num pacote encerrado (inclusive a sem mudança), e o pagamento precisa valer no concluído e a anulação no cancelado; o SQL cru é bloqueado no client protegido. Por isso o gatilho `BEFORE INSERT` do pagamento faz `SELECT … FOR NO KEY UPDATE` na linha do pacote, recusa o cancelado, confere a moeda e não deixa a soma dos não anulados passar do preço; o da anulação trava o pacote do pagamento. Os dois carimbam o instante do banco. Vale para qualquer escritor, e a corrida perdida volta como 409 (o `23514` traduzido no serviço). Pagamento e anulação são imutáveis pelo gatilho (só a cascata do workspace os apaga) e append-only no client protegido.
+- **Permissões:** as três chaves no catálogo do Clinics; Owner e Admin as recebem pela matriz da ativação (`CLINICS_PERMISSION_KEYS`) e, nos workspaces que já existiam, pelo livro do preenchimento, com o pré-requisito `clinics:schedule:read`. Recepção, "Recepção e atendimento", Profissional e Guest não recebem nada.
+- **API:** `GET /clinics/patients/:id/package-payments` e `GET /clinics/packages/:id/payments` (`payments:read` + `schedule:read`); `POST /clinics/packages/:id/payments` (`payments:write` + `payments:read` + `schedule:read`) e `POST /clinics/package-payments/:id/void` (`payments:void` + `payments:read` + `schedule:read`), as duas com `Idempotency-Key` obrigatória e a guarda de replay no padrão do adendo 6 (permissões de agora; pagamento ainda deste workspace). A data futura é recusada (400) pelo dia local da **única unidade ativa**, como a agenda sem `unitId`, pelo relógio do banco; sem exatamente uma unidade ativa, o registro é recusado (400) — limitação conhecida para a F6.1b.
+- **Ficha:** a aba "Pagamentos" (`payments:read`), com a lista (estado, preço, recebido, saldo; o pendente destacado; o sem preço com "Saldo não calculável — preço não registrado") e o painel de cada pacote (o histórico com autoria, o anulado riscado, "Registrar pagamento" e "Anular" conforme as chaves).
+- **Auditoria:** `clinics.package.payment_recorded` (`clinicsPackagePayment`: pacote, valor, moeda, data, forma) e `clinics.package.payment_voided` (`clinicsPackagePaymentVoid`: pagamento, pacote, motivo). O valor entra na trilha: é o próprio fato financeiro, sem dado do paciente nem texto livre.

@@ -1072,6 +1072,40 @@ muda o registro da migration e não desfaz nenhum objeto.
     WHERE c."contactId" IS NOT NULL AND m."receivedContactId" IS NULL;
    ```
 
+   Para a `20261105150000_clinics_package_payments` (F6.1a, ADR-063), com
+   **28 objetos**: os enums `ClinicsPaymentMethod` e
+   `ClinicsPaymentVoidReason`, as tabelas `ClinicsPackagePayment` e
+   `ClinicsPackagePaymentVoid` com os índices (oito, com as chaves primárias),
+   as restrições (nove: duas chaves primárias, seis FKs e o CHECK do valor),
+   três funções e quatro gatilhos. Nenhum objeto existente muda, e as tabelas
+   nascem vazias. Ela sobe sozinha na API (ADR-058, adendo 2). O ensaio da
+   falha forçada deu o schema idêntico e o inventário em 0; a aplicação limpa,
+   28 e o `migrate diff` vazio. **Volta ao código anterior:** o código anterior
+   ignora as tabelas; os pagamentos registrados ficam guardados e voltam a
+   aparecer com o código novo.
+
+   ```sql
+   -- inventário da 20261105150000_clinics_package_payments: 0 linhas = nada
+   -- ficou; 28 = inteira; qualquer outro número = estado parcial
+   SELECT 'tipo' AS k, t.typname::text AS nome FROM pg_type t
+     WHERE t.typname IN ('ClinicsPaymentMethod', 'ClinicsPaymentVoidReason')
+   UNION ALL SELECT 'tabela', c.relname::text FROM pg_class c
+     WHERE c.relname IN ('ClinicsPackagePayment', 'ClinicsPackagePaymentVoid') AND c.relkind = 'r'
+   UNION ALL SELECT 'indice', c.relname::text FROM pg_class c
+     WHERE c.relkind = 'i' AND (c.relname LIKE 'ClinicsPackagePayment\_%'
+       OR c.relname LIKE 'ClinicsPackagePaymentVoid\_%')
+   UNION ALL SELECT 'restricao', co.conname::text FROM pg_constraint co
+     WHERE (co.conname LIKE 'ClinicsPackagePayment\_%' OR co.conname LIKE 'ClinicsPackagePaymentVoid\_%')
+       AND co.contype NOT IN ('n', 't')  -- sem os NOT NULL (Postgres 18)
+   UNION ALL SELECT 'funcao', p.proname::text FROM pg_proc p
+     WHERE p.proname IN ('clinics_package_payment_guard', 'clinics_package_payment_void_guard',
+       'clinics_package_payment_is_final')
+   UNION ALL SELECT 'gatilho', tg.tgname::text FROM pg_trigger tg
+     WHERE tg.tgname IN ('ClinicsPackagePayment_guard', 'ClinicsPackagePaymentVoid_guard',
+       'ClinicsPackagePayment_is_final', 'ClinicsPackagePaymentVoid_is_final')
+   ORDER BY 1, 2;
+   ```
+
    Para outra migration, monte o inventário do mesmo jeito, a partir das
    instruções do arquivo: cada `CREATE` e cada `ADD CONSTRAINT`.
 
