@@ -117,20 +117,21 @@ describe('Clinics — a lista de consentimentos sob o E8 (integração, B1 item 
     });
     return c.id;
   };
-  const conceder = (contactId: string, number: string, purposeId: string, s = owner) =>
+  const conceder = (
+    contactId: string,
+    number: string,
+    purposeId: string,
+    s = owner,
+    chave: string = randomUUID(),
+  ) =>
     post(
       `/api/contacts/${contactId}/consents`,
       s,
       { channelId: canal, number, purposeId, origin: 'in_person' },
-      randomUUID(),
+      chave,
     );
-  const revogar = (contactId: string, consentId: string, s = owner) =>
-    post(
-      `/api/contacts/${contactId}/consents/${consentId}/revoke`,
-      s,
-      { origin: 'phone' },
-      randomUUID(),
-    );
+  const revogar = (contactId: string, consentId: string, s = owner, chave: string = randomUUID()) =>
+    post(`/api/contacts/${contactId}/consents/${consentId}/revoke`, s, { origin: 'phone' }, chave);
   const doContato = async (s: Session, contactId: string) =>
     (await get(`/api/contacts/${contactId}/consents`, s).expect(200)).body
       .consents as Consentimento[];
@@ -292,6 +293,105 @@ describe('Clinics — a lista de consentimentos sob o E8 (integração, B1 item 
       'clinics:schedule:read',
     ]);
     expect(await revogacoes(comAgenda)).toEqual([daConfirmacao, lembreteP.id].sort());
+  });
+
+  it('trilha: sem a agenda, o pedido de parar do paciente e o do interessado saem iguais, sem as contagens', async () => {
+    // o paciente tem um consentimento a mais (o da extensão); o interessado, não
+    const pararP = (
+      await post(
+        `/api/contacts/${paciente}/stop`,
+        owner,
+        { number: NUM_P, origin: 'phone' },
+        randomUUID(),
+      ).expect(201)
+    ).body.id as string;
+    const pararI = (
+      await post(
+        `/api/contacts/${interessado}/stop`,
+        owner,
+        { number: NUM_I, origin: 'phone' },
+        randomUUID(),
+      ).expect(201)
+    ).body.id as string;
+    const pedidos = async (s: Session) => {
+      const itens = (await get('/api/audit?limit=100&action=stop.registered', s).expect(200)).body
+        .items as { entityId: string; after: Record<string, unknown> }[];
+      // sem o que é de cada pedido (o recibo)
+      const de = (id: string) => {
+        const resto = { ...itens.find((i) => i.entityId === id)!.after };
+        delete resto.receipt;
+        return resto;
+      };
+      return { p: de(pararP), i: de(pararI) };
+    };
+    const auditor = await papel(ws.workspaceId, 'auditor@veyra.test', [
+      'audit:read',
+      'contacts:read',
+      'consents:read',
+    ]);
+    const uniforme = await pedidos(auditor);
+    expect(uniforme.p).toEqual(uniforme.i);
+    expect(uniforme.p.consentsRevoked).toBe('Conteúdo restrito');
+    expect(uniforme.p.dispatchesCanceled).toBe('Conteúdo restrito');
+    // quem tem a agenda vê as contagens como sempre (o paciente, duas revogações)
+    const comAgenda = await pedidos(
+      await papel(ws.workspaceId, 'auditor-agenda@veyra.test', [
+        'audit:read',
+        'clinics:schedule:read',
+      ]),
+    );
+    expect([comAgenda.p.consentsRevoked, comAgenda.i.consentsRevoked]).toEqual([2, 1]);
+  });
+
+  it('a repetição da concessão e da revogação confere o acesso de agora: sem a agenda, o mesmo 404 de um pedido novo', async () => {
+    const gestor = await papel(ws.workspaceId, 'gestor@veyra.test', [
+      'workspace:read',
+      'contacts:read',
+      'consents:read',
+      'consents:manage',
+      'clinics:schedule:read',
+    ]);
+    const lembreteP = (await doContato(owner, paciente)).find((c) => c.purposeKey === 'lembrete')!;
+    const [kRevogar, kConceder, kCore] = [randomUUID(), randomUUID(), randomUUID()];
+    await revogar(paciente, daConfirmacao, gestor, kRevogar).expect(201);
+    const nova = (await conceder(paciente, NUM_P, confirmacao, gestor, kConceder).expect(201)).body
+      .id as string;
+    await revogar(paciente, lembreteP.id, gestor, kCore).expect(201);
+    // com a agenda, a repetição devolve o corpo guardado
+    const comAgenda = await conceder(paciente, NUM_P, confirmacao, gestor, kConceder).expect(201);
+    expect([comAgenda.headers['idempotent-replay'], comAgenda.body.id]).toEqual(['true', nova]);
+
+    // o papel perde a chave da agenda
+    const membership = await prisma.raw.membership.findFirstOrThrow({
+      where: { workspaceId: ws.workspaceId, user: { email: 'gestor@veyra.test' } },
+      select: { roleId: true },
+    });
+    await prisma.raw.rolePermission.deleteMany({
+      where: { roleId: membership.roleId, permissionKey: 'clinics:schedule:read' },
+    });
+    const semAgenda = await loginAs('gestor@veyra.test');
+    const antes = await prisma.raw.consent.count({ where: { workspaceId: ws.workspaceId } });
+
+    const repetirConceder = await conceder(paciente, NUM_P, confirmacao, semAgenda, kConceder);
+    const novoNoInteressado = await conceder(interessado, NUM_I, confirmacao, semAgenda);
+    expect(repetirConceder.status).toBe(404);
+    expect([repetirConceder.status, repetirConceder.body.message]).toEqual([
+      novoNoInteressado.status,
+      novoNoInteressado.body.message,
+    ]);
+    const repetirRevogar = await revogar(paciente, daConfirmacao, semAgenda, kRevogar);
+    const revogarNada = await revogar(interessado, randomUUID(), semAgenda);
+    expect(repetirRevogar.status).toBe(404);
+    expect([repetirRevogar.status, repetirRevogar.body.message]).toEqual([
+      revogarNada.status,
+      revogarNada.body.message,
+    ]);
+    expect(JSON.stringify([repetirConceder.body, repetirRevogar.body])).not.toMatch(/clinics_/);
+    // a finalidade do Core segue repetindo o corpo guardado
+    const repetirCore = await revogar(paciente, lembreteP.id, semAgenda, kCore).expect(201);
+    expect(repetirCore.headers['idempotent-replay']).toBe('true');
+    // nada executou de novo
+    expect(await prisma.raw.consent.count({ where: { workspaceId: ws.workspaceId } })).toBe(antes);
   });
 
   it('a recepção vê e registra o consentimento da confirmação como antes, pela ficha e pelo Inbox', async () => {

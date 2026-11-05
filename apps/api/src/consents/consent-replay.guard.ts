@@ -3,6 +3,8 @@ import type { Request } from 'express';
 import type { AuthContext } from '../common/decorators';
 import type { IdempotentReplayGuard, ReplayVerdict } from '../common/idempotency.decorator';
 import { ConversationsService } from '../conversations/conversations.service';
+import { ProtectedContentService } from '../extensions/protected-content';
+import { PrismaService } from '../prisma/prisma.service';
 
 const MENSAGEM_ACESSO_MUDOU =
   'O registro desta chave já foi feito, mas a resposta guardada mostra o número completo, e o seu acesso atual não permite vê-lo.';
@@ -48,5 +50,50 @@ export class ConversationConsentReplayGuard implements IdempotentReplayGuard {
       return { refuse: new ForbiddenException(MENSAGEM_ACESSO_MUDOU) };
     }
     return 'replay';
+  }
+}
+
+/**
+ * O replay da concessão e da revogação PELO CONTATO sob o E8 (ADR-061, adendo
+ * 8, item 7; o padrão do adendo 6): o corpo guardado é o consentimento, com a
+ * finalidade. Quem o gravou podendo saber quem é protegido e repete depois de
+ * perder a chave que revela (o `uniforme`) recebe a MESMA resposta que um
+ * pedido novo daria agora — o 404 da finalidade (concessão) ou do
+ * consentimento (revogação), igual para todo contato —, e não o corpo
+ * guardado. Nunca executa de novo nem apaga o guardado. Falha ao ler: 503.
+ */
+@Injectable()
+export class ContactConsentReplayGuard implements IdempotentReplayGuard {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly protegido: ProtectedContentService,
+  ) {}
+
+  async verdict(
+    request: Request & { auth?: AuthContext },
+    guardado: { status: number; body: unknown },
+  ): Promise<ReplayVerdict> {
+    const auth = request.auth;
+    if (!auth) return 'unavailable';
+    // a revogação tem o id do consentimento na rota; a concessão, não
+    const recusa =
+      typeof request.params?.consentId === 'string'
+        ? new NotFoundException('Consentimento não encontrado')
+        : new NotFoundException('Finalidade não encontrada');
+    try {
+      const finalidadeVisivel = await this.protegido.finalidadeVisivel(auth);
+      if (Object.keys(finalidadeVisivel).length === 0) return 'replay';
+      const purposeId = (guardado.body as { purposeId?: unknown } | null)?.purposeId;
+      // sem a finalidade no corpo, na dúvida, a recusa (conservador)
+      if (typeof purposeId !== 'string') return { refuse: recusa };
+      const visivel =
+        (await this.prisma.db.consentPurpose.count({
+          where: { AND: [{ id: purposeId }, finalidadeVisivel] },
+        } as never)) > 0;
+      return visivel ? 'replay' : { refuse: recusa };
+    } catch {
+      // não deu para decidir agora: nem devolve, nem apaga
+      return 'unavailable';
+    }
   }
 }

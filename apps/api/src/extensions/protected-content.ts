@@ -70,6 +70,21 @@ export const ATIVIDADES_DE_CONTEUDO = [
   'task_completed',
 ] as const;
 
+/**
+ * As contagens da trilha do Core que SOMAM, sem dizer o quê, o que é da
+ * extensão (ADR-061, adendo 8, item 7): o pedido de parar conta os
+ * consentimentos que revogou — inclusive os de finalidade da extensão, que no
+ * `uniforme` não saem da lista — e os despachos que cancelou ou alcançou no
+ * voo, inclusive os da origem da extensão. Comparadas com o que é visível,
+ * diriam quem é protegido; no `uniforme`, saem como "Conteúdo restrito" em
+ * TODA linha da ação, igual para todo contato.
+ */
+const CONTAGENS_QUE_SOMAM_A_EXTENSAO: Readonly<Record<string, readonly string[]>> = {
+  'stop.registered': ['consentsRevoked', 'dispatchesCanceled', 'dispatchesInFlight'],
+};
+
+type LinhaDaTrilha = { action: string; before: unknown; after: unknown };
+
 type Alvo = { contactId?: string | null; dealId?: string | null };
 type Modo =
   { tipo: 'livre' } | { tipo: 'restrito'; oculto: Record<string, unknown> } | { tipo: 'uniforme' };
@@ -237,11 +252,14 @@ export class ProtectedContentService {
    * finalidade da extensão (a revogação não grava a finalidade, e o id ligaria
    * a linha ao contato; adendo 8, item 7), no SQL. `revela`: as linhas do
    * Core cuja origem ou finalidade é da extensão — conferidas linha a linha,
-   * porque um filtro JSON no SQL vira NULL onde o campo falta. `null`: nada.
+   * porque um filtro JSON no SQL vira NULL onde o campo falta. `tapar`: as
+   * contagens que somam o que é da extensão saem como "Conteúdo restrito"
+   * (adendo 8, item 7). `null`: nada.
    */
   async trilhaQueRevela(auth: AuthContext): Promise<{
     where: Record<string, unknown>;
     revela: (linha: { before: unknown; after: unknown }) => boolean;
+    tapar: <T extends LinhaDaTrilha>(linha: T) => T;
   } | null> {
     if ((await this.modo(auth)).tipo !== 'uniforme') return null;
     const acoes: Record<string, unknown>[] = [];
@@ -293,6 +311,17 @@ export class ProtectedContentService {
             (typeof finalidade === 'string' && finalidades.has(finalidade))
           );
         }),
+      tapar: (linha) => {
+        const campos = CONTAGENS_QUE_SOMAM_A_EXTENSAO[linha.action];
+        if (!campos) return linha;
+        const lado = (valor: unknown): unknown => {
+          if (!valor || typeof valor !== 'object') return valor;
+          const copia = { ...(valor as Record<string, unknown>) };
+          for (const c of campos) if (c in copia) copia[c] = CONTEUDO_RESTRITO;
+          return copia;
+        };
+        return { ...linha, before: lado(linha.before), after: lado(linha.after) };
+      },
     };
   }
 

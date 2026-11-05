@@ -18,7 +18,8 @@ export class AuditController {
   /**
    * A trilha sob o E8 (ADR-061, adendo 7): as ações que revelam a
    * classificação não saem para quem não pode sabê-la, e o conteúdo protegido
-   * (títulos, nomes de arquivo) sai mascarado quando a entidade é oculta.
+   * (títulos, nomes de arquivo) sai mascarado quando a entidade é oculta. No
+   * `uniforme`, as contagens que somam o que é da extensão também (adendo 8).
    */
   @RequirePermissions('audit:read')
   @Get()
@@ -28,7 +29,9 @@ export class AuditController {
   ): Promise<AuditPageDto> {
     const revela = await this.protegido.trilhaQueRevela(auth);
     const pagina = await this.audit.list(query, { fora: revela?.where ?? null });
-    const items = revela ? pagina.items.filter((i) => !revela.revela(i)) : pagina.items;
+    const items = revela
+      ? pagina.items.filter((i) => !revela.revela(i)).map((i) => revela.tapar(i))
+      : pagina.items;
     return { ...pagina, items: await this.trilha.mascarar(auth, items) };
   }
 }

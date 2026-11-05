@@ -18,7 +18,7 @@ import {
 import { AuthContext, CurrentAuth, RequirePermissions } from '../common/decorators';
 import { Idempotent } from '../common/idempotency.decorator';
 import { ZodPipe } from '../common/zod.pipe';
-import { ConversationConsentReplayGuard } from './consent-replay.guard';
+import { ContactConsentReplayGuard, ConversationConsentReplayGuard } from './consent-replay.guard';
 import { ConsentsService } from './consents.service';
 
 /**
@@ -34,7 +34,9 @@ import { ConsentsService } from './consents.service';
  *
  * Sob o E8 (ADR-061, adendo 8, item 7): quem não pode saber quem é protegido
  * (o `uniforme`) não vê as finalidades da extensão — nem nas listas de TODO
- * contato, nem nas oferecidas, nem na concessão ou na revogação por id.
+ * contato, nem nas oferecidas, nem na concessão ou na revogação por id. A
+ * repetição dessas duas pelo contato passa pela guarda que confere o acesso de
+ * agora (`ContactConsentReplayGuard`, o padrão do adendo 6).
  */
 @Controller()
 export class ConsentsController {
@@ -72,7 +74,7 @@ export class ConsentsController {
   }
 
   @RequirePermissions('consents:manage', 'contacts:read', 'consents:read')
-  @Idempotent({ required: true })
+  @Idempotent({ required: true, replayGuard: ContactConsentReplayGuard })
   @Post('contacts/:contactId/consents')
   grant(
     @CurrentAuth() auth: AuthContext,
@@ -83,7 +85,7 @@ export class ConsentsController {
   }
 
   @RequirePermissions('consents:manage', 'contacts:read', 'consents:read')
-  @Idempotent({ required: true })
+  @Idempotent({ required: true, replayGuard: ContactConsentReplayGuard })
   @Post('contacts/:contactId/consents/:consentId/revoke')
   revoke(
     @CurrentAuth() auth: AuthContext,

@@ -2,7 +2,7 @@ import { Module } from '@nestjs/common';
 import { ChannelsModule } from '../channels/channels.module';
 import { ConversationsModule } from '../conversations/conversations.module';
 import { ConsentPurposesService } from './consent-purposes.service';
-import { ConversationConsentReplayGuard } from './consent-replay.guard';
+import { ContactConsentReplayGuard, ConversationConsentReplayGuard } from './consent-replay.guard';
 import { ConsentsController } from './consents.controller';
 import { ConsentsService } from './consents.service';
 
@@ -16,7 +16,12 @@ import { ConsentsService } from './consents.service';
 @Module({
   imports: [ChannelsModule, ConversationsModule],
   controllers: [ConsentsController],
-  providers: [ConsentsService, ConsentPurposesService, ConversationConsentReplayGuard],
+  providers: [
+    ConsentsService,
+    ConsentPurposesService,
+    ConversationConsentReplayGuard,
+    ContactConsentReplayGuard,
+  ],
   // a CLI pega o serviço das finalidades pelo contexto (`app.get`): ele não sai
   // do módulo, porque resolve qualquer workspace pelo slug
   exports: [ConsentsService],
