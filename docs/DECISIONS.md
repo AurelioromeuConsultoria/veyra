@@ -10629,6 +10629,26 @@ O workspace que nunca teve o Clinics fica sempre no modo livre, com o comportame
     9. **a condição para a política de exclusão do B3:** excluir um paciente apagaria em cascata as atividades do tempo dele, e os títulos antigos voltariam em claro na trilha;
     10. a validação operacional e jurídica do modelo de acesso, junto com o B3 (a política de exclusão de pacientes) e o B4.
 
+### ADR-061, adendo 8 — B1: a agenda do Core e a lista de consentimentos sob o E8 (2026-11-04)
+
+**Status:** pedido do usuário em 2026-11-04 ("Vamos seguir pelo B1 … Comece pela agenda do Core e pela lista de consentimentos"). Itens 1 e 7 da lista obrigatória do adendo 7. Sem migration, sem permissão nova e sem mudança no que a recepção pode fazer.
+
+**Contexto.** O adendo 7 deixou o B1 aberto com dez pendências. Duas são sinais diretos de quem é paciente para quem não tem a agenda clínica:
+
+- **1, a agenda do Core:** o título, a descrição e o local de um `CalendarEvent` ligado ao contato ou à oportunidade de um paciente saem a quem tem `calendar:read`, na lista e no evento, na atividade `event_scheduled` da timeline e na notificação `calendar_event_scheduled`. É texto escrito sobre a pessoa, da mesma classe das notas e tarefas.
+- **7, a lista de consentimentos:** `GET /contacts/:id/consents` e `GET /conversations/:id/consents` devolvem a finalidade `clinics_confirmacao` sem o E8; quem tem `consents:read` e não tem a agenda deduz quem é paciente.
+
+**Decisão.** O mesmo tratamento que a F5.3 deu às notas e tarefas, pela porta do E8, sem o Core saber por que o contato é protegido:
+
+1. **A agenda do Core:** o texto do evento (título, descrição, local) entra na regra do conteúdo protegido. No `restrito`, o evento de pessoa protegida sai com o texto "Conteúdo restrito"; no `uniforme`, o de TODA pessoa (pelo contato ou pela oportunidade com contato), igual para paciente e não paciente; datas, ids e vínculos não mudam. A atividade `event_scheduled` e a notificação `calendar_event_scheduled` seguem a mesma regra. As escritas seguem a regra das notas e tarefas no `uniforme` (a que toca uma pessoa é recusada igual para todo contato).
+2. **A lista de consentimentos:** no `uniforme`, os consentimentos de finalidade da extensão (o `purposeKeyPrefix` do `auditReveal`) saem da lista de TODO contato, igual para paciente e não paciente. No `restrito` e no `livre`, a lista não muda: quem tem a agenda já sabe quem é paciente.
+3. **A recepção não muda:** ela tem `clinics:schedule:read` (a chave que revela), então nunca cai no `uniforme`; na agenda do Core, fica no mesmo modo em que já está para notas e tarefas. A agenda dela é a do Clinics, que não muda.
+4. **Prova:** para cada caminho, primeiro o teste pela API que reproduz o sinal (o papel sem a agenda distingue paciente de não paciente), depois a correção, com o mesmo teste mostrando a resposta igual, e o fluxo da recepção conferido.
+
+**Alternativas.** Esconder a agenda do Core inteira no workspace com o Clinics: tira do CRM uma função do Core sem necessidade, e a API continuaria respondendo. Tirar `consents:read` dos papéis sem a agenda: muda papéis e o que cada um faz, o que o usuário pediu para decidir antes.
+
+**Consequências.** O Guest e o papel personalizado sem a agenda passam a ver, em workspace sujeito, os eventos de pessoa sem texto e a lista de consentimentos sem as finalidades da extensão. Depois da desativação do vertical, vale o que já vale para notas e tarefas (o workspace segue sujeito enquanto houver dado protegido, adendo 7).
+
 ## ADR-062 — Redesenho visual e de UX: "Mineral" com moldura, estados e próxima ação (2026-11-04)
 
 **Status:** aprovado pelo usuário em 2026-11-04, a partir do canvas de design "Veyra Clinics — redesenho" (10 telas: Hoje, Agenda, Ficha do paciente, Conversas, Pacientes, Funil, Retornos, Indicadores, Configurações e Entrar).
