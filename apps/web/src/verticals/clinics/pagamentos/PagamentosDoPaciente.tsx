@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import {
   CLINICS_PAYMENT_MAX_CENTS,
   type ClinicsPackageBalanceDto,
@@ -6,6 +6,7 @@ import {
   type ClinicsPackagePaymentsDto,
   type ClinicsPaymentMethod,
   type ClinicsPaymentVoidReason,
+  horaLocal,
 } from '@veyra/contracts/verticals/clinics';
 import { useState } from 'react';
 import { Button } from '../../../components/ui/button';
@@ -14,10 +15,10 @@ import { Field, Input, Select } from '../../../components/ui/input';
 import { EmptyState, Panel } from '../../../components/ui/page';
 import { StatusChip, type Tom } from '../../../components/ui/status';
 import { ApiError, api } from '../../../lib/api';
-import { useRegistroIdempotente } from '../../../lib/registro-idempotente';
 import { hasPermission, useSession } from '../../../lib/session';
 import { ROTULO_DO_PACOTE, dataCurta } from '../continuidade';
 import { centsToReaisInput, reaisToCents } from '../format';
+import { useTentativaDoPacote, type Tentativa } from './tentativa-pendente';
 
 /** A chave das consultas de pagamento: a lista e o painel, invalidados juntos. */
 export const PAYMENTS_KEY = ['clinics', 'package-payments'] as const;
@@ -50,19 +51,27 @@ export function valor(cents: number, moeda: string): string {
   return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: moeda }).format(cents / 100);
 }
 
-/** Um instante do banco, na hora local de quem vê: "05/11/2026 às 14:32". */
-function quando(iso: string): string {
-  const d = new Date(iso);
-  const data = d.toLocaleDateString('pt-BR');
-  const hora = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-  return `${data} às ${hora}`;
+/**
+ * Um instante do banco na hora LOCAL da unidade da operação (a mesma do "hoje"
+ * do serviço): "05/11/2026 às 14:32". Sem o fuso da unidade (zero ou mais de uma
+ * ativa), na hora do navegador — e dito, com o fuso dele.
+ */
+export function quando(iso: string, fuso: string | null): string {
+  if (fuso) {
+    const h = horaLocal(new Date(iso), fuso);
+    return `${dataCurta(h.data)} às ${h.hora}`;
+  }
+  const doNavegador = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const h = horaLocal(new Date(iso), doNavegador);
+  return `${dataCurta(h.data)} às ${h.hora} (fuso do navegador, ${doNavegador})`;
 }
 
 /** Ativo ou concluído com saldo a receber: o que a recepção precisa ver primeiro. */
 const pendente = (p: ClinicsPackageBalanceDto) =>
   p.status !== 'canceled' && p.balanceCents !== null && p.balanceCents > 0;
 
-const quem = (nome: string) => nome || 'pessoa que saiu da equipe';
+// memberships não são apagadas: o nome vem sempre; vazio só no caso defensivo
+const quem = (nome: string) => nome || 'pessoa não identificada';
 
 /**
  * A aba "Pagamentos" da ficha (ADR-063, F6.1a). Só montada com
@@ -134,7 +143,10 @@ export function PagamentosDoPaciente({ pacienteId }: { pacienteId: string }) {
                     <span className="text-muted-fg">{SEM_PRECO}</span>
                   ) : pendente(p) ? (
                     <StatusChip tom="pending">
-                      <span className="num">{valor(p.balanceCents, p.currency)}</span> a receber
+                      {/* o chip é flex: o texto solto perderia o espaço inicial */}
+                      <span>
+                        <span className="num">{valor(p.balanceCents, p.currency)}</span> a receber
+                      </span>
                     </StatusChip>
                   ) : (
                     <span className="num">{valor(p.balanceCents, p.currency)}</span>
@@ -175,12 +187,19 @@ export function PagamentosDoPaciente({ pacienteId }: { pacienteId: string }) {
 
 type Acao = { tipo: 'registrar' } | { tipo: 'anular'; pagamento: ClinicsPackagePaymentDto } | null;
 
-/** O painel de um pacote: o saldo, o histórico e as ações. */
+type Envio = ReturnType<typeof useTentativaDoPacote>;
+
+/**
+ * O painel de um pacote: o saldo, o histórico e as ações. A tentativa pendente
+ * (o resultado que não chegou) vem antes de tudo: nem fechar o painel nem a
+ * recarga que falha a tiram da tela — só "Tentar de novo" ou "Descartar".
+ */
 function PainelDoPacote({ packageId }: { packageId: string }) {
   const { data: user } = useSession();
   const podeRegistrar = hasPermission(user, 'clinics:payments:write');
   const podeAnular = hasPermission(user, 'clinics:payments:void');
   const [acao, setAcao] = useState<Acao>(null);
+  const envio = useTentativaDoPacote(packageId);
   const detalhe = useQuery({
     queryKey: [...PAYMENTS_KEY, 'package', packageId],
     queryFn: () =>
@@ -188,30 +207,160 @@ function PainelDoPacote({ packageId }: { packageId: string }) {
         `/api/clinics/packages/${encodeURIComponent(packageId)}/payments`,
       ),
   });
+  // confirmado o envio, volta ao histórico com o recibo
+  const acaoAtual = envio.feito ? null : acao;
+  const abrir = (a: Acao) => {
+    envio.limparAvisos();
+    setAcao(a);
+  };
+  const erroDaCarga = detalhe.isError ? (
+    <p role="alert" className="text-data text-negative">
+      {detalhe.error instanceof ApiError && detalhe.error.status === 404
+        ? 'Pacote não encontrado.'
+        : 'Não foi possível carregar os pagamentos do pacote.'}
+    </p>
+  ) : null;
 
-  if (detalhe.isError) {
+  // a tentativa pendente: na primeira confirmação, em voo, o formulário fica
+  // montado (ocupado); fora isso, a pendência toma o lugar da ação
+  if (envio.pendente && (acaoAtual === null || !envio.emVoo)) {
     return (
-      <p role="alert" className="text-data text-negative">
-        {detalhe.error instanceof ApiError && detalhe.error.status === 404
-          ? 'Pacote não encontrado.'
-          : 'Não foi possível carregar os pagamentos do pacote.'}
-      </p>
+      <div className="space-y-4">
+        <TentativaPendente
+          tentativa={envio.pendente}
+          emVoo={envio.emVoo}
+          onRepetir={envio.repetir}
+          onDescartar={() => {
+            envio.descartar();
+            setAcao(null);
+          }}
+        />
+        {erroDaCarga ?? (detalhe.data ? <Resumo dados={detalhe.data} podeAnular={false} /> : null)}
+      </div>
     );
   }
+  // a ação aberta continua montada mesmo se a recarga falhar (o dado fica)
+  if (acaoAtual && detalhe.data) {
+    const { package: p, today } = detalhe.data;
+    return acaoAtual.tipo === 'registrar' ? (
+      <RegistrarPagamento pacote={p} hoje={today} envio={envio} onFim={() => setAcao(null)} />
+    ) : (
+      <AnularPagamento
+        pagamento={acaoAtual.pagamento}
+        moeda={p.currency}
+        envio={envio}
+        onFim={() => setAcao(null)}
+      />
+    );
+  }
+  if (erroDaCarga) return erroDaCarga;
   if (!detalhe.data) return <p className="text-data text-muted-fg">Carregando…</p>;
-  const { package: p, payments, today } = detalhe.data;
-
-  if (acao?.tipo === 'registrar') {
-    return <RegistrarPagamento pacote={p} hoje={today} onFim={() => setAcao(null)} />;
-  }
-  if (acao?.tipo === 'anular') {
-    return (
-      <AnularPagamento pagamento={acao.pagamento} moeda={p.currency} onFim={() => setAcao(null)} />
-    );
-  }
+  const p = detalhe.data.package;
+  const quitado = p.balanceCents !== null && p.balanceCents <= 0;
+  const semRegistro = p.status === 'canceled' || quitado;
 
   return (
     <div className="space-y-4">
+      {envio.feito ? (
+        <p role="status" className="text-body-sm font-medium">
+          {envio.feito}
+        </p>
+      ) : null}
+      {envio.erro ? (
+        <p role="alert" className="text-data text-negative">
+          {envio.erro}
+        </p>
+      ) : null}
+      {podeRegistrar ? (
+        <div className="space-y-1.5">
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={semRegistro}
+            aria-describedby={semRegistro ? 'motivo-sem-registro' : undefined}
+            onClick={() => abrir({ tipo: 'registrar' })}
+          >
+            Registrar pagamento
+          </Button>
+          {p.status === 'canceled' ? (
+            <p id="motivo-sem-registro" className="text-data text-muted-fg">
+              Pacote cancelado: não recebe pagamento novo. Os registrados podem ser anulados.
+            </p>
+          ) : quitado ? (
+            <p id="motivo-sem-registro" className="text-data text-muted-fg">
+              Pacote quitado: o recebido cobre o preço.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+      <Resumo
+        dados={detalhe.data}
+        podeAnular={podeAnular}
+        onAnular={(pagamento) => abrir({ tipo: 'anular', pagamento })}
+      />
+    </div>
+  );
+}
+
+/** O pedido sem resultado confirmado, com a única saída de cada lado. */
+function TentativaPendente({
+  tentativa,
+  emVoo,
+  onRepetir,
+  onDescartar,
+}: {
+  tentativa: Tentativa;
+  emVoo: boolean;
+  onRepetir: () => void;
+  onDescartar: () => void;
+}) {
+  const titulo =
+    tentativa.tipo === 'registrar'
+      ? 'Registro pendente de confirmação'
+      : 'Anulação pendente de confirmação';
+  return (
+    <section
+      aria-label={titulo}
+      className="space-y-2 rounded-control border border-border bg-state-pending/40 p-3"
+    >
+      <h3 className="font-display text-[15px] font-semibold">{titulo}</h3>
+      <p className="text-body-sm">{tentativa.resumo}</p>
+      {emVoo ? (
+        <p role="status" className="text-data text-muted-fg">
+          Enviando…
+        </p>
+      ) : (
+        <p role="alert" className="text-data">
+          O resultado não chegou: o pedido pode ter sido gravado ou não. “Tentar de novo” repete o
+          mesmo pedido e não cria outro lançamento. “Descartar” esquece este pedido; confira o
+          histórico antes de registrar de novo.
+        </p>
+      )}
+      <div className="flex gap-2">
+        <Button size="sm" variant="primary" disabled={emVoo} onClick={onRepetir}>
+          Tentar de novo
+        </Button>
+        <Button size="sm" variant="ghost" disabled={emVoo} onClick={onDescartar}>
+          Descartar
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+/** O saldo e o histórico; "Anular" só para quem tem a chave e sem tentativa pendente. */
+function Resumo({
+  dados,
+  podeAnular,
+  onAnular,
+}: {
+  dados: ClinicsPackagePaymentsDto;
+  podeAnular: boolean;
+  onAnular?: (pagamento: ClinicsPackagePaymentDto) => void;
+}) {
+  const { package: p, payments, timezone } = dados;
+  return (
+    <>
       <dl className="grid grid-cols-3 gap-3 text-body-sm">
         <div>
           <dt className="eyebrow text-muted-fg">Preço</dt>
@@ -230,17 +379,6 @@ function PainelDoPacote({ packageId }: { packageId: string }) {
           </dd>
         </div>
       </dl>
-      {podeRegistrar ? (
-        p.status === 'canceled' ? (
-          <p className="text-data text-muted-fg">
-            Pacote cancelado: não recebe pagamento novo. Os registrados podem ser anulados.
-          </p>
-        ) : (
-          <Button size="sm" variant="primary" onClick={() => setAcao({ tipo: 'registrar' })}>
-            Registrar pagamento
-          </Button>
-        )
-      ) : null}
       <section aria-label="Histórico de pagamentos" className="space-y-2">
         <h3 className="eyebrow text-muted-fg">Histórico</h3>
         {payments.length === 0 ? (
@@ -262,19 +400,20 @@ function PainelDoPacote({ packageId }: { packageId: string }) {
                   </span>
                 </div>
                 <p className="text-[13px] text-muted-fg">
-                  registrado por {quem(pg.createdBy.name)} em {quando(pg.createdAt)}
+                  registrado por {quem(pg.createdBy.name)} em {quando(pg.createdAt, timezone)}
                 </p>
                 {pg.void ? (
                   <p className="text-[13px] text-negative">
-                    anulado por {quem(pg.void.voidedBy.name)} em {quando(pg.void.createdAt)},
-                    motivo: {ROTULO_DO_MOTIVO_DA_ANULACAO[pg.void.reason].toLowerCase()}
+                    anulado por {quem(pg.void.voidedBy.name)} em{' '}
+                    {quando(pg.void.createdAt, timezone)}, motivo:{' '}
+                    {ROTULO_DO_MOTIVO_DA_ANULACAO[pg.void.reason].toLowerCase()}
                   </p>
-                ) : podeAnular ? (
+                ) : podeAnular && onAnular ? (
                   <Button
                     size="sm"
                     variant="ghost"
                     aria-label={`Anular o pagamento de ${valor(pg.amountCents, pg.currency)} recebido em ${dataCurta(pg.receivedOn)}`}
-                    onClick={() => setAcao({ tipo: 'anular', pagamento: pg })}
+                    onClick={() => onAnular(pg)}
                   >
                     Anular
                   </Button>
@@ -284,26 +423,27 @@ function PainelDoPacote({ packageId }: { packageId: string }) {
           </ul>
         )}
       </section>
-    </div>
+    </>
   );
 }
 
 /**
  * Registrar: o valor vem preenchido com o saldo (editável), a data é hoje na
  * unidade e a forma é escolhida. Revisar mostra o que será gravado; a
- * confirmação manda com `Idempotency-Key`, e a repetição do resultado incerto
- * usa a MESMA chave.
+ * confirmação manda com `Idempotency-Key`. O resultado que não chega vira a
+ * tentativa pendente do pacote, repetida com a MESMA chave.
  */
 function RegistrarPagamento({
   pacote,
   hoje,
+  envio,
   onFim,
 }: {
   pacote: ClinicsPackageBalanceDto;
   hoje: string | null;
+  envio: Envio;
   onFim: () => void;
 }) {
-  const queryClient = useQueryClient();
   const [texto, setTexto] = useState(
     pacote.balanceCents !== null && pacote.balanceCents > 0
       ? centsToReaisInput(pacote.balanceCents)
@@ -312,9 +452,7 @@ function RegistrarPagamento({
   const [data, setData] = useState(hoje ?? '');
   const [forma, setForma] = useState<ClinicsPaymentMethod | ''>('');
   const [revisando, setRevisando] = useState(false);
-  const registro = useRegistroIdempotente(
-    () => void queryClient.invalidateQueries({ queryKey: PAYMENTS_KEY }),
-  );
+  const ocupado = envio.pendente !== null;
   const centavos = reaisToCents(texto);
   const valorValido =
     typeof centavos === 'number' && centavos > 0 && centavos <= CLINICS_PAYMENT_MAX_CENTS;
@@ -323,31 +461,13 @@ function RegistrarPagamento({
   const dataValida = /^\d{4}-\d{2}-\d{2}$/.test(data) && (hoje === null || data <= hoje);
   const pronto = valorValido && !acimaDoSaldo && dataValida && forma !== '';
 
-  if (registro.feito) {
-    return (
-      <div className="space-y-3">
-        <p role="status" className="text-body-sm font-medium">
-          {registro.feito}
-        </p>
-        <Button size="sm" variant="secondary" onClick={onFim}>
-          Voltar ao histórico
-        </Button>
-      </div>
-    );
-  }
-
   return (
     <div className="space-y-3">
       <h3 className="font-display text-[15px] font-semibold">Registrar pagamento</h3>
-      {registro.erro ? (
+      {envio.erro ? (
         <p role="alert" className="text-data text-negative">
-          {registro.erro}
+          {envio.erro}
         </p>
-      ) : null}
-      {registro.incerta ? (
-        <Button size="sm" variant="secondary" onClick={registro.repetir} disabled={registro.emVoo}>
-          Repetir o mesmo registro
-        </Button>
       ) : null}
       {revisando && pronto ? (
         <>
@@ -362,23 +482,25 @@ function RegistrarPagamento({
             <Button
               size="sm"
               variant="primary"
-              disabled={registro.ocupado}
-              onClick={() =>
-                registro.registrar({
+              disabled={ocupado}
+              onClick={() => {
+                const quanto = valor(centavos as number, pacote.currency);
+                const comoFoi = ROTULO_DA_FORMA[forma as ClinicsPaymentMethod].toLowerCase();
+                envio.enviar({
+                  tipo: 'registrar',
                   caminho: `/api/clinics/packages/${encodeURIComponent(pacote.packageId)}/payments`,
                   corpo: { amountCents: centavos, receivedOn: data, method: forma },
-                  rotulo: 'Pagamento',
-                  sucesso: (r) =>
-                    `Pagamento de ${valor((r as ClinicsPackagePaymentDto).amountCents, pacote.currency)} registrado.`,
-                })
-              }
+                  resumo: `Pagamento de ${quanto} em ${comoFoi}, recebido em ${dataCurta(data)}, no pacote de ${pacote.serviceName}.`,
+                  confirmacao: `Pagamento de ${quanto} registrado.`,
+                });
+              }}
             >
               Confirmar registro
             </Button>
             <Button
               size="sm"
               variant="ghost"
-              disabled={registro.ocupado}
+              disabled={ocupado}
               onClick={() => setRevisando(false)}
             >
               Voltar
@@ -433,12 +555,12 @@ function RegistrarPagamento({
             <Button
               size="sm"
               variant="primary"
-              disabled={!pronto || registro.ocupado}
+              disabled={!pronto || ocupado}
               onClick={() => setRevisando(true)}
             >
               Revisar pagamento
             </Button>
-            <Button size="sm" variant="ghost" disabled={registro.ocupado} onClick={onFim}>
+            <Button size="sm" variant="ghost" disabled={ocupado} onClick={onFim}>
               Cancelar
             </Button>
           </div>
@@ -452,44 +574,25 @@ function RegistrarPagamento({
 function AnularPagamento({
   pagamento,
   moeda,
+  envio,
   onFim,
 }: {
   pagamento: ClinicsPackagePaymentDto;
   moeda: string;
+  envio: Envio;
   onFim: () => void;
 }) {
-  const queryClient = useQueryClient();
   const [motivo, setMotivo] = useState<ClinicsPaymentVoidReason | ''>('');
-  const anulacao = useRegistroIdempotente(
-    () => void queryClient.invalidateQueries({ queryKey: PAYMENTS_KEY }),
-  );
+  const ocupado = envio.pendente !== null;
   const descricao = `${valor(pagamento.amountCents, moeda)} recebido em ${dataCurta(pagamento.receivedOn)}`;
-
-  if (anulacao.feito) {
-    return (
-      <div className="space-y-3">
-        <p role="status" className="text-body-sm font-medium">
-          {anulacao.feito}
-        </p>
-        <Button size="sm" variant="secondary" onClick={onFim}>
-          Voltar ao histórico
-        </Button>
-      </div>
-    );
-  }
 
   return (
     <div className="space-y-3">
       <h3 className="font-display text-[15px] font-semibold">Anular pagamento</h3>
-      {anulacao.erro ? (
+      {envio.erro ? (
         <p role="alert" className="text-data text-negative">
-          {anulacao.erro}
+          {envio.erro}
         </p>
-      ) : null}
-      {anulacao.incerta ? (
-        <Button size="sm" variant="secondary" onClick={anulacao.repetir} disabled={anulacao.emVoo}>
-          Repetir a mesma anulação
-        </Button>
       ) : null}
       <p className="text-body-sm">
         O pagamento de {descricao} fica no histórico, marcado como anulado, e deixa de contar no
@@ -514,19 +617,20 @@ function AnularPagamento({
         <Button
           size="sm"
           variant="danger"
-          disabled={motivo === '' || anulacao.ocupado}
+          disabled={motivo === '' || ocupado}
           onClick={() =>
-            anulacao.registrar({
+            envio.enviar({
+              tipo: 'anular',
               caminho: `/api/clinics/package-payments/${encodeURIComponent(pagamento.id)}/void`,
               corpo: { reason: motivo },
-              rotulo: 'Anulação',
-              sucesso: () => `Pagamento de ${descricao} anulado.`,
+              resumo: `Anular o pagamento de ${descricao}, motivo: ${ROTULO_DO_MOTIVO_DA_ANULACAO[motivo as ClinicsPaymentVoidReason].toLowerCase()}.`,
+              confirmacao: `Pagamento de ${descricao} anulado.`,
             })
           }
         >
           Confirmar anulação
         </Button>
-        <Button size="sm" variant="ghost" disabled={anulacao.ocupado} onClick={onFim}>
+        <Button size="sm" variant="ghost" disabled={ocupado} onClick={onFim}>
           Voltar
         </Button>
       </div>

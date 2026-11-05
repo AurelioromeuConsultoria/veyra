@@ -853,7 +853,11 @@ export const voidClinicsPackagePaymentSchema = z
   .strict();
 export type VoidClinicsPackagePaymentInput = z.infer<typeof voidClinicsPackagePaymentSchema>;
 
-/** Quem fez: a membership e o nome de exibição (vazio se a pessoa saiu). */
+/**
+ * Quem fez: a membership e o nome de exibição. Memberships não são apagadas,
+ * então o nome aparece mesmo de quem saiu da equipe; vazio só se a membership
+ * não for encontrada neste workspace (defensivo).
+ */
 export interface ClinicsPaymentActorDto {
   membershipId: string;
   name: string;
@@ -908,6 +912,11 @@ export interface ClinicsPackagePaymentsDto {
    * `null` quando o workspace não tem exatamente uma unidade ativa
    */
   today: string | null;
+  /**
+   * o fuso IANA da mesma unidade (a única ativa), para mostrar os instantes
+   * (registrado em, anulado em) na hora local dela; `null` junto com `today`
+   */
+  timezone: string | null;
 }
 
 // ── Retornos (ADR-048 adendo 7, F3.2) ─────────────────────────────────────

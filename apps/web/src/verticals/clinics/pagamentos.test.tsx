@@ -7,6 +7,7 @@ import { ExperienceProvider } from '../../lib/experience';
 import { criarQueryClient } from '../../lib/session-query';
 import { clinicsExperience } from './experience';
 import { PagamentosDoPaciente } from './pagamentos/PagamentosDoPaciente';
+import { limparTentativasPendentes } from './pagamentos/tentativa-pendente';
 import { ClinicsPatientPage } from './PatientPage';
 
 /**
@@ -104,6 +105,7 @@ const detalhe = (pagamentos: unknown[], extra: Record<string, unknown> = {}) => 
   package: saldo(extra),
   payments: pagamentos,
   today: '2026-11-05',
+  timezone: 'America/Sao_Paulo',
 });
 
 let client: QueryClient;
@@ -122,6 +124,7 @@ function renderizar(ui: ReactNode, caminho = '/') {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  limparTentativasPendentes();
 });
 
 const abrirPainel = async (servico = 'Limpeza de pele') => {
@@ -182,7 +185,8 @@ describe('a lista e o painel', () => {
     });
     renderizar(<PagamentosDoPaciente pacienteId={PAC} />);
     const ativo = await screen.findByRole('row', { name: 'Pacote de Limpeza de pele' });
-    expect(within(ativo).getByText(/a receber/)).toBeInTheDocument();
+    // com o espaço entre o valor e o texto (o chip é flex)
+    expect(within(ativo).getByText(/a receber/)).toHaveTextContent(/^R\$\s600,00 a receber$/);
     expect(within(ativo).getByText('Ativo')).toBeInTheDocument();
     const semPreco = screen.getByRole('row', { name: 'Pacote de Peeling' });
     expect(
@@ -213,13 +217,14 @@ describe('a lista e o painel', () => {
     });
     renderizar(<PagamentosDoPaciente pacienteId={PAC} />);
     const painel = await abrirPainel();
+    // no fuso da UNIDADE (São Paulo, UTC−3), não no do navegador
     expect(
-      await within(painel).findAllByText(
-        /registrado por Fulana Fictícia em \d{2}\/\d{2}\/\d{4} às \d{2}:\d{2}/,
-      ),
+      await within(painel).findAllByText('registrado por Fulana Fictícia em 05/11/2026 às 14:32'),
     ).toHaveLength(2);
     expect(
-      within(painel).getByText(/anulado por Beltrana Fictícia em .*motivo: duplicado/),
+      within(painel).getByText(
+        /^anulado por Beltrana Fictícia em 05\/11\/2026 às 15:00, motivo: duplicado$/,
+      ),
     ).toBeVisible();
     expect(within(painel).getByText(/R\$\s400,00 · Pix/)).toHaveClass('line-through');
     expect(within(painel).getByText(/R\$\s300,00 · Dinheiro/)).not.toHaveClass('line-through');
@@ -293,7 +298,7 @@ describe('a lista e o painel', () => {
     expect(
       await within(painel).findByText(/Pacote cancelado: não recebe pagamento novo/),
     ).toBeVisible();
-    expect(within(painel).queryByRole('button', { name: 'Registrar pagamento' })).toBeNull();
+    expect(within(painel).getByRole('button', { name: 'Registrar pagamento' })).toBeDisabled();
     fireEvent.click(
       within(painel).getByRole('button', {
         name: /^Anular o pagamento de R\$\s400,00 recebido em 03\/11\/2026$/,
@@ -305,11 +310,225 @@ describe('a lista e o painel', () => {
       target: { value: 'wrong_amount' },
     });
     fireEvent.click(confirmar);
-    expect(await within(painel).findByRole('status')).toHaveTextContent(/anulado/);
+    expect(await within(painel).findByText(/^Pagamento de .* anulado\.$/)).toHaveAttribute(
+      'role',
+      'status',
+    );
     await waitFor(() => {
       const post = chamadas.find((c) => c.chave.startsWith('POST'));
       expect(post?.corpo).toEqual({ reason: 'wrong_amount' });
       expect(post?.headers.get('Idempotency-Key')).toMatch(/^[0-9a-f-]{36}$/);
     });
+  });
+});
+
+describe('o botão de registrar e o fuso', () => {
+  const painelCom = async (extra: Record<string, unknown>, det: Record<string, unknown> = {}) => {
+    mockApi({
+      'GET /api/auth/me': { body: usuario(TUDO) },
+      [`GET /api/clinics/patients/${PAC}/package-payments`]: { body: [saldo(extra)] },
+      [`GET /api/clinics/packages/${P1}/payments`]: {
+        body: { ...detalhe([pagamento()], extra), ...det },
+      },
+    });
+    renderizar(<PagamentosDoPaciente pacienteId={PAC} />);
+    return abrirPainel();
+  };
+
+  it('quitado (preço e saldo zero): "Registrar pagamento" indisponível, com "Pacote quitado"', async () => {
+    const painel = await painelCom({ receivedCents: 100_000, balanceCents: 0 });
+    expect(await within(painel).findByText(/^Pacote quitado/)).toBeVisible();
+    expect(within(painel).getByRole('button', { name: 'Registrar pagamento' })).toBeDisabled();
+  });
+
+  it('sem preço: "Registrar pagamento" continua disponível', async () => {
+    const painel = await painelCom({ totalPriceCents: null, balanceCents: null });
+    expect(
+      await within(painel).findByRole('button', { name: 'Registrar pagamento' }),
+    ).toBeEnabled();
+    expect(within(painel).queryByText(/Pacote quitado/)).toBeNull();
+  });
+
+  it('sem o fuso da unidade: os instantes na hora do navegador, e dito', async () => {
+    const painel = await painelCom({}, { today: null, timezone: null });
+    expect(
+      await within(painel).findByText(
+        /^registrado por Fulana Fictícia em \d{2}\/\d{2}\/\d{4} às \d{2}:\d{2} \(fuso do navegador, .+\)$/,
+      ),
+    ).toBeVisible();
+  });
+});
+
+describe('a tentativa pendente (o resultado que não chegou)', () => {
+  /**
+   * O POST registra no "servidor" e a resposta se perde (`perder`), ou a rede
+   * cai antes; a recarga do painel pode falhar junto (`recargaFalha`).
+   */
+  function cenario(opcoes: { recargaFalha?: boolean } = {}) {
+    const estado = { perder: true, recargaFalha: opcoes.recargaFalha ?? false };
+    const chamadas = mockApi({
+      'GET /api/auth/me': { body: usuario(TUDO) },
+      [`GET /api/clinics/patients/${PAC}/package-payments`]: () => {
+        if (estado.recargaFalha) throw new TypeError('Failed to fetch');
+        return { body: [saldo()] };
+      },
+      [`GET /api/clinics/packages/${P1}/payments`]: () => {
+        if (estado.recargaFalha) throw new TypeError('Failed to fetch');
+        return { body: detalhe([pagamento()]) };
+      },
+      [`POST /api/clinics/packages/${P1}/payments`]: () => {
+        if (estado.perder) throw new TypeError('Failed to fetch');
+        return { status: 201, body: pagamento({ id: PG2, amountCents: 60_000 }) };
+      },
+      [`POST /api/clinics/package-payments/${PG1}/void`]: () => {
+        if (estado.perder) return { status: 503, body: { message: 'indisponível' } };
+        return { status: 201, body: pagamento() };
+      },
+    });
+    return { estado, chamadas };
+  }
+
+  const confirmarRegistro = async (painel: HTMLElement) => {
+    fireEvent.click(await within(painel).findByRole('button', { name: 'Registrar pagamento' }));
+    fireEvent.change(within(painel).getByLabelText('Forma'), { target: { value: 'pix' } });
+    fireEvent.click(within(painel).getByRole('button', { name: 'Revisar pagamento' }));
+    fireEvent.click(within(painel).getByRole('button', { name: 'Confirmar registro' }));
+  };
+
+  const fecharEReabrir = async () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Fechar' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    return abrirPainel();
+  };
+
+  const posts = (chamadas: ReturnType<typeof mockApi>) =>
+    chamadas.filter((c) => c.chave.startsWith('POST'));
+
+  it('com a recarga falhando: a pendência fica, sobrevive a fechar e reabrir, e "Tentar de novo" repete a MESMA chave e o MESMO corpo', async () => {
+    const { estado, chamadas } = cenario({ recargaFalha: false });
+    renderizar(<PagamentosDoPaciente pacienteId={PAC} />);
+    let painel = await abrirPainel();
+    // a recarga que segue a falha também falha
+    estado.recargaFalha = true;
+    await confirmarRegistro(painel);
+    const pendencia = await within(painel).findByRole('region', {
+      name: 'Registro pendente de confirmação',
+    });
+    expect(pendencia).toHaveTextContent(/R\$\s600,00 em pix, recebido em 05\/11\/2026/);
+    expect(within(pendencia).getByRole('alert')).toHaveTextContent(/O resultado não chegou/);
+    // a falha da recarga não toma o lugar da pendência
+    await waitFor(() =>
+      expect(within(painel).getByText(/Não foi possível carregar/)).toBeInTheDocument(),
+    );
+    expect(within(painel).getByRole('button', { name: 'Tentar de novo' })).toBeEnabled();
+
+    // a lista volta a carregar (a recarga da página, a rede de volta): a pendência continua
+    estado.recargaFalha = false;
+    await client.invalidateQueries();
+    painel = await fecharEReabrir();
+    expect(
+      await within(painel).findByRole('region', { name: 'Registro pendente de confirmação' }),
+    ).toBeVisible();
+
+    estado.perder = false;
+    fireEvent.click(within(painel).getByRole('button', { name: 'Tentar de novo' }));
+    expect(
+      await within(painel).findByText(/^Pagamento de R\$\s600,00 registrado\.$/),
+    ).toHaveAttribute('role', 'status');
+    expect(
+      within(painel).queryByRole('region', { name: 'Registro pendente de confirmação' }),
+    ).toBeNull();
+    const [primeiro, segundo] = posts(chamadas);
+    expect(posts(chamadas)).toHaveLength(2);
+    expect(segundo.headers.get('Idempotency-Key')).toBe(primeiro.headers.get('Idempotency-Key'));
+    expect(segundo.corpo).toEqual(primeiro.corpo);
+
+    // resolvida, some de vez: reabrir mostra o histórico, sem pendência
+    painel = await fecharEReabrir();
+    expect(
+      await within(painel).findByRole('button', { name: 'Registrar pagamento' }),
+    ).toBeVisible();
+    expect(within(painel).queryByRole('region', { name: /pendente de confirmação/ })).toBeNull();
+  });
+
+  it('enquanto pendente, nada novo é enviado: o histórico aparece sem "Registrar" nem "Anular"', async () => {
+    const { chamadas } = cenario();
+    renderizar(<PagamentosDoPaciente pacienteId={PAC} />);
+    const painel = await abrirPainel();
+    await confirmarRegistro(painel);
+    await within(painel).findByRole('region', { name: 'Registro pendente de confirmação' });
+    expect(
+      await within(painel).findByRole('region', { name: 'Histórico de pagamentos' }),
+    ).toBeVisible();
+    expect(within(painel).queryByRole('button', { name: 'Registrar pagamento' })).toBeNull();
+    expect(within(painel).queryByRole('button', { name: /^Anular/ })).toBeNull();
+    expect(posts(chamadas)).toHaveLength(1);
+  });
+
+  it('"Descartar": só então a intenção some; o próximo registro nasce com outra chave', async () => {
+    const { estado, chamadas } = cenario();
+    renderizar(<PagamentosDoPaciente pacienteId={PAC} />);
+    let painel = await abrirPainel();
+    await confirmarRegistro(painel);
+    await within(painel).findByRole('region', { name: 'Registro pendente de confirmação' });
+    fireEvent.click(within(painel).getByRole('button', { name: 'Descartar' }));
+    expect(
+      within(painel).queryByRole('region', { name: 'Registro pendente de confirmação' }),
+    ).toBeNull();
+    painel = await fecharEReabrir();
+    expect(
+      await within(painel).findByRole('button', { name: 'Registrar pagamento' }),
+    ).toBeEnabled();
+    expect(within(painel).queryByRole('region', { name: /pendente de confirmação/ })).toBeNull();
+    estado.perder = false;
+    await confirmarRegistro(painel);
+    expect(await within(painel).findByRole('status')).toHaveTextContent(/registrado/);
+    const [primeiro, segundo] = posts(chamadas);
+    expect(segundo.headers.get('Idempotency-Key')).not.toBe(
+      primeiro.headers.get('Idempotency-Key'),
+    );
+  });
+
+  it('a anulação com 5xx: pendente, sobrevive a fechar e reabrir, e repete a MESMA chave', async () => {
+    const { estado, chamadas } = cenario();
+    renderizar(<PagamentosDoPaciente pacienteId={PAC} />);
+    let painel = await abrirPainel();
+    fireEvent.click(
+      await within(painel).findByRole('button', { name: /^Anular o pagamento de R\$\s400,00/ }),
+    );
+    fireEvent.change(within(painel).getByLabelText('Motivo'), { target: { value: 'duplicate' } });
+    fireEvent.click(within(painel).getByRole('button', { name: 'Confirmar anulação' }));
+    expect(
+      await within(painel).findByRole('region', { name: 'Anulação pendente de confirmação' }),
+    ).toHaveTextContent(/motivo: duplicado/);
+    painel = await fecharEReabrir();
+    await within(painel).findByRole('region', { name: 'Anulação pendente de confirmação' });
+    estado.perder = false;
+    fireEvent.click(within(painel).getByRole('button', { name: 'Tentar de novo' }));
+    expect(await within(painel).findByText(/^Pagamento de .* anulado\.$/)).toHaveAttribute(
+      'role',
+      'status',
+    );
+    const [primeiro, segundo] = posts(chamadas);
+    expect(segundo.headers.get('Idempotency-Key')).toBe(primeiro.headers.get('Idempotency-Key'));
+    expect(segundo.corpo).toEqual({ reason: 'duplicate' });
+  });
+
+  it('a recusa definitiva (4xx) não fica pendente: mostra o motivo e libera', async () => {
+    mockApi({
+      'GET /api/auth/me': { body: usuario(TUDO) },
+      [`GET /api/clinics/patients/${PAC}/package-payments`]: { body: [saldo()] },
+      [`GET /api/clinics/packages/${P1}/payments`]: { body: detalhe([pagamento()]) },
+      [`POST /api/clinics/packages/${P1}/payments`]: {
+        status: 409,
+        body: { message: 'O valor passa do saldo do pacote; nada foi registrado' },
+      },
+    });
+    renderizar(<PagamentosDoPaciente pacienteId={PAC} />);
+    const painel = await abrirPainel();
+    await confirmarRegistro(painel);
+    expect(await within(painel).findByRole('alert')).toHaveTextContent(/passa do saldo/);
+    expect(within(painel).queryByRole('region', { name: /pendente de confirmação/ })).toBeNull();
+    expect(within(painel).getByRole('button', { name: 'Confirmar registro' })).toBeEnabled();
   });
 });

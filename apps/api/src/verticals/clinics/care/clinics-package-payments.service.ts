@@ -99,9 +99,10 @@ const JA_ANULADO = 'Este pagamento já foi anulado';
  * A trava é do BANCO: o gatilho da inserção do pagamento e o da anulação travam
  * a linha do pacote (`FOR NO KEY UPDATE`), e o do pagamento confere ali o
  * estado e a soma dos não anulados contra o preço. Assim dois registros
- * simultâneos não passam do preço, quem quer que insira. O serviço pré-confere
- * as mesmas regras para responder com a mensagem certa, e traduz a recusa do
- * gatilho (a corrida perdida) na mesma resposta. A transação é a interativa,
+ * simultâneos não passam do preço, quem quer que insira. O serviço só
+ * pré-confere o pacote cancelado, para responder com a mensagem certa; o saldo
+ * e a moeda ficam com o gatilho, e a recusa dele (inclusive a corrida perdida)
+ * vira o 409 com a mensagem escolhida pelo estado de agora. A transação é a interativa,
  * com espera de trava e prazo limitados: o prazo vencido é 409, sem efeito.
  */
 @Injectable()
@@ -153,10 +154,12 @@ export class ClinicsPackagePaymentsService {
         ...(p.void ? [p.void.voidedByMembershipId] : []),
       ]),
     );
+    const unidade = await this.hojeNaUnidade();
     return {
       package: toBalanceDto(pacote, recebido),
       payments: pagamentos.map((p) => toPaymentDto(p, nomes)),
-      today: await this.hojeNaUnidade(),
+      today: unidade?.hoje ?? null,
+      timezone: unidade?.fuso ?? null,
     };
   }
 
@@ -174,7 +177,7 @@ export class ClinicsPackagePaymentsService {
     // a resposta revela o pacote e o pagamento: quem registra precisa poder
     // lê-los. A regra mora AQUI, e não só na rota, para valer a qualquer chamador
     await this.exigir(auth, 'clinics:payments:read');
-    const hoje = await this.hojeNaUnidade();
+    const hoje = (await this.hojeNaUnidade())?.hoje ?? null;
     if (hoje === null) {
       throw new BadRequestException(
         'A data do recebimento segue o fuso da unidade, e a clínica não tem exatamente uma unidade ativa',
@@ -320,17 +323,19 @@ export class ClinicsPackagePaymentsService {
   }
 
   /**
-   * A data local de hoje na unidade, pelo relógio do BANCO (ADR-049): a única
-   * unidade ativa, como a agenda sem `unitId`. Sem exatamente uma, `null`.
+   * A data local de hoje na unidade, pelo relógio do BANCO (ADR-049), e o fuso
+   * dela: a única unidade ativa, como a agenda sem `unitId` (o pacote não guarda
+   * unidade; limitação registrada no ADR-063). Sem exatamente uma, `null`.
    */
-  private async hojeNaUnidade(): Promise<string | null> {
+  private async hojeNaUnidade(): Promise<{ hoje: string; fuso: string } | null> {
     const ativas = (await this.prisma.db.clinicsUnit.findMany({
       where: { archivedAt: null },
       select: { timezone: true },
       take: 2,
     })) as unknown as { timezone: string }[];
     if (ativas.length !== 1) return null;
-    return horaLocal(await agoraDoBanco(this.prisma), ativas[0].timezone).data;
+    const fuso = ativas[0].timezone;
+    return { hoje: horaLocal(await agoraDoBanco(this.prisma), fuso).data, fuso };
   }
 
   /** O nome de exibição de cada membership deste workspace (vazio se não há). */

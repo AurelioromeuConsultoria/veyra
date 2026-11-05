@@ -391,11 +391,25 @@ describe('Clinics — pagamentos de pacotes (integração, F6.1a)', () => {
       });
       const frente = await hojeNaUnidade();
       expect(frente > atras).toBe(true);
+      // o painel recebe o hoje e o fuso da MESMA unidade (os instantes na hora dela)
+      expect(await detalhe(p)).toMatchObject({ today: frente, timezone: 'Pacific/Kiritimati' });
       await registrar(p, { receivedOn: frente, amountCents: 1 }).expect(201);
       await registrar(p, { receivedOn: somarDias(frente, 1), amountCents: 1 }).expect(400);
       // uma data anterior vale
       await registrar(p, { receivedOn: '2026-01-15', amountCents: 1 }).expect(201);
       expect(await pagamentos()).toBe(2);
+    });
+
+    it('sem exatamente uma unidade ativa: o painel vem sem hoje e sem fuso, e o registro é recusado (400)', async () => {
+      const p = await criarPacote();
+      await prisma.raw.clinicsUnit.updateMany({
+        where: { id: unitA },
+        data: { archivedAt: new Date() },
+      });
+      expect(await detalhe(p)).toMatchObject({ today: null, timezone: null });
+      const r = await registrar(p).expect(400);
+      expect(r.body.message).toMatch(/exatamente uma unidade ativa/);
+      expect(await pagamentos()).toBe(0);
     });
 
     it('pacote sem preço: aceita qualquer valor, e o saldo não é calculável', async () => {
