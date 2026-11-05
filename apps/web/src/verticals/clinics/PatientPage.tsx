@@ -38,6 +38,7 @@ import { ChipDoConsentimento, EnviarMensagem, OrigemDoContato } from './ficha/Ca
 import { reaisToCents } from './format';
 import { CLINICS_AGENDA_PATH, CLINICS_PATIENTS_PATH } from './nav';
 import { NotasETarefasDoPaciente } from './NotasETarefasDoPaciente';
+import { PagamentosDoPaciente } from './pagamentos/PagamentosDoPaciente';
 import { ListaDeRetornos, TETO_DOS_RETORNOS, useRetornos } from './retornos/ListaDeRetornos';
 import { SessoesDoPacote } from './SessoesDoPacote';
 import { ContatoDaPessoa } from './pessoa/ContatoDaPessoa';
@@ -55,7 +56,7 @@ const TOM_DO_PACOTE: Record<ClinicsPackageStatus, Tom> = {
   canceled: 'neutral',
 };
 
-type ChaveDaAba = 'pacotes' | 'retornos' | 'atendimentos' | 'notas' | 'contato';
+type ChaveDaAba = 'pacotes' | 'pagamentos' | 'retornos' | 'atendimentos' | 'notas' | 'contato';
 const BASE_DAS_ABAS = 'ficha';
 
 /**
@@ -79,6 +80,8 @@ function FichaReady() {
   const idValido = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
   const { data: user } = useSession();
   const lePacotes = hasPermission(user, 'clinics:care:read');
+  // os pagamentos têm acesso PRÓPRIO, separado do atendimento (ADR-063)
+  const lePagamentos = hasPermission(user, 'clinics:payments:read');
   // a porta da ficha já exige ler a agenda; a condição fica explícita aqui
   const leAgenda = hasPermission(user, 'clinics:schedule:read');
   const podeAgendar = hasPermission(user, 'clinics:schedule:write');
@@ -115,6 +118,7 @@ function FichaReady() {
   // (a aba que não existe não monta, e o que ela consulta não é consultado)
   const abas: Aba<ChaveDaAba>[] = [
     ...(lePacotes ? [{ chave: 'pacotes' as const, rotulo: 'Pacotes' }] : []),
+    ...(lePagamentos ? [{ chave: 'pagamentos' as const, rotulo: 'Pagamentos' }] : []),
     { chave: 'retornos', rotulo: 'Retornos' },
     ...(leAgenda ? [{ chave: 'atendimentos' as const, rotulo: 'Atendimentos' }] : []),
     ...(contactId && alcanca(user, { permission: 'tasks:read' })
@@ -200,6 +204,7 @@ function FichaReady() {
             className="min-w-0 flex-[999_1_520px]"
           >
             {ativa === 'pacotes' ? <PacotesDoPaciente pacienteId={id} /> : null}
+            {ativa === 'pagamentos' ? <PagamentosDoPaciente pacienteId={id} /> : null}
             {ativa === 'retornos' ? (
               <section aria-label="Retornos do paciente" className="space-y-3">
                 <div className="flex items-center justify-between gap-3">
@@ -637,7 +642,7 @@ function PacotesDoPaciente({ pacienteId }: { pacienteId: string }) {
 /**
  * Pacote novo: o total de sessões e o preço TOTAL, opcional, digitado em reais
  * e enviado em centavos inteiros. A confirmação mostra o que fica congelado.
- * Preço registrado não é pagamento (D1 em aberto).
+ * Preço registrado não é pagamento: os pagamentos são lançamentos à parte (ADR-063).
  */
 function NovoPacote({ pacienteId, onDone }: { pacienteId: string; onDone: () => void }) {
   const queryClient = useQueryClient();
