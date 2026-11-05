@@ -1012,7 +1012,12 @@ muda o registro da migration e não desfaz nenhum objeto.
    Nenhuma linha, coluna ou restrição muda, e a migration não usa o valor.
    Ela sobe sozinha na API (ADR-058, adendo 2). O ensaio da falha forçada deu
    o schema idêntico e o inventário em 0; a aplicação limpa, 1 e o
-   `migrate diff` vazio.
+   `migrate diff` vazio. **Volta ao código anterior:** depois que existirem
+   linhas `event_linked`, a timeline anterior (sem o filtro do tipo) passaria
+   a servir esse tipo interno, ou falharia com o valor desconhecido. Não se
+   volta a um código anterior a ela; se for inevitável, as linhas
+   `event_linked` saem antes, numa janela (§4.1), e o texto dos eventos
+   desligados de pacientes volta a ser servido até o código novo voltar.
 
    ```sql
    -- inventário da 20261104120000_activity_event_linked: 0 linhas = nada
