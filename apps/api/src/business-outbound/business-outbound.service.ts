@@ -1,4 +1,10 @@
-import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type {
   ApproveBusinessOutboundInput,
@@ -24,6 +30,7 @@ import { postgresErrorCode } from '../common/prisma-exception.filter';
 import { TravasDeIdentidade } from '../content-use/identity-locks';
 import { chaveDeCoincidencia } from '../contacts/phone-identity';
 import { MudancasDeRestricao, type ExecutorDeTransacao } from '../content-use/restriction-changes';
+import { CONTEUDO_RESTRITO, ProtectedContentService } from '../extensions/protected-content';
 import {
   OutboundPreconditionService,
   PREFIXO_DO_CORE,
@@ -142,7 +149,22 @@ export class EnvioDoNegocioService {
     private readonly permissoes: PermissionsService,
     private readonly cancelamento: CancelamentoDeDespachos,
     private readonly config: ConfigService,
+    private readonly protegido: ProtectedContentService,
   ) {}
+
+  /**
+   * QUEM NÃO LÊ NÃO ESCREVE (ADR-061, adendo 9, item 8): pela rota do Core, o
+   * envio escreve na conversa de uma pessoa (todo alvo tem contato). No
+   * `uniforme`, quem pede não lê o texto de nenhuma conversa com pessoa, e a
+   * prévia e a aprovação respondem o mesmo 403 "Conteúdo restrito", igual
+   * para todo contato e antes de qualquer conferência do alvo. A origem de um
+   * vertical vem pelas rotas dele, que exigem as chaves dele.
+   */
+  async exigirTextoDoCore(auth: AuthContext): Promise<void> {
+    if (await this.protegido.semClassificacao(auth)) {
+      throw new ForbiddenException(CONTEUDO_RESTRITO);
+    }
+  }
 
   /**
    * O transporte é o SIMULADO (o falso de staging, ADR-046)? A MESMA função da
@@ -283,6 +305,7 @@ export class EnvioDoNegocioService {
     input: PreviewBusinessOutboundInput,
     rota: RotaDoEnvio,
   ): Promise<BusinessOutboundPreviewDto> {
+    if (rota === 'core') await this.exigirTextoDoCore(auth);
     const workspaceId = auth.workspaceId as string;
     const agora = await this.conferencia.agora();
     const items: BusinessOutboundPreviewDto['items'] = [];
@@ -319,6 +342,7 @@ export class EnvioDoNegocioService {
     input: ApproveBusinessOutboundInput,
     rota: RotaDoEnvio,
   ): Promise<{ items: ItemAprovado[] }> {
+    if (rota === 'core') await this.exigirTextoDoCore(auth);
     const items: ItemAprovado[] = [];
     for (const [index, item] of input.items.entries()) {
       try {

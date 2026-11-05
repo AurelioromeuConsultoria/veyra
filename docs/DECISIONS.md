@@ -10616,7 +10616,7 @@ O workspace que nunca teve o Clinics fica sempre no modo livre, com o comportame
   - a máscara da trilha confere as tarefas uma a uma;
   - falta um teste que ligue a allowlist da trilha aos campos mascarados.
 - **A conclusão sobre o B1:**
-  - **Coberto:** a parte técnica do acesso ao conteúdo clínico pelas pessoas e papéis do workspace, entre a F5.3a e a F5.3d. São as notas, as tarefas, a mídia, os campos, os títulos, a trilha, a timeline, o histórico das automações, o replay e a RAI, para a demonstração com dados fictícios. Na trilha, as linhas que dizem quem é paciente saem; fora dela, o sinal ainda existe no item 8 abaixo (o 7 foi resolvido no adendo 8).
+  - **Coberto:** a parte técnica do acesso ao conteúdo clínico pelas pessoas e papéis do workspace, entre a F5.3a e a F5.3d. São as notas, as tarefas, a mídia, os campos, os títulos, a trilha, a timeline, o histórico das automações, o replay e a RAI, para a demonstração com dados fictícios. Na trilha, as linhas que dizem quem é paciente saem; fora dela, o sinal existia nos itens 7 e 8 abaixo (o 7 foi resolvido no adendo 8, e o 8 no adendo 9).
   - **O B1 NÃO é levantado.** Continuam obrigatórios antes do piloto com dados reais:
     1. **a agenda do Core (`CalendarEvent`):** o título, a descrição e o local de um evento ligado ao contato ou à oportunidade de um paciente saem a quem tem `calendar:read` (Member e Guest), na atividade `event_scheduled` e na notificação `calendar_event_scheduled`. É texto escrito sobre o contato, da mesma classe das notas e tarefas, e fica fora da F5.3. O Clinics tem a agenda própria dele. A do Core não está nas rotas da experiência da clínica, mas a API dela responde _(resolvido no adendo 8, resultado do item 1 e ressalvas da revisão)_;
     2. o procedimento seguro para corrigir uma atribuição errada de remetente em conversa de paciente com mídia (adendo 6, item 3) _(resolvido no adendo 9, resultado do item 2)_;
@@ -10625,7 +10625,7 @@ O workspace que nunca teve o Clinics fica sempre no modo livre, com o comportame
     5. a corrida do vínculo profissional lido fora da transação (D8, adendo 1, aceito só para a demonstração);
     6. **o sinal fraco da IA:** um interessado liberado para IA que vira paciente passa a ser recusado, o que se confunde com a revogação manual;
     7. _(resolvido no adendo 8, item 7)_ **a lista de consentimentos por contato:** `GET /contacts/:id/consents` e `GET /conversations/:id/consents` devolvem `purposeKey: 'clinics_confirmacao'` sem o E8. Quem tem `consents:read` e não tem a agenda deduz quem é paciente. Isso vale para um papel personalizado e para todos depois da desativação. O `consent.revoked` da trilha não tem `purposeId`, e a lista liga o id ao contato;
-    8. **o texto das conversas:** o adendo 5 manteve o texto visível. Quem lê conversas sem a agenda (o Guest padrão, por exemplo) lê o envio do vertical, como a confirmação com data e hora, e a mensagem do próprio paciente. As conversas estão entre as superfícies que revelam a classificação (adendo 3, item 9);
+    8. _(resolvido no adendo 9, item 8)_ **o texto das conversas:** o adendo 5 manteve o texto visível. Quem lê conversas sem a agenda (o Guest padrão, por exemplo) lê o envio do vertical, como a confirmação com data e hora, e a mensagem do próprio paciente. As conversas estão entre as superfícies que revelam a classificação (adendo 3, item 9);
     9. **a condição para a política de exclusão do B3:** excluir um paciente apagaria em cascata as atividades do tempo dele, e os títulos antigos voltariam em claro na trilha;
     10. a validação operacional e jurídica do modelo de acesso, junto com o B3 (a política de exclusão de pacientes) e o B4.
 
@@ -10806,6 +10806,90 @@ O workspace que nunca teve o Clinics fica sempre no modo livre, com o comportame
   - **o preenchimento usa o contato ATUAL:** a história anterior das religações não é recomposta. O staging só tem dados fictícios, e nenhum piloto rodou;
   - **o id de um contato excluído vai na dúvida:** a mídia recebida por um interessado que depois foi excluído, hoje numa conversa de outro interessado, passa a sair restrita para a recepção. É conservador, e quem tem as chaves continua lendo;
   - **a corrida entre a ingestão do código anterior e a correção** fica limitada à janela da troca, e só o código novo corrige.
+
+**Resultado do item 8, o texto das conversas (commit local, 2026-11-05).** Sem migration, sem permissão nova, sem `raw` novo; a porta do E8 só ganhou um método; o Core não cita o vertical. A recepção não perdeu nenhuma ação.
+
+- **O sinal, reproduzido antes da correção** pela integração nova `clinics-patient-conversations`, pela API. Num workspace com o Clinics, o Guest padrão e um papel personalizado com `conversations:read` e `conversations:write`, sem `clinics:schedule:read`, liam na conversa do paciente:
+  - o assunto ("Retorno da toxina"), a confirmação com data e hora e a mensagem do próprio paciente (textos fictícios);
+  - o corpo neutro da origem do vertical ("Mensagem por template"), que só essa origem grava;
+  - o código `origin_invalidated` do despacho cancelado, que só a origem do vertical produz;
+  - o assunto na notificação de atribuição.
+
+  Na mesma rodada, todas as escritas passavam (201 e 200), a política de envio dizia `free_form` e a prévia do envio do negócio pela rota do Core respondia 200. Quatro cenários falharam assim. Os dois que já passavam são o da recepção e o do workspace sem o Clinics.
+
+- **O mapa: as superfícies que expõem texto de conversa a uma pessoa.**
+  1. **O corpo das mensagens:** a lista (`GET /conversations/:id/messages`), a resposta do registro e a da repetição. Mascarado.
+  2. **O assunto:** a lista, a conversa por id e as respostas de criar, editar, identificar, desfazer e rejeitar o remetente. Mascarado.
+  3. **A prévia (a última mensagem na lista):** não existe no DTO. A lista traz só `lastMessageAt`, e a tela usa o assunto como legenda. Coberta pelo assunto.
+  4. **As notificações:** `conversation_assigned` grava o assunto pronto. Mascarado na leitura da caixa. Não existe notificação de mensagem recebida.
+  5. **O código do despacho (`dispatchError`):** `origin_invalidated`, `precondition_failed` e `precondition_unavailable` só vêm da origem do vertical, e `content_restricted` vem da E6. Sai `null`.
+  6. **A política de envio (`send-policy`):** o motivo dependia da pessoa (o pedido de parar, o remetente, a janela). Agora é `blocked`, "Conteúdo restrito", antes de todos os outros motivos.
+  7. **O envio do negócio pela rota do Core:** a prévia mostra o texto renderizado, e a aprovação escreve na conversa. Recusado. As opções (`/business-outbound/options`) só listam templates e finalidades do Core, sem as da extensão, e não mudam.
+  8. **A timeline:** `message_sent` e `message_received` têm o payload vazio (mapa fechado). Nada muda.
+  9. **A trilha:** a allowlist de `message` é `externalId`, `direction` e `authorType`, e a de `conversationSender` tem só estado, ids e contagens. Nenhuma ação grava o assunto ou o corpo. Nada muda.
+  10. **A busca:** não existe busca em conversas. A do Core é de contatos, por nome e e-mail. Nada muda.
+  11. **A exportação:** não existe (adendo 7). Nada muda.
+  12. **Webhooks e automações:** não há evento de webhook nem gatilho de automação de mensagem. Nada muda.
+  13. **A IA:** o resumo e o rascunho leem o texto como antes e seguem sob a E6, que sempre recusa o paciente. Ver as pendências.
+  14. **O contexto clínico das Conversas e o Hoje do Clinics:** exigem `clinics:schedule:read`, então nunca estão no `uniforme`.
+
+- **O que mudou, no servidor:**
+  - **A porta do E8 (`ProtectedContentService`)** ganhou só um método, `conversasComTextoOculto`. No `uniforme`, oculta TODA conversa com contato ou a identificar, e a que não existe mais, sem consultar a classificação. No `restrito` e no `livre`, não oculta nenhuma.
+  - **A leitura (`ConversationsService`):**
+    - o assunto sai "Conteúdo restrito", também quando não há assunto gravado, e a conversa leva a marca `textRestricted: true`;
+    - cada mensagem sai com o corpo "Conteúdo restrito" (também o marcador da mídia, que diria o tipo), `dispatchError: null` e `textRestricted: true`;
+    - o contrato só ganhou o campo opcional `textRestricted`;
+    - a estrutura fica: canal, estado, responsável, datas, ids, direção, autoria, o estado do despacho e os anexos, já restritos pela regra da mídia;
+    - a conversa sem pessoa segue como sempre.
+  - **Quem não lê não escreve:** com o mesmo 403 "Conteúdo restrito", antes de qualquer outra conferência, são recusados:
+    - registrar mensagem, de entrada ou de saída;
+    - mudar ou limpar o assunto;
+    - criar uma conversa para um contato;
+    - a prévia e a aprovação do envio do negócio pela rota do Core (`exigirTextoDoCore`).
+
+    Mudar o estado e o responsável segue livre, porque é estrutura.
+
+  - **A notificação `conversation_assigned`** é mascarada na leitura da caixa, pela conversa lida da `dedupeKey` (`conversation_assigned:<conversa>:<destinatário>`). A conversa que não existe mais vai na dúvida.
+  - **A repetição pela mesma `Idempotency-Key` dá a resposta de um pedido novo,** só no `uniforme`, e nada executa de novo:
+    - o registro de mensagem: `MessageReplayGuard` roda as mesmas conferências do pedido novo, o 404 da RAI invisível e o 403 do texto;
+    - a criação de conversa: a nova `ConversationCreateReplayGuard`;
+    - a aprovação do envio do negócio pelo Core: a nova `EnvioDoNegocioReplayGuard`.
+
+    A falha ao decidir dá 503, sem apagar o guardado. No `restrito` e no `livre`, a repetição é a de antes.
+
+  - **A IA não passa pelo filtro:** as leituras de texto dela (o resumo e o rascunho) pedem `leitor: 'ia'`, e o padrão `pessoa` falha fechado para qualquer outro chamador. O envio, a ingestão (o webhook do WhatsApp) e o worker não usam essas rotas.
+- **O web (Inbox):**
+  - a legenda da lista, o assunto no contexto e o corpo de cada mensagem mostram o mesmo aviso, em itálico e com um cadeado, sem mudar o layout nem a contagem;
+  - na conversa restrita, o compositor dá lugar ao aviso "Conteúdo restrito: … não é possível registrar mensagens nela";
+  - o status continua editável.
+- **Para qual papel:**
+  - **o Guest e o papel personalizado sem `clinics:schedule:read` (`uniforme`):** o texto de TODA conversa com pessoa ou RAI sai restrito. O Guest não tem `conversations:write`, então só a leitura muda para ele. O papel com escrita perde as escritas de texto nessas conversas e mantém o estado e o responsável;
+  - **a "Recepção" (Member, `restrito`) e "Recepção e atendimento", Owner e Admin (`livre`):** nada muda. O teste confere a leitura do texto do paciente e do interessado, o código do despacho, o registro de entrada e de saída, o assunto, a atribuição com a notificação, a conversa nova para o paciente, a política `free_form` e a repetição devolvendo o corpo;
+  - **depois da desativação:** todos ficam no `uniforme`, inclusive o Owner;
+  - **o workspace que nunca teve o Clinics:** nada muda, para o mesmo papel e para o Guest.
+- **Os testes:**
+  - **`clinics-patient-conversations`, com 6 cenários:**
+    - o `uniforme` com o Guest e o papel personalizado, comparando paciente e interessado na lista, na conversa, nas mensagens e na notificação, mais a RAI e a conversa sem pessoa;
+    - as oito escritas iguais no `uniforme`, o estado editável e o que não tem pessoa;
+    - a recepção, o papel combinado e o Owner;
+    - a repetição do registro, da criação e da aprovação, com 403 igual ao pedido novo, o corpo de sempre no `restrito` e nada criado de novo;
+    - a desativação;
+    - o workspace sem o Clinics.
+  - **`clinics-patient-media-fields`:** duas expectativas do `uniforme` passaram de `[anexo]` para "Conteúdo restrito", por esta decisão. O `[anexo]` continua no `restrito`.
+  - **Os specs existentes passam:**
+    - conversas, identidade do WhatsApp, WhatsApp e envio do WhatsApp;
+    - notificações, agenda do Core (`organization`) e trilha;
+    - consentimentos e envio do negócio;
+    - IA (`intelligence` e `reply-suggestion`) e pedidos de envio do Clinics;
+    - o E8 do Clinics: `content`, `media-fields`, `audit`, `calendar` e `consents`.
+
+    Na rodada final, depois da formatação, as 18 suítes de integração (a nova e as 17 acima) passaram com 475 casos. Os unitários das pastas tocadas também passam (16 suítes).
+
+  - **Web:** `tsc`, e `vitest` com 27 arquivos, incluindo o novo `inbox-texto-restrito` com 3 casos.
+- **Pendências e decisões, registradas aqui:**
+  - **A IA no `uniforme` (para decisão, junto com o item 6 do adendo 7).** Um papel personalizado no `uniforme` com `intelligence:use` ainda lê o resumo da IA (o novo e o guardado) da conversa de um interessado liberado para IA, um texto derivado da conversa que ele não lê. Nenhum papel padrão tem esse par num workspace com o Clinics: o Guest não tem `intelligence:use`, e o Member tem a agenda. O paciente é sempre recusado pela E6, então a diferença entre recusado e resumido é o sinal do item 6. O rascunho de resposta passou a ser recusado (`send_blocked`) no `uniforme` para todos, porque a política de envio bloqueia antes. **Recomendação:** no `uniforme`, recusar as capacidades da IA sobre conversa com pessoa, igual para todo contato. Não foi feito porque a decisão do adendo 9 manteve a IA como estava.
+  - **A autoria `ai`** (o selo de IA numa mensagem) diz que o contato estava liberado para IA quando ela saiu, e o paciente nunca está. É um sinal fraco do item 6. A autoria é estrutura e fica.
+  - **O momento e a forma das mensagens** seguem visíveis como estrutura. Uma confirmação do vertical tem a mesma forma de um template do Core (a autoria `user` de quem aprovou e um despacho), e o corpo e o código saem restritos. Sobra o ritmo, como as saídas perto dos horários de agenda, que é um sinal fraco.
 
 ## ADR-062 — Redesenho visual e de UX: "Mineral" com moldura, estados e próxima ação (2026-11-04)
 

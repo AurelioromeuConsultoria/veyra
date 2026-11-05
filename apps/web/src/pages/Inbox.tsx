@@ -16,6 +16,7 @@ import type {
 import { clsx } from 'clsx';
 import {
   Check,
+  Lock,
   MessageSquarePlus,
   Paperclip,
   Send,
@@ -760,7 +761,16 @@ export function InboxPage() {
                       </span>
                     </div>
                     {legenda ? (
-                      <p className="mt-0.5 truncate text-[13px] text-muted-fg">{legenda}</p>
+                      <p
+                        className={clsx(
+                          'mt-0.5 truncate text-[13px] text-muted-fg',
+                          // o assunto restrito (ADR-061, adendo 9, item 8): o mesmo
+                          // aviso em toda conversa com pessoa, sem diferença de forma
+                          !rai && conversation.textRestricted && 'italic',
+                        )}
+                      >
+                        {legenda}
+                      </p>
                     ) : null}
                     <div className="mt-1.5 flex items-center gap-1.5">
                       {conversation.channelType !== 'internal' ? (
@@ -978,10 +988,24 @@ export function InboxPage() {
                               daIa && 'border-l-2 border-l-ai',
                             )}
                           >
-                            {/* React escapa por padrão: corpo de mensagem nunca vira HTML */}
-                            <p className="whitespace-pre-wrap text-[14px] leading-[1.45]">
-                              {message.body}
-                            </p>
+                            {message.textRestricted ? (
+                              // o texto restrito (ADR-061, adendo 9, item 8): o mesmo
+                              // aviso em toda mensagem, do mesmo tamanho, sem o tipo
+                              <p
+                                className={clsx(
+                                  'flex items-center gap-1.5 text-[14px] italic leading-[1.45]',
+                                  saida ? 'text-accent-fg/80' : 'text-muted-fg',
+                                )}
+                              >
+                                <Lock size={12} aria-hidden />
+                                {message.body}
+                              </p>
+                            ) : (
+                              /* React escapa por padrão: corpo de mensagem nunca vira HTML */
+                              <p className="whitespace-pre-wrap text-[14px] leading-[1.45]">
+                                {message.body}
+                              </p>
+                            )}
                             {message.attachments.length > 0 ? (
                               <ul
                                 className={clsx(
@@ -1176,7 +1200,18 @@ export function InboxPage() {
             </p>
           ) : null}
 
-          {canWrite ? (
+          {canWrite && selected.textRestricted ? (
+            /* quem não lê o texto da conversa não escreve nela (ADR-061, adendo
+               9, item 8): o servidor recusa, e a tela não oferece o compositor */
+            <p
+              data-testid="composer-restrito"
+              className="flex items-center gap-2 border-t border-border bg-surface px-6 py-3.5 text-body-sm text-muted-fg"
+            >
+              <Lock size={13} aria-hidden />
+              Conteúdo restrito: o texto desta conversa não está disponível para o seu papel, e não
+              é possível registrar mensagens nela.
+            </p>
+          ) : canWrite ? (
             <form
               className="border-t border-border bg-surface px-6 py-3.5"
               onSubmit={(e) => {

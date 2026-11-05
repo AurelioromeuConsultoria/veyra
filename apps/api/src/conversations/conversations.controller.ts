@@ -25,7 +25,7 @@ import { AuthContext, CurrentAuth, RequirePermissions } from '../common/decorato
 import { Idempotent } from '../common/idempotency.decorator';
 import { ZodPipe } from '../common/zod.pipe';
 import { ConversationSenderService } from './conversation-sender.service';
-import { MessageReplayGuard } from './message-replay.guard';
+import { ConversationCreateReplayGuard, MessageReplayGuard } from './message-replay.guard';
 import { ConversationsService } from './conversations.service';
 
 @Controller('conversations')
@@ -53,8 +53,12 @@ export class ConversationsController {
     return this.conversations.get(auth, id);
   }
 
+  /**
+   * A repetição segue a regra de agora (ADR-061, adendo 9, item 8): no
+   * `uniforme`, a conversa pedida para uma pessoa dá o 403 de um pedido novo.
+   */
   @RequirePermissions('conversations:write')
-  @Idempotent()
+  @Idempotent({ replayGuard: ConversationCreateReplayGuard })
   @Post()
   create(
     @CurrentAuth() auth: AuthContext,

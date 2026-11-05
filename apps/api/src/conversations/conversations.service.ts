@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -28,7 +29,7 @@ import {
 } from '../channels/send-policy';
 import { bloqueioAtivo, MENSAGEM_PEDIDO_DE_PARAR } from '../consents/consent-records';
 import { WhatsappSendService } from '../channels/whatsapp-send.service';
-import { ProtectedContentService } from '../extensions/protected-content';
+import { CONTEUDO_RESTRITO, ProtectedContentService } from '../extensions/protected-content';
 import { FilesService } from '../files/files.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UsageService } from '../usage/usage.service';
@@ -58,6 +59,17 @@ type ConversationRow = {
 
 /** O que a tela pode ver da conversa, conforme quem pergunta (C13). */
 type Visao = { podeVerRai: boolean; mostraNumero: boolean };
+
+/**
+ * QUEM lê o texto das conversas (ADR-061, adendo 9, item 8). `pessoa` (o
+ * padrão, para falhar fechado): a regra do E8 — no `uniforme`, o texto de toda
+ * conversa com pessoa ou a identificar sai como "Conteúdo restrito". `ia`: as
+ * capacidades da IA leem o texto como antes; elas não passam pelo filtro de
+ * leitura (decisão do adendo 9) e seguem sob a E6, que já recusa o paciente.
+ */
+export type LeitorDoTexto = 'pessoa' | 'ia';
+
+type ConversaDoTexto = Pick<ConversationRow, 'contactId' | 'senderStatus'>;
 
 /** C13: a RAI não vai para quem não pode identificá-la. */
 const MENSAGEM_ATRIBUIR_RAI =
@@ -207,7 +219,11 @@ export class ConversationsService {
     return channel.id;
   }
 
-  async list(auth: AuthContext, input: ListConversationsInput): Promise<ConversationPageDto> {
+  async list(
+    auth: AuthContext,
+    input: ListConversationsInput,
+    leitor: LeitorDoTexto = 'pessoa',
+  ): Promise<ConversationPageDto> {
     const visao = await this.visao(auth);
     const cursor = input.cursor ? decodeCursor(input.cursor) : null;
     const where = {
@@ -238,7 +254,7 @@ export class ConversationsService {
     const page = rows.slice(0, input.limit);
     const last = page[page.length - 1];
     return {
-      items: await this.toDtos(page, visao),
+      items: await this.toDtos(auth, page, visao, leitor),
       nextCursor:
         rows.length > input.limit && last
           ? encodeCursor({ at: last.lastMessageAt, id: last.id })
@@ -246,13 +262,61 @@ export class ConversationsService {
     };
   }
 
-  async get(auth: AuthContext, id: string): Promise<ConversationDto> {
+  async get(
+    auth: AuthContext,
+    id: string,
+    leitor: LeitorDoTexto = 'pessoa',
+  ): Promise<ConversationDto> {
     const { row, visao } = await this.lerVisivel(auth, id);
-    const [dto] = await this.toDtos([row], visao);
+    const [dto] = await this.toDtos(auth, [row], visao, leitor);
     return dto;
   }
 
+  /**
+   * O texto da conversa é oculto para quem pede (ADR-061, adendo 9, item 8)?
+   * `null`: a conversa que não existe mais, na dúvida.
+   */
+  private async textoOculto(auth: AuthContext, conversa: ConversaDoTexto | null): Promise<boolean> {
+    return (await this.protegido.conversasComTextoOculto(auth, [{ chave: 0, conversa }])).size > 0;
+  }
+
+  /**
+   * QUEM NÃO LÊ NÃO ESCREVE (ADR-061, adendo 9, item 8; a regra das notas e
+   * tarefas no `uniforme`): o texto escrito numa conversa cujo texto é oculto
+   * para quem pede — a mensagem registrada, o assunto, a conversa nova com
+   * pessoa — é recusado com o mesmo 403, igual para todo contato.
+   */
+  private async exigirTextoVisivel(auth: AuthContext, conversa: ConversaDoTexto): Promise<void> {
+    if (await this.textoOculto(auth, conversa)) throw new ForbiddenException(CONTEUDO_RESTRITO);
+  }
+
+  /**
+   * As conferências de um registro de mensagem ANTES de escrever: a conversa
+   * visível (a RAI invisível é 404, C13) e o texto visível (403 no
+   * `uniforme`). A guarda da repetição usa as mesmas, para responder como um
+   * pedido novo responderia agora.
+   */
+  async conferirRegistro(auth: AuthContext, conversationId: string): Promise<void> {
+    const { row } = await this.lerVisivel(auth, conversationId);
+    await this.exigirTextoVisivel(auth, row);
+  }
+
+  /**
+   * As conferências da criação ANTES de escrever (a conversa nova com pessoa:
+   * o assunto é texto sobre ela; adendo 9, item 8). A guarda da repetição usa
+   * a mesma.
+   */
+  async conferirCriacao(auth: AuthContext, input: { contactId?: string | null }): Promise<void> {
+    if (input.contactId) {
+      await this.exigirTextoVisivel(auth, {
+        contactId: input.contactId,
+        senderStatus: 'identified',
+      });
+    }
+  }
+
   async create(auth: AuthContext, input: CreateConversationInput): Promise<ConversationDto> {
+    await this.conferirCriacao(auth, input);
     await this.validateReferences(input);
     const channelId = await this.systemChannelId();
     const created = await this.prisma.db.conversation.create({
@@ -274,6 +338,8 @@ export class ConversationsService {
     input: UpdateConversationInput,
   ): Promise<ConversationDto> {
     const { row: existing, visao } = await this.lerVisivel(auth, id);
+    // o assunto (inclusive limpá-lo) é texto; o estado e o responsável, estrutura
+    if (input.subject !== undefined) await this.exigirTextoVisivel(auth, existing);
     await this.validateReferences(input);
     // C13: a conversa RAI só vai para quem pode identificar o remetente — a
     // notificação da atribuição revelaria a conversa a quem não pode vê-la
@@ -341,6 +407,8 @@ export class ConversationsService {
     input: CreateMessageInput,
   ): Promise<MessageDto> {
     const { row: conversation, visao } = await this.lerVisivel(auth, conversationId);
+    // antes de qualquer outra conferência: a recusa é a mesma para todo contato
+    await this.exigirTextoVisivel(auth, conversation);
 
     if (input.direction === 'inbound' && !conversation.contactId) {
       throw new BadRequestException(
@@ -505,6 +573,7 @@ export class ConversationsService {
     auth: AuthContext,
     conversationId: string,
     input: ListMessagesInput,
+    leitor: LeitorDoTexto = 'pessoa',
   ): Promise<MessagePageDto> {
     const { row: conversation } = await this.lerVisivel(auth, conversationId);
 
@@ -528,7 +597,7 @@ export class ConversationsService {
     const page = rows.slice(0, input.limit);
     const last = page[page.length - 1];
     return {
-      items: await this.toMessageDtos(auth, page, conversation),
+      items: await this.toMessageDtos(auth, page, conversation, leitor),
       nextCursor:
         rows.length > input.limit && last
           ? encodeCursor({ at: last.createdAt, id: last.id })
@@ -557,6 +626,24 @@ export class ConversationsService {
     const windowExpiresAt = row.lastInboundAt
       ? new Date(row.lastInboundAt.getTime() + SERVICE_WINDOW_MS).toISOString()
       : null;
+
+    /**
+     * QUEM NÃO LÊ NÃO ESCREVE (ADR-061, adendo 9, item 8): no `uniforme`, a
+     * conversa com pessoa ou a identificar não recebe texto de quem pede — o
+     * registro responde 403. Vem ANTES de todo outro motivo (o pedido de
+     * parar, o remetente, a cota, a janela), para que o veredito seja o mesmo
+     * para todo contato: um motivo diferente diria algo da pessoa.
+     */
+    if (await this.textoOculto(auth, row)) {
+      return {
+        channelType,
+        mode: 'blocked',
+        reason: CONTEUDO_RESTRITO,
+        windowExpiresAt: channelType === 'internal' ? null : windowExpiresAt,
+        consentStatus: null,
+        templates: [],
+      };
+    }
 
     // canal interno não tem janela, consentimento nem template: registro direto
     if (channelType === 'internal') {
@@ -735,8 +822,13 @@ export class ConversationsService {
     }
   }
 
-  private async toDtos(rows: ConversationRow[], visao: Visao): Promise<ConversationDto[]> {
-    const [contactNames, memberNames, channels, doLegado] = await Promise.all([
+  private async toDtos(
+    auth: AuthContext,
+    rows: ConversationRow[],
+    visao: Visao,
+    leitor: LeitorDoTexto,
+  ): Promise<ConversationDto[]> {
+    const [contactNames, memberNames, channels, doLegado, ocultas] = await Promise.all([
       this.resolveContactNames(rows.map((r) => r.contactId)),
       this.resolveMemberNames(rows.map((r) => r.assigneeMembershipId)),
       this.prisma.db.channel.findMany({
@@ -744,6 +836,12 @@ export class ConversationsService {
         select: { id: true, type: true },
       }),
       this.conversasDoLegado(rows),
+      leitor === 'ia'
+        ? new Set<string>()
+        : this.protegido.conversasComTextoOculto(
+            auth,
+            rows.map((r) => ({ chave: r.id, conversa: r })),
+          ),
     ]);
     const channelType = new Map(channels.map((c) => [c.id, c.type]));
     return rows.map((row) => ({
@@ -760,7 +858,10 @@ export class ConversationsService {
         : null,
       senderIdentifiedByPerson: row.senderIdentifiedAt !== null,
       senderRelinkBlocked: doLegado.has(row.id),
-      subject: row.subject,
+      // o texto oculto (adendo 9, item 8): sempre o mesmo, com ou sem assunto
+      ...(ocultas.has(row.id)
+        ? { subject: CONTEUDO_RESTRITO, textRestricted: true as const }
+        : { subject: row.subject }),
       status: row.status,
       assigneeMembershipId: row.assigneeMembershipId,
       assigneeName: row.assigneeMembershipId
@@ -817,48 +918,74 @@ export class ConversationsService {
   private async toMessageDtos(
     auth: AuthContext,
     rows: MessageRow[],
-    conversa: Pick<ConversationRow, 'contactId' | 'senderStatus'>,
+    conversa: ConversaDoTexto,
+    leitor: LeitorDoTexto = 'pessoa',
   ): Promise<MessageDto[]> {
-    const [memberNames, contactNames, attachments, dispatches, conversaOculta, recebidosOcultos] =
-      await Promise.all([
-        this.resolveMemberNames(rows.map((r) => r.authorMembershipId)),
-        this.resolveContactNames([...rows.map((r) => r.authorContactId), conversa.contactId]),
-        this.resolveAttachments(
-          auth,
-          rows.map((r) => r.id),
-        ),
-        this.resolveDispatches(rows.map((r) => r.id)),
-        this.conversaOculta(auth, conversa),
-        // o contato do recebimento (adendo 9, item 2): o marcador da mídia ainda
-        // não coletada também não revela o tipo depois da correção do remetente
-        this.protegido.contatosGravadosOcultos(
-          auth,
-          rows.map((r) => r.receivedContactId),
-        ),
-      ]);
-    return rows.map((row) => ({
-      id: row.id,
-      direction: row.direction,
-      authorType: row.authorType,
-      authorName: row.authorMembershipId
-        ? (memberNames.get(row.authorMembershipId) ?? null)
-        : row.authorContactId
-          ? (contactNames.get(row.authorContactId) ?? null)
-          : row.authorType === 'contact' && conversa.contactId
-            ? (contactNames.get(conversa.contactId) ?? null)
-            : null,
-      body: corpoVisivel(
-        row,
-        attachments.get(row.id) ?? [],
-        conversaOculta ||
-          (row.receivedContactId !== null && recebidosOcultos.has(row.receivedContactId)),
+    const [
+      memberNames,
+      contactNames,
+      attachments,
+      dispatches,
+      conversaOculta,
+      recebidosOcultos,
+      textoOculto,
+    ] = await Promise.all([
+      this.resolveMemberNames(rows.map((r) => r.authorMembershipId)),
+      this.resolveContactNames([...rows.map((r) => r.authorContactId), conversa.contactId]),
+      this.resolveAttachments(
+        auth,
+        rows.map((r) => r.id),
       ),
-      attachments: attachments.get(row.id) ?? [],
-      dispatchState: (dispatches.get(row.id)?.state ?? null) as MessageDto['dispatchState'],
-      dispatchError: dispatches.get(row.id)?.errorCode ?? null,
-      deliveredAt: row.deliveredAt?.toISOString() ?? null,
-      createdAt: row.createdAt.toISOString(),
-    }));
+      this.resolveDispatches(rows.map((r) => r.id)),
+      this.conversaOculta(auth, conversa),
+      // o contato do recebimento (adendo 9, item 2): o marcador da mídia ainda
+      // não coletada também não revela o tipo depois da correção do remetente
+      this.protegido.contatosGravadosOcultos(
+        auth,
+        rows.map((r) => r.receivedContactId),
+      ),
+      // o texto da conversa (adendo 9, item 8)
+      leitor === 'ia' ? false : this.textoOculto(auth, conversa),
+    ]);
+    return rows.map((row) =>
+      this.comTextoDaConversa(textoOculto, {
+        id: row.id,
+        direction: row.direction,
+        authorType: row.authorType,
+        authorName: row.authorMembershipId
+          ? (memberNames.get(row.authorMembershipId) ?? null)
+          : row.authorContactId
+            ? (contactNames.get(row.authorContactId) ?? null)
+            : row.authorType === 'contact' && conversa.contactId
+              ? (contactNames.get(conversa.contactId) ?? null)
+              : null,
+        body: corpoVisivel(
+          row,
+          attachments.get(row.id) ?? [],
+          conversaOculta ||
+            (row.receivedContactId !== null && recebidosOcultos.has(row.receivedContactId)),
+        ),
+        attachments: attachments.get(row.id) ?? [],
+        dispatchState: (dispatches.get(row.id)?.state ?? null) as MessageDto['dispatchState'],
+        dispatchError: dispatches.get(row.id)?.errorCode ?? null,
+        deliveredAt: row.deliveredAt?.toISOString() ?? null,
+        createdAt: row.createdAt.toISOString(),
+      }),
+    );
+  }
+
+  /**
+   * A mensagem de uma conversa de texto oculto para quem lê (ADR-061, adendo
+   * 9, item 8): o corpo — inclusive o marcador da mídia, que diria o tipo —
+   * sai como "Conteúdo restrito", e o código do despacho sai `null` (há
+   * códigos que só a origem de uma extensão produz, como o cancelamento da
+   * origem invalidada). A estrutura (direção, autoria, anexos já restritos
+   * pela regra da mídia, estado do despacho, datas) fica. Igual para todo
+   * contato.
+   */
+  private comTextoDaConversa(oculto: boolean, dto: MessageDto): MessageDto {
+    if (!oculto) return dto;
+    return { ...dto, body: CONTEUDO_RESTRITO, dispatchError: null, textRestricted: true };
   }
 
   /**

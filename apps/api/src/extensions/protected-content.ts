@@ -619,6 +619,37 @@ export class ProtectedContentService {
   }
 
   /**
+   * O TEXTO das conversas — o assunto, o corpo das mensagens e as menções a
+   * ele, como o assunto na notificação de atribuição (ADR-061, adendo 9, item
+   * 8). Só no `uniforme`: o texto de TODA conversa com pessoa (com contato) ou
+   * a identificar (RAI) é oculto, igual para quem é protegido e quem não é,
+   * sem consulta. `conversa: null` é a que não existe mais: na dúvida, oculta.
+   * No `restrito` e no `livre`, nenhuma — a recepção e quem tem a agenda
+   * clínica leem o que o paciente escreve (necessidade operacional, adendo 9,
+   * item 8.2). Só para a LEITURA e as escritas de quem pede: o envio, a
+   * ingestão, o worker e a IA não passam por aqui. Devolve as chaves ocultas.
+   */
+  async conversasComTextoOculto<K>(
+    auth: AuthContext,
+    itens: readonly {
+      chave: K;
+      conversa: { contactId: string | null; senderStatus: string } | null;
+    }[],
+  ): Promise<Set<K>> {
+    if (itens.length === 0 || !(await this.semClassificacao(auth))) return new Set();
+    return new Set(
+      itens
+        .filter(
+          (i) =>
+            i.conversa === null ||
+            i.conversa.contactId !== null ||
+            i.conversa.senderStatus === 'unidentified',
+        )
+        .map((i) => i.chave),
+    );
+  }
+
+  /**
    * Na dúvida sobre de quem é o conteúdo (remetente a identificar, arquivo sem
    * vínculo), a regra é conservadora: oculto fora do `livre` (adendo 5).
    */

@@ -277,8 +277,9 @@ describe('Clinics — mídia, campos e título de pacientes (integração, F5.3c
     expect((await get(`/api/conversations/${rai}/messages`, recepcao)).body.items[0].body).toBe(
       '[anexo]',
     );
+    // sem a agenda (o `uniforme`), o texto da RAI inteiro sai restrito (adendo 9, item 8)
     expect((await get(`/api/conversations/${rai}/messages`, operador)).body.items[0].body).toBe(
-      '[anexo]',
+      'Conteúdo restrito',
     );
     expect((await get(`/api/conversations/${rai}/messages`, owner)).body.items[0].body).toBe(
       '[image]',
@@ -295,7 +296,8 @@ describe('Clinics — mídia, campos e título de pacientes (integração, F5.3c
     const vistaP = await midiaVista(operador, cP, doPaciente);
     expect(vistaP).toEqual(await midiaVista(operador, cI, doInteressado));
     expect(vistaP).toEqual({
-      corpo: ['[anexo]'],
+      // o texto da conversa com pessoa sai restrito no `uniforme` (adendo 9, item 8)
+      corpo: ['Conteúdo restrito'],
       anexos: [[{ restricted: true }]],
       download: 404,
       naLista: false,

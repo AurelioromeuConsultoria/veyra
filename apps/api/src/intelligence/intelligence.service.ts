@@ -200,7 +200,8 @@ export class IntelligenceService {
     // existência ANTES do gate de consentimento: id inexistente ou de outro
     // workspace precisa dar 404, e não "sem consentimento". `get` traz só
     // metadados — nenhum corpo de mensagem é lido antes do consentimento.
-    const conversation = await this.conversations.get(auth, conversationId);
+    // `ia`: a IA lê o assunto como antes (ADR-061, adendo 9, item 8.3)
+    const conversation = await this.conversations.get(auth, conversationId, 'ia');
 
     // ADR-048 §6.3: restrição ANTES de ler qualquer corpo — e antes do
     // consentimento, que é do workspace e não libera contato restrito
@@ -226,9 +227,12 @@ export class IntelligenceService {
       return { status: 'no_consent', runId };
     }
 
-    const page = await this.conversations.listMessages(auth, conversationId, {
-      limit: SUMMARY_MESSAGE_LIMIT,
-    });
+    const page = await this.conversations.listMessages(
+      auth,
+      conversationId,
+      { limit: SUMMARY_MESSAGE_LIMIT },
+      'ia',
+    );
     if (page.items.length === 0) {
       throw new BadRequestException('Conversa sem mensagens para resumir');
     }
@@ -591,8 +595,9 @@ export class IntelligenceService {
    * modelo, nem para este método.
    */
   async suggestReply(auth: AuthContext, conversationId: string): Promise<ReplySuggestionResult> {
-    // existência primeiro: id de outro workspace é 404, não "indisponível"
-    const conversation = await this.conversations.get(auth, conversationId);
+    // existência primeiro: id de outro workspace é 404, não "indisponível";
+    // `ia`: a IA lê o assunto como antes (ADR-061, adendo 9, item 8.3)
+    const conversation = await this.conversations.get(auth, conversationId, 'ia');
 
     // restrição antes da política, do consentimento e de qualquer leitura de corpo
     const scope = this.scope(auth, sujeitosDaConversa(conversation));
@@ -668,9 +673,12 @@ export class IntelligenceService {
       };
     }
 
-    const page = await this.conversations.listMessages(auth, conversationId, {
-      limit: REPLY_MESSAGE_LIMIT,
-    });
+    const page = await this.conversations.listMessages(
+      auth,
+      conversationId,
+      { limit: REPLY_MESSAGE_LIMIT },
+      'ia',
+    );
     if (page.items.length === 0) {
       throw new BadRequestException('Conversa sem mensagens para responder');
     }

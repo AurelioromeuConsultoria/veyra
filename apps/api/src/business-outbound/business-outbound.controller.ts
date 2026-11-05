@@ -14,6 +14,7 @@ import {
 import { AuthContext, CurrentAuth, RequirePermissions } from '../common/decorators';
 import { Idempotent } from '../common/idempotency.decorator';
 import { ZodPipe } from '../common/zod.pipe';
+import { EnvioDoNegocioReplayGuard } from './business-outbound-replay.guard';
 import { EnvioDoNegocioService } from './business-outbound.service';
 
 /**
@@ -57,8 +58,9 @@ export class EnvioDoNegocioController {
     return this.envio.previa(auth, body, 'core');
   }
 
+  /** a repetição segue a regra de agora (ADR-061, adendo 9, item 8) */
   @RequirePermissions('conversations:write', 'contacts:read', 'consents:read')
-  @Idempotent({ required: true })
+  @Idempotent({ required: true, replayGuard: EnvioDoNegocioReplayGuard })
   @Post()
   @HttpCode(200)
   async aprovar(

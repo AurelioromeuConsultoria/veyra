@@ -139,7 +139,14 @@ export function ContextoDaConversa({
         <dl className="mt-1 divide-y divide-border/70">
           {conversa.subject ? (
             <Item rotulo="Assunto">
-              <span className="break-words">{conversa.subject}</span>
+              {/* o assunto restrito (ADR-061, adendo 9, item 8): o mesmo aviso em toda conversa */}
+              <span
+                className={
+                  conversa.textRestricted ? 'break-words italic text-muted-fg' : 'break-words'
+                }
+              >
+                {conversa.subject}
+              </span>
             </Item>
           ) : null}
           <Item rotulo="Canal">{ROTULO_DO_CANAL[conversa.channelType]}</Item>

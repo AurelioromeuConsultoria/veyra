@@ -135,7 +135,20 @@ export interface ConversationDto {
    * tela não os oferece.
    */
   senderRelinkBlocked: boolean;
+  /**
+   * Com `textRestricted`, "Conteúdo restrito" (mesmo sem assunto gravado: a
+   * presença de um assunto não diferencia uma conversa da outra).
+   */
   subject: string | null;
+  /**
+   * O texto desta conversa é oculto para quem lê (E8; ADR-061, adendo 9, item
+   * 8): quem não pode saber quem é protegido (o modo `uniforme`) não lê o
+   * texto de NENHUMA conversa com pessoa ou a identificar — o assunto e o
+   * corpo das mensagens saem como "Conteúdo restrito", igual para todo
+   * contato — nem escreve nela. A estrutura (canal, estado, datas, ids) fica.
+   * Ausente quando o texto é visível.
+   */
+  textRestricted?: true;
   status: ConversationStatus;
   assigneeMembershipId: string | null;
   assigneeName: string | null;
@@ -235,12 +248,18 @@ export interface MessageDto {
   direction: MessageDirection;
   authorType: MessageAuthorType;
   authorName: string | null;
+  /** com `textRestricted`, "Conteúdo restrito" (também o marcador da mídia) */
   body: string;
   attachments: MessageAttachmentDto[];
   /** null em canal interno (não há despacho externo) */
   dispatchState: MessageDispatchState | null;
-  /** código curto do provedor quando o despacho falhou */
+  /**
+   * código curto do provedor quando o despacho falhou; `null` com
+   * `textRestricted` (há códigos que só a origem de uma extensão produz)
+   */
   dispatchError: string | null;
+  /** o texto da conversa é oculto para quem lê (ver `ConversationDto.textRestricted`) */
+  textRestricted?: true;
   deliveredAt: string | null;
   createdAt: string;
 }

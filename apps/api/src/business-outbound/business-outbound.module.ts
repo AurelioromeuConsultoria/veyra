@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { ChannelsModule } from '../channels/channels.module';
 import { TemplatesModule } from '../templates/templates.module';
+import { EnvioDoNegocioReplayGuard } from './business-outbound-replay.guard';
 import { EnvioDoNegocioController } from './business-outbound.controller';
 import { EnvioDoNegocioService } from './business-outbound.service';
 import { ConferenciaDoEnvio } from './conferencia';
@@ -15,7 +16,12 @@ import { VerificadorDoNegocio } from './verificador';
 @Module({
   imports: [AuthModule, ChannelsModule, TemplatesModule],
   controllers: [EnvioDoNegocioController],
-  providers: [ConferenciaDoEnvio, EnvioDoNegocioService, VerificadorDoNegocio],
+  providers: [
+    ConferenciaDoEnvio,
+    EnvioDoNegocioService,
+    VerificadorDoNegocio,
+    EnvioDoNegocioReplayGuard,
+  ],
   // o vertical chama a prévia e a aprovação no mesmo processo (a rota dele)
   exports: [EnvioDoNegocioService],
 })

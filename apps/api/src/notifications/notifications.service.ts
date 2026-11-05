@@ -28,6 +28,13 @@ const NOTIFICATION_PAYLOADS: Record<NotificationType, z.ZodType> = {
  */
 const EVENTO_DA_NOTIFICACAO = /^calendar_event_scheduled:([0-9a-f-]{36}):/i;
 
+/**
+ * A conversa de uma `conversation_assigned`, lida da `dedupeKey`
+ * (`conversation_assigned:<conversa>:<destinatário>`, gravada pelo
+ * ConversationsService): o assunto foi gravado PRONTO no envio.
+ */
+const CONVERSA_DA_NOTIFICACAO = /^conversation_assigned:([0-9a-f-]{36}):/i;
+
 @Injectable()
 export class NotificationsService {
   constructor(
@@ -97,13 +104,20 @@ export class NotificationsService {
       readAt: Date | null;
       createdAt: Date;
     }[];
-    const ocultas = await this.eventosOcultos(auth, linhas);
+    const [ocultas, assuntosOcultos] = await Promise.all([
+      this.eventosOcultos(auth, linhas),
+      this.assuntosOcultos(auth, linhas),
+    ]);
     const items: NotificationDto[] = linhas.map((row) => {
       const payload = row.payload as Record<string, string>;
       return {
         id: row.id,
         type: row.type as NotificationType,
-        payload: ocultas.has(row.id) ? { ...payload, title: CONTEUDO_RESTRITO } : payload,
+        payload: ocultas.has(row.id)
+          ? { ...payload, title: CONTEUDO_RESTRITO }
+          : assuntosOcultos.has(row.id)
+            ? { ...payload, subject: CONTEUDO_RESTRITO }
+            : payload,
         readAt: row.readAt?.toISOString() ?? null,
         createdAt: row.createdAt.toISOString(),
       };
@@ -131,6 +145,45 @@ export class NotificationsService {
     return this.protegido.eventosComTextoOculto(
       auth,
       deEvento.map((n) => ({ chave: n.id, eventoId: n.eventoId })),
+    );
+  }
+
+  /**
+   * As notificações de atribuição cujo assunto é oculto para quem lê (ADR-061,
+   * adendo 9, item 8): o assunto foi gravado no envio, então a regra é
+   * aplicada na LEITURA, pela conversa de AGORA — no `uniforme`, a de toda
+   * conversa com pessoa ou a identificar. A conversa que não existe mais (ou
+   * a chave fora do formato) vai na dúvida. Fora do `uniforme`, nenhuma, sem
+   * consulta.
+   */
+  private async assuntosOcultos(
+    auth: AuthContext,
+    linhas: readonly { id: string; type: string; dedupeKey: string }[],
+  ): Promise<Set<string>> {
+    const deConversa = linhas
+      .filter((l) => l.type === 'conversation_assigned')
+      .map((l) => ({
+        id: l.id,
+        conversaId: CONVERSA_DA_NOTIFICACAO.exec(l.dedupeKey)?.[1] ?? null,
+      }));
+    if (deConversa.length === 0 || !(await this.protegido.semClassificacao(auth))) {
+      return new Set();
+    }
+    const ids = [...new Set(deConversa.flatMap((n) => (n.conversaId ? [n.conversaId] : [])))];
+    const conversas = new Map(
+      (
+        (await this.prisma.db.conversation.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, contactId: true, senderStatus: true },
+        } as never)) as unknown as { id: string; contactId: string | null; senderStatus: string }[]
+      ).map((c) => [c.id, c]),
+    );
+    return this.protegido.conversasComTextoOculto(
+      auth,
+      deConversa.map((n) => ({
+        chave: n.id,
+        conversa: (n.conversaId ? conversas.get(n.conversaId) : undefined) ?? null,
+      })),
     );
   }
 
