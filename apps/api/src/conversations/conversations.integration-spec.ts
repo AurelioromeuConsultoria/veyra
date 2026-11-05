@@ -471,6 +471,106 @@ describe('Conversas — inbox, mensagens e timeline (integração)', () => {
     });
   });
 
+  it('a ÚNICA exceção ao append-only de Message: o preenchimento NULL → contato do recebimento, na forma exata, só no workspace do contexto (ADR-061, adendo 9)', async () => {
+    // uma conversa de cada workspace, com uma mensagem SEM o contato do
+    // recebimento (como a RAI as grava), e uma COM ele
+    const mensagem = async (workspaceId: string, receivedContactId: string | null) => {
+      const canal = (await prisma.raw.channel.findFirst({ where: { workspaceId } }))!;
+      const conversa = await prisma.raw.conversation.create({
+        data: { workspaceId, channelId: canal.id, senderStatus: 'unidentified' },
+      });
+      return prisma.raw.message.create({
+        data: {
+          workspaceId,
+          conversationId: conversa.id,
+          channelId: canal.id,
+          direction: 'inbound',
+          authorType: 'contact',
+          body: 'fictícia',
+          receivedContactId,
+        },
+      });
+    };
+    const semA = await mensagem(wsA.workspaceId, null);
+    const comA = await prisma.raw.message.create({
+      data: {
+        workspaceId: wsA.workspaceId,
+        conversationId: semA.conversationId,
+        channelId: semA.channelId,
+        direction: 'inbound',
+        authorType: 'contact',
+        body: 'fictícia, com o contato',
+        receivedContactId: contactA,
+      },
+    });
+    const semB = await mensagem(wsB.workspaceId, null);
+    const outro = '00000000-0000-4000-8000-000000000001';
+    const lido = async (id: string) =>
+      (await prisma.raw.message.findFirst({ where: { id } }))?.receivedContactId;
+
+    const cls = app.get(ClsService);
+    await cls.run(async () => {
+      cls.set('workspaceId', wsA.workspaceId);
+      const recusado = (args: unknown, operacao = 'updateMany') =>
+        expect(
+          (prisma.db.message as unknown as Record<string, (a: unknown) => Promise<unknown>>)[
+            operacao
+          ](args),
+        ).rejects.toThrow(/append-only/);
+      const where = { conversationId: semA.conversationId, receivedContactId: null };
+      const data = { receivedContactId: outro };
+
+      // tudo o que não é a forma exata cai na recusa de sempre
+      await recusado({ where, data: { body: 'editada' } });
+      await recusado({ where, data: { receivedContactId: outro, body: 'editada' } });
+      await recusado({ where, data: { receivedContactId: null } });
+      await recusado({ where, data: { receivedContactId: 'nao-e-uuid' } });
+      await recusado({ where, data: { receivedContactId: { set: outro } } });
+      await recusado({ where: { conversationId: semA.conversationId }, data });
+      await recusado({ where: { id: comA.id, receivedContactId: null }, data });
+      await recusado({ where: { receivedContactId: null }, data });
+      await recusado({
+        where: { conversationId: semA.conversationId, receivedContactId: { equals: null } },
+        data,
+      });
+      await recusado({
+        where: { conversationId: semA.conversationId, receivedContactId: { not: null } },
+        data,
+      });
+      await recusado({ where: { ...where, OR: [{ receivedContactId: { not: null } }] }, data });
+      await recusado({ where: { ...where, conversationId: { in: [semA.conversationId] } }, data });
+      await recusado({ where, data, limit: 1 });
+      await recusado({ where, data }, 'updateManyAndReturn');
+      // o mesmo formato em outro modelo append-only não passa
+      await expect(
+        prisma.db.activity.updateMany({
+          where: { conversationId: semA.conversationId, receivedContactId: null },
+          data: { receivedContactId: outro },
+        } as never),
+      ).rejects.toThrow(/append-only/);
+      expect(await lido(semA.id)).toBeNull();
+
+      // a forma exata: só a linha NULL muda; a gravada fica como estava
+      expect(await prisma.db.message.updateMany({ where, data })).toEqual({ count: 1 });
+      expect(await lido(semA.id)).toBe(outro);
+      expect(await lido(comA.id)).toBe(contactA);
+      // UMA vez: de novo, nada muda (o filtro é o NULL)
+      expect(
+        await prisma.db.message.updateMany({ where, data: { receivedContactId: contactA } }),
+      ).toEqual({ count: 0 });
+      expect(await lido(semA.id)).toBe(outro);
+
+      // isolamento: a conversa de OUTRO workspace, pelo id, não é alcançada
+      expect(
+        await prisma.db.message.updateMany({
+          where: { conversationId: semB.conversationId, receivedContactId: null },
+          data,
+        }),
+      ).toEqual({ count: 0 });
+    });
+    expect(await lido(semB.id)).toBeNull();
+  });
+
   // ── Idempotência (ajuste aprovado) ────────────────────────────────────────
 
   it('@Idempotent: duplo clique não duplica mensagem nem Activity', async () => {

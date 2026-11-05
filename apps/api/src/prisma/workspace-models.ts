@@ -123,6 +123,28 @@ export const APPEND_ONLY_MODELS = new Set<string>([
 ]);
 
 /**
+ * A ÚNICA exceção ao append-only (ADR-061, adendo 9, o resíduo das ressalvas
+ * da revisão): a identificação de uma conversa a identificar grava, UMA vez, o
+ * contato do recebimento das mensagens que chegaram sem ele (NULL → o contato
+ * identificado). Sem isso, o texto e a mídia recebidos na RAI valeriam o
+ * contato ATUAL para sempre: depois de RAI → paciente → correção → interessado,
+ * contariam como do interessado (a IA leria, a mídia perderia a proteção).
+ *
+ * O client protegido aceita SÓ esta forma, conferida inteira (`prisma.service`):
+ * `updateMany` em `Message`, com `where` exatamente `{ conversationId: <uuid>,
+ * receivedContactId: null }` e `data` exatamente `{ receivedContactId: <uuid> }`.
+ * Nunca sobrescreve um valor gravado (o filtro é o NULL), nunca grava NULL e
+ * nunca toca outra coluna. O ÚNICO chamador é a identificação do remetente
+ * (`ConversationSenderService.identify`), fixado pelo teste estático em
+ * `conversations/sender-boundary.spec.ts`.
+ */
+export const PREENCHIMENTO_UNICO_DO_RECEBIMENTO = {
+  model: 'Message',
+  coluna: 'receivedContactId',
+  escopo: 'conversationId',
+} as const;
+
+/**
  * Modelos em que o registro é imutável e só o DESFECHO se preenche (F4.1b,
  * ADR-052 item 5): a revogação do consentimento e o desbloqueio do pedido de
  * parar.

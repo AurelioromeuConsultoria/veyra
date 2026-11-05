@@ -495,24 +495,94 @@ describe('Clinics — a correção segura do remetente com mídia (integração,
     expect(await midiaVista(recepcao, conversa.id, arquivo)).toEqual(RESTRITA);
   });
 
-  it('a mídia sem o contato do recebimento (RAI, ou código anterior): a correção é recusada a todos (409); NULL vale o contato atual', async () => {
+  it('a RAI com mídia identificada como paciente: a identificação grava o contato do recebimento, UMA vez, e a correção passa a ser possível; a mídia segue protegida', async () => {
     const N = '5511987650005';
     // o segundo candidato do número: a ingestão não escolhe, e a conversa nasce RAI
-    await contato('Outro Fictício', [`+${N}`]);
+    const outro = await contato('Outro Fictício', [`+${N}`]);
     await telefones(paciente, [`+${N}`]);
     // a imagem chega na RAI (dois candidatos): sem o contato do recebimento
     await chegaImagem(N);
     const conversa = await conversaDoNumero(ws.workspaceId, `+${N}`);
     expect(conversa.senderStatus).toBe('unidentified');
-    expect(
-      (await prisma.raw.message.findFirst({ where: { conversationId: conversa.id } }))
-        ?.receivedContactId,
-    ).toBeNull();
+    const recebidos = async () =>
+      (
+        await prisma.raw.message.findMany({
+          where: { conversationId: conversa.id },
+          select: { receivedContactId: true },
+          orderBy: { createdAt: 'asc' },
+        })
+      ).map((m) => m.receivedContactId);
+    expect(await recebidos()).toEqual([null]);
     await coletar();
     const [arquivo] = await arquivosDa(conversa.id);
     await post(`/api/conversations/${conversa.id}/sender/identify`, owner, {
       contactId: paciente,
     }).expect(201);
+    // a identificação gravou o paciente na mensagem da RAI
+    expect(await recebidos()).toEqual([paciente]);
+    expect(await midiaVista(recepcao, conversa.id, arquivo)).toEqual(RESTRITA);
+
+    // a correção, antes recusada a todos (409), agora é de quem tem as chaves
+    await post(`/api/conversations/${conversa.id}/sender/reject`, recepcao, {
+      removeNumber: false,
+    }).expect(403);
+    await post(`/api/conversations/${conversa.id}/sender/reject`, owner, {
+      removeNumber: false,
+    }).expect(201);
+    expect((await trilha(owner, 'conversation.sender_rejected'))[0].after).toMatchObject({
+      protectedMedia: 1,
+    });
+    // rejeitar não toca a mensagem; identificar de novo, como o outro, não sobrescreve
+    expect(await recebidos()).toEqual([paciente]);
+    await post(`/api/conversations/${conversa.id}/sender/identify`, owner, {
+      contactId: outro,
+    }).expect(201);
+    expect(await recebidos()).toEqual([paciente]);
+    expect(await midiaVista(recepcao, conversa.id, arquivo)).toEqual(RESTRITA);
+    const doGuest = await midiaVista(guest, conversa.id, arquivo);
+    expect(doGuest.anexos).toEqual([[{ restricted: true }]]);
+    expect(doGuest.download).toBe(404);
+    expect(await midiaVista(owner, conversa.id, arquivo)).toEqual(ABERTA);
+  });
+
+  it('o NULL que sobra numa conversa identificada (o código anterior à coluna): a correção segue recusada a todos (409); NULL vale o contato atual', async () => {
+    // a conversa e a mensagem como o código anterior as deixou, gravadas direto
+    const canal = (await prisma.raw.channel.findFirst({ where: { workspaceId: ws.workspaceId } }))!;
+    const N = '+5511987650012';
+    await telefones(paciente, [N]);
+    const conversa = await prisma.raw.conversation.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        channelId: canal.id,
+        contactId: paciente,
+        externalAddress: N,
+        senderStatus: 'identified',
+        // identificada por pessoa: desfazer também chega à conferência da mídia
+        senderIdentifiedAt: new Date(),
+      },
+    });
+    const msg = await prisma.raw.message.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        conversationId: conversa.id,
+        channelId: canal.id,
+        direction: 'inbound',
+        authorType: 'contact',
+        body: '[image]',
+      },
+    });
+    const arquivo = (
+      await request(http)
+        .post('/api/files')
+        .set('Origin', ORIGIN)
+        .set('Cookie', owner.cookieHeader)
+        .set('x-csrf-token', owner.csrf)
+        .attach('file', PNG, `troca-${++seq}.png`)
+        .expect(201)
+    ).body.id as string;
+    await prisma.raw.messageAttachment.create({
+      data: { workspaceId: ws.workspaceId, messageId: msg.id, fileObjectId: arquivo },
+    });
     // NULL vale o contato atual: o paciente, restrita para a recepção
     expect(await midiaVista(recepcao, conversa.id, arquivo)).toEqual(RESTRITA);
     for (const [rota, corpo] of [
@@ -525,15 +595,16 @@ describe('Clinics — a correção segura do remetente com mídia (integração,
       );
       expect(r.body.message).toBe(MENSAGEM_MIDIA_SEM_RECEBIMENTO);
     }
-    // nada mudou: o remetente, o número e o arquivo
+    // nada mudou: o remetente, o número, o arquivo e a mensagem
     expect(await prisma.raw.conversation.findFirst({ where: { id: conversa.id } })).toMatchObject({
       contactId: paciente,
       senderStatus: 'identified',
     });
-    expect((await prisma.raw.contact.findFirst({ where: { id: paciente } }))?.phones).toEqual([
-      `+${N}`,
-    ]);
+    expect((await prisma.raw.contact.findFirst({ where: { id: paciente } }))?.phones).toEqual([N]);
     expect(await prisma.raw.fileObject.count({ where: { id: arquivo } })).toBe(1);
+    expect((await prisma.raw.message.findFirst({ where: { id: msg.id } }))?.receivedContactId).toBe(
+      null,
+    );
     expect(await midiaVista(owner, conversa.id, arquivo)).toEqual(ABERTA);
   });
 
@@ -1098,5 +1169,194 @@ describe('Clinics — a correção segura do remetente com mídia (integração,
 
     expect(llm.chamadas.length).toBe(chamadas);
     expect(saiuOTextoDoPaciente()).toBe(false);
+  });
+
+  // ── o preenchimento único na identificação (o resíduo das ressalvas do adendo 9) ──
+  const recebidosDa = async (conversationId: string) =>
+    (
+      await prisma.raw.message.findMany({
+        where: { conversationId },
+        select: { receivedContactId: true },
+        orderBy: { createdAt: 'asc' },
+      })
+    ).map((m) => m.receivedContactId);
+
+  it('RAI com texto e mídia → paciente → corrigida para o interessado liberado: a IA recusa sem chamar o provedor (também na repetição) e a mídia segue restrita para a recepção e o Guest', async () => {
+    await prepararIa(interessado);
+    const N = '5511987650030';
+    // dois candidatos: a conversa nasce RAI, com o texto e a imagem do paciente
+    await contato('Outro Fictício', [`+${N}`]);
+    await telefones(paciente, [`+${N}`]);
+    await chegaTexto(N, NUMERO_A, DO_PACIENTE);
+    await chegaImagem(N);
+    const conversa = await conversaDoNumero(ws.workspaceId, `+${N}`);
+    expect(conversa.senderStatus).toBe('unidentified');
+    expect(await recebidosDa(conversa.id)).toEqual([null, null]);
+    await coletar();
+    const [arquivo] = await arquivosDa(conversa.id);
+
+    // identificada como o paciente (a recepção pode: é o próprio protegido)
+    await post(`/api/conversations/${conversa.id}/sender/identify`, recepcao, {
+      contactId: paciente,
+    }).expect(201);
+    expect(await recebidosDa(conversa.id)).toEqual([paciente, paciente]);
+
+    // a correção pelo Owner, tirando o número, e a recepção identifica como o interessado
+    await post(`/api/conversations/${conversa.id}/sender/reject`, owner, {
+      removeNumber: true,
+    }).expect(201);
+    await telefones(interessado, [`+${N}`], recepcao);
+    await post(`/api/conversations/${conversa.id}/sender/identify`, recepcao, {
+      contactId: interessado,
+    }).expect(201);
+    expect(
+      (await prisma.raw.conversation.findFirst({ where: { id: conversa.id } }))?.contactId,
+    ).toBe(interessado);
+    // as mensagens da RAI continuam do paciente: o preenchimento é uma vez só
+    expect(await recebidosDa(conversa.id)).toEqual([paciente, paciente]);
+
+    // a IA: o contato ATUAL é liberado, mas o texto é da época do paciente
+    const chamadas = llm.chamadas.length;
+    for (const s of [owner, recepcao]) {
+      expect((await resumir(s, conversa.id).expect(201)).body.status).toBe('content_restricted');
+      expect((await rascunhar(s, conversa.id).expect(201)).body).toMatchObject({
+        status: 'content_restricted',
+      });
+    }
+    for (let i = 0; i < 2; i++) {
+      expect((await resumir(owner, conversa.id, 'resumo-rai').expect(201)).body).toEqual({
+        status: 'content_restricted',
+        runId: expect.any(String),
+      });
+    }
+    expect(llm.chamadas.length).toBe(chamadas);
+    expect(saiuOTextoDoPaciente()).toBe(false);
+
+    // a mídia: restrita para a recepção e para o Guest; quem tem as chaves lê
+    expect(await midiaVista(recepcao, conversa.id, arquivo)).toEqual(RESTRITA);
+    const doGuest = await midiaVista(guest, conversa.id, arquivo);
+    expect(doGuest.anexos).toEqual([[{ restricted: true }]]);
+    expect(doGuest.download).toBe(404);
+    expect(await midiaVista(owner, conversa.id, arquivo)).toEqual(ABERTA);
+  });
+
+  it('só texto: RAI → paciente → corrigida para o interessado liberado — o texto da RAI não vai ao provedor (sem o preenchimento, ia como do interessado)', async () => {
+    await prepararIa(interessado);
+    const N = '5511987650034';
+    await contato('Outro Fictício', [`+${N}`]);
+    await telefones(paciente, [`+${N}`]);
+    await chegaTexto(N, NUMERO_A, DO_PACIENTE);
+    const conversa = await conversaDoNumero(ws.workspaceId, `+${N}`);
+    await post(`/api/conversations/${conversa.id}/sender/identify`, recepcao, {
+      contactId: paciente,
+    }).expect(201);
+    await post(`/api/conversations/${conversa.id}/sender/reject`, owner, {
+      removeNumber: true,
+    }).expect(201);
+    await telefones(interessado, [`+${N}`], recepcao);
+    await post(`/api/conversations/${conversa.id}/sender/identify`, recepcao, {
+      contactId: interessado,
+    }).expect(201);
+    const chamadas = llm.chamadas.length;
+    for (const s of [owner, recepcao]) {
+      expect((await resumir(s, conversa.id).expect(201)).body.status).toBe('content_restricted');
+      expect((await rascunhar(s, conversa.id).expect(201)).body.status).toBe('content_restricted');
+    }
+    expect(llm.chamadas.length).toBe(chamadas);
+    expect(saiuOTextoDoPaciente()).toBe(false);
+  });
+
+  it('a RAI que nunca foi paciente segue igual para o usuário; desfazer e rejeitar não preenchem nada, e a RAI nunca identificada continua NULL', async () => {
+    await prepararIa(interessado);
+    const N = '5511987650031';
+    const outro = await contato('Outro Fictício', [`+${N}`]);
+    await telefones(interessado, [`+${N}`]);
+    await chegaTexto(N, NUMERO_A, 'Quanto custa a limpeza de pele?');
+    const conversa = await conversaDoNumero(ws.workspaceId, `+${N}`);
+    expect(conversa.senderStatus).toBe('unidentified');
+    // outra RAI, de outro número, que ninguém identifica
+    const N2 = '5511987650032';
+    await contato('Terceiro Fictício', [`+${N2}`]);
+    await contato('Quarto Fictício', [`+${N2}`]);
+    await chegaTexto(N2, NUMERO_A, 'Olá');
+    const intocada = await conversaDoNumero(ws.workspaceId, `+${N2}`);
+    expect(intocada.senderStatus).toBe('unidentified');
+
+    // a recepção identifica como o interessado liberado: como sempre
+    await post(`/api/conversations/${conversa.id}/sender/identify`, recepcao, {
+      contactId: interessado,
+    }).expect(201);
+    expect(await recebidosDa(conversa.id)).toEqual([interessado]);
+    const corpo = async (s: Session) =>
+      (await get(`/api/conversations/${conversa.id}/messages`, s).expect(200)).body.items.map(
+        (m: { body: string }) => m.body,
+      );
+    expect(await corpo(recepcao)).toEqual(['Quanto custa a limpeza de pele?']);
+    const chamadas = llm.chamadas.length;
+    expect((await resumir(recepcao, conversa.id).expect(201)).body.status).toBe('ok');
+    expect(llm.chamadas.length).toBe(chamadas + 1);
+    expect(llm.chamadas.at(-1)?.untrusted).toMatch(/limpeza de pele/);
+
+    // rejeitar: a mensagem fica como estava; a que chega na RAI vem com NULL
+    await post(`/api/conversations/${conversa.id}/sender/reject`, recepcao, {
+      removeNumber: false,
+    }).expect(201);
+    expect(await recebidosDa(conversa.id)).toEqual([interessado]);
+    await chegaTexto(N, NUMERO_A, 'Sou eu de novo');
+    expect(await recebidosDa(conversa.id)).toEqual([interessado, null]);
+    // identificar como o outro: só o NULL ganha o contato
+    await post(`/api/conversations/${conversa.id}/sender/identify`, recepcao, {
+      contactId: outro,
+    }).expect(201);
+    expect(await recebidosDa(conversa.id)).toEqual([interessado, outro]);
+    // desfazer: nada muda nas mensagens
+    await post(`/api/conversations/${conversa.id}/sender/unidentify`, recepcao).expect(201);
+    expect(await recebidosDa(conversa.id)).toEqual([interessado, outro]);
+
+    // a RAI de outro número, nunca identificada, continua NULL
+    expect(await recebidosDa(intocada.id)).toEqual([null]);
+  });
+
+  it('isolamento e o workspace sem o Clinics: a identificação em um workspace não preenche a RAI do outro; sem o Clinics, preenche e a correção segue como sempre', async () => {
+    // a RAI de beta (sem o Clinics), com mídia
+    const N = '5511987650033';
+    const b1 = await contato('Beta Um', [`+${N}`], membroBeta);
+    await contato('Beta Dois', [`+${N}`], membroBeta);
+    await chegaImagem(N, NUMERO_B);
+    const deBeta = await conversaDoNumero(beta.workspaceId, `+${N}`);
+    expect(deBeta.senderStatus).toBe('unidentified');
+    // a RAI de acme, do MESMO número, identificada pelo Owner de acme
+    await contato('Acme Um', [`+${N}`]);
+    await contato('Acme Dois', [`+${N}`]);
+    await chegaImagem(N);
+    const deAcme = await conversaDoNumero(ws.workspaceId, `+${N}`);
+    const [primeiro] = (
+      await get(`/api/conversations/${deAcme.id}/sender/candidates`, owner).expect(200)
+    ).body as { contactId: string }[];
+    await post(`/api/conversations/${deAcme.id}/sender/identify`, owner, {
+      contactId: primeiro.contactId,
+    }).expect(201);
+    expect(await recebidosDa(deAcme.id)).toEqual([primeiro.contactId]);
+    // a de beta não foi alcançada, e acme não a vê
+    expect(await recebidosDa(deBeta.id)).toEqual([null]);
+    await post(`/api/conversations/${deBeta.id}/sender/identify`, owner, {
+      contactId: primeiro.contactId,
+    }).expect(404);
+
+    // em beta, sem o Clinics: identificar preenche, e rejeitar com mídia segue como sempre
+    await coletar();
+    const [arquivoBeta] = await arquivosDa(deBeta.id);
+    await post(`/api/conversations/${deBeta.id}/sender/identify`, membroBeta, {
+      contactId: b1,
+    }).expect(201);
+    expect(await recebidosDa(deBeta.id)).toEqual([b1]);
+    await post(`/api/conversations/${deBeta.id}/sender/reject`, membroBeta, {
+      removeNumber: true,
+    }).expect(201);
+    await post(`/api/conversations/${deBeta.id}/sender/identify`, membroBeta, {
+      newContact: { name: 'Novo de Beta' },
+    }).expect(201);
+    expect(await recebidosDa(deBeta.id)).toEqual([b1]);
+    expect(await midiaVista(membroBeta, deBeta.id, arquivoBeta)).toEqual(ABERTA);
   });
 });

@@ -576,10 +576,11 @@ describe('Clinics — mídia, campos e título de pacientes (integração, F5.3c
   });
 
   // as mensagens destes dois casos são gravadas SEM o contato do recebimento,
-  // como o código anterior à coluna as deixava: a correção segue recusada a
-  // todos (ADR-061, adendo 9, item 2; a correção possível está em
-  // `clinics-sender-correction`)
-  it('mídia histórica (adendos 6 e 9): a conversa de paciente com mídia SEM o contato do recebimento não volta à RAI para NENHUM papel — remetente, número e arquivo preservados', async () => {
+  // como o código anterior à coluna as deixava: numa conversa identificada, a
+  // correção segue recusada a todos; na RAI, a identificação grava o contato
+  // (ADR-061, adendo 9, item 2 e o fechamento do resíduo; a correção possível
+  // está em `clinics-sender-correction`)
+  it('mídia histórica (adendos 6 e 9): a conversa de paciente com mídia SEM o contato do recebimento não volta à RAI para NENHUM papel — remetente, número e arquivo preservados; a RAI identificada ganha o contato e pode ser corrigida', async () => {
     await comNumero(paciente);
     const arquivo = await subir();
     const conversa = await conversaDoNumero(paciente, arquivo);
@@ -597,15 +598,21 @@ describe('Clinics — mídia, campos e título de pacientes (integração, F5.3c
     expect(await prisma.raw.fileObject.count({ where: { id: arquivo } })).toBe(1);
     expect((await midiaVista(owner, conversa, arquivo)).download).toBe(200);
 
-    // desfazer: a RAI com mídia identificada como o paciente por quem tem as chaves
-    const rai = await conversaDoNumero(null, await subir());
+    // desfazer: a RAI com mídia identificada como o paciente por quem tem as
+    // chaves — a identificação grava o paciente na mensagem (o preenchimento
+    // único), e desfazer passa a ser possível, com a mídia ainda protegida
+    const arquivoRai = await subir();
+    const rai = await conversaDoNumero(null, arquivoRai);
     await post(`/api/conversations/${rai}/sender/identify`, owner, { contactId: paciente }).expect(
       201,
     );
-    await post(`/api/conversations/${rai}/sender/unidentify`, owner).expect(409);
-    expect((await prisma.raw.conversation.findFirst({ where: { id: rai } }))?.contactId).toBe(
-      paciente,
-    );
+    expect(
+      (await prisma.raw.message.findFirst({ where: { conversationId: rai } }))?.receivedContactId,
+    ).toBe(paciente);
+    await post(`/api/conversations/${rai}/sender/unidentify`, recepcao).expect(403);
+    await post(`/api/conversations/${rai}/sender/unidentify`, owner).expect(201);
+    expect((await prisma.raw.conversation.findFirst({ where: { id: rai } }))?.contactId).toBe(null);
+    expect((await midiaVista(recepcao, rai, arquivoRai)).download).toBe(404);
   });
 
   it('mídia histórica (adendos 6 e 9): o download ainda pendente, sem o contato do recebimento, também bloqueia; sem mídia, quem tem as chaves rejeita como sempre', async () => {

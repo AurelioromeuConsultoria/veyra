@@ -6,6 +6,7 @@ import {
   webhookEventSchema,
 } from '@veyra/contracts';
 import { OUTBOX_EVENTS } from '../outbox/outbox.service';
+import { PREENCHIMENTO_UNICO_DO_RECEBIMENTO } from '../prisma/workspace-models';
 
 /**
  * A fronteira do "remetente a identificar" (ADR-052 item 2). Hoje nenhum evento,
@@ -69,6 +70,47 @@ describe('a fronteira do remetente a identificar (ADR-052 item 2)', () => {
     expect(usos.sort()).toEqual(['user.findMany', 'workspace.findUnique']);
     expect(texto).toMatch(
       /raw\.workspace\.findUnique\(\{\s*where: \{ id: workspaceId \},\s*select: \{ phoneRegion: true \},/,
+    );
+  });
+
+  it('a única escrita em `Message` é o preenchimento único do contato do recebimento, na identificação (ADR-061, adendo 9)', () => {
+    // a exceção do client protegido: o modelo, a coluna e o escopo, e nada mais
+    expect(PREENCHIMENTO_UNICO_DO_RECEBIMENTO).toEqual({
+      model: 'Message',
+      coluna: 'receivedContactId',
+      escopo: 'conversationId',
+    });
+    const escritas: string[] = [];
+    const sqlCru: string[] = [];
+    for (const arquivo of arquivosDeProducao(SRC)) {
+      const texto = readFileSync(arquivo, 'utf8');
+      // pelo client (protegido ou cru), em qualquer variável: update*, delete*, upsert
+      for (const m of texto.matchAll(
+        /\.message\.(update|updateMany|updateManyAndReturn|upsert|delete|deleteMany)\(/g,
+      )) {
+        escritas.push(`${relative(SRC, arquivo)}:${m[1]}:${m.index}`);
+      }
+      // e por SQL cru, em qualquer forma de citar a tabela
+      if (/(UPDATE|DELETE\s+FROM)\s+"?Message"?\b/i.test(texto))
+        sqlCru.push(relative(SRC, arquivo));
+    }
+    expect(sqlCru).toEqual([]);
+    expect(escritas).toHaveLength(1);
+    const [arquivo, operacao, posicao] = escritas[0].split(':');
+    expect([arquivo, operacao]).toEqual([
+      'conversations/conversation-sender.service.ts',
+      'updateMany',
+    ]);
+
+    // dentro de `identify`, e na forma exata que o client aceita
+    const texto = readFileSync(join(SRC, arquivo), 'utf8');
+    const inicio = texto.indexOf('  async identify(');
+    const fim = texto.indexOf('  async unidentify(');
+    expect(inicio).toBeGreaterThan(-1);
+    expect(Number(posicao)).toBeGreaterThan(inicio);
+    expect(Number(posicao)).toBeLessThan(fim);
+    expect(texto.slice(Number(posicao), Number(posicao) + 200)).toMatch(
+      /^\.message\.updateMany\(\{\s*where: \{ conversationId: conversa\.id, receivedContactId: null \},\s*data: \{ receivedContactId: contactId \},\s*\}\)/,
     );
   });
 

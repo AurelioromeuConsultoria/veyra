@@ -11,6 +11,7 @@ import { ClsService } from 'nestjs-cls';
 import { PrismaClient } from '../generated/prisma/client';
 import { CORE_REGISTRY, EXTENSION_REGISTRY, type ComposedRegistry } from '../extensions/registry';
 import { sqlDeCoordenacao } from '../content-use/coordination-sql';
+import { PREENCHIMENTO_UNICO_DO_RECEBIMENTO } from './workspace-models';
 
 /**
  * Operações por chave única não aceitam filtro extra de workspace no where —
@@ -163,6 +164,46 @@ function assertSafeData(
   }
 }
 
+/**
+ * A exceção ESTREITA ao append-only (ADR-061, adendo 9; `PREENCHIMENTO_UNICO_DO_RECEBIMENTO`):
+ * o preenchimento único do contato do recebimento das mensagens de uma
+ * conversa, NULL → contato. Vale só a forma exata, e qualquer desvio cai na
+ * recusa de sempre:
+ *
+ * - o modelo é `Message` e a operação é `updateMany` (não a que devolve linhas);
+ * - os argumentos são só `where` e `data`;
+ * - o `where` tem EXATAMENTE `conversationId` (um uuid) e `receivedContactId: null`
+ *   (o literal, não `{ equals: null }` nem `{ not: … }`): só as linhas sem
+ *   valor mudam, e nenhum `OR`/`NOT` alarga o alvo;
+ * - o `data` tem EXATAMENTE `receivedContactId` com um uuid (não NULL, não
+ *   `{ set: … }`).
+ *
+ * O resto do hook segue: o filtro do workspace do contexto entra no `where`.
+ */
+function ePreenchimentoUnicoDoRecebimento(
+  model: string,
+  operation: string,
+  args: unknown,
+): boolean {
+  const { model: alvo, coluna, escopo } = PREENCHIMENTO_UNICO_DO_RECEBIMENTO;
+  if (model !== alvo || operation !== 'updateMany' || !isPlainObject(args)) return false;
+  const { where, data } = args;
+  const mesmasChaves = (obj: Record<string, unknown>, chaves: string[]) =>
+    Object.keys(obj).sort().join(',') === [...chaves].sort().join(',');
+  return (
+    mesmasChaves(args, ['where', 'data']) &&
+    isPlainObject(where) &&
+    mesmasChaves(where, [escopo, coluna]) &&
+    where[coluna] === null &&
+    typeof where[escopo] === 'string' &&
+    UUID_RE.test(where[escopo]) &&
+    isPlainObject(data) &&
+    mesmasChaves(data, [coluna]) &&
+    typeof data[coluna] === 'string' &&
+    UUID_RE.test(data[coluna])
+  );
+}
+
 function blockedRaw(method: string): never {
   throw new Error(
     `${method} não existe no client protegido — SQL cru só via prisma.raw, com justificativa (SECURITY.md §2).`,
@@ -222,8 +263,14 @@ export function createWorkspaceClient(
             );
           }
 
-          // append-only: histórico não se reescreve nem se apaga por aqui
-          if (reg.appendOnlyModels.has(model) && MUTATING_OPERATIONS.has(operation)) {
+          // append-only: histórico não se reescreve nem se apaga por aqui — com
+          // UMA exceção estreita, o preenchimento único do contato do
+          // recebimento na identificação (ADR-061, adendo 9)
+          if (
+            reg.appendOnlyModels.has(model) &&
+            MUTATING_OPERATIONS.has(operation) &&
+            !ePreenchimentoUnicoDoRecebimento(model, operation, args)
+          ) {
             throw new Error(
               `${model} é append-only: ${operation} é proibido. Exclusão só por cascade do dono ` +
                 `(LGPD) ou pelo job de retenção (prisma.raw justificado).`,

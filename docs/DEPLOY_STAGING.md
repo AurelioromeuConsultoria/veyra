@@ -1064,8 +1064,9 @@ muda o registro da migration e não desfaz nenhum objeto.
    -- conferência da 20261105090100_message_received_contact_backfill: as
    -- mensagens de conversa identificada ainda sem o contato do recebimento:
    -- 0 logo depois da aplicação, salvo as gravadas pelo código anterior na
-   -- troca. Com o tempo, a mensagem recebida na RAI e depois identificada
-   -- também conta (ela fica com NULL de propósito)
+   -- troca (a mensagem, ou a RAI que ele identificou). A RAI identificada
+   -- pelo código novo não conta: a identificação grava o contato nas
+   -- mensagens dela (ADR-061 adendo 9, fechamento do resíduo)
    SELECT count(*) FROM "Message" m
      JOIN "Conversation" c ON c."workspaceId" = m."workspaceId" AND c."id" = m."conversationId"
     WHERE c."contactId" IS NOT NULL AND m."receivedContactId" IS NULL;

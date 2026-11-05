@@ -69,7 +69,9 @@ export const MENSAGEM_MUDOU = 'A conversa acabou de mudar. Recarregue e tente de
  *
  * A AUTORIA não muda nunca: `authorType`, o membro e a origem de IA ficam como
  * estão, e a auditoria não é apagada. Só a ATRIBUIÇÃO ao contato, que nas
- * mensagens novas vem da conversa (C12).
+ * mensagens novas vem da conversa (C12). A identificação grava, uma vez, o
+ * contato do recebimento das mensagens que chegaram na RAI (NULL → o
+ * identificado); desfazer e rejeitar não tocam mensagem (ADR-061, adendo 9).
  */
 /**
  * A recusa de levar à RAI a conversa protegida com mídia a quem não lê todo o
@@ -80,9 +82,10 @@ export const MENSAGEM_MIDIA_PROTEGIDA =
 
 /**
  * A recusa da correção quando alguma mídia da conversa não tem o contato do
- * recebimento gravado (recebida enquanto o remetente estava a identificar, ou
- * gravada pelo código anterior à coluna): depois da correção, só o contato
- * atual a protegeria (ADR-061, adendo 9, item 2).
+ * recebimento gravado (só a do código anterior à coluna, na janela da troca;
+ * a recebida na RAI o ganha na identificação): depois da correção, só o
+ * contato atual a protegeria (ADR-061, adendo 9, item 2 e o fechamento do
+ * resíduo).
  */
 export const MENSAGEM_MIDIA_SEM_RECEBIMENTO =
   'Esta conversa tem mídia sem o contato do recebimento gravado e não pode voltar a remetente a identificar.';
@@ -218,6 +221,21 @@ export class ConversationSenderService {
           where: { id: conversa.id },
           data: { contactId, senderStatus: 'identified', senderIdentifiedAt: new Date() },
         });
+        /**
+         * O contato do recebimento das mensagens que chegaram na RAI (ADR-061,
+         * adendo 9): gravado AGORA, uma vez, sob as mesmas travas e na mesma
+         * transação da identificação — a ingestão do número espera as travas,
+         * e o registro manual, a linha presa. Só NULL → o contato identificado;
+         * o que já tem valor (o recebido com a conversa identificada antes) não
+         * muda. Sem isso, o texto e a mídia da época valeriam o contato ATUAL
+         * para sempre, e uma correção posterior os passaria ao próximo contato.
+         * É a ÚNICA escrita em `Message` (a exceção estreita ao append-only,
+         * `PREENCHIMENTO_UNICO_DO_RECEBIMENTO`; o teste estático a fixa aqui).
+         */
+        await tx.message.updateMany({
+          where: { conversationId: conversa.id, receivedContactId: null },
+          data: { receivedContactId: contactId },
+        });
         await this.limpeza.expirarNaTransacao(tx, workspaceId, conversa.id);
         await this.audit.record(tx, workspaceId, 'conversation.sender_identified', {
           entityType: 'conversationSender',
@@ -309,11 +327,12 @@ export class ConversationSenderService {
    * antes de qualquer mudança. Quem não pode saber quem é protegido já
    * recebeu, antes, a recusa uniforme (403).
    *
-   * A mídia de uma mensagem SEM o contato do recebimento (a que chegou
-   * enquanto o remetente estava a identificar, ou a gravada pelo código
-   * anterior à coluna) só é protegida pelo contato atual, que a correção tira:
-   * com ela, a correção é recusada a todos (409). A mensagem é append-only, e
-   * gravar o contato nela depois exigiria abrir a regra do append-only.
+   * A mídia de uma mensagem SEM o contato do recebimento só é protegida pelo
+   * contato atual, que a correção tira: com ela, a correção é recusada a todos
+   * (409). A que chegou na RAI ganha o contato na identificação (o
+   * preenchimento único, em `identify`); o NULL numa conversa identificada
+   * sobra só do código anterior à coluna, na janela da troca: a mensagem que
+   * ele grava, ou a RAI que ele identifica sem preencher.
    *
    * Devolve quantas mídias da conversa continuam protegidas pelo contato do
    * recebimento — o protegido pela extensão, ou o que não existe mais (na
