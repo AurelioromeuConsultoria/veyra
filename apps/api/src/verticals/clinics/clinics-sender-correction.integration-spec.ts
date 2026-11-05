@@ -189,7 +189,13 @@ describe('Clinics — a correção segura do remetente com mídia (integração,
     const lista = await get('/api/files', s).expect(200);
     const comMidia = (
       msgs.body.items as { body: string; attachments: Record<string, unknown>[] }[]
-    ).filter((m) => m.body !== m.body.replace(/^\[\w+\]$/, ''));
+    ).filter(
+      (m) =>
+        m.body !== m.body.replace(/^\[\w+\]$/, '') ||
+        // no `uniforme`, o texto inteiro da conversa sai restrito (adendo 9,
+        // item 8): a mensagem de mídia se acha pelo anexo
+        (m.body === 'Conteúdo restrito' && m.attachments.length > 0),
+    );
     return {
       corpo: comMidia.map((m) => m.body),
       anexos: comMidia.map((m) => m.attachments.map((a) => (a.restricted ? a : { aberto: true }))),
