@@ -234,11 +234,11 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
      - o workspace sem o Clinics fica como sempre.
 
      A F5.3c está publicada (com os adendos 6: replay, marcador genérico e mídia histórica). A **F5.3d (adendo 7)** fecha a F5.3:
-     - a trilha de auditoria mascara título e nome de arquivo de entidade oculta, inclusive os títulos do passado, e tira da trilha, para quem não pode saber quem é paciente, as linhas que dizem isso (ações do vertical, envios e consentimentos dele). Fora da trilha, a lista de consentimentos e o texto das conversas ainda dão esse sinal (pendências do B1);
+     - a trilha de auditoria mascara título e nome de arquivo de entidade oculta, inclusive os títulos do passado, e tira da trilha, para quem não pode saber quem é paciente, as linhas que dizem isso (ações do vertical, envios e consentimentos dele). Fora da trilha, o texto das conversas ainda dá esse sinal (pendência do B1; a lista de consentimentos foi fechada no adendo 8, item 7);
      - a busca e as exportações foram mapeadas: nenhuma busca procura em conteúdo protegido, e não existe exportação;
      - os três pontos registrados foram fechados: os títulos antigos na timeline, o histórico das automações e a corrida na identificação.
 
-     **O B1, depois da F5.3:** a parte técnica de acesso ao conteúdo clínico está coberta para a demonstração, mas o B1 NÃO é levantado. Ficam pendências obrigatórias antes do piloto, listadas no resultado do adendo 7.
+     **O B1, depois da F5.3:** a parte técnica de acesso ao conteúdo clínico está coberta para a demonstração, mas o B1 NÃO é levantado. Ficam pendências obrigatórias antes do piloto, listadas no resultado do adendo 7. O **adendo 8** fechou os itens 1 (a agenda do Core, com o histórico dos vínculos dos eventos e a migration aditiva `20261104120000_activity_event_linked`) e 7 (a lista de consentimentos) e registrou duas pendências novas do B1: a exclusão do paciente que apaga o histórico em cascata (com o item 9/B3) e as lacunas do contador de recibos `CON-`.
 
      Nenhum bloqueio é levantado e nenhuma visibilidade muda por inferência.
 
