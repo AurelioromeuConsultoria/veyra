@@ -59,7 +59,9 @@ export const AUDIT_FIELDS: Record<string, readonly string[]> = {
   /**
    * O remetente de uma conversa (ADR-052 item 2): identificar, desfazer,
    * rejeitar e a conversa anterior encerrada. Estado, ids e contagens — NUNCA o
-   * número nem o conteúdo das mensagens.
+   * número nem o conteúdo das mensagens. `protectedMedia`: na correção, quantas
+   * mídias continuam protegidas pelo contato do recebimento (ADR-061, adendo 9,
+   * item 2) — só a contagem, nunca o arquivo, o nome ou o tipo.
    */
   conversationSender: [
     'senderStatus',
@@ -71,6 +73,7 @@ export const AUDIT_FIELDS: Record<string, readonly string[]> = {
     'status',
     'replacedBy',
     'unassigned',
+    'protectedMedia',
   ],
   /**
    * O consentimento por finalidade, o pedido de parar e a finalidade (ADR-052

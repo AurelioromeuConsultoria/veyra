@@ -72,6 +72,8 @@ type MessageRow = {
   authorType: 'contact' | 'user' | 'ai' | 'system';
   authorMembershipId: string | null;
   authorContactId: string | null;
+  /** o contato da conversa quando a mensagem foi gravada (ADR-061, adendo 9) */
+  receivedContactId: string | null;
   body: string;
   deliveredAt: Date | null;
   createdAt: Date;
@@ -405,11 +407,37 @@ export class ConversationsService {
 
     const db = this.prisma.db as unknown as TxRunner;
     const id = await db.$transaction(async (tx) => {
+      /**
+       * A LINHA DA CONVERSA presa ANTES de qualquer escrita (escrita sem efeito
+       * de quem já vai tocar `lastMessageAt`), e o remetente relido sob ela
+       * (ADR-061, adendo 9, item 2, e o backlog do adendo 6): a correção do
+       * remetente prende a mesma linha antes de contar a mídia, então as duas se
+       * serializam. Se ela veio antes, o remetente mudou e o registro é recusado
+       * sem efeito; se veio depois, ela vê esta mensagem e o anexo dela. O
+       * contato gravado como o do recebimento é o relido aqui.
+       */
+      await tx.conversation.updateMany({
+        where: { id: conversationId },
+        data: { lastMessageAt: new Date() },
+      });
+      const presa = (await tx.conversation.findFirst({
+        where: { id: conversationId },
+        select: { contactId: true, senderStatus: true },
+      })) as unknown as Pick<ConversationRow, 'contactId' | 'senderStatus'> | null;
+      if (
+        !presa ||
+        presa.contactId !== conversation.contactId ||
+        presa.senderStatus !== conversation.senderStatus
+      ) {
+        throw new ConflictException('A conversa acabou de mudar. Recarregue e tente de novo.');
+      }
       const message = await tx.message.create({
         data: {
           conversationId,
           // derivado da conversa NO SERVIDOR (ADR-023), nunca do cliente
           channelId: conversation.channelId,
+          // o contato da conversa AGORA, relido sob a trava (adendo 9, item 2)
+          receivedContactId: presa.contactId,
           direction: input.direction,
           // a AUTORIA é gravada; a ATRIBUIÇÃO ao contato vem da conversa (C12)
           authorType: input.direction === 'outbound' ? 'user' : 'contact',
@@ -791,16 +819,23 @@ export class ConversationsService {
     rows: MessageRow[],
     conversa: Pick<ConversationRow, 'contactId' | 'senderStatus'>,
   ): Promise<MessageDto[]> {
-    const [memberNames, contactNames, attachments, dispatches, conversaOculta] = await Promise.all([
-      this.resolveMemberNames(rows.map((r) => r.authorMembershipId)),
-      this.resolveContactNames([...rows.map((r) => r.authorContactId), conversa.contactId]),
-      this.resolveAttachments(
-        auth,
-        rows.map((r) => r.id),
-      ),
-      this.resolveDispatches(rows.map((r) => r.id)),
-      this.conversaOculta(auth, conversa),
-    ]);
+    const [memberNames, contactNames, attachments, dispatches, conversaOculta, recebidosOcultos] =
+      await Promise.all([
+        this.resolveMemberNames(rows.map((r) => r.authorMembershipId)),
+        this.resolveContactNames([...rows.map((r) => r.authorContactId), conversa.contactId]),
+        this.resolveAttachments(
+          auth,
+          rows.map((r) => r.id),
+        ),
+        this.resolveDispatches(rows.map((r) => r.id)),
+        this.conversaOculta(auth, conversa),
+        // o contato do recebimento (adendo 9, item 2): o marcador da mídia ainda
+        // não coletada também não revela o tipo depois da correção do remetente
+        this.protegido.contatosGravadosOcultos(
+          auth,
+          rows.map((r) => r.receivedContactId),
+        ),
+      ]);
     return rows.map((row) => ({
       id: row.id,
       direction: row.direction,
@@ -812,7 +847,12 @@ export class ConversationsService {
           : row.authorType === 'contact' && conversa.contactId
             ? (contactNames.get(conversa.contactId) ?? null)
             : null,
-      body: corpoVisivel(row, attachments.get(row.id) ?? [], conversaOculta),
+      body: corpoVisivel(
+        row,
+        attachments.get(row.id) ?? [],
+        conversaOculta ||
+          (row.receivedContactId !== null && recebidosOcultos.has(row.receivedContactId)),
+      ),
       attachments: attachments.get(row.id) ?? [],
       dispatchState: (dispatches.get(row.id)?.state ?? null) as MessageDto['dispatchState'],
       dispatchError: dispatches.get(row.id)?.errorCode ?? null,
@@ -865,8 +905,14 @@ export class ConversationsService {
       where: { id: conversationId },
       select: { contactId: true, senderStatus: true },
     } as never)) as unknown as Pick<ConversationRow, 'contactId' | 'senderStatus'> | null;
+    // o contato do recebimento da mensagem guardada (adendo 9, item 2)
+    const gravada = (await this.prisma.db.message.findFirst({
+      where: { id: guardada.id },
+      select: { receivedContactId: true },
+    } as never)) as unknown as { receivedContactId: string | null } | null;
     const oculta = conversa
-      ? await this.conversaOculta(auth, conversa)
+      ? (await this.conversaOculta(auth, conversa)) ||
+        (await this.protegido.contatosGravadosOcultos(auth, [gravada?.receivedContactId])).size > 0
       : await this.protegido.duvidaOculta(auth);
     const ids = guardada.attachments.flatMap((a) => (a.restricted ? [] : [a.fileObjectId]));
     const protegidas =

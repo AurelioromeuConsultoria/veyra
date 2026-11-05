@@ -253,6 +253,7 @@ export class WhatsappSendService implements OnModuleInit {
       data: {
         conversationId: prepared.conversationId,
         channelId: prepared.channelId,
+        receivedContactId: await this.contatoDaConversa(tx, prepared.conversationId),
         direction: 'outbound',
         authorType: author.authorType,
         authorMembershipId: author.authorMembershipId,
@@ -299,6 +300,20 @@ export class WhatsappSendService implements OnModuleInit {
       `whatsapp.send_pending:${messageId}`,
     );
     return { messageId };
+  }
+
+  /**
+   * O contato da conversa NO MOMENTO da gravação, lido na transação de quem
+   * grava: toda mensagem nova leva o contato do recebimento (ADR-061, adendo 9,
+   * item 2). A mensagem de saída não tem mídia hoje; gravá-lo mesmo assim
+   * mantém a regra igual para toda mensagem.
+   */
+  private async contatoDaConversa(tx: Db, conversationId: string): Promise<string | null> {
+    const conversa = (await tx.conversation.findFirst({
+      where: { id: conversationId },
+      select: { contactId: true },
+    })) as unknown as { contactId: string | null } | null;
+    return conversa?.contactId ?? null;
   }
 
   /**
@@ -355,6 +370,7 @@ export class WhatsappSendService implements OnModuleInit {
       data: {
         conversationId: entrada.conversationId,
         channelId: entrada.channelId,
+        receivedContactId: await this.contatoDaConversa(tx, entrada.conversationId),
         direction: 'outbound',
         authorType: 'user',
         authorMembershipId: entrada.aprovacao.approvedByMembershipId,

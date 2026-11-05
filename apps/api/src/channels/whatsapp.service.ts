@@ -230,6 +230,10 @@ export class WhatsappService {
           workspaceId,
           conversationId: conversation.id,
           channelId,
+          // o contato da conversa no recebimento, decidido sob as travas do
+          // número (NULL na RAI): a mídia dele continua protegida depois de
+          // uma correção do remetente (ADR-061, adendo 9, item 2)
+          receivedContactId: contactId,
           direction: 'inbound',
           // a AUTORIA não muda (é do contato que escreveu); a ATRIBUIÇÃO ao
           // contato deixa de ser gravada e passa a vir da conversa (C12)

@@ -60,6 +60,12 @@ const DOCUMENTED_LOOSE_COLUMNS = new Set([
   // A integridade que importa aqui é o unique de dedup por canal
   // (workspaceId, channelId, externalId), que existe. ADR-023.
   'Message.externalId',
+  // o contato da conversa quando a mensagem foi gravada (ADR-061, adendo 9,
+  // item 2; DOMAIN_MODEL §9): FOTOGRAFIA que sobrevive ao contato. Uma FK em
+  // cascata apagaria a mensagem de outra conversa, NoAction travaria a exclusão
+  // (LGPD) e SET NULL derrubaria a proteção da mídia. Gravada só pelo servidor,
+  // a partir da conversa do mesmo workspace; o id que não resolve vai na dúvida.
+  'Message.receivedContactId',
   // identificadores DO PROVEDOR (Meta), não referências locais: número,
   // conta business e id da mensagem enviada (wamid). Não há tabela nossa para
   // referenciar; a integridade que importa é o unique de roteamento
@@ -109,7 +115,7 @@ const DOCUMENTED_LOOSE_COLUMNS = new Set([
 ]);
 
 /**
- * Colunas de LISTA de ids sem FK (fotografias). O Postgres não declara FK
+ * Colunas de LISTA de ids sem FK (fotografias), e as escalares (`escalar`). O Postgres não declara FK
  * para elementos de array, então a checagem de dados é explícita: nenhum id
  * pode apontar para linha de OUTRO workspace. Id que não existe mais é
  * permitido (o contato foi excluído depois da emissão). `key` é a chave
@@ -120,6 +126,9 @@ const SNAPSHOT_COLUMNS = [
   { table: 'ContentUse', column: 'contactIds', target: 'Contact', key: 'id' },
   // o despacho é 1:1 com a mensagem: a chave é `messageId`, não há `id`
   { table: 'MessageDispatch', column: 'approvalContactIds', target: 'Contact', key: 'messageId' },
+  // uma fotografia ESCALAR (ADR-061, adendo 9, item 2): conferida como uma
+  // lista de um elemento (NULL não aponta para nada)
+  { table: 'Message', column: 'receivedContactId', target: 'Contact', key: 'id', escalar: true },
 ];
 
 interface FkRow {
@@ -240,7 +249,11 @@ async function main(): Promise<void> {
       const { rows } = await client.query<{ child_id: string }>(
         `SELECT DISTINCT e.${q(snap.key)}::text AS child_id
            FROM ${q(snap.table)} e
-           CROSS JOIN LATERAL unnest(e.${q(snap.column)}) AS s(ref_id)
+           CROSS JOIN LATERAL unnest(${
+             'escalar' in snap && snap.escalar
+               ? `ARRAY[e.${q(snap.column)}]`
+               : `e.${q(snap.column)}`
+           }) AS s(ref_id)
            JOIN ${q(snap.target)} t ON t."id" = s.ref_id
           WHERE t."workspaceId" <> e."workspaceId"
           LIMIT 20`,

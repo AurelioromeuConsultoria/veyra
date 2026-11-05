@@ -82,6 +82,13 @@ export const ATIVIDADES_DE_CONTEUDO = [
  */
 const CONTAGENS_QUE_SOMAM_A_EXTENSAO: Readonly<Record<string, readonly string[]>> = {
   'stop.registered': ['consentsRevoked', 'dispatchesCanceled', 'dispatchesInFlight'],
+  /**
+   * A correção do remetente conta as mídias que continuam protegidas pelo
+   * contato do recebimento (ADR-061, adendo 9, item 2): maior que zero, diria
+   * que a conversa foi de um contato protegido.
+   */
+  'conversation.sender_rejected': ['protectedMedia'],
+  'conversation.sender_unidentified': ['protectedMedia'],
 };
 
 type LinhaDaTrilha = { action: string; before: unknown; after: unknown };
@@ -168,6 +175,66 @@ export class ProtectedContentService {
       select: { id: true },
     } as never)) as unknown as { id: string }[];
     return new Set(rows.map((r) => r.id));
+  }
+
+  /**
+   * O mesmo que `contatosOcultos`, para um contato GRAVADO numa linha que
+   * sobrevive a ele — o contato do recebimento da mensagem (ADR-061, adendo 9,
+   * item 2), que não tem FK: o id que não resolve mais (contato excluído, ou de
+   * outro workspace) vai na dúvida, oculto fora do `livre`. Assim a exclusão do
+   * contato não derruba a proteção da mídia que chegou no tempo dele.
+   */
+  async contatosGravadosOcultos(
+    auth: AuthContext,
+    ids: readonly (string | null | undefined)[],
+    db: Db = this.prisma.db,
+  ): Promise<Set<string>> {
+    const unicos = [...new Set(ids.filter((id): id is string => Boolean(id)))];
+    if (unicos.length === 0) return new Set();
+    const modo = await this.modo(auth);
+    if (modo.tipo !== 'restrito') return this.contatosOcultos(auth, unicos, db);
+    const [existem, ocultos] = await Promise.all([
+      db.contact.findMany({
+        where: { id: { in: unicos } },
+        select: { id: true },
+      } as never) as unknown as Promise<{ id: string }[]>,
+      this.contatosOcultos(auth, unicos, db),
+    ]);
+    const vivos = new Set(existem.map((c) => c.id));
+    for (const id of unicos) if (!vivos.has(id)) ocultos.add(id);
+    return ocultos;
+  }
+
+  /**
+   * Quem pede lê TODO o conteúdo protegido (o `livre`): tem as duas chaves de
+   * toda extensão sujeita neste workspace, ou nenhuma se aplica. É o que a
+   * correção do remetente de uma conversa protegida com mídia exige (ADR-061,
+   * adendo 9, item 2).
+   */
+  async liberaTudo(auth: AuthContext): Promise<boolean> {
+    return (await this.modo(auth)).tipo === 'livre';
+  }
+
+  /**
+   * Os contatos, dentre `ids`, protegidos por alguma extensão sujeita neste
+   * workspace, INDEPENDENTE de quem pede — o lote de `contatoProtegido`. Para
+   * contar, na trilha da correção do remetente, as mídias que continuam
+   * protegidas (adendo 9, item 2).
+   */
+  async contatosProtegidos(ids: readonly string[], db: Db = this.prisma.db): Promise<Set<string>> {
+    const unicos = [...new Set(ids)];
+    const protegidos = new Set<string>();
+    if (unicos.length === 0) return protegidos;
+    for (const p of this.providers) {
+      const rows = (await db.contact.findMany({
+        where: { AND: [{ id: { in: unicos } }, p.contactFilter()] },
+        select: { id: true },
+      } as never)) as unknown as { id: string }[];
+      if (rows.length > 0 && (await p.appliesToWorkspace())) {
+        for (const r of rows) protegidos.add(r.id);
+      }
+    }
+    return protegidos;
   }
 
   /** As oportunidades, dentre `ids`, de contato oculto para quem pede (adendo 5). */

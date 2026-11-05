@@ -70,9 +70,21 @@ const MENSAGEM_MUDOU = 'A conversa acabou de mudar. Recarregue e tente de novo.'
  * estão, e a auditoria não é apagada. Só a ATRIBUIÇÃO ao contato, que nas
  * mensagens novas vem da conversa (C12).
  */
-/** A recusa de levar à RAI a conversa protegida com mídia (ADR-061, adendo 6). */
+/**
+ * A recusa de levar à RAI a conversa protegida com mídia a quem não lê todo o
+ * conteúdo protegido (ADR-061, adendos 6 e 9).
+ */
 export const MENSAGEM_MIDIA_PROTEGIDA =
-  'Esta conversa tem mídia de um contato protegido e não pode voltar a remetente a identificar. A correção de uma atribuição errada ainda não está disponível.';
+  'Esta conversa tem mídia de um contato protegido e não pode voltar a remetente a identificar. A correção só pode ser feita por quem lê o conteúdo protegido.';
+
+/**
+ * A recusa da correção quando alguma mídia da conversa não tem o contato do
+ * recebimento gravado (recebida enquanto o remetente estava a identificar, ou
+ * gravada pelo código anterior à coluna): depois da correção, só o contato
+ * atual a protegeria (ADR-061, adendo 9, item 2).
+ */
+export const MENSAGEM_MIDIA_SEM_RECEBIMENTO =
+  'Esta conversa tem mídia sem o contato do recebimento gravado e não pode voltar a remetente a identificar.';
 
 function mesmoConjuntoDeIds(a: readonly string[], b: readonly string[]): boolean {
   const x = new Set(a);
@@ -285,29 +297,74 @@ export class ConversationSenderService {
   }
 
   /**
-   * A MÍDIA HISTÓRICA de uma conversa protegida (ADR-061, adendo 6): a
-   * proteção é derivada do contato ATUAL da conversa, e nada guarda de quem ela
-   * era quando a mídia chegou. Levar à RAI a conversa de um contato protegido
-   * que tem mídia — anexada ou ainda pendente de download — e depois
-   * identificá-la como outro reabriria essa mídia. Por isso, em workspace
-   * sujeito, desfazer e rejeitar são recusados a TODOS os papéis nessa
-   * conversa, antes de qualquer mudança: o remetente, o número e o arquivo
-   * ficam como estão. Quem não pode saber quem é protegido já recebeu, antes,
-   * a recusa uniforme. O procedimento seguro para corrigir uma atribuição
-   * errada é pendência obrigatória antes do piloto.
+   * A CORREÇÃO DO REMETENTE de uma conversa protegida com mídia (ADR-061,
+   * adendo 9, item 2). Cada mensagem grava o contato do recebimento, e a mídia
+   * é protegida se ele OU o atual for oculto para quem pede: levar a conversa
+   * à RAI, e depois identificá-la como outro, não abre a mídia do contato
+   * antigo. Por isso, em workspace sujeito, desfazer e rejeitar a conversa de
+   * um contato protegido que tem mídia — anexada ou ainda pendente de
+   * download — são permitidos SÓ a quem lê todo o conteúdo protegido (as duas
+   * chaves da extensão, o `livre`) e tem `contacts:write`; aos outros, 409,
+   * antes de qualquer mudança. Quem não pode saber quem é protegido já
+   * recebeu, antes, a recusa uniforme (403).
+   *
+   * A mídia de uma mensagem SEM o contato do recebimento (a que chegou
+   * enquanto o remetente estava a identificar, ou a gravada pelo código
+   * anterior à coluna) só é protegida pelo contato atual, que a correção tira:
+   * com ela, a correção é recusada a todos (409). A mensagem é append-only, e
+   * gravar o contato nela depois exigiria abrir a regra do append-only.
+   *
+   * Devolve quantas mídias da conversa continuam protegidas pelo contato do
+   * recebimento — o protegido pela extensão, ou o que não existe mais (na
+   * dúvida) —, para a trilha.
    */
-  private async exigirSemMidiaProtegida(
+  private async exigirCorrecaoPermitida(
+    auth: AuthContext,
     db: Db,
     conversationId: string,
     contactId: string,
-  ): Promise<void> {
-    if (!(await this.protegido.contatoProtegido(contactId, db))) return;
-    const midia =
-      (await db.messageAttachment.count({
-        where: { message: { conversationId } },
-      } as never)) +
-      (await db.inboundMedia.count({ where: { message: { conversationId } } } as never));
-    if (midia > 0) throw new ConflictException(MENSAGEM_MIDIA_PROTEGIDA);
+  ): Promise<number> {
+    const midias = await this.midiasDaConversa(db, conversationId);
+    if (midias.length === 0) return 0;
+    if (await this.protegido.contatoProtegido(contactId, db)) {
+      const corrige =
+        (await this.protegido.liberaTudo(auth)) &&
+        (await this.permissions.has(auth, 'contacts:write'));
+      if (!corrige) throw new ConflictException(MENSAGEM_MIDIA_PROTEGIDA);
+      if (midias.some((m) => m === null)) {
+        throw new ConflictException(MENSAGEM_MIDIA_SEM_RECEBIMENTO);
+      }
+    }
+    const gravados = [...new Set(midias.filter((m): m is string => m !== null))];
+    if (gravados.length === 0) return 0;
+    const [protegidos, existem] = await Promise.all([
+      this.protegido.contatosProtegidos(gravados, db),
+      db.contact.findMany({
+        where: { id: { in: gravados } },
+        select: { id: true },
+      } as never) as unknown as Promise<{ id: string }[]>,
+    ]);
+    const vivos = new Set(existem.map((c) => c.id));
+    return midias.filter((m) => m !== null && (protegidos.has(m) || !vivos.has(m))).length;
+  }
+
+  /**
+   * As mídias da conversa, uma entrada por mídia, com o contato do
+   * recebimento da mensagem que a trouxe (NULL quando não gravado): os anexos
+   * e a mídia recebida ainda sem arquivo (pendente ou com a coleta falha) —
+   * a coletada já é um anexo.
+   */
+  private async midiasDaConversa(db: Db, conversationId: string): Promise<(string | null)[]> {
+    const daConversa = { message: { conversationId } };
+    const selecao = { message: { select: { receivedContactId: true } } };
+    const [anexos, semArquivo] = (await Promise.all([
+      db.messageAttachment.findMany({ where: daConversa, select: selecao } as never),
+      db.inboundMedia.findMany({
+        where: { ...daConversa, fileObjectId: null },
+        select: selecao,
+      } as never),
+    ])) as unknown as { message: { receivedContactId: string | null } }[][];
+    return [...anexos, ...semArquivo].map((m) => m.message.receivedContactId);
   }
 
   private async levarARai(
@@ -331,7 +388,7 @@ export class ConversationSenderService {
      * `uniforme`, a recusa vale para toda pessoa — igual para todos.
      */
     await this.protegido.exigirAlvoVisivel(auth, { contactId: antes.contactId });
-    await this.exigirSemMidiaProtegida(this.prisma.db, antes.id, antes.contactId as string);
+    await this.exigirCorrecaoPermitida(auth, this.prisma.db, antes.id, antes.contactId as string);
     const saida = tirarNumero
       ? await this.contacts.saidaDoNumero(antes.contactId as string, this.enderecoDe(antes), regiao)
       : null;
@@ -344,7 +401,14 @@ export class ConversationSenderService {
         }
         // de novo, sob as travas do contato: a conversão concorrente é vista
         await this.protegido.exigirAlvoVisivel(auth, { contactId: conversa.contactId }, tx);
-        await this.exigirSemMidiaProtegida(tx, conversa.id, conversa.contactId as string);
+        // a mídia contada sob a trava da linha, que o registro de mensagem também
+        // prende antes de anexar: um anexo concorrente entra aqui ou espera
+        const midiasProtegidas = await this.exigirCorrecaoPermitida(
+          auth,
+          tx,
+          conversa.id,
+          conversa.contactId as string,
+        );
         const anterior = conversa.contactId as string;
         const endereco = this.enderecoDe(conversa);
         const candidatos = (await this.classificar(tx, endereco)).length;
@@ -401,6 +465,9 @@ export class ConversationSenderService {
             numberRemoved: numeroTirado,
             closed: raiAberta !== null,
             unassigned: semResponsavel,
+            // quantas mídias continuam protegidas pelo contato do recebimento
+            // (adendo 9, item 2); no `uniforme`, a trilha a tapa
+            protectedMedia: midiasProtegidas,
           },
         });
       },

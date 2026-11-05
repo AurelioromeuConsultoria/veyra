@@ -573,7 +573,11 @@ describe('Clinics — mídia, campos e título de pacientes (integração, F5.3c
     await post(`/api/conversations/${rai}/sender/unidentify`, recepcao).expect(403);
   });
 
-  it('mídia histórica (adendo 6): a conversa de paciente com mídia não volta à RAI para NENHUM papel — remetente, número e arquivo preservados', async () => {
+  // as mensagens destes dois casos são gravadas SEM o contato do recebimento,
+  // como o código anterior à coluna as deixava: a correção segue recusada a
+  // todos (ADR-061, adendo 9, item 2; a correção possível está em
+  // `clinics-sender-correction`)
+  it('mídia histórica (adendos 6 e 9): a conversa de paciente com mídia SEM o contato do recebimento não volta à RAI para NENHUM papel — remetente, número e arquivo preservados', async () => {
     await comNumero(paciente);
     const arquivo = await subir();
     const conversa = await conversaDoNumero(paciente, arquivo);
@@ -602,7 +606,7 @@ describe('Clinics — mídia, campos e título de pacientes (integração, F5.3c
     );
   });
 
-  it('mídia histórica (adendo 6): o download ainda pendente também bloqueia; sem mídia, quem tem as chaves rejeita como sempre', async () => {
+  it('mídia histórica (adendos 6 e 9): o download ainda pendente, sem o contato do recebimento, também bloqueia; sem mídia, quem tem as chaves rejeita como sempre', async () => {
     await comNumero(paciente);
     const canal = await prisma.raw.channel.create({
       data: { workspaceId: ws.workspaceId, type: 'whatsapp', name: 'WhatsApp pendente' },

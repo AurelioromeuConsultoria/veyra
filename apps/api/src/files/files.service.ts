@@ -28,6 +28,13 @@ type TxRunner = { $transaction: <T>(fn: (tx: Db) => Promise<T>) => Promise<T> };
  */
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
+/** Um vínculo do arquivo a uma mensagem: a conversa de agora e o contato do recebimento. */
+type Vinculo = {
+  senderStatus: string;
+  contactId: string | null;
+  receivedContactId: string | null;
+};
+
 type FileRow = {
   id: string;
   key: string;
@@ -91,12 +98,18 @@ export class FilesService {
 
   /** As conversas a que cada arquivo está ligado (anexo ou mídia recebida), e os marcados. */
   private async vinculosDe(fileIds: string[]): Promise<{
-    vinculos: Map<string, { senderStatus: string; contactId: string | null }[]>;
+    vinculos: Map<string, Vinculo[]>;
     restritos: Set<string>;
   }> {
     const selecao = {
       fileObjectId: true,
-      message: { select: { conversation: { select: { senderStatus: true, contactId: true } } } },
+      message: {
+        select: {
+          // o contato do recebimento (ADR-061, adendo 9, item 2), ao lado do atual
+          receivedContactId: true,
+          conversation: { select: { senderStatus: true, contactId: true } },
+        },
+      },
     } as const;
     const [anexos, midias, marcados] = await Promise.all([
       this.prisma.db.messageAttachment.findMany({
@@ -113,48 +126,66 @@ export class FilesService {
       } as never),
     ]);
     const restritos = new Set((marcados as unknown as { id: string }[]).map((m) => m.id));
-    const vinculos = new Map<string, { senderStatus: string; contactId: string | null }[]>();
+    const vinculos = new Map<string, Vinculo[]>();
     for (const vinculo of [...anexos, ...midias] as unknown as {
       fileObjectId: string | null;
-      message: { conversation: { senderStatus: string; contactId: string | null } };
+      message: {
+        receivedContactId: string | null;
+        conversation: { senderStatus: string; contactId: string | null };
+      };
     }[]) {
       if (!vinculo.fileObjectId) continue;
       vinculos.set(vinculo.fileObjectId, [
         ...(vinculos.get(vinculo.fileObjectId) ?? []),
-        vinculo.message.conversation,
+        { ...vinculo.message.conversation, receivedContactId: vinculo.message.receivedContactId },
       ]);
     }
     return { vinculos, restritos };
   }
 
   /**
-   * A MÍDIA DE CONVERSA PROTEGIDA (E8; ADR-061, adendo 5): o arquivo ligado a
-   * QUALQUER conversa de um contato oculto para quem pede (o protegido pela
-   * extensão no `restrito`; qualquer pessoa no `uniforme`), ou de remetente a identificar,
-   * ou marcado `conversationRestricted` sem vínculo (não se sabe de quem é) —
-   * estes dois pela regra conservadora da dúvida. Derivada a cada leitura: o
-   * contato que passa a ser protegido, a identificação ou o desfazer valem já no pedido
-   * seguinte, e um vínculo protegido protege o arquivo em todo lugar. Sem a
-   * porta, ou no `livre`, nada aqui (o Core de sempre).
+   * A MÍDIA DE CONVERSA PROTEGIDA (E8; ADR-061, adendos 5 e 9): o arquivo
+   * ligado a uma mensagem cujo contato do RECEBIMENTO, ou o contato ATUAL da
+   * conversa, é oculto para quem pede (o protegido pela extensão no
+   * `restrito`; qualquer pessoa no `uniforme`); ou a uma conversa de remetente
+   * a identificar; ou marcado `conversationRestricted` sem vínculo (não se
+   * sabe de quem é) — estes dois pela regra conservadora da dúvida. O contato
+   * do recebimento é o que a correção do remetente não muda: a mídia do
+   * contato antigo continua protegida depois que a conversa passa a outro
+   * (adendo 9, item 2). NULL (a mensagem da RAI, ou a gravada pelo código
+   * anterior): vale só o atual. O id gravado que não resolve mais vai na
+   * dúvida (`contatosGravadosOcultos`). Derivada a cada leitura: o contato que
+   * passa a ser protegido vale já no pedido seguinte, e um vínculo protegido
+   * protege o arquivo em todo lugar. Sem a porta, ou no `livre`, nada aqui (o
+   * Core de sempre).
    */
   private async protegidasDe(
     auth: AuthContext,
     fileIds: string[],
-    vinculos: Map<string, { senderStatus: string; contactId: string | null }[]>,
+    vinculos: Map<string, Vinculo[]>,
     restritos: Set<string>,
   ): Promise<Set<string>> {
     if (!(await this.protegido.duvidaOculta(auth))) return new Set();
-    const ocultos = await this.protegido.contatosOcultos(
-      auth,
-      [...vinculos.values()].flat().map((c) => c.contactId),
-    );
+    const todos = [...vinculos.values()].flat();
+    const [ocultos, recebidosOcultos] = await Promise.all([
+      this.protegido.contatosOcultos(
+        auth,
+        todos.map((c) => c.contactId),
+      ),
+      this.protegido.contatosGravadosOcultos(
+        auth,
+        todos.map((c) => c.receivedContactId),
+      ),
+    ]);
     return new Set(
       fileIds.filter((id) => {
         const conversas = vinculos.get(id);
         if (!conversas) return restritos.has(id);
         return conversas.some(
           (c) =>
-            c.senderStatus === 'unidentified' || (c.contactId !== null && ocultos.has(c.contactId)),
+            c.senderStatus === 'unidentified' ||
+            (c.contactId !== null && ocultos.has(c.contactId)) ||
+            (c.receivedContactId !== null && recebidosOcultos.has(c.receivedContactId)),
         );
       }),
     );

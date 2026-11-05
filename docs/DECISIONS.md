@@ -10565,7 +10565,7 @@ O workspace que nunca teve o Clinics fica sempre no modo livre, com o comportame
      - **A conversa do paciente sem mídia** continua podendo ser rejeitada por quem tem as chaves.
      - **Os testes usam as rotas reais:** rejeitar (com e sem tirar o número), desfazer, o download pendente e a conversa sem mídia.
    - **Backlog (revisão de segurança, P2):** o registro manual de uma mensagem de entrada com anexo cria o anexo antes de prender a linha da conversa. Um rejeitar concorrente por outra pessoa com as chaves pode contar zero mídias e levar a conversa à RAI. A janela é estreita e exige dois usuários com as chaves ao mesmo tempo. A correção é prender a linha da conversa no início do `addMessage`.
-   - **PENDÊNCIA OBRIGATÓRIA ANTES DO PILOTO:** um procedimento seguro para corrigir uma atribuição errada nessas conversas. O caminho provável é a migration que grava em cada mensagem o contato do momento em que ela chegou, mais uma liberação auditada por quem tem as chaves.
+   - **PENDÊNCIA OBRIGATÓRIA ANTES DO PILOTO** _(resolvida no adendo 9, item 2: a recusa a todos vale agora só para a mídia sem o contato do recebimento)_: um procedimento seguro para corrigir uma atribuição errada nessas conversas. O caminho provável é a migration que grava em cada mensagem o contato do momento em que ela chegou, mais uma liberação auditada por quem tem as chaves.
    - **O registro anterior, mantido como histórico:** o item dependia de decisão do usuário e não tinha sido implementado. A proteção hoje é derivada do contato ATUAL da conversa, e nada guarda de quem a conversa era quando a mídia chegou. Os caminhos possíveis:
    - **sem migration:** recusar a todos, inclusive a quem tem as chaves, desfazer ou rejeitar a conversa de um contato protegido que tenha mídia. A proteção fica preservada, mas ninguém corrige uma atribuição errada dessa conversa;
    - **com migration:** gravar em cada mensagem o contato da conversa no momento em que ela chegou. A mídia é protegida se esse contato OU o atual for oculto. Também é preciso decidir quem pode liberar a mídia de uma atribuição errada, se alguém puder.
@@ -10619,9 +10619,9 @@ O workspace que nunca teve o Clinics fica sempre no modo livre, com o comportame
   - **Coberto:** a parte técnica do acesso ao conteúdo clínico pelas pessoas e papéis do workspace, entre a F5.3a e a F5.3d. São as notas, as tarefas, a mídia, os campos, os títulos, a trilha, a timeline, o histórico das automações, o replay e a RAI, para a demonstração com dados fictícios. Na trilha, as linhas que dizem quem é paciente saem; fora dela, o sinal ainda existe no item 8 abaixo (o 7 foi resolvido no adendo 8).
   - **O B1 NÃO é levantado.** Continuam obrigatórios antes do piloto com dados reais:
     1. **a agenda do Core (`CalendarEvent`):** o título, a descrição e o local de um evento ligado ao contato ou à oportunidade de um paciente saem a quem tem `calendar:read` (Member e Guest), na atividade `event_scheduled` e na notificação `calendar_event_scheduled`. É texto escrito sobre o contato, da mesma classe das notas e tarefas, e fica fora da F5.3. O Clinics tem a agenda própria dele. A do Core não está nas rotas da experiência da clínica, mas a API dela responde _(resolvido no adendo 8, resultado do item 1 e ressalvas da revisão)_;
-    2. o procedimento seguro para corrigir uma atribuição errada de remetente em conversa de paciente com mídia (adendo 6, item 3);
+    2. o procedimento seguro para corrigir uma atribuição errada de remetente em conversa de paciente com mídia (adendo 6, item 3) _(resolvido no adendo 9, resultado do item 2)_;
     3. a corrida de inserção na cascata da exclusão, que é pendência de integridade (adendo 4);
-    4. a corrida do registro manual de mensagem com anexo contra o rejeitar (adendo 6, backlog);
+    4. a corrida do registro manual de mensagem com anexo contra o rejeitar (adendo 6, backlog) _(resolvido no adendo 9, resultado do item 2: o registro prende a linha da conversa antes de gravar)_;
     5. a corrida do vínculo profissional lido fora da transação (D8, adendo 1, aceito só para a demonstração);
     6. **o sinal fraco da IA:** um interessado liberado para IA que vira paciente passa a ser recusado, o que se confunde com a revogação manual;
     7. _(resolvido no adendo 8, item 7)_ **a lista de consentimentos por contato:** `GET /contacts/:id/consents` e `GET /conversations/:id/consents` devolvem `purposeKey: 'clinics_confirmacao'` sem o E8. Quem tem `consents:read` e não tem a agenda deduz quem é paciente. Isso vale para um papel personalizado e para todos depois da desativação. O `consent.revoked` da trilha não tem `purposeId`, e a lista liga o id ao contato;
@@ -10746,6 +10746,66 @@ O workspace que nunca teve o Clinics fica sempre no modo livre, com o comportame
 **Alternativas.** Item 8: tirar `conversations:read` dos papéis sem a agenda clínica muda papéis do Core sem necessidade; esconder só o envio do vertical deixa a mensagem do paciente revelando. Item 2: manter a recusa a todos deixa erro de atribuição sem correção nenhuma; liberar a mídia junto da correção decide quem pode desfazer uma proteção, o que o usuário não decidiu.
 
 **Consequências.** No `uniforme`, as Conversas ficam sem texto para conversas com pessoa: o Guest passa a ver só a estrutura (canal, estado, datas). A migration do item 2 é a segunda pelo caminho automático; o preenchimento é um `UPDATE` em massa, que a guarda do job não pega: por isso ele vai em migration própria, ensaiada pela skill `create-migration`, com o resultado dos dados conferido.
+
+**Resultado do item 2, a correção de remetente (commit local, 2026-11-05).** Sem permissão nova, sem `raw` novo, e nenhuma ação da recepção mudou.
+
+- **As migrations, as duas pelo caminho automático (ADR-058, adendo 2):**
+  - `20261105090000_message_received_contact`: a coluna `Message.receivedContactId` (uuid, NULL). Só acréscimo;
+  - `20261105090100_message_received_contact_backfill`: o preenchimento, em migration própria, com o contato ATUAL da conversa de cada mensagem (a RAI fica com NULL).
+  - **O ensaio da skill `create-migration`:** cada uma é uma transação só. Na da coluna, a falha forçada deixou o schema idêntico e o inventário em 0, e a aplicação limpa deu 1 e o `migrate diff` vazio. Na do preenchimento, com uma base semeada de dados fictícios (`SEMEIA`, `DADOS` e `DADOS_ESPERADO`), a falha deixou os dados intactos, e a aplicação deu o esperado. A regra do job (`migrations_que_nao_sobem`) deu "ok" para as duas. O inventário e a conferência estão no `DEPLOY_STAGING` §4.
+  - **A compatibilidade:** o código anterior ignora a coluna. A mensagem que ele gravar na troca fica com NULL, que a API nova trata como "vale o contato atual".
+- **Sem FK, de propósito** (`DOMAIN_MODEL` §9, exceção no `check:fk`). A coluna é uma fotografia que precisa sobreviver ao contato, e cada opção de FK quebrava algo:
+  - em cascata, excluir o contato apagaria mensagens de uma conversa que hoje é de outro;
+  - `NoAction` travaria a exclusão do contato (LGPD);
+  - `SET NULL` derrubaria a proteção (NULL vale o atual), e na FK composta tentaria anular o `workspaceId`.
+
+  Sem FK, **o id que não resolve mais** (o contato excluído, ou um id de outro workspace) vai na dúvida: oculto fora do `livre`. Assim a proteção não cai com a exclusão do contato do recebimento. No Clinics, o paciente já não pode ser excluído. O `check:fk` confere os dados da coluna como confere as fotografias em lista: nenhum id de outro workspace. Isso foi provado com uma linha forjada, que deixou o `check:fk` "SUJO". Não há índice, porque nada consulta pela coluna.
+
+- **A gravação:** toda mensagem nova grava o contato da conversa no momento. São os quatro escritores:
+  - a ingestão do WhatsApp, com o contato decidido sob as travas do número (NULL na RAI);
+  - o registro manual;
+  - o envio de pessoa e da IA;
+  - o envio do negócio.
+
+  Não existe mensagem de sistema. **O backlog do adendo 6 foi fechado no mesmo caminho:** o registro manual prende a linha da conversa antes de gravar (uma escrita de `lastMessageAt`) e relê o remetente sob ela. A correção prende a mesma linha antes de contar a mídia. Se ela vem antes, o registro responde 409 "A conversa acabou de mudar", sem efeito. Se vem depois, vê a mensagem e o anexo. O contato gravado é o relido sob a trava.
+
+- **A regra da mídia:** é protegida se o contato do recebimento OU o atual for oculto para quem pede, em todo caminho:
+  - a lista de mensagens, inclusive o marcador da mídia ainda não coletada;
+  - o download, a listagem e a exclusão de arquivos;
+  - anexar o id em outra mensagem;
+  - a trilha `file.*`;
+  - a repetição do registro.
+
+  Todos passam por `FilesService.protegidasDe` e pelo novo `contatosGravadosOcultos` da porta do E8. O resto do adendo 5 não mudou: a RAI, o `conversationRestricted`, o `uniforme` e o `[anexo]`.
+
+- **A correção, para cada papel:**
+  - **Owner, Admin e "Recepção e atendimento" (`livre`, com `contacts:write`):** rejeitar, com ou sem tirar o número, e desfazer a conversa de um paciente com mídia passam a ser possíveis. A mídia do paciente continua protegida, para a recepção e para o Guest, também depois que a conversa é identificada como interessado ou como um contato novo. Para quem corrige, nada muda na leitura.
+  - **A recepção (`restrito`):** a mesma recusa de antes (403 "Conteúdo restrito"). O que mudou para ela é só a leitura: ela já não vê a mídia do paciente depois da correção. Era o atalho do adendo 5: tirar o número, pôr o número no interessado e identificar a RAI como ele.
+  - **O Guest e o papel sem a agenda (`uniforme`):** o 403 uniforme de antes, igual para paciente e interessado.
+  - **O 409 `MENSAGEM_MIDIA_PROTEGIDA`** continua como guarda para quem não está no `livre`. Com uma extensão só, o 403 vem antes, então o teste simula esse caso.
+  - **O workspace sem o Clinics:** nada muda.
+- **A trilha:** `conversation.sender_rejected` e `sender_unidentified` levam `protectedMedia`, que é a contagem das mídias que continuam protegidas pelo contato do recebimento (protegido pela extensão, ou o id que não resolve). O campo entrou na allowlist e nunca leva nome, tipo ou arquivo. No `uniforme`, ele sai "Conteúdo restrito" em toda linha da ação (`CONTAGENS_QUE_SOMAM_A_EXTENSAO`), porque um valor maior que zero diria que a conversa foi de um paciente. Quem corrigiu é o ator. "De quem para quem" é o `contactId` antes e depois, e a identificação seguinte tem a linha própria.
+- **Uma decisão tomada aqui, mais conservadora que o pedido:** se alguma mídia da conversa NÃO tem o contato do recebimento, a correção é recusada a todos (409 `MENSAGEM_MIDIA_SEM_RECEBIMENTO`). Esse caso inclui a mídia recebida enquanto a conversa era RAI e depois identificada como o paciente, e a mídia gravada pelo código anterior na troca. Depois da correção, só o contato atual protegeria essa mídia, e a correção o tira. Gravar o contato nessas mensagens no momento da identificação exigiria escrever numa `Message`, que é append-only no client protegido (`APPEND_ONLY_MODELS`). Abrir essa regra mexe na camada de isolamento e pede revisão própria.
+  - **O que fica disponível hoje:** as mensagens anteriores, preenchidas pela migration, e toda mensagem recebida com a conversa identificada.
+  - **O que fica para depois:** a conversa que nasceu RAI com mídia e foi identificada como paciente continua sem correção. É pendência antes do piloto, com o desenho mínimo: o preenchimento único (NULL → contato) na identificação, como desfecho de `Message`, com `reviewer` e `security`.
+- **Os testes:**
+  - **a integração nova, `clinics-sender-correction` (10 cenários, pelas rotas reais: a ingestão pelo webhook e a coleta pelo coletor):**
+    - rejeitar sem tirar o número, com a recepção, o Guest, o arquivo e a trilha;
+    - rejeitar tirando o número, com a recepção identificando como interessado;
+    - desfazer, com o registro manual e a trilha `file.uploaded` mascarada;
+    - o download pendente coletado depois da correção, com o marcador;
+    - a mídia sem o contato do recebimento (409 a todos, nada muda);
+    - a mensagem antiga preenchida pelo `UPDATE` da própria migration;
+    - o 403 uniforme, o 409 de guarda e a contagem tapada;
+    - a repetição com a mesma chave depois da correção;
+    - a ordem forçada entre o registro e a correção, com a trava da linha observada;
+    - o id que não resolve (excluído, ou de outro workspace) e o workspace sem o Clinics.
+  - **Os specs existentes passam:** mídia, conteúdo e trilha do E8, conversas, arquivos, varredura de arquivos, trilha, identidade do WhatsApp, envio e coleta, ingestão, envio do negócio e escritores de telefone. Os dois casos do adendo 6 em `clinics-patient-media-fields` (as mensagens sem o contato gravado) seguem 409 e só mudaram de título.
+  - **Também passam:** os unitários de conversas, arquivos, Prisma, extensões, trilha, canais e CLI, o `check:fk` limpo e o `tsc` da API.
+- **Limites registrados:**
+  - **o preenchimento usa o contato ATUAL:** a história anterior das religações não é recomposta. O staging só tem dados fictícios, e nenhum piloto rodou;
+  - **o id de um contato excluído vai na dúvida:** a mídia recebida por um interessado que depois foi excluído, hoje numa conversa de outro interessado, passa a sair restrita para a recepção. É conservador, e quem tem as chaves continua lendo;
+  - **a corrida entre a ingestão do código anterior e a correção** fica limitada à janela da troca, e só o código novo corrige.
 
 ## ADR-062 — Redesenho visual e de UX: "Mineral" com moldura, estados e próxima ação (2026-11-04)
 

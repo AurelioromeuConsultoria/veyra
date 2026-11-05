@@ -1028,6 +1028,49 @@ muda o registro da migration e não desfaz nenhum objeto.
    ORDER BY 1, 2;
    ```
 
+   Para a `20261105090000_message_received_contact` (B1, ADR-061 adendo 9,
+   item 2), com **1 objeto**: a coluna `Message.receivedContactId` (uuid,
+   NULL, sem DEFAULT, sem índice e sem FK, de propósito). Só acréscimo: o
+   código anterior a ignora. Ela sobe sozinha na API (ADR-058, adendo 2). O
+   ensaio da falha forçada deu o schema idêntico e o inventário em 0; a
+   aplicação limpa, 1 e o `migrate diff` vazio.
+
+   ```sql
+   -- inventário da 20261105090000_message_received_contact: 0 linhas = nada
+   -- ficou; 1 = inteira
+   SELECT 'coluna' AS k, column_name::text AS nome FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'Message'
+       AND column_name = 'receivedContactId'
+   ORDER BY 1, 2;
+   ```
+
+   Para a `20261105090100_message_received_contact_backfill`, a migration de
+   **dados** que vem logo depois, com **0 objetos**: grava em cada mensagem
+   ainda sem ele o contato ATUAL da conversa (a RAI fica com NULL). Ela também
+   sobe sozinha. Como não cria objeto, o inventário de objetos é vazio, e o
+   estado se prova pelos DADOS. No ensaio, com uma base semeada de dados
+   fictícios (dois workspaces, uma conversa identificada com duas mensagens,
+   uma RAI e uma conversa do outro workspace), a falha forçada deixou o schema
+   idêntico e todas as mensagens com NULL; a aplicação limpa preencheu as três
+   mensagens das conversas identificadas com o contato da própria conversa e
+   deixou a da RAI com NULL, com o `migrate diff` vazio. **Na falha:** a
+   transação desfaz tudo, e a API nova trata o NULL como o contato atual (a
+   correção do remetente de uma conversa protegida com mídia fica recusada,
+   409, até o preenchimento). Repetir é seguro: o `UPDATE` só toca o que
+   ainda é NULL. **A mensagem gravada pelo código anterior** entre a
+   migration e a troca da API fica com NULL, com o mesmo tratamento.
+
+   ```sql
+   -- conferência da 20261105090100_message_received_contact_backfill: as
+   -- mensagens de conversa identificada ainda sem o contato do recebimento:
+   -- 0 logo depois da aplicação, salvo as gravadas pelo código anterior na
+   -- troca. Com o tempo, a mensagem recebida na RAI e depois identificada
+   -- também conta (ela fica com NULL de propósito)
+   SELECT count(*) FROM "Message" m
+     JOIN "Conversation" c ON c."workspaceId" = m."workspaceId" AND c."id" = m."conversationId"
+    WHERE c."contactId" IS NOT NULL AND m."receivedContactId" IS NULL;
+   ```
+
    Para outra migration, monte o inventário do mesmo jeito, a partir das
    instruções do arquivo: cada `CREATE` e cada `ADD CONSTRAINT`.
 

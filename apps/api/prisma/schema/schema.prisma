@@ -1029,6 +1029,16 @@ model Message {
   authorType         MessageAuthor
   authorMembershipId String?          @db.Uuid
   authorContactId    String?          @db.Uuid
+  /// o CONTATO DA CONVERSA no momento em que a mensagem foi gravada (ADR-061,
+  /// adendo 9, item 2): a mídia dela é protegida (E8) se este contato OU o
+  /// atual da conversa for oculto para quem pede — a correção do remetente não
+  /// libera a mídia do contato antigo. NULL na mensagem da RAI e na gravada
+  /// pelo código anterior à coluna: vale o contato atual. SEM FK de propósito
+  /// (DOMAIN_MODEL §9): a exclusão do contato não pode apagar a mensagem
+  /// (cascata), nem travar a exclusão (NoAction), nem anular a proteção (SET
+  /// NULL); o id que não resolve mais vai na dúvida (oculto fora do `livre`).
+  /// Gravado só pelo servidor, a partir da conversa do mesmo workspace.
+  receivedContactId  String?          @db.Uuid
   body               String
   externalId         String?
   deliveredAt        DateTime?
