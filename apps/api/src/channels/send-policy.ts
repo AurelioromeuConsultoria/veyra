@@ -19,6 +19,14 @@ export const MENSAGEM_NUMERO_NAO_CONFERE =
   'O número desta conversa não confere, de forma exata, com um telefone do cadastro do contato. Confira o contato antes de responder.';
 
 /**
+ * O 409 de quem perdeu a corrida para a conversa: os atos do remetente, o
+ * registro manual e o envio de pessoa, que relê o remetente sob a linha presa
+ * (ADR-061, adendo 9). Mora aqui, num arquivo sem dependências, para que o
+ * envio (`channels`) e o remetente (`conversations`) a usem sem ciclo.
+ */
+export const MENSAGEM_MUDOU = 'A conversa acabou de mudar. Recarregue e tente de novo.';
+
+/**
  * O template pelo envio COMUM (F4.1b, mantido na F4.1c-3): consentimento
  * antigo não autoriza template, e o parâmetro digitado nunca vira mensagem. O
  * template sai só pelo envio do negócio — a prévia e a aprovação de uma versão

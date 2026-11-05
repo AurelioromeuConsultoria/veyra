@@ -18,6 +18,10 @@ import {
   type WorkspaceFixture,
 } from '../../test/integration/fixtures';
 import { resetDb } from '../../test/integration/harness';
+import { TEST_DATABASE_URL } from '../../test/integration/db-url';
+import { esperarBloqueadosPor } from '../../test/integration/locks';
+import { OutboxService } from '../outbox/outbox.service';
+import { MENSAGEM_MUDOU } from './send-policy';
 import {
   agoraNoBanco,
   comRelogioDoNode,
@@ -1796,6 +1800,231 @@ describe('Canal WhatsApp — envio e coleta (integração)', () => {
       );
       // recém-escrita pelo banco: segundos, não os 20 min do relógio do Node
       expect(await lerIdade()).toBeLessThan(60);
+    });
+  });
+
+  /**
+   * O ENVIO DE PESSOA relê o remetente sob a linha presa (ADR-061, adendo 9,
+   * revisão de `security` do fechamento do resíduo). Antes, a escrita lia o
+   * contato da conversa SEM a linha presa: uma correção que comitasse entre o
+   * preparo e essa leitura fazia a mensagem nascer com o contato NULL numa
+   * conversa de volta à RAI, e a identificação seguinte gravava nela o contato
+   * NOVO. Agora a escrita prende a linha, relê o remetente e responde 409 se a
+   * conversa mudou desde o preparo; nada é gravado.
+   */
+  describe('o envio de pessoa e a correção concorrente do remetente', () => {
+    /** quem abre um portão, uma trava ou um pedido o registra aqui; o afterEach solta tudo */
+    const soltar: (() => Promise<void> | void)[] = [];
+    afterEach(async () => {
+      for (const s of soltar.splice(0).reverse()) await s();
+      jest.restoreAllMocks();
+    });
+
+    /** uma conexão própria, com a linha da conversa presa numa transação aberta */
+    const prenderConversa = async () => {
+      const trava = new Client({ connectionString: TEST_DATABASE_URL });
+      await trava.connect();
+      soltar.push(async () => {
+        await trava.query('ROLLBACK').catch(() => undefined);
+        await trava.end().catch(() => undefined);
+      });
+      await trava.query('BEGIN');
+      await trava.query(
+        `SELECT 1 FROM "Conversation" WHERE "workspaceId" = $1 AND "id" = $2 FOR UPDATE`,
+        [wsA.workspaceId, conversationId],
+      );
+      return trava;
+    };
+    /** o pedido em voo, esperado no afterEach mesmo se o teste falhar antes */
+    const emVoo = <T>(p: PromiseLike<T>): Promise<T> => {
+      const promessa = Promise.resolve(p);
+      soltar.push(() => promessa.then(() => undefined).catch(() => undefined));
+      return promessa;
+    };
+    /** nada do envio nasceu: mensagem, despacho, evento e reserva */
+    const nadaGravado = async (body: string) => {
+      expect(await prisma.raw.message.count({ where: { body } })).toBe(0);
+      expect(await prisma.raw.messageDispatch.count()).toBe(0);
+      expect(
+        await prisma.raw.outboxEvent.count({ where: { eventType: 'whatsapp.send_pending' } }),
+      ).toBe(0);
+      expect(await prisma.raw.usageReservation.count()).toBe(0);
+      // nenhuma mensagem da conversa ficou sem o contato do recebimento: a
+      // identificação seguinte não teria o que preencher com o contato novo
+      expect(
+        await prisma.raw.message.count({ where: { conversationId, receivedContactId: null } }),
+      ).toBe(0);
+    };
+
+    it('a correção que comita entre o preparo e a escrita: 409, e nada é gravado (antes, a mensagem nascia com NULL na RAI)', async () => {
+      const send = app.get(WhatsappSendService);
+      const preparar = send.prepareOutbound.bind(send);
+      jest.spyOn(send, 'prepareOutbound').mockImplementationOnce(async (...args) => {
+        const preparado = await preparar(...args);
+        // a ordem forçada: o preparo viu o contato; a correção (a rota real)
+        // leva a conversa à RAI antes de a escrita começar
+        await post(`/api/conversations/${conversationId}/sender/reject`, {
+          removeNumber: false,
+        }).expect(201);
+        return preparado;
+      });
+
+      const res = await sendMessage({ direction: 'outbound', body: 'Escrita para o anterior' });
+      expect(res.status).toBe(409);
+      expect(res.body.message).toBe(MENSAGEM_MUDOU);
+      await nadaGravado('Escrita para o anterior');
+      expect(
+        await prisma.raw.conversation.findFirst({ where: { id: conversationId } }),
+      ).toMatchObject({ senderStatus: 'unidentified', contactId: null });
+
+      // a identificação seguinte, como um contato NOVO, não alcança o texto
+      await post(`/api/conversations/${conversationId}/sender/identify`, {
+        newContact: { name: 'Outro Fictício' },
+      }).expect(201);
+      expect(
+        await prisma.raw.message.findMany({
+          where: { conversationId },
+          select: { direction: true, receivedContactId: true },
+        }),
+      ).toEqual([{ direction: 'inbound', receivedContactId: contactId }]);
+      await drain();
+      expect(transport.sends).toEqual([]);
+    });
+
+    it('a trava da linha observada: o envio espera a linha presa, e a correção que comita primeiro faz o envio ser recusado, sem efeito', async () => {
+      const trava = await prenderConversa();
+      const pedido = emVoo(sendMessage({ direction: 'outbound', body: 'Depois da correção' }));
+      // bloqueado na PRIMEIRA escrita da transação, antes de gravar qualquer coisa
+      await esperarBloqueadosPor(trava, 1, { descricao: 'o envio da mensagem' });
+      // o que a correção comitaria primeiro: a conversa volta à RAI
+      await trava.query(
+        `UPDATE "Conversation" SET "contactId" = NULL, "senderStatus" = 'unidentified'
+          WHERE "workspaceId" = $1 AND "id" = $2`,
+        [wsA.workspaceId, conversationId],
+      );
+      await trava.query('COMMIT');
+      const res = await pedido;
+      expect(res.status).toBe(409);
+      expect(res.body.message).toBe(MENSAGEM_MUDOU);
+      await nadaGravado('Depois da correção');
+    });
+
+    it('a conversa religada a OUTRO contato sob a trava (não só a RAI): 409, e nada é gravado', async () => {
+      const outro = await prisma.raw.contact.create({
+        data: { workspaceId: wsA.workspaceId, name: 'Outro Fictício' },
+      });
+      const trava = await prenderConversa();
+      const pedido = emVoo(sendMessage({ direction: 'outbound', body: 'Para o anterior' }));
+      await esperarBloqueadosPor(trava, 1, { descricao: 'o envio da mensagem' });
+      await trava.query(
+        `UPDATE "Conversation" SET "contactId" = $3 WHERE "workspaceId" = $1 AND "id" = $2`,
+        [wsA.workspaceId, conversationId, outro.id],
+      );
+      await trava.query('COMMIT');
+      const res = await pedido;
+      expect(res.status).toBe(409);
+      expect(res.body.message).toBe(MENSAGEM_MUDOU);
+      await nadaGravado('Para o anterior');
+    });
+
+    it('o envio normal sob a trava: espera, grava o contato relido, despacha, e a repetição pela mesma chave devolve a mesma mensagem', async () => {
+      const trava = await prenderConversa();
+      const chave = { 'idempotency-key': 'envio-sob-trava' };
+      const pedido = emVoo(sendMessage({ direction: 'outbound', body: 'Sem mudança' }, chave));
+      await esperarBloqueadosPor(trava, 1, { descricao: 'o envio da mensagem' });
+      await trava.query('COMMIT');
+      const res = await pedido;
+      expect(res.status).toBe(201);
+      const messageId = res.body.id as string;
+      expect(
+        await prisma.raw.message.findFirst({
+          where: { id: messageId },
+          select: { receivedContactId: true, authorType: true },
+        }),
+      ).toEqual({ receivedContactId: contactId, authorType: 'user' });
+      expect(await prisma.raw.messageDispatch.findFirst({ where: { messageId } })).toMatchObject({
+        state: 'reserved',
+        approvalContactIds: [contactId],
+      });
+
+      // a repetição pela mesma chave: a mesma mensagem, nada novo
+      const repeticao = await sendMessage(
+        { direction: 'outbound', body: 'Sem mudança' },
+        chave,
+      ).expect(201);
+      expect(repeticao.body.id).toBe(messageId);
+      expect(await prisma.raw.message.count({ where: { direction: 'outbound' } })).toBe(1);
+
+      await drain();
+      await expectEnvios(messageId, 1);
+      expect(transport.sends).toEqual([{ to: '+5511999998888', body: 'Sem mudança' }]);
+      expect(await prisma.raw.messageDispatch.findFirst({ where: { messageId } })).toMatchObject({
+        state: 'sent',
+        externalId: 'wamid.ENVIADA',
+      });
+    });
+
+    it('a ordem inversa, pelas rotas reais: a correção espera o envio que prendeu a linha, e as duas concluem sem deadlock; o despacho é barrado pela religação', async () => {
+      const outbox = app.get(OutboxService);
+      const enfileirar = outbox.enqueue.bind(outbox) as (...a: unknown[]) => Promise<void>;
+      let chegou!: () => void;
+      const naTransacao = new Promise<void>((r) => (chegou = r));
+      let abrir!: () => void;
+      const portao = new Promise<void>((r) => (abrir = r));
+      soltar.push(() => abrir());
+      // o envio pausado DENTRO da transação, depois de prender a linha e de
+      // gravar a mensagem: o enfileiramento do despacho espera o portão
+      jest.spyOn(outbox, 'enqueue').mockImplementation(async (...args: unknown[]) => {
+        if (args[2] === 'whatsapp.send_pending') {
+          chegou();
+          await portao;
+        }
+        return enfileirar(...args);
+      });
+      const envio = emVoo(sendMessage({ direction: 'outbound', body: 'Antes da correção' }));
+      await naTransacao;
+
+      const correcao = emVoo(
+        post(`/api/conversations/${conversationId}/sender/reject`, { removeNumber: false }),
+      );
+      // a correção pega as travas consultivas (o envio não pega nenhuma) e
+      // espera a LINHA que o envio segura
+      const observador = new Client({ connectionString: TEST_DATABASE_URL });
+      await observador.connect();
+      soltar.push(() => observador.end().catch(() => undefined));
+      let esperando = 0;
+      for (let i = 0; i < 400 && esperando === 0; i += 1) {
+        const { rows } = await observador.query<{ n: string }>(
+          `SELECT count(*)::text AS n FROM pg_locks WHERE NOT granted AND locktype <> 'advisory'`,
+        );
+        esperando = Number(rows[0].n);
+        if (esperando === 0) await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(esperando).toBeGreaterThan(0);
+      abrir();
+
+      const [resEnvio, resCorrecao] = await Promise.all([envio, correcao]);
+      expect(resEnvio.status).toBe(201);
+      expect(resCorrecao.status).toBe(201);
+      const messageId = resEnvio.body.id as string;
+      // gravada com o contato de quando foi escrita; a correção a viu depois
+      expect(
+        await prisma.raw.message.findFirst({
+          where: { id: messageId },
+          select: { receivedContactId: true },
+        }),
+      ).toEqual({ receivedContactId: contactId });
+      expect(
+        await prisma.raw.conversation.findFirst({ where: { id: conversationId } }),
+      ).toMatchObject({ senderStatus: 'unidentified', contactId: null });
+
+      // o despacho, como antes: a conversa foi religada, e nada sai
+      await drain();
+      expect(transport.sends).toEqual([]);
+      expect(await prisma.raw.messageDispatch.findFirst({ where: { messageId } })).toMatchObject({
+        state: 'failed_permanent',
+        errorCode: 'conversation_relinked',
+      });
     });
   });
 });

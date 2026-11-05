@@ -11,6 +11,7 @@ import type {
   RejectConversationSenderInput,
 } from '@veyra/contracts';
 import { AuditService } from '../audit/audit.service';
+import { MENSAGEM_MUDOU } from '../channels/send-policy';
 import { PermissionsService } from '../auth/permissions.service';
 import { AuthContext } from '../common/decorators';
 import { ContactsService } from '../contacts/contacts.service';
@@ -52,8 +53,11 @@ const SELECAO = {
 export const MENSAGEM_DO_LEGADO =
   'Esta conversa tem mensagens anteriores à atualização, ligadas ao contato. Corrigir o remetente dela ainda não é possível.';
 
-/** O 409 de quem perdeu a corrida para a conversa (também o do registro manual). */
-export const MENSAGEM_MUDOU = 'A conversa acabou de mudar. Recarregue e tente de novo.';
+/**
+ * O 409 de quem perdeu a corrida para a conversa (também o do registro manual e
+ * o do envio de pessoa); definido na política de envio, sem dependências.
+ */
+export { MENSAGEM_MUDOU };
 
 /**
  * O remetente de uma conversa (ADR-052 item 2): identificar, desfazer e

@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Inject,
   Injectable,
   Logger,
@@ -36,6 +37,7 @@ import { chaveDeCoincidencia, coincideExatamente } from '../contacts/phone-ident
 import { bloqueioAtivo, MENSAGEM_PEDIDO_DE_PARAR } from '../consents/consent-records';
 import {
   decideSend,
+  MENSAGEM_MUDOU,
   MENSAGEM_NUMERO_NAO_CONFERE,
   MENSAGEM_REMETENTE_A_IDENTIFICAR,
   MENSAGEM_TEMPLATE_INDISPONIVEL,
@@ -249,11 +251,37 @@ export class WhatsappSendService implements OnModuleInit {
         throw new Error('Contatos da aprovação inexistentes ou de outro workspace.');
       }
     }
+    /**
+     * A LINHA DA CONVERSA presa ANTES de qualquer escrita (escrita sem efeito
+     * de quem já vai tocar `lastMessageAt`), e o remetente relido sob ela
+     * (ADR-061, adendo 9), como no registro manual. Sem isso, uma correção
+     * (desfazer ou rejeitar) que comitasse entre o preparo e a escrita faria a
+     * mensagem nascer com o contato NULL numa conversa de volta à RAI, e a
+     * identificação seguinte gravaria nela o contato NOVO: a IA desse contato
+     * leria o texto escrito para o anterior. A correção e a identificação
+     * prendem a mesma linha depois das travas consultivas delas; este caminho
+     * não pega trava consultiva, então não há inversão (nem deadlock). Se a
+     * correção veio antes, a conversa mudou e nada é gravado (409); se vem
+     * depois, ela espera o commit e vê esta mensagem com o contato gravado.
+     */
+    await tx.conversation.updateMany({
+      where: { id: prepared.conversationId },
+      data: { lastMessageAt: new Date() },
+    });
+    const presa = (await tx.conversation.findFirst({
+      where: { id: prepared.conversationId },
+      select: { contactId: true, senderStatus: true },
+    })) as unknown as { contactId: string | null; senderStatus: string } | null;
+    if (!presa || presa.senderStatus === 'unidentified' || presa.contactId !== prepared.contactId) {
+      // o texto foi escrito para o contato do preparo: não nasce para outro
+      throw new ConflictException(MENSAGEM_MUDOU);
+    }
     const message = await tx.message.create({
       data: {
         conversationId: prepared.conversationId,
         channelId: prepared.channelId,
-        receivedContactId: await this.contatoDaConversa(tx, prepared.conversationId),
+        // o contato da conversa AGORA, relido sob a linha presa
+        receivedContactId: presa.contactId,
         direction: 'outbound',
         authorType: author.authorType,
         authorMembershipId: author.authorMembershipId,
@@ -307,6 +335,12 @@ export class WhatsappSendService implements OnModuleInit {
    * grava: toda mensagem nova leva o contato do recebimento (ADR-061, adendo 9,
    * item 2). A mensagem de saída não tem mídia hoje; gravá-lo mesmo assim
    * mantém a regra igual para toda mensagem.
+   *
+   * Só o envio do NEGÓCIO lê assim, sem prender a linha: ele já segura o
+   * `address:` do número compartilhado (`paraEnvioDoNegocio`), que a
+   * identificação, o desfazer e o rejeitar pegam exclusivo — o contato da
+   * conversa não muda até o commit dele. O envio de pessoa e da IA não pega
+   * essa trava e relê o remetente sob a linha presa (`writeOutboundWithin`).
    */
   private async contatoDaConversa(tx: Db, conversationId: string): Promise<string | null> {
     const conversa = (await tx.conversation.findFirst({
