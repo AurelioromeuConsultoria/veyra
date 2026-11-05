@@ -21,7 +21,11 @@ import { AuthContext, CurrentAuth, RequirePermissions } from '../common/decorato
 import { Idempotent } from '../common/idempotency.decorator';
 import { ZodPipe } from '../common/zod.pipe';
 import { IntelligenceService } from './intelligence.service';
-import { ContactContentReplayGuard, ConversationContentReplayGuard } from './replay-guards';
+import {
+  ContactContentReplayGuard,
+  ConversationContentReplayGuard,
+  ReplyApprovalReplayGuard,
+} from './replay-guards';
 
 @Controller('intelligence')
 export class IntelligenceController {
@@ -186,7 +190,8 @@ export class IntelligenceController {
    * runtime dentro do service.
    */
   @RequirePermissions('intelligence:approve', 'conversations:write')
-  @Idempotent()
+  // a repetição segue a regra de agora (ADR-061, adendo 9, item 8)
+  @Idempotent({ replayGuard: ReplyApprovalReplayGuard })
   @Post('proposals/:id/approve-reply')
   approveReply(
     @CurrentAuth() auth: AuthContext,

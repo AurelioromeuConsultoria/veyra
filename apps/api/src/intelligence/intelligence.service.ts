@@ -14,6 +14,7 @@ import { UsageService } from '../usage/usage.service';
 import { AuthContext } from '../common/decorators';
 import { ContactsService } from '../contacts/contacts.service';
 import { ConversationsService } from '../conversations/conversations.service';
+import { CONTEUDO_RESTRITO } from '../extensions/protected-content';
 import { DealsService } from '../deals/deals.service';
 import { estimateCostCents, estimateMaxCostCents } from './cost';
 import { computeLeadScore, type LeadScore, type ScoreSignals } from './lead-score';
@@ -202,6 +203,17 @@ export class IntelligenceService {
     // metadados — nenhum corpo de mensagem é lido antes do consentimento.
     // `ia`: a IA lê o assunto como antes (ADR-061, adendo 9, item 8.3)
     const conversation = await this.conversations.get(auth, conversationId, 'ia');
+
+    // E8 (ADR-061, adendo 9, item 8): no `uniforme`, ANTES da E6, que diria
+    // quem é paciente — a mesma recusa para todo contato
+    if (await this.conversations.textoOcultoParaPessoa(auth, conversation)) {
+      const runId = await this.refusedAsHiddenText(
+        auth,
+        CONVERSATION_SUMMARY_PROMPT.capability,
+        conversationId,
+      );
+      return { status: 'content_restricted', runId };
+    }
 
     // ADR-048 §6.3: restrição ANTES de ler qualquer corpo — e antes do
     // consentimento, que é do workspace e não libera contato restrito
@@ -493,6 +505,9 @@ export class IntelligenceService {
   ): Promise<ConversationSummaryResult | null> {
     // valida acesso pelo serviço de domínio antes de devolver qualquer coisa
     const conversation = await this.conversations.get(auth, conversationId);
+    // E8 (adendo 9, item 8): o resumo é texto da conversa; no `uniforme`, nada,
+    // antes da E6 e igual para todo contato
+    if (await this.conversations.textoOcultoParaPessoa(auth, conversation)) return null;
     // conteúdo JÁ persistido também não sai para contato restrito — inclusive o
     // gerado antes de a restrição existir (ADR-048 §6.3, item 3)
     if (!(await this.llm.allows(this.scope(auth, sujeitosDaConversa(conversation))))) return null;
@@ -561,10 +576,17 @@ export class IntelligenceService {
     /** quem não lê conversas não recebe rascunho de resposta (SECURITY.md §4) */
     options: { includeReplyDrafts: boolean } = { includeReplyDrafts: true },
   ) {
+    /**
+     * E8 (ADR-061, adendo 9, item 8): no `uniforme`, nenhum rascunho de
+     * resposta — todo rascunho é texto de uma conversa com pessoa. No WHERE,
+     * como o filtro de quem não lê conversas, e igual para todo contato.
+     */
+    const comRascunhos =
+      options.includeReplyDrafts && !(await this.conversations.semLeituraDoTextoDasConversas(auth));
     const rows = await this.proposals.list(
       status,
       100,
-      options.includeReplyDrafts ? undefined : ['send_message'],
+      comRascunhos ? undefined : ['send_message'],
     );
     /**
      * Proposta de contato restrito não aparece (ADR-048 §6.3, item 3): o
@@ -598,6 +620,17 @@ export class IntelligenceService {
     // existência primeiro: id de outro workspace é 404, não "indisponível";
     // `ia`: a IA lê o assunto como antes (ADR-061, adendo 9, item 8.3)
     const conversation = await this.conversations.get(auth, conversationId, 'ia');
+
+    // E8 (ADR-061, adendo 9, item 8): no `uniforme`, ANTES da E6 e da política
+    // de envio — a mesma recusa para todo contato
+    if (await this.conversations.textoOcultoParaPessoa(auth, conversation)) {
+      const runId = await this.refusedAsHiddenText(
+        auth,
+        REPLY_SUGGESTION_PROMPT.capability,
+        conversationId,
+      );
+      return { status: 'content_restricted', runId, reason: CONTEUDO_RESTRITO };
+    }
 
     // restrição antes da política, do consentimento e de qualquer leitura de corpo
     const scope = this.scope(auth, sujeitosDaConversa(conversation));
@@ -826,6 +859,8 @@ export class IntelligenceService {
     conversationId: string,
   ): Promise<ReplySuggestionResult | null> {
     const conversation = await this.conversations.get(auth, conversationId);
+    // E8 (adendo 9, item 8): o rascunho é texto derivado da conversa
+    if (await this.conversations.textoOcultoParaPessoa(auth, conversation)) return null;
     const proposal = await this.proposals.findPendingReply(conversationId);
     if (!proposal) return null;
     // o rascunho é derivado da conversa: restrito pelo contato de HOJE e pelo
@@ -858,6 +893,14 @@ export class IntelligenceService {
     id: string,
     editedBody?: string,
   ): Promise<{ messageId: string }> {
+    /**
+     * E8 (ADR-061, adendo 9, item 8): todo rascunho é de uma conversa com
+     * pessoa, e no `uniforme` quem pede não lê nem escreve o texto dela. A
+     * recusa vem ANTES de procurar a proposta: o id que existe e o que não
+     * existe dão a mesma resposta (um rascunho existir diria quem é liberado
+     * para IA, logo quem não é paciente).
+     */
+    await this.conversations.exigirLeituraDoTextoDasConversas(auth);
     const proposal = await this.proposals.findById(id);
     if (!proposal) throw new NotFoundException('Proposta não encontrada');
     if (proposal.status !== 'pending') throw new BadRequestException('Proposta já revisada');
@@ -965,6 +1008,8 @@ export class IntelligenceService {
 
   /** Descarte de rascunho de resposta: `intelligence:approve` + `conversations:write`. */
   async rejectReply(auth: AuthContext, id: string): Promise<void> {
+    // E8 (adendo 9, item 8): como na aprovação, antes de procurar a proposta
+    await this.conversations.exigirLeituraDoTextoDasConversas(auth);
     const proposal = await this.proposals.findById(id);
     if (!proposal) throw new NotFoundException('Proposta não encontrada');
     if (proposal.type !== 'send_message') {
@@ -1025,6 +1070,30 @@ export class IntelligenceService {
       reasonCode: 'content_restricted',
       conversationId: target.conversationId ?? null,
       contactId: target.contactId ?? null,
+    });
+  }
+
+  /**
+   * Run recusado porque quem pede não lê o texto da conversa (E8; ADR-061,
+   * adendo 9, item 8): no `uniforme`, ANTES da E6, sem chamada ao provedor,
+   * sem quota e sem corpo. O registro é o MESMO para todo contato — o mesmo
+   * motivo e o mesmo resumo, sem contato —, para que nem a trilha de custo
+   * (`/intelligence/usage`) diferencie o paciente do interessado.
+   */
+  private async refusedAsHiddenText(
+    auth: AuthContext,
+    capability: string,
+    conversationId: string,
+  ): Promise<string> {
+    return this.record(auth, {
+      capability,
+      promptVersionId: null,
+      contextSummary:
+        'recusado antes de montar contexto: o texto da conversa é restrito para quem pediu',
+      status: 'refused',
+      reasonCode: 'content_restricted',
+      conversationId,
+      contactId: null,
     });
   }
 

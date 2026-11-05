@@ -281,6 +281,36 @@ export class ConversationsService {
   }
 
   /**
+   * O texto desta conversa é oculto para a PESSOA que pede (ADR-061, adendo 9,
+   * item 8)? Para a IA: ela lê o texto como antes (`leitor: 'ia'`), mas não lê
+   * POR quem não o lê — no `uniforme`, as capacidades sobre conversa com pessoa
+   * ou a identificar são recusadas, igual para todo contato, antes de qualquer
+   * outra conferência (a E6 diria quem é paciente).
+   */
+  async textoOcultoParaPessoa(
+    auth: AuthContext,
+    conversa: Pick<ConversationDto, 'contactId' | 'senderStatus'>,
+  ): Promise<boolean> {
+    return this.textoOculto(auth, conversa);
+  }
+
+  /**
+   * Quem pede não lê o texto de NENHUMA conversa com pessoa (o `uniforme`)? Para
+   * o que não tem uma conversa à mão antes de agir — a fila e a decisão sobre
+   * os rascunhos de resposta da IA, que sempre são de uma conversa com pessoa.
+   */
+  async semLeituraDoTextoDasConversas(auth: AuthContext): Promise<boolean> {
+    return this.protegido.semClassificacao(auth);
+  }
+
+  /** O mesmo, como recusa: 403 "Conteúdo restrito", igual para todo contato. */
+  async exigirLeituraDoTextoDasConversas(auth: AuthContext): Promise<void> {
+    if (await this.semLeituraDoTextoDasConversas(auth)) {
+      throw new ForbiddenException(CONTEUDO_RESTRITO);
+    }
+  }
+
+  /**
    * QUEM NÃO LÊ NÃO ESCREVE (ADR-061, adendo 9, item 8; a regra das notas e
    * tarefas no `uniforme`): o texto escrito numa conversa cujo texto é oculto
    * para quem pede — a mensagem registrada, o assunto, a conversa nova com

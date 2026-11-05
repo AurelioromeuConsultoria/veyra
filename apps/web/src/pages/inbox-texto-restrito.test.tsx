@@ -186,6 +186,21 @@ describe('Inbox — o texto restrito das conversas (ADR-061, adendo 9, item 8)',
     expect(screen.getByRole('combobox', { name: 'Status da conversa' })).toBeInTheDocument();
   });
 
+  it('a IA também não lê por quem não lê: sem "Resumir" na conversa restrita, e sem pedir o resumo guardado', async () => {
+    mockApi();
+    renderizar(['conversations:read', 'conversations:write', 'contacts:read', 'intelligence:use']);
+    fireEvent.click(await screen.findByRole('button', { name: /^Pessoa a/ }));
+    await screen.findByTestId('composer-restrito');
+    expect(screen.queryByRole('button', { name: /Resumir/ })).toBeNull();
+    const pedidos = (fetch as unknown as { mock: { calls: [RequestInfo | URL][] } }).mock.calls.map(
+      ([u]) => String(u),
+    );
+    expect(pedidos.some((u) => u.includes('/api/intelligence/'))).toBe(false);
+    // a conversa sem a marca: a ação de sempre
+    fireEvent.click(screen.getByRole('button', { name: /Reunião interna/ }));
+    expect(await screen.findByRole('button', { name: /Resumir/ })).toBeInTheDocument();
+  });
+
   it('a conversa sem a marca é a de sempre: o texto e o compositor', async () => {
     mockApi();
     renderizar(['conversations:read', 'conversations:write', 'contacts:read']);

@@ -10,7 +10,11 @@ import { IntelligenceService } from './intelligence.service';
 import { AnthropicClient } from './llm/anthropic.client';
 import { LLM_CLIENT } from './llm/llm.client';
 import { LlmGateway } from './llm/llm.gateway';
-import { ContactContentReplayGuard, ConversationContentReplayGuard } from './replay-guards';
+import {
+  ContactContentReplayGuard,
+  ConversationContentReplayGuard,
+  ReplyApprovalReplayGuard,
+} from './replay-guards';
 
 /**
  * O módulo NÃO importa Prisma (ADR-027): as portas de persistência vêm do
@@ -40,6 +44,7 @@ import { ContactContentReplayGuard, ConversationContentReplayGuard } from './rep
     // guardas do replay de idempotência das capacidades (ADR-048 §6.3, item 3)
     ConversationContentReplayGuard,
     ContactContentReplayGuard,
+    ReplyApprovalReplayGuard,
   ],
   exports: [IntelligenceService],
 })

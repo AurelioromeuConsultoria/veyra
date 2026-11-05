@@ -298,6 +298,11 @@ export function InboxPage() {
   const selected = items.find((c) => c.id === selectedId) ?? null;
   /** remetente a identificar: a IA não usa esta conversa (o servidor recusa) */
   const selectedRai = selected?.senderStatus === 'unidentified';
+  /**
+   * o texto da conversa é restrito para esta sessão (ADR-061, adendo 9, item
+   * 8): a IA também não o lê por ela — o servidor recusa, e a tela não oferece
+   */
+  const selectedRestrita = selected?.textRestricted === true;
 
   /**
    * A conversa apontada de fora pode não caber no filtro corrente — uma proposta
@@ -325,7 +330,8 @@ export function InboxPage() {
       ),
     // mesma regra do rascunho: a rota do resumo é `intelligence:use` +
     // `conversations:read`, e a tela não pode pedir o que o servidor negará
-    enabled: selectedId !== null && canUseAi && canReadConversations && !selectedRai,
+    enabled:
+      selectedId !== null && canUseAi && canReadConversations && !selectedRai && !selectedRestrita,
   });
 
   /**
@@ -347,7 +353,8 @@ export function InboxPage() {
       api.get<ReplySuggestionDto | null>(
         `/api/intelligence/conversations/${selectedId}/reply-suggestion`,
       ),
-    enabled: selectedId !== null && canUseAi && canReadConversations && !selectedRai,
+    enabled:
+      selectedId !== null && canUseAi && canReadConversations && !selectedRai && !selectedRestrita,
   });
 
   const messages = useQuery({
@@ -833,7 +840,7 @@ export function InboxPage() {
                 <ShieldCheck size={13} /> Consentimento
               </Button>
             ) : null}
-            {canUseAi && canReadConversations && !selectedRai ? (
+            {canUseAi && canReadConversations && !selectedRai && !selectedRestrita ? (
               <Button
                 size="sm"
                 variant="ai"
@@ -1075,7 +1082,7 @@ export function InboxPage() {
           </div>
 
           {/* ── rascunho de resposta da IA (ADR-044) ───────────────────── */}
-          {canUseAi && canReadConversations && externo ? (
+          {canUseAi && canReadConversations && externo && !selectedRestrita ? (
             <div
               className="ai-mark border-t border-border px-6 py-3"
               data-testid="reply-suggestion"

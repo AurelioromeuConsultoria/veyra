@@ -10830,7 +10830,7 @@ O workspace que nunca teve o Clinics fica sempre no modo livre, com o comportame
   10. **A busca:** não existe busca em conversas. A do Core é de contatos, por nome e e-mail. Nada muda.
   11. **A exportação:** não existe (adendo 7). Nada muda.
   12. **Webhooks e automações:** não há evento de webhook nem gatilho de automação de mensagem. Nada muda.
-  13. **A IA:** o resumo e o rascunho leem o texto como antes e seguem sob a E6, que sempre recusa o paciente. Ver as pendências.
+  13. **A IA:** o resumo (novo e guardado), o rascunho de resposta (novo e pendente), a fila de rascunhos e aprovar ou descartar um rascunho mostram ou escrevem texto da conversa. Recusados no `uniforme` pelo ajuste no fim deste resultado; a leitura da própria IA segue como antes.
   14. **O contexto clínico das Conversas e o Hoje do Clinics:** exigem `clinics:schedule:read`, então nunca estão no `uniforme`.
 
 - **O que mudou, no servidor:**
@@ -10887,9 +10887,27 @@ O workspace que nunca teve o Clinics fica sempre no modo livre, com o comportame
 
   - **Web:** `tsc`, e `vitest` com 27 arquivos, incluindo o novo `inbox-texto-restrito` com 3 casos.
 - **Pendências e decisões, registradas aqui:**
-  - **A IA no `uniforme` (para decisão, junto com o item 6 do adendo 7).** Um papel personalizado no `uniforme` com `intelligence:use` ainda lê o resumo da IA (o novo e o guardado) da conversa de um interessado liberado para IA, um texto derivado da conversa que ele não lê. Nenhum papel padrão tem esse par num workspace com o Clinics: o Guest não tem `intelligence:use`, e o Member tem a agenda. O paciente é sempre recusado pela E6, então a diferença entre recusado e resumido é o sinal do item 6. O rascunho de resposta passou a ser recusado (`send_blocked`) no `uniforme` para todos, porque a política de envio bloqueia antes. **Recomendação:** no `uniforme`, recusar as capacidades da IA sobre conversa com pessoa, igual para todo contato. Não foi feito porque a decisão do adendo 9 manteve a IA como estava.
+  - _(resolvido no ajuste abaixo)_ **A IA no `uniforme`.** Um papel personalizado no `uniforme` com `intelligence:use` ainda lia o resumo da IA (o novo e o guardado) da conversa de um interessado liberado para IA, um texto derivado da conversa que ele não lê. O paciente é sempre recusado pela E6, então a diferença entre recusado e resumido era o sinal.
   - **A autoria `ai`** (o selo de IA numa mensagem) diz que o contato estava liberado para IA quando ela saiu, e o paciente nunca está. É um sinal fraco do item 6. A autoria é estrutura e fica.
   - **O momento e a forma das mensagens** seguem visíveis como estrutura. Uma confirmação do vertical tem a mesma forma de um template do Core (a autoria `user` de quem aprovou e um despacho), e o corpo e o código saem restritos. Sobra o ritmo, como as saídas perto dos horários de agenda, que é um sinal fraco.
+  - Os dois sinais fracos acima (o selo de IA e o momento das mensagens) ficam registrados no item 6 do adendo 7, por decisão do usuário (2026-11-05).
+
+**Ajuste do item 8: a IA no `uniforme` (decisão do usuário, 2026-11-05, em commit próprio).** O usuário aprovou o item 8 e trouxe a IA para dentro dele: o resumo e o rascunho mostram texto da conversa, e "recusado × resumido" é o sinal.
+
+- **O sinal, reproduzido antes da correção** (os três cenários novos de `clinics-patient-conversations`, rodados com a IA na versão anterior): o papel personalizado sem a agenda, com `intelligence:use` e `conversations:read`, recebia `content_restricted` ("A IA não está disponível para este contato") no paciente e o resumo do interessado liberado. Lia também o resumo guardado que a recepção gerou, via o rascunho pendente na fila de propostas, e a repetição do resumo pela mesma chave devolvia o corpo guardado depois de perder a agenda.
+- **A regra:** no `uniforme`, as capacidades da IA sobre conversa com pessoa ou a identificar são recusadas com a MESMA resposta para todo contato, ANTES da E6 (que diria quem é paciente), do consentimento, da política de envio e de qualquer chamada ao provedor. A checagem vem do serviço de domínio (`ConversationsService.textoOcultoParaPessoa`, `exigirLeituraDoTextoDasConversas`), sobre a porta do E8; o `intelligence` continua sem tocar o Prisma.
+  - **Gerar o resumo e o rascunho** (`POST .../summary`, `POST .../reply-suggestion`): `content_restricted`, e o rascunho com o motivo "Conteúdo restrito".
+  - **O run da recusa:** gravado como toda recusa do módulo, e IGUAL para todo contato: `status: refused`, `reasonCode: content_restricted`, o mesmo `contextSummary` ("recusado antes de montar contexto: o texto da conversa é restrito para quem pediu"), sem contato, sem versão de prompt, sem tokens nem custo. Só a conversa e a capacidade, como em qualquer run. A rota devolve só o estado e o id do run.
+  - **Ler o resumo guardado e o rascunho pendente** (`GET`): vazio, como a conversa sem nada.
+  - **A fila de propostas** (`GET /intelligence/proposals`): sem nenhum rascunho de resposta, no WHERE.
+  - **Aprovar e descartar um rascunho** (`approve-reply`, `reject-reply`): 403 "Conteúdo restrito", ANTES de procurar a proposta, então o id que existe e o que não existe dão a mesma resposta. Todo rascunho é de uma conversa com pessoa.
+  - **A repetição pela mesma chave:** a `ConversationContentReplayGuard` descarta o corpo guardado da conversa de texto oculto, e a rota responde a recusa de agora; a nova `ReplyApprovalReplayGuard` dá o 403 de um pedido novo na aprovação.
+  - **Fora do `uniforme`, nada muda:** o Owner, "Recepção e atendimento" e a recepção resumem o interessado liberado e recebem a recusa da E6 no paciente, como antes.
+- **O web:** na conversa restrita, o Inbox não oferece "Resumir" nem o rascunho, e não pede o resumo guardado nem o rascunho pendente.
+- **Os testes:** três cenários a mais em `clinics-patient-conversations` (9 no total), com o provedor falso: as quatro leituras iguais para o interessado liberado e o paciente, nenhuma chamada ao provedor e os runs iguais, com o Owner, o papel combinado e a recepção como antes; a fila e as decisões sobre o rascunho, com o id real e um inexistente, e o rascunho intocado; e a repetição do resumo depois de perder a agenda. Um caso a mais no `inbox-texto-restrito` do web. Na rodada do ajuste, 22 suítes de integração passaram com 579 casos: as 18 do item 8 e as da IA do Clinics (`clinics-ai-guard`, `clinics-ai-dispatch-guard`, `clinics-restriction`, `clinics-restriction-changes`). Também passam os unitários das pastas tocadas, inclusive a fronteira do `intelligence` (sem Prisma), o `tsc` da API e do web, e o `vitest`, com 27 arquivos e 373 casos.
+- **Limites registrados:**
+  - **o histórico de custo** (`GET /intelligence/usage`, `workspace:manage`) mostra os runs antigos de quem tem a agenda, com o `contextSummary` de cada um: a recusa da E6 de um paciente e o resumo de um interessado diferem ali. Exige uma permissão administrativa; fica no item 6 do adendo 7;
+  - **a próxima ação e o score** (`/contacts/:id/next-action`, `/contacts/:id/score`) não leem o texto das conversas (só contagens e sinais determinísticos) e ficam como estão; a diferença entre o paciente e o interessado liberado ali também é o sinal do item 6.
 
 ## ADR-062 — Redesenho visual e de UX: "Mineral" com moldura, estados e próxima ação (2026-11-04)
 

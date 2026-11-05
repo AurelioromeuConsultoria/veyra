@@ -1,6 +1,12 @@
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { CLINICS_RECEPTION_CARE_SYSTEM_KEY } from '@veyra/contracts/verticals/clinics';
+import {
+  LLM_CLIENT,
+  type LlmClient,
+  type LlmOutcome,
+  type LlmRequest,
+} from '../../intelligence/llm/llm.client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { createTestApp } from '../../../test/integration/app';
 import {
@@ -45,6 +51,27 @@ interface Session {
   csrf: string;
 }
 
+/** Cliente de LLM FALSO: a suíte nunca fala com provedor real (ADR-029). */
+class LlmFalso implements LlmClient {
+  readonly model = 'claude-sonnet-5';
+  chamadas: LlmRequest[] = [];
+  async complete(request: LlmRequest): Promise<LlmOutcome> {
+    this.chamadas.push(request);
+    return {
+      kind: 'ok',
+      text: JSON.stringify({
+        subject: 'Orçamento',
+        summary: 'Resumo fictício da conversa.',
+        pendencies: [],
+        sentiment: 'neutro',
+        injectionAttempt: false,
+      }),
+      inputTokens: 100,
+      outputTokens: 20,
+    };
+  }
+}
+
 /**
  * B1, o texto das conversas sob o E8 (ADR-061, adendo 9, item 8). Antes, quem
  * lê conversas e NÃO tem `clinics:schedule:read` (o Guest padrão, um papel
@@ -64,8 +91,10 @@ describe('Clinics — o texto das conversas sob o E8 (integração, ADR-061 aden
   let prisma: PrismaService;
   let http: ReturnType<INestApplication['getHttpServer']>;
 
+  const llm = new LlmFalso();
+
   beforeAll(async () => {
-    app = await createTestApp();
+    app = await createTestApp([], [{ provide: LLM_CLIENT, useValue: llm }]);
     prisma = app.get(PrismaService);
     http = app.getHttpServer();
   });
@@ -94,7 +123,7 @@ describe('Clinics — o texto das conversas sob o E8 (integração, ADR-061 aden
     return { cookieHeader, csrf: /veyra_csrf=([^;]+)/.exec(cookieHeader)?.[1] ?? '' };
   };
   const enviar = (
-    metodo: 'post' | 'patch',
+    metodo: 'post' | 'patch' | 'put',
     path: string,
     s: Session,
     body?: unknown,
@@ -613,6 +642,204 @@ describe('Clinics — o texto das conversas sob o E8 (integração, ADR-061 aden
     expect(await prisma.raw.conversation.count({ where: { workspaceId: ws.workspaceId } })).toBe(
       conversas,
     );
+  });
+
+  // ── a IA sobre o texto da conversa (adendo 9, item 8, ampliado pelo usuário) ──
+  /** o workspace autoriza conteúdo de conversa na IA, e o interessado é liberado */
+  const prepararIa = async () => {
+    await enviar('put', '/api/intelligence/consent', owner, { conversationContent: true }).expect(
+      (r) => expect(r.status).toBeLessThan(300),
+    );
+    await post(`/api/clinics/contacts/${interessado}/ai-release`, owner, {
+      reason: 'non_clinical_business',
+    }).expect(201);
+  };
+  const resumir = (s: Session, c: string, chave?: string) =>
+    post(
+      `/api/intelligence/conversations/${c}/summary`,
+      s,
+      undefined,
+      chave ? { 'Idempotency-Key': chave } : {},
+    );
+  /** o que a sessão recebe de cada capacidade da IA sobre a conversa (sem o id do run) */
+  const iaVista = async (s: Session, c: string) => {
+    const r = await resumir(s, c);
+    const rascunho = await post(`/api/intelligence/conversations/${c}/reply-suggestion`, s);
+    return {
+      resumo: [r.status, r.body.status, r.body.summary],
+      resumoGuardado: [
+        (await get(`/api/intelligence/conversations/${c}/summary`, s)).status,
+        (await get(`/api/intelligence/conversations/${c}/summary`, s)).body,
+      ],
+      rascunho: [rascunho.status, rascunho.body.status, rascunho.body.reason, rascunho.body.draft],
+      rascunhoPendente: (await get(`/api/intelligence/conversations/${c}/reply-suggestion`, s))
+        .body,
+    };
+  };
+  const SEM_AGENDA_COM_IA = [...SEM_AGENDA, 'intelligence:use', 'intelligence:approve'];
+
+  it('IA, uniforme: o papel sem a agenda recebe a MESMA recusa para o interessado liberado e para o paciente, sem provedor e com o mesmo run', async () => {
+    await prepararIa();
+    const cP = await conversaDa(paciente, DO_PACIENTE);
+    const cI = await conversaDa(interessado, DO_INTERESSADO);
+    // quem tem a agenda: como antes — o interessado liberado é resumido, o paciente recusado (E6)
+    for (const s of [owner, combinado, recepcao]) {
+      expect((await resumir(s, cI).expect(201)).body).toMatchObject({
+        status: 'ok',
+        summary: 'Resumo fictício da conversa.',
+      });
+      expect((await resumir(s, cP).expect(201)).body.status).toBe('content_restricted');
+    }
+    // o resumo GUARDADO do interessado, para quem tem a agenda
+    expect((await get(`/api/intelligence/conversations/${cI}/summary`, owner)).body).toMatchObject({
+      status: 'ok',
+      summary: 'Resumo fictício da conversa.',
+    });
+
+    const { sessao: operador, membership } = await membro(
+      ws.workspaceId,
+      'conversas-ia@veyra.test',
+      await papel(ws.workspaceId, 'Conversas e IA do CRM', SEM_AGENDA_COM_IA),
+    );
+    const chamadas = llm.chamadas.length;
+    const vistaP = await iaVista(operador, cP);
+    // o sinal: "recusado × resumido" — agora a mesma resposta para os dois
+    expect(vistaP).toEqual(await iaVista(operador, cI));
+    expect(vistaP).toEqual({
+      resumo: [201, 'content_restricted', undefined],
+      // nem o resumo que a recepção gerou: o mesmo vazio
+      resumoGuardado: [200, {}],
+      rascunho: [201, 'content_restricted', RESTRITO, undefined],
+      rascunhoPendente: {},
+    });
+    // nenhuma chamada ao provedor
+    expect(llm.chamadas.length).toBe(chamadas);
+    // os runs da recusa: o mesmo registro para os dois, sem contato
+    const runs = await prisma.raw.aiRun.findMany({
+      where: { workspaceId: ws.workspaceId, triggeredByMembershipId: membership },
+      select: {
+        capability: true,
+        status: true,
+        reasonCode: true,
+        contextSummary: true,
+        contactId: true,
+        conversationId: true,
+        promptVersionId: true,
+        inputTokens: true,
+        costCents: true,
+      },
+    });
+    const daConversa = (c: string) =>
+      runs
+        .filter((r) => r.conversationId === c)
+        .map(({ conversationId: _c, ...resto }) => resto)
+        .sort((a, b) => a.capability.localeCompare(b.capability));
+    expect(daConversa(cP)).toEqual(daConversa(cI));
+    expect(daConversa(cP)).toEqual(
+      ['conversation_summary', 'reply_suggestion'].map((capability) => ({
+        capability,
+        status: 'refused',
+        reasonCode: 'content_restricted',
+        contextSummary: expect.stringMatching(/texto da conversa é restrito/),
+        contactId: null,
+        promptVersionId: null,
+        inputTokens: 0,
+        costCents: 0,
+      })),
+    );
+  });
+
+  it('IA, uniforme: rascunhos fora da fila, e aprovar ou descartar recusados iguais, exista ou não o rascunho; quem tem a agenda, como antes', async () => {
+    await prepararIa();
+    const cP = await conversaDa(paciente, DO_PACIENTE);
+    const cI = await conversaDa(interessado, DO_INTERESSADO);
+    // um rascunho pendente na conversa do interessado liberado (o do paciente não existe: E6)
+    const run = await prisma.raw.aiRun.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        capability: 'reply_suggestion',
+        model: 'claude-sonnet-5',
+        contextSummary: 'teste',
+        status: 'ok',
+        conversationId: cI,
+      },
+    });
+    const rascunho = await prisma.raw.aiProposal.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        runId: run.id,
+        type: 'send_message',
+        payload: { body: 'Rascunho fictício: temos horário amanhã.' },
+        rationale: 'teste',
+        conversationId: cI,
+        contactId: interessado,
+        pendingReplyMark: true,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60_000),
+      },
+    });
+    const { sessao: operador } = await membro(
+      ws.workspaceId,
+      'conversas-ia@veyra.test',
+      await papel(ws.workspaceId, 'Conversas e IA do CRM', SEM_AGENDA_COM_IA),
+    );
+    const fila = async (s: Session) =>
+      (
+        (await get('/api/intelligence/proposals?status=all', s).expect(200)).body as {
+          id: string;
+        }[]
+      ).map((p) => p.id);
+    const r = (x: { status: number; body: { message?: unknown } }) => [x.status, x.body.message];
+    const inexistente = '00000000-0000-4000-8000-0000000000aa';
+
+    // o Owner (livre): como antes
+    expect(await fila(owner)).toEqual([rascunho.id]);
+    expect(
+      (await get(`/api/intelligence/conversations/${cI}/reply-suggestion`, owner)).body,
+    ).toMatchObject({ status: 'proposed', draft: 'Rascunho fictício: temos horário amanhã.' });
+
+    // o papel sem a agenda: nada do rascunho, e as decisões recusadas iguais
+    expect(await fila(operador)).toEqual([]);
+    for (const c of [cP, cI]) {
+      expect(
+        (await get(`/api/intelligence/conversations/${c}/reply-suggestion`, operador)).body,
+      ).toEqual({});
+    }
+    const aprovar = (id: string) =>
+      post(`/api/intelligence/proposals/${id}/approve-reply`, operador, {});
+    const descartar = (id: string) =>
+      post(`/api/intelligence/proposals/${id}/reject-reply`, operador);
+    expect(r(await aprovar(rascunho.id))).toEqual([403, RESTRITO]);
+    expect(r(await aprovar(inexistente))).toEqual([403, RESTRITO]);
+    expect(r(await descartar(rascunho.id))).toEqual([403, RESTRITO]);
+    expect(r(await descartar(inexistente))).toEqual([403, RESTRITO]);
+    // o rascunho segue pendente, intocado
+    expect((await prisma.raw.aiProposal.findFirst({ where: { id: rascunho.id } }))?.status).toBe(
+      'pending',
+    );
+  });
+
+  it('IA, a repetição: quem perdeu a agenda recebe a recusa de agora, não o resumo guardado', async () => {
+    await prepararIa();
+    const cI = await conversaDa(interessado, DO_INTERESSADO);
+    const roleId = await papel(ws.workspaceId, 'Conversas, IA e agenda', [
+      ...SEM_AGENDA_COM_IA,
+      'clinics:schedule:read',
+    ]);
+    const { sessao: comAgenda } = await membro(ws.workspaceId, 'gestor-ia@veyra.test', roleId);
+    expect((await resumir(comAgenda, cI, 'resumo-1').expect(201)).body.status).toBe('ok');
+    // a repetição com a agenda: o corpo guardado, como antes
+    expect((await resumir(comAgenda, cI, 'resumo-1').expect(201)).body.summary).toBe(
+      'Resumo fictício da conversa.',
+    );
+    await prisma.raw.rolePermission.deleteMany({
+      where: { roleId, permissionKey: 'clinics:schedule:read' },
+    });
+    const semAgenda = await loginAs('gestor-ia@veyra.test');
+    const chamadas = llm.chamadas.length;
+    const repetido = await resumir(semAgenda, cI, 'resumo-1').expect(201);
+    expect(repetido.body.status).toBe('content_restricted');
+    expect(repetido.body.summary).toBeUndefined();
+    expect(llm.chamadas.length).toBe(chamadas);
   });
 
   it('a desativação mantém a proteção: o Owner também fica no uniforme', async () => {
