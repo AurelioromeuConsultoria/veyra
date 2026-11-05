@@ -10,6 +10,12 @@ import { JobsModule } from '../../jobs/jobs.module';
 import { ClinicsPackageCorrectionReplayGuard } from './care/clinics-package-correction-replay.guard';
 import { ClinicsPackageCorrectionsController } from './care/clinics-package-corrections.controller';
 import { ClinicsPackageCorrectionsService } from './care/clinics-package-corrections.service';
+import {
+  ClinicsPaymentRecordReplayGuard,
+  ClinicsPaymentVoidReplayGuard,
+} from './care/clinics-package-payment-replay.guard';
+import { ClinicsPackagePaymentsController } from './care/clinics-package-payments.controller';
+import { ClinicsPackagePaymentsService } from './care/clinics-package-payments.service';
 import { ClinicsPackagesController } from './care/clinics-packages.controller';
 import { ClinicsPackagesService } from './care/clinics-packages.service';
 import { ClinicsCatalogController } from './catalog/clinics-catalog.controller';
@@ -53,6 +59,7 @@ import { ClinicsReturnsService } from './schedule/clinics-returns.service';
     ClinicsAppointmentsController,
     ClinicsPackagesController,
     ClinicsPackageCorrectionsController,
+    ClinicsPackagePaymentsController,
     ClinicsReturnsController,
     ClinicsNoShowController,
     ClinicsOutreachController,
@@ -74,6 +81,9 @@ import { ClinicsReturnsService } from './schedule/clinics-returns.service';
     ClinicsPackagesService,
     ClinicsPackageCorrectionsService,
     ClinicsPackageCorrectionReplayGuard,
+    ClinicsPackagePaymentsService,
+    ClinicsPaymentRecordReplayGuard,
+    ClinicsPaymentVoidReplayGuard,
     ClinicsReturnsService,
     ClinicsNoShowService,
     ClinicsOutreachService,

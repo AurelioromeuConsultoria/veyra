@@ -362,6 +362,8 @@ model ClinicsPackage {
   currentAttendances ClinicsAttendance[]        @relation("ClinicsAttendanceCurrentPackage")
   correctionsFrom    ClinicsPackageCorrection[] @relation("ClinicsPackageCorrectionFrom")
   correctionsTo      ClinicsPackageCorrection[] @relation("ClinicsPackageCorrectionTo")
+  /// os pagamentos recebidos (ADR-063): lançamentos que não mudam
+  payments           ClinicsPackagePayment[]
 
   @@unique([workspaceId, id])
   /// apoio das FKs da correção: o pacote é do MESMO paciente e serviço (ADR-059)
@@ -420,6 +422,74 @@ model ClinicsPackageCorrection {
   @@index([workspaceId, fromPackageId])
   @@index([workspaceId, toPackageId])
   @@index([workspaceId, correctedByMembershipId])
+}
+
+/// A forma do recebimento (ADR-063, F6.1): lista fechada, sem texto livre (H7).
+enum ClinicsPaymentMethod {
+  cash
+  pix
+  debit_card
+  credit_card
+  bank_transfer
+  other
+}
+
+/// O motivo da anulação de um pagamento (ADR-063): lista fechada.
+enum ClinicsPaymentVoidReason {
+  wrong_entry
+  wrong_amount
+  duplicate
+}
+
+/// Pagamento recebido de um pacote (ADR-063, F6.1; fecha a D1). Classe S, só de
+/// acréscimo: um lançamento que não muda nem é apagado (gatilho), corrigido só
+/// por anulação. O gatilho da inserção TRAVA o pacote, recusa o pacote
+/// cancelado, confere a moeda e não deixa a soma dos não anulados passar do
+/// preço registrado; o instante é do banco (ADR-049). Sem texto livre (H7).
+model ClinicsPackagePayment {
+  id                    String               @id @default(uuid()) @db.Uuid
+  workspaceId           String               @db.Uuid
+  packageId             String               @db.Uuid
+  /// centavos, maior que zero (CHECK), na moeda do pacote
+  amountCents           Int
+  currency              String
+  /// data LOCAL do recebimento na unidade; nunca futura (conferida no serviço)
+  receivedOn            DateTime             @db.Date
+  method                ClinicsPaymentMethod
+  createdByMembershipId String               @db.Uuid
+  /// pelo relógio do banco (gatilho, ADR-049); nunca escrito pelo Prisma
+  createdAt             DateTime             @default(dbgenerated("transaction_timestamp()")) @db.Timestamptz(3)
+
+  workspace Workspace                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  package   ClinicsPackage             @relation(fields: [workspaceId, packageId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  createdBy Membership                 @relation("ClinicsPackagePaymentCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  void      ClinicsPackagePaymentVoid?
+
+  @@unique([workspaceId, id])
+  @@index([workspaceId, packageId, createdAt])
+  @@index([workspaceId, createdByMembershipId])
+}
+
+/// A anulação de um pagamento (ADR-063). No máximo UMA por pagamento (única);
+/// o original fica no histórico. Só de acréscimo (gatilho); o gatilho da
+/// inserção trava o pacote do pagamento; o instante é do banco.
+model ClinicsPackagePaymentVoid {
+  id                   String                   @id @default(uuid()) @db.Uuid
+  workspaceId          String                   @db.Uuid
+  paymentId            String                   @db.Uuid
+  reason               ClinicsPaymentVoidReason
+  voidedByMembershipId String                   @db.Uuid
+  /// pelo relógio do banco (gatilho, ADR-049); nunca escrito pelo Prisma
+  createdAt            DateTime                 @default(dbgenerated("transaction_timestamp()")) @db.Timestamptz(3)
+
+  workspace Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  payment   ClinicsPackagePayment @relation(fields: [workspaceId, paymentId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  voidedBy  Membership            @relation("ClinicsPackagePaymentVoidedBy", fields: [workspaceId, voidedByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([workspaceId, id])
+  /// uma anulação por pagamento: a segunda falha fechada
+  @@unique([workspaceId, paymentId])
+  @@index([workspaceId, voidedByMembershipId])
 }
 
 /// Retorno (ADR-048 adendo 7, F3.2). Classe S. Concluir é COMPROVAR um

@@ -713,6 +713,20 @@ describe('Clinics — restrição de conteúdo com a porta real e API de libera�
         ]);
         return correcao;
       },
+      // o pagamento passa por um pacote real do paciente (ADR-063); a anulação,
+      // por um pagamento real
+      ClinicsPackagePayment: () => pagamentoComPais(),
+      ClinicsPackagePaymentVoid: async () => {
+        const pagamento = await pagamentoComPais();
+        return prisma.raw.clinicsPackagePaymentVoid.create({
+          data: {
+            workspaceId: wsA.workspaceId,
+            paymentId: pagamento.id,
+            reason: 'duplicate',
+            voidedByMembershipId: pagamento.createdByMembershipId,
+          },
+        });
+      },
       // o pedido de envio passa pelo agendamento real, que vem junto (F4.2)
       ClinicsOutreachRequest: async () => {
         const ag = await agendamentoComPais();
@@ -727,6 +741,32 @@ describe('Clinics — restrição de conteúdo com a porta real e API de libera�
         });
       },
     };
+
+    /** Pagamento fictício de um pacote com os pais (paciente, serviço). */
+    async function pagamentoComPais() {
+      const ag = await agendamentoComPais();
+      const pacote = await prisma.raw.clinicsPackage.create({
+        data: {
+          workspaceId: wsA.workspaceId,
+          patientId: ag.patientId,
+          serviceId: ag.serviceId,
+          totalSessions: 3,
+          currency: 'BRL',
+          createdByMembershipId: ag.createdByMembershipId,
+        },
+      });
+      return prisma.raw.clinicsPackagePayment.create({
+        data: {
+          workspaceId: wsA.workspaceId,
+          packageId: pacote.id,
+          amountCents: 100,
+          currency: 'BRL',
+          receivedOn: new Date('2026-11-02T00:00:00Z'),
+          method: 'pix',
+          createdByMembershipId: ag.createdByMembershipId,
+        },
+      });
+    }
 
     /** Agendamento fictício com os pais (paciente, profissional, serviço, unidade). */
     async function agendamentoComPais() {

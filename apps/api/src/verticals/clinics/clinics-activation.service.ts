@@ -89,6 +89,15 @@ const PREENCHIMENTOS: readonly {
     preRequisito: 'contacts:read',
     papeis: ['owner', 'admin', CLINICS_RECEPTION_CARE_SYSTEM_KEY],
   },
+  // os pagamentos de pacotes (ADR-063, F6.1a): SÓ Owner e Admin. A recepção e
+  // "Recepção e atendimento" entram na F6.1b, com a visão financeira deles
+  ...(['clinics:payments:read', 'clinics:payments:write', 'clinics:payments:void'] as const).map(
+    (chave) => ({
+      chave,
+      preRequisito: 'clinics:schedule:read' as const,
+      papeis: ['owner', 'admin'],
+    }),
+  ),
 ];
 
 /**

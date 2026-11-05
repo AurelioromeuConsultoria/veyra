@@ -336,6 +336,24 @@ describe('Clinics — garantias estáticas (ADR-047, ADR-048)', () => {
     ).toEqual([]);
   });
 
+  it('o PAGAMENTO e a ANULAÇÃO só têm um escritor, e só criam um a um: nenhuma criação em lote, alteração nem exclusão (ADR-063)', () => {
+    const CRIA = /clinicsPackagePayment(Void)?\s*\.\s*create\b/;
+    const ALTERA = [
+      /clinicsPackagePayment(Void)?\s*\.\s*(createMany|createManyAndReturn|update|updateMany|upsert|delete|deleteMany)\b/,
+      /(INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+"?ClinicsPackagePayment(Void)?"?/i,
+    ];
+    const arquivos = walk(ROOT);
+    expect(
+      arquivos
+        .filter((file) => CRIA.test(readFileSync(file, 'utf8')))
+        .map((file) => relative(ROOT, file))
+        .sort(),
+    ).toEqual(['care/clinics-package-payments.service.ts']);
+    expect(
+      arquivos.filter((file) => ALTERA.some((p) => p.test(readFileSync(file, 'utf8')))),
+    ).toEqual([]);
+  });
+
   it('o RETORNO só tem um arquivo escritor: o serviço de retornos (o registro de atendimento chama as funções dele, na sua transação) — F3.2', () => {
     const ESCREVE_RETORNO = [
       /clinicsReturn\s*\.\s*(create|createMany|createManyAndReturn|update|updateMany|upsert|delete|deleteMany)\b/,

@@ -32,6 +32,12 @@ export const CLINICS_PERMISSION_CATALOG = {
     'Ler as notas e tarefas de quem é paciente (soma-se a tasks:read e tasks:write, sem conceder nada sozinha)',
   'clinics:restriction:manage':
     'Liberar um contato para uso de IA como sem relação com o Clinics, ou desfazer a liberação',
+  // pagamentos de pacotes (ADR-063, F6.1): chaves próprias, sem relação com o atendimento
+  'clinics:payments:read':
+    'Ver os pacotes do paciente com preço, recebido e saldo, e o histórico de pagamentos (sem sessões nem atendimentos)',
+  'clinics:payments:write': 'Registrar o pagamento recebido de um pacote',
+  'clinics:payments:void':
+    'Anular um pagamento registrado por engano (o original fica no histórico)',
 } as const;
 
 export type ClinicsPermissionKey = keyof typeof CLINICS_PERMISSION_CATALOG;
@@ -704,8 +710,8 @@ export type ClinicsPackageStatus = (typeof CLINICS_PACKAGE_STATUSES)[number];
 /**
  * Pacote de sessões (ADR-048 adendo 7, F3.1). Classe S. O PREÇO é o TOTAL do
  * pacote, digitado e confirmado por quem cria, e congelado; ausente significa
- * "não informado" — nunca zero nem gratuito. Nada disto é gestão financeira
- * (D1 em aberto): não há desconto, pagamento nem quitação.
+ * "não informado" — nunca zero nem gratuito. O preço não é pagamento: não há
+ * desconto nem quitação aqui; os pagamentos são lançamentos à parte (ADR-063).
  */
 export const createClinicsPackageSchema = z
   .object({
@@ -801,6 +807,107 @@ export interface ClinicsPackageSessionsDto {
    * cortada e não é o histórico inteiro (a trilha de auditoria é)
    */
   corrections: ClinicsPackageCorrectionDto[];
+}
+
+// ── Pagamentos de pacotes (ADR-063, F6.1) ─────────────────────────────────
+
+/**
+ * A forma do recebimento, por lista fechada (sem texto livre, H7). Registro
+ * manual de quem recebeu: nada aqui é integração com banco, cartão ou Pix.
+ */
+export const CLINICS_PAYMENT_METHODS = [
+  'cash',
+  'pix',
+  'debit_card',
+  'credit_card',
+  'bank_transfer',
+  'other',
+] as const;
+export type ClinicsPaymentMethod = (typeof CLINICS_PAYMENT_METHODS)[number];
+
+/** O motivo da anulação, por lista fechada. Anular não é devolver ao paciente. */
+export const CLINICS_PAYMENT_VOID_REASONS = ['wrong_entry', 'wrong_amount', 'duplicate'] as const;
+export type ClinicsPaymentVoidReason = (typeof CLINICS_PAYMENT_VOID_REASONS)[number];
+
+/** O teto de um pagamento: o mesmo do preço de um pacote. */
+export const CLINICS_PAYMENT_MAX_CENTS = 100_000_000;
+
+/**
+ * Registrar um pagamento recebido (ADR-063). Exige `Idempotency-Key`. O valor é
+ * em CENTAVOS inteiros, maior que zero, na moeda do pacote. A data é a do
+ * recebimento, LOCAL da unidade: pode ser anterior, nunca futura (400). Com
+ * preço registrado, o valor não passa do saldo (409).
+ */
+export const recordClinicsPackagePaymentSchema = z
+  .object({
+    amountCents: z.number().int().min(1).max(CLINICS_PAYMENT_MAX_CENTS),
+    receivedOn: localDate,
+    method: z.enum(CLINICS_PAYMENT_METHODS),
+  })
+  .strict();
+export type RecordClinicsPackagePaymentInput = z.infer<typeof recordClinicsPackagePaymentSchema>;
+
+/** Anular um pagamento (ADR-063). Exige `Idempotency-Key`. No máximo uma vez. */
+export const voidClinicsPackagePaymentSchema = z
+  .object({ reason: z.enum(CLINICS_PAYMENT_VOID_REASONS) })
+  .strict();
+export type VoidClinicsPackagePaymentInput = z.infer<typeof voidClinicsPackagePaymentSchema>;
+
+/** Quem fez: a membership e o nome de exibição (vazio se a pessoa saiu). */
+export interface ClinicsPaymentActorDto {
+  membershipId: string;
+  name: string;
+}
+
+/**
+ * A visão FINANCEIRA de um pacote: serviço, estado, preço, recebido e saldo.
+ * Sem sessões, atendimentos nem correções (ADR-063): quem só tem
+ * `payments:read` não lê dado de atendimento por aqui.
+ */
+export interface ClinicsPackageBalanceDto {
+  packageId: string;
+  patientId: string;
+  serviceId: string;
+  serviceName: string;
+  status: ClinicsPackageStatus;
+  /** o preço TOTAL congelado; `null` = não registrado */
+  totalPriceCents: number | null;
+  currency: string;
+  /** a soma dos pagamentos NÃO anulados */
+  receivedCents: number;
+  /** preço − recebido; `null` = não calculável (preço não registrado) */
+  balanceCents: number | null;
+  createdAt: string;
+}
+
+/** Um pagamento registrado, com a anulação se houver. Nunca muda depois. */
+export interface ClinicsPackagePaymentDto {
+  id: string;
+  packageId: string;
+  amountCents: number;
+  currency: string;
+  /** data LOCAL do recebimento, `AAAA-MM-DD` */
+  receivedOn: string;
+  method: ClinicsPaymentMethod;
+  createdBy: ClinicsPaymentActorDto;
+  /** pelo relógio do banco (ADR-049) */
+  createdAt: string;
+  void: {
+    reason: ClinicsPaymentVoidReason;
+    voidedBy: ClinicsPaymentActorDto;
+    createdAt: string;
+  } | null;
+}
+
+/** O pacote, o saldo e o histórico de pagamentos, do mais novo ao mais antigo. */
+export interface ClinicsPackagePaymentsDto {
+  package: ClinicsPackageBalanceDto;
+  payments: ClinicsPackagePaymentDto[];
+  /**
+   * a data local de HOJE na unidade (a mais recente aceita no recebimento);
+   * `null` quando o workspace não tem exatamente uma unidade ativa
+   */
+  today: string | null;
 }
 
 // ── Retornos (ADR-048 adendo 7, F3.2) ─────────────────────────────────────

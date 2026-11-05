@@ -20,6 +20,8 @@ export const CLINICS_MODELS = [
   'ClinicsAttendance',
   'ClinicsPackage',
   'ClinicsPackageCorrection',
+  'ClinicsPackagePayment',
+  'ClinicsPackagePaymentVoid',
   'ClinicsReturn',
   'ClinicsOutreachRequest',
   'ClinicsAppointmentDeal',
@@ -33,6 +35,9 @@ export const clinicsExtension: CoreExtension = {
   experience: { selectable: true },
   tenantModels: {
     workspaceModels: CLINICS_MODELS,
+    // os pagamentos e as anulações são lançamentos que não mudam (ADR-063): o
+    // client protegido recusa update/delete neles, e o gatilho do banco também
+    appendOnlyModels: ['ClinicsPackagePayment', 'ClinicsPackagePaymentVoid'],
     relationTargets: {
       ClinicsSettings: { workspace: 'Workspace' },
       ClinicsUnit: {
@@ -107,6 +112,18 @@ export const clinicsExtension: CoreExtension = {
         currentAttendances: 'ClinicsAttendance',
         correctionsFrom: 'ClinicsPackageCorrection',
         correctionsTo: 'ClinicsPackageCorrection',
+        payments: 'ClinicsPackagePayment',
+      },
+      ClinicsPackagePayment: {
+        workspace: 'Workspace',
+        package: 'ClinicsPackage',
+        createdBy: 'Membership',
+        void: 'ClinicsPackagePaymentVoid',
+      },
+      ClinicsPackagePaymentVoid: {
+        workspace: 'Workspace',
+        payment: 'ClinicsPackagePayment',
+        voidedBy: 'Membership',
       },
       ClinicsPackageCorrection: {
         workspace: 'Workspace',
@@ -159,6 +176,8 @@ export const clinicsExtension: CoreExtension = {
         clinicsAttendancesRecorded: 'ClinicsAttendance',
         clinicsPackagesCreated: 'ClinicsPackage',
         clinicsPackageCorrections: 'ClinicsPackageCorrection',
+        clinicsPackagePayments: 'ClinicsPackagePayment',
+        clinicsPackagePaymentVoids: 'ClinicsPackagePaymentVoid',
         clinicsReturnsAssigned: 'ClinicsReturn',
         clinicsReturnsCreated: 'ClinicsReturn',
         clinicsReturnsClosed: 'ClinicsReturn',
@@ -239,6 +258,13 @@ export const clinicsExtension: CoreExtension = {
       'fromPackage',
       'toPackage',
     ],
+    // classe S (ADR-063, F6.1): o pagamento é um FATO financeiro, e o valor é o
+    // próprio fato (sem ele, a trilha não serve para conferir um lançamento):
+    // o pacote, o valor em centavos, a moeda, a data local e a forma de lista
+    // fechada. Nada clínico, nenhum texto livre, nenhum dado do paciente
+    clinicsPackagePayment: ['packageId', 'amountCents', 'currency', 'receivedOn', 'method'],
+    // a anulação: o pagamento, o pacote e o motivo de lista fechada
+    clinicsPackagePaymentVoid: ['paymentId', 'packageId', 'reason'],
     // classe S (ADR-048 adendo 7, F3.2): ids, vencimento, estado, origem e
     // motivo de lista fechada. Nada clínico existe no retorno
     clinicsReturn: [
