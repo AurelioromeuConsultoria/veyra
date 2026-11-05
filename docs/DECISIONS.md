@@ -9883,6 +9883,59 @@ Os dois valiam para deploys manuais pelo painel. A publicação comum agora segu
 - Revisão: `reviewer` e `security` pediram a conferência da destrutiva no job (o hook do agente não vê commit humano), a do nome, a da transação inteira, a da corrida, o ambiente mínimo do processo da migration, a manutenção pelo `MAINTENANCE_MODE` e o `MIGRATIONS_NA_SUBIDA=false` no começo de toda janela. Tudo entrou.
 - Produção, quando existir, decide o próprio caminho: aqui só o `VEYRA_ENV=staging` migra.
 
+### ADR-058, adendo 3 — O push comum para a main sem a confirmação repetida do hook (2026-11-05)
+
+**Status:** APROVADO pelo usuário em 2026-11-05 ("Aprovo a liberação limitada conforme você descreveu").
+
+**Contexto.** O hook `block-unvalidated-push.sh` pedia confirmação em todo `git push`, inclusive no push que o usuário já tinha autorizado na conversa. As esperas de 34 e de 72 minutos entre a validação e o push de 2026-11-05 foram esse pedido aguardando o clique: no transcript, a chamada sai, o hook responde `ask`, e o comando só roda no clique. O hook vê apenas o texto do comando, não a conversa. Por isso ele não consegue distinguir um push autorizado dos demais. Ler a última mensagem do usuário erraria nos dois sentidos, e uma marca que o hook pudesse ler o agente também conseguiria escrever.
+
+**Decisão.**
+
+- O hook passa a conferir só a forma e o destino do push. A autorização continua sendo a da conversa (CLAUDE.md §6).
+- Ele responde "sem decisão" (`{}`) exclusivamente quando todas estas condições valem:
+  - o comando inteiro é exatamente `git push origin main`, sem nada antes nem depois;
+  - no diretório do comando, a branch é a `main`;
+  - todas as URLs de envio do `origin` são do `AurelioromeuConsultoria/veyra` no GitHub. A conferência usa `git remote get-url --push --all`, que já aplica `pushurl` e `insteadOf`/`pushInsteadOf`;
+  - nenhuma configuração do git muda o que esse mesmo comando faz. A revisão de `security` demonstrou que um `remote.origin.push` com `+` transforma o comando exato em force push, e que com outro destino ele atualiza outra branch. Por isso pedem confirmação:
+    - `remote.origin.push`, `vcs`, `receivepack` e `mirror`;
+    - `core.sshCommand` e `core.hooksPath`;
+    - `push.followTags`, `recurseSubmodules` e `pushOption`;
+    - um hook `pre-push`;
+    - `GIT_SSH_COMMAND` ou `GIT_SSH` no ambiente;
+  - o `cwd` da entrada é o diretório em que o hook roda, que é o do comando. A conferência é feita nesse diretório.
+- "Sem decisão" não é "permitir": as aprovações da ferramenta e da plataforma continuam valendo. Nesta máquina, porém, o `~/.claude/settings.json` do usuário já libera `Bash(git push *)`, em modo `dontAsk`. Então, aqui, "sem decisão" significa que o push roda sem nenhum pedido. O hook era a única barreira, e não existe segunda barreira local.
+- Todo o resto continua pedindo confirmação, como antes:
+  - force e force-with-lease;
+  - `--delete` e refspec com `:`, `+` ou `HEAD:`;
+  - outro remote, URL ou branch;
+  - qualquer opção, comando composto, redirecionamento ou pipe;
+  - outra branch atual ou HEAD destacado;
+  - falta do `cwd` ou do `origin`.
+- O push segue pelas verificações locais da entrega, e o staging só recebe a versão depois do CI verde (ADR-058).
+
+**Alternativas.**
+
+- Manter a confirmação: preserva a espera repetida que o usuário quer eliminar.
+- Ler a autorização no transcript: heurística sobre linguagem natural, que liberaria por engano e bloquearia autorizações curtas como "sim".
+- Liberar todo `git push`: descartada, porque force, exclusão e mudança de destino continuam pedindo confirmação.
+
+**Consequências.**
+
+- Um push comum feito sem autorização, por erro do agente, deixa de ser barrado pelo hook. Um revert desfaz o código, mas não garante desfazer o que a versão já fez no staging: dados gravados enquanto ela esteve no ar e migrations já aplicadas na subida (adendo 2) ficam. Uma migration aplicada não é editada (ADR-051 §4). Desfazê-la exige uma migration nova, corretiva, ou a restauração do backup, que pede a janela própria (ADR-058, política item 3). Por isso a autorização prévia na conversa continua obrigatória.
+- Validação: 43 casos do próprio hook, com o resultado esperado de cada um. Liberam o push 3 casos, 1 comando sem push passa direto e 39 pedem confirmação.
+  - Liberam: o comando exato no repositório, o `origin` por SSH e um repositório temporário limpo.
+  - Pedem as formas acima, e também o repositório temporário com cada um destes: outra branch, HEAD destacado, outro `origin`, `pushurl` ou `pushInsteadOf` desviando o envio, falta do `origin`, cada configuração listada, um hook `pre-push`, `GIT_SSH_COMMAND` no ambiente, e um `cwd` diferente do diretório do hook.
+  - Como o repositório limpo libera e só a configuração acrescentada muda o resultado, a recusa vem da própria configuração.
+- Revisão: `reviewer` e `security` encontraram, cada um, que o `remote.origin.push` transformava o comando exato em force push ou em envio para outra branch, e isso foi corrigido. Na conferência da correção, a revisão de `security` aprovou com a ressalva do caminho relativo dos hooks, listada abaixo.
+- O `cwd` foi conferido com um registro temporário da entrada do hook, já retirado:
+  - com o shell no Veyra, o `cwd` recebido era o do comando;
+  - com o shell em outro repositório, o hook não rodou.
+- Continua fora deste ajuste, porque já era assim antes:
+  - a detecção só reconhece `git push` no começo de um trecho do comando. Formas como `git -C <dir> push`, `sh -c "git push …"` ou `a | git push` não passam por este hook;
+  - o `settings.json` chama os hooks por caminho relativo, então, com o shell fora do repositório, nenhum hook do projeto roda;
+  - sem o `jq`, o hook devolve "sem decisão" para tudo.
+  - A defesa do lado do servidor seria uma proteção da `main` no GitHub contra force push e exclusão. Hoje a `main` não está protegida, e essa configuração é do usuário.
+
 ## ADR-059 — Correção de um consumo de pacote registrado por engano (F5.2)
 
 **Status:** APROVADO pelo usuário em 2026-11-03, em duas entregas, com os ajustes do fim deste ADR ("Aprovação com ajustes"), que prevalecem sobre o texto proposto. A F5.2a está autorizada até o commit local. · **Data:** 2026-11-03

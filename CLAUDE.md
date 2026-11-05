@@ -79,11 +79,11 @@ pnpm monorepo · TypeScript strict ponta a ponta · NestJS (monólito modular) �
 
 `docs/` é a referência completa; `.claude/` é a camada executável (agentes, skills, hooks) que **linka de volta** para `docs/` — nunca duplique o raciocínio inteiro nos dois lugares. Ao mudar um, atualize o outro.
 
-| Executável        | Papel                                                                                                                                                                          |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `.claude/agents/` | architect, backend, frontend, database, security (read-only), qa, reviewer (read-only), intelligence                                                                           |
-| `.claude/skills/` | create-module, create-entity, create-migration, create-api, create-vertical, review-rbac, review-tenant-isolation, implement-ai-capability, security-review, release-checklist |
-| `.claude/hooks/`  | bloqueiam migration destrutiva, segredos em commit, mudança sensível em tenancy/RBAC sem revisão, push sem validação                                                           |
+| Executável        | Papel                                                                                                                                                                              |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.claude/agents/` | architect, backend, frontend, database, security (read-only), qa, reviewer (read-only), intelligence                                                                               |
+| `.claude/skills/` | create-module, create-entity, create-migration, create-api, create-vertical, review-rbac, review-tenant-isolation, implement-ai-capability, security-review, release-checklist     |
+| `.claude/hooks/`  | bloqueiam migration destrutiva, segredos em commit, mudança sensível em tenancy/RBAC sem revisão; o push pede confirmação, salvo o `git push origin main` exato (ADR-058 adendo 3) |
 
 **Roteie proativamente**: mudanças em auth, tenancy, RBAC, segredos ou migrations exigem `reviewer` + `security` antes do commit — sem esperar ser pedido.
 

@@ -87,6 +87,6 @@ O Norteie (`/Users/aurelioromeu/repos/Malach/norteie`) é um sistema de gestão 
 | `block-destructive-migration.sh` | DROP TABLE/COLUMN, TRUNCATE, NOT NULL sem default em migrations → ask (deny para TRUNCATE/DROP TABLE em arquivo de migration)                        | Norteie só cobre git destrutivo             |
 | `guard-secrets.sh`               | `.env` staged (exceto `.env.example`), private keys, tokens reais → **deny**                                                                         | Norteie usa `ask`; Veyra nega               |
 | `guard-tenant-rbac.sh`           | Edição de prisma.service/guards/decorators de permissão → contexto adicional; commit tocando esses arquivos → ask exigindo revisão security+reviewer | Novo                                        |
-| `block-unvalidated-push.sh`      | `git push` → ask com checklist DoD (build/testes)                                                                                                    | Evolução do dod-reminder (que só informava) |
+| `block-unvalidated-push.sh`      | `git push` → ask com checklist DoD (build/testes); o `git push origin main` exato sai sem decisão (ADR-058 adendo 3)                                 | Evolução do dod-reminder (que só informava) |
 
 Aprendizado operacional mantido: os hooks filtram **dentro do script** (o matcher do settings.json não é confiável), leem stdin JSON com `jq` e devolvem `{}` quando não se aplicam.
