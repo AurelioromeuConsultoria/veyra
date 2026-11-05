@@ -379,6 +379,77 @@ export class ProtectedContentService {
   }
 
   /**
+   * O TEXTO escrito sobre uma pessoa fora das notas e tarefas: o de um evento
+   * da agenda do Core (título, descrição e local) e o das menções a ele — a
+   * atividade `event_scheduled` e a notificação `calendar_event_scheduled`
+   * (ADR-061, adendo 8). Cada item traz os vínculos que o ligam a pessoas (os
+   * do evento de agora e, na atividade, também os gravados nela); o item é
+   * oculto quando QUALQUER vínculo é oculto para quem pede: o contato, ou a
+   * oportunidade pelo contato atual dela. No `restrito`, o protegido; no
+   * `uniforme`, toda pessoa. `vinculos: null` é o item cujo evento não existe
+   * mais: na dúvida, oculto fora do `livre`. Devolve as chaves ocultas.
+   */
+  async textosOcultos<K>(
+    auth: AuthContext,
+    itens: readonly { chave: K; vinculos: readonly Alvo[] | null }[],
+    db: Db = this.prisma.db,
+  ): Promise<Set<K>> {
+    if (itens.length === 0 || !(await this.duvidaOculta(auth))) return new Set();
+    const alvos = itens.flatMap((i) => i.vinculos ?? []);
+    const contatos = await this.contatosOcultos(
+      auth,
+      alvos.map((a) => a.contactId),
+      db,
+    );
+    const oportunidades = await this.oportunidadesOcultas(
+      auth,
+      alvos.map((a) => a.dealId).filter((id): id is string => Boolean(id)),
+      db,
+    );
+    const oculto = (a: Alvo) =>
+      Boolean(
+        (a.contactId && contatos.has(a.contactId)) || (a.dealId && oportunidades.has(a.dealId)),
+      );
+    return new Set(
+      itens.filter((i) => i.vinculos === null || i.vinculos.some(oculto)).map((i) => i.chave),
+    );
+  }
+
+  /**
+   * Os vínculos de cada evento da agenda do Core, para `textosOcultos`: os de
+   * AGORA e os GRAVADOS na atividade `event_scheduled` da criação (a pessoa do
+   * momento em que o texto foi escrito). Assim, desligar da pessoa protegida
+   * um evento criado para ela não devolve o texto — a mesma ideia dos títulos
+   * antigos da oportunidade (adendo 7, item 4a). O evento que não existe mais
+   * fica fora do mapa (quem chama trata na dúvida).
+   */
+  async vinculosDosEventos(
+    ids: readonly string[],
+    db: Db = this.prisma.db,
+  ): Promise<Map<string, Alvo[]>> {
+    const unicos = [...new Set(ids)];
+    const resultado = new Map<string, Alvo[]>();
+    if (unicos.length === 0) return resultado;
+    const eventos = (await db.calendarEvent.findMany({
+      where: { id: { in: unicos } },
+      select: { id: true, contactId: true, dealId: true },
+    } as never)) as unknown as { id: string; contactId: string | null; dealId: string | null }[];
+    const criacoes = (await db.activity.findMany({
+      where: { calendarEventId: { in: unicos }, type: 'event_scheduled' },
+      select: { calendarEventId: true, contactId: true, dealId: true },
+    } as never)) as unknown as {
+      calendarEventId: string;
+      contactId: string | null;
+      dealId: string | null;
+    }[];
+    for (const e of eventos) resultado.set(e.id, [{ contactId: e.contactId, dealId: e.dealId }]);
+    for (const c of criacoes) {
+      resultado.get(c.calendarEventId)?.push({ contactId: c.contactId, dealId: c.dealId });
+    }
+    return resultado;
+  }
+
+  /**
    * Na dúvida sobre de quem é o conteúdo (remetente a identificar, arquivo sem
    * vínculo), a regra é conservadora: oculto fora do `livre` (adendo 5).
    */

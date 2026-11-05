@@ -37,7 +37,7 @@ export class NotificationsController {
     // não há destinatário, e consultar sem workspace seria recusado com 500
     // pela proteção multitenant (ADR-055 adendo 1, item 7)
     if (!auth.workspaceId) return { items: [], unreadCount: 0 };
-    return this.notifications.list(auth.membershipId as string, query);
+    return this.notifications.list(auth, query);
   }
 
   @AuthenticatedOnly()

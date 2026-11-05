@@ -82,4 +82,11 @@ export interface CalendarEventDto {
   contactName: string | null;
   dealId: string | null;
   createdAt: string;
+  /**
+   * o texto (título, descrição e local) é conteúdo protegido que quem pede
+   * não lê (ADR-061, adendo 8): os três saem como "Conteúdo restrito", e as
+   * datas, o estado e os vínculos ficam. Só aparece quando `true`. A tela não
+   * envia de volta um texto que não mostra.
+   */
+  textRestricted?: true;
 }

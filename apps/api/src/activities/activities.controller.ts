@@ -59,6 +59,8 @@ export class ActivitiesController {
               .map((i) => i.id),
           );
         },
+        // o título dos eventos da agenda do Core ligados a pessoa oculta (adendo 8)
+        textosDeEventoOcultos: (itens) => this.protegido.textosOcultos(auth, itens),
       },
     );
   }

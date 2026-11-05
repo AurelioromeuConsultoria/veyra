@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import type { NotificationDto, NotificationPageDto, NotificationType } from '@veyra/contracts';
 import { z } from 'zod';
 import type { Prisma } from '../generated/prisma/client';
+import type { AuthContext } from '../common/decorators';
+import { CONTEUDO_RESTRITO, ProtectedContentService } from '../extensions/protected-content';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 
 type AnyClient = Db | Prisma.TransactionClient;
@@ -18,9 +20,20 @@ const NOTIFICATION_PAYLOADS: Record<NotificationType, z.ZodType> = {
   conversation_assigned: z.object({ subject: z.string().max(200) }).strict(),
 };
 
+/**
+ * O evento da agenda de uma `calendar_event_scheduled`, lido da `dedupeKey`
+ * (`calendar_event_scheduled:<evento>:<destinatário>`, gravada pelo
+ * CalendarService): a notificação não guarda o id em outra coluna, e o texto
+ * dela foi gravado PRONTO no envio.
+ */
+const EVENTO_DA_NOTIFICACAO = /^calendar_event_scheduled:([0-9a-f-]{36}):/i;
+
 @Injectable()
 export class NotificationsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly protegido: ProtectedContentService,
+  ) {}
 
   /**
    * ÚNICO ponto de emissão. Chamado DENTRO da transação do fato que a origina —
@@ -58,9 +71,10 @@ export class NotificationsService {
 
   /** Caixa PESSOAL: o destinatário é sempre a membership da sessão. */
   async list(
-    membershipId: string,
+    auth: AuthContext,
     input: { unreadOnly: boolean; limit: number },
   ): Promise<NotificationPageDto> {
+    const membershipId = auth.membershipId as string;
     const where = {
       recipientMembershipId: membershipId,
       ...(input.unreadOnly ? { readAt: null } : {}),
@@ -75,22 +89,56 @@ export class NotificationsService {
         where: { recipientMembershipId: membershipId, readAt: null },
       } as never),
     ]);
-    const items: NotificationDto[] = (
-      rows as unknown as {
-        id: string;
-        type: string;
-        payload: unknown;
-        readAt: Date | null;
-        createdAt: Date;
-      }[]
-    ).map((row) => ({
-      id: row.id,
-      type: row.type as NotificationType,
-      payload: row.payload as Record<string, string>,
-      readAt: row.readAt?.toISOString() ?? null,
-      createdAt: row.createdAt.toISOString(),
-    }));
+    const linhas = rows as unknown as {
+      id: string;
+      type: string;
+      payload: unknown;
+      dedupeKey: string;
+      readAt: Date | null;
+      createdAt: Date;
+    }[];
+    const ocultas = await this.eventosOcultos(auth, linhas);
+    const items: NotificationDto[] = linhas.map((row) => {
+      const payload = row.payload as Record<string, string>;
+      return {
+        id: row.id,
+        type: row.type as NotificationType,
+        payload: ocultas.has(row.id) ? { ...payload, title: CONTEUDO_RESTRITO } : payload,
+        readAt: row.readAt?.toISOString() ?? null,
+        createdAt: row.createdAt.toISOString(),
+      };
+    });
     return { items, unreadCount };
+  }
+
+  /**
+   * As notificações de evento da agenda cujo texto é oculto para quem lê
+   * (ADR-061, adendo 8). O título foi gravado no envio, então a regra é
+   * aplicada na LEITURA, pelos vínculos de AGORA do evento e pelos da criação
+   * dele: o interessado que vira paciente deixa de ter o título servido no
+   * pedido seguinte, e desligar o evento não devolve o título. O evento
+   * que não existe mais (ou a chave fora do formato) vai na dúvida: oculto
+   * fora do `livre`.
+   */
+  private async eventosOcultos(
+    auth: AuthContext,
+    linhas: readonly { id: string; type: string; dedupeKey: string }[],
+  ): Promise<Set<string>> {
+    const deEvento = linhas
+      .filter((l) => l.type === 'calendar_event_scheduled')
+      .map((l) => ({ id: l.id, eventoId: EVENTO_DA_NOTIFICACAO.exec(l.dedupeKey)?.[1] ?? null }));
+    if (deEvento.length === 0 || !(await this.protegido.duvidaOculta(auth))) return new Set();
+    // os vínculos de agora e os da criação do evento (o título é o da criação)
+    const vinculos = await this.protegido.vinculosDosEventos(
+      deEvento.map((n) => n.eventoId).filter((id): id is string => id !== null),
+    );
+    return this.protegido.textosOcultos(
+      auth,
+      deEvento.map((n) => ({
+        chave: n.id,
+        vinculos: (n.eventoId ? vinculos.get(n.eventoId) : undefined) ?? null,
+      })),
+    );
   }
 
   /**

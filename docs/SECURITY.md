@@ -211,6 +211,11 @@ Política obrigatória para `FileObject`:
         - **O marcador da mídia restrita** é o genérico `[anexo]`, que não revela o tipo.
         - **A mídia histórica (adendo 6, item 3):** rejeitar ou desfazer o remetente de uma conversa de paciente com mídia, mesmo com o download pendente, é recusado a todos os papéis, preservando o remetente, o número e o arquivo. **Pendência obrigatória antes do piloto:** o procedimento seguro para corrigir uma atribuição errada.
         - **A trilha, a busca e a exportação** ficaram com a F5.3d, abaixo.
+      - **A agenda do Core (ADR-061, adendo 8, item 1)** segue os mesmos três modos:
+        - **Leitura:** o evento ligado a um contato oculto, ou a uma oportunidade de contato oculto, sai com título, descrição e local como "Conteúdo restrito" e a marca `textRestricted`, na lista, no evento e nas respostas da escrita. Datas, estado, ids e vínculos ficam. O evento é julgado pelos vínculos de agora e pelos gravados na atividade da criação, de modo que desligá-lo da pessoa não devolve o texto.
+        - **A atividade `event_scheduled`** sai com o título restrito e marca `restrictedContent`. **A notificação `calendar_event_scheduled`** guarda o título pronto, então é mascarada na leitura da caixa, pelo evento lido da `dedupeKey`; o evento apagado vai na dúvida.
+        - **Escritas, só no `uniforme`:** criar, editar, religar ou apagar um evento que toca uma pessoa dá 403 "Conteúdo restrito", igual para todo contato. A recepção (`restrito`) escreve como antes. A repetição da criação devolve o corpo com a regra de hoje.
+        - **Pendência do B1:** o texto escrito enquanto um evento criado sem a pessoa estava ligado ao paciente volta a quem o desliga (adendo 8, ponto aberto para decisão).
       - **A desativação do Clinics** tira de todos as chaves do vertical, mas a presença fica. Até a reativação, todos, inclusive o Owner, ficam na regra uniforme, e ninguém exclui contatos. Reativar só recompõe as permissões aplicáveis (a matriz nos papéis de sistema). A política de exclusão de pacientes é pendência do B3.
       - **A busca, as exportações e a trilha (F5.3d, adendo 7):**
         - **Busca:** nenhuma procura dentro de conteúdo protegido. A busca de pacientes e interessados exige a chave da agenda.

@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import type { ActivityDto, ActivityPageDto, ActivityType } from '@veyra/contracts';
 import { z } from 'zod';
+import { CONTEUDO_RESTRITO } from '../extensions/protected-content';
 import type { Prisma } from '../generated/prisma/client';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 
@@ -62,6 +63,14 @@ function decodeCursor(raw: string): Cursor {
 
 /** Os eventos de oportunidade que levam o título dela no payload (ADR-061, adendo 5). */
 const TIPOS_COM_TITULO_DO_DEAL: ReadonlySet<string> = new Set(['deal_created', 'deal_updated']);
+
+/** Decide, pelos vínculos, quais atividades `event_scheduled` têm o texto oculto (adendo 8). */
+type TextosDeEventoOcultos = (
+  itens: {
+    chave: string;
+    vinculos: { contactId: string | null; dealId: string | null }[] | null;
+  }[],
+) => Promise<Set<string>>;
 
 function semCampo(payload: ActivityDto['payload'], campo: string): ActivityDto['payload'] {
   const copia = { ...(payload as Record<string, unknown>) };
@@ -138,6 +147,14 @@ export class ActivitiesService {
       titulosOcultos?: (
         itens: { id: string; dealId: string; contactId: string | null; title: unknown }[],
       ) => Promise<Set<string>>;
+      /**
+       * as atividades `event_scheduled`, dentre as dadas com os vínculos
+       * gravados nelas e os do evento de agora (`null`: o evento não existe
+       * mais), cujo texto é oculto para quem pede (ADR-061, adendo 8): o
+       * `title` sai como "Conteúdo restrito", e a resposta diz que há
+       * conteúdo restrito
+       */
+      textosDeEventoOcultos?: TextosDeEventoOcultos;
     } = {},
   ): Promise<ActivityPageDto> {
     /**
@@ -212,6 +229,7 @@ export class ActivitiesService {
             })),
           )
         : new Set<string>();
+    const eventosOcultos = await this.eventosOcultos(page, options.textosDeEventoOcultos);
     const items: ActivityDto[] = page.map((row) => {
       const payload = row.payload as ActivityDto['payload'];
       const semTitulo = TIPOS_COM_TITULO_DO_DEAL.has(row.type) && ocultasPorId.has(row.id);
@@ -220,7 +238,11 @@ export class ActivitiesService {
         type: row.type as ActivityType,
         actorType: row.actorType,
         actorName: row.actorMembershipId ? (actorNames.get(row.actorMembershipId) ?? null) : null,
-        payload: semTitulo ? semCampo(payload, 'title') : payload,
+        payload: semTitulo
+          ? semCampo(payload, 'title')
+          : eventosOcultos.has(row.id)
+            ? { ...payload, title: CONTEUDO_RESTRITO }
+            : payload,
         occurredAt: row.occurredAt.toISOString(),
       };
     });
@@ -231,10 +253,50 @@ export class ActivitiesService {
         rows.length > limit && last
           ? encodeCursor({ occurredAt: last.occurredAt, id: last.id })
           : null,
-      ...(options.conteudoRestrito || ocultasPorId.size > 0
+      ...(options.conteudoRestrito || ocultasPorId.size > 0 || eventosOcultos.size > 0
         ? { restrictedContent: true as const }
         : {}),
     };
+  }
+
+  /**
+   * As atividades `event_scheduled` da página cujo texto (o título do evento)
+   * é oculto para quem pede (ADR-061, adendo 8). Os vínculos de cada uma: os
+   * gravados nela (a pessoa do momento) E os do evento de agora, que pode ter
+   * sido religado; o evento que não existe mais vai na dúvida (`null`).
+   */
+  private async eventosOcultos(
+    page: {
+      id: string;
+      type: string;
+      contactId: string | null;
+      dealId: string | null;
+      calendarEventId: string | null;
+    }[],
+    textosOcultos?: TextosDeEventoOcultos,
+  ): Promise<Set<string>> {
+    const eventos = page.filter((row) => row.type === 'event_scheduled');
+    if (!textosOcultos || eventos.length === 0) return new Set();
+    const ids = eventos.map((row) => row.calendarEventId).filter((id): id is string => Boolean(id));
+    const atuais = (await this.prisma.db.calendarEvent.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, contactId: true, dealId: true },
+    } as never)) as unknown as { id: string; contactId: string | null; dealId: string | null }[];
+    const porId = new Map(atuais.map((e) => [e.id, e]));
+    return textosOcultos(
+      eventos.map((row) => {
+        const atual = row.calendarEventId ? porId.get(row.calendarEventId) : undefined;
+        return {
+          chave: row.id,
+          vinculos: atual
+            ? [
+                { contactId: row.contactId, dealId: row.dealId },
+                { contactId: atual.contactId, dealId: atual.dealId },
+              ]
+            : null,
+        };
+      }),
+    );
   }
 
   private async resolveActorNames(membershipIds: (string | null)[]): Promise<Map<string, string>> {
