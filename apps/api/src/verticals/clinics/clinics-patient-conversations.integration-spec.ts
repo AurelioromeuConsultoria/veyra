@@ -777,10 +777,11 @@ describe('Clinics — o texto das conversas sob o E8 (integração, ADR-061 aden
         expiresAt: new Date(Date.now() + 24 * 60 * 60_000),
       },
     });
+    // com `tasks:write`: a fila genérica (`approve` e `reject`) também está ao alcance dele
     const { sessao: operador } = await membro(
       ws.workspaceId,
       'conversas-ia@veyra.test',
-      await papel(ws.workspaceId, 'Conversas e IA do CRM', SEM_AGENDA_COM_IA),
+      await papel(ws.workspaceId, 'Conversas e IA do CRM', [...SEM_AGENDA_COM_IA, 'tasks:write']),
     );
     const fila = async (s: Session) =>
       (
@@ -812,6 +813,49 @@ describe('Clinics — o texto das conversas sob o E8 (integração, ADR-061 aden
     expect(r(await aprovar(inexistente))).toEqual([403, RESTRITO]);
     expect(r(await descartar(rascunho.id))).toEqual([403, RESTRITO]);
     expect(r(await descartar(inexistente))).toEqual([403, RESTRITO]);
+    /**
+     * A fila GENÉRICA (só de `create_task`; ressalvas do adendo 9): o id do
+     * rascunho dava 400 "tipo não permitido" e o inexistente 404 — o oráculo de
+     * que o rascunho existe. No `uniforme`, o mesmo 404 para os dois.
+     */
+    const NAO_ENCONTRADA = [404, 'Proposta não encontrada'];
+    for (const id of [rascunho.id, inexistente]) {
+      expect(r(await post(`/api/intelligence/proposals/${id}/approve`, operador, {}))).toEqual(
+        NAO_ENCONTRADA,
+      );
+      expect(r(await post(`/api/intelligence/proposals/${id}/reject`, operador))).toEqual(
+        NAO_ENCONTRADA,
+      );
+    }
+    // fora do `uniforme`, como antes: o Owner recebe o 400 do tipo
+    expect(r(await post(`/api/intelligence/proposals/${rascunho.id}/reject`, owner))).toEqual([
+      400,
+      'Tipo de proposta não permitido nesta rota',
+    ]);
+    // e a proposta de tarefa segue decidível pelo papel no `uniforme` (não é texto de conversa)
+    const runTarefa = await prisma.raw.aiRun.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        capability: 'next_action',
+        model: 'claude-sonnet-5',
+        contextSummary: 'teste',
+        status: 'ok',
+      },
+    });
+    const tarefa = await prisma.raw.aiProposal.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        runId: runTarefa.id,
+        type: 'create_task',
+        payload: { title: 'Ligar', dueAt: new Date().toISOString(), contactId: interessado },
+        rationale: 'teste',
+        contactId: interessado,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60_000),
+      },
+    });
+    expect((await post(`/api/intelligence/proposals/${tarefa.id}/reject`, operador)).status).toBe(
+      201,
+    );
     // o rascunho segue pendente, intocado
     expect((await prisma.raw.aiProposal.findFirst({ where: { id: rascunho.id } }))?.status).toBe(
       'pending',

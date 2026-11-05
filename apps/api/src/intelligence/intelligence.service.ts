@@ -190,6 +190,27 @@ export class IntelligenceService {
   ) {}
 
   /**
+   * Os sujeitos do TEXTO de uma conversa para a E6 (ADR-061, adendo 9,
+   * ressalvas): os de `sujeitosDaConversa` mais os contatos do RECEBIMENTO das
+   * mensagens. Depois de uma correção de remetente (paciente → RAI →
+   * interessado liberado), o contato atual é liberado, mas as mensagens da
+   * época do paciente seguem na conversa e iriam ao provedor. O NULL vale o
+   * contato atual (já incluído); o id que não resolve mais (contato excluído)
+   * a porta trata como restrito, na dúvida. A RAI segue sem sujeito nenhum.
+   * Vem do serviço de domínio: o `intelligence` não toca o Prisma.
+   */
+  private async sujeitosDoTexto(
+    conversation: Pick<ConversationDto, 'id' | 'contactId' | 'senderStatus'>,
+    outros: readonly (string | null)[] = [],
+  ): Promise<(string | null)[]> {
+    if (conversation.senderStatus === 'unidentified') return [];
+    const recebidos =
+      (await this.conversations.contatosDoRecebimento([conversation.id])).get(conversation.id) ??
+      [];
+    return sujeitosDaConversa(conversation, [...outros, ...recebidos]);
+  }
+
+  /**
    * Resumo de conversa. Fluxo da v1 (ADR-029): consentimento → contexto
    * permitido → chamada estruturada → validação Zod → registro. Sem loop, sem
    * ferramenta: o modelo não escolhe o que ler nem consegue escrever nada.
@@ -216,8 +237,10 @@ export class IntelligenceService {
     }
 
     // ADR-048 §6.3: restrição ANTES de ler qualquer corpo — e antes do
-    // consentimento, que é do workspace e não libera contato restrito
-    const scope = this.scope(auth, sujeitosDaConversa(conversation));
+    // consentimento, que é do workspace e não libera contato restrito. O
+    // escopo inclui os contatos do recebimento: o texto lido é de TODAS as
+    // mensagens, também as de antes de uma correção de remetente
+    const scope = this.scope(auth, await this.sujeitosDoTexto(conversation));
     if ((await this.assertRestrictionAnswered(scope)) === 'restricted') {
       const runId = await this.refusedAsRestricted(auth, CONVERSATION_SUMMARY_PROMPT.capability, {
         conversationId,
@@ -279,6 +302,8 @@ export class IntelligenceService {
         scope,
       } satisfies ScopedLlmRequest,
       target: { conversationId },
+      // quem a conversa É: se mudar até a trava, o contexto é de quem ela era
+      identidade: sujeitosDaConversa(conversation),
       contextSummary,
       // NA transação da guarda: valida e grava, ainda sob as travas
       onResponse: async (tx, { runId, promptVersionId, response, usage }) => {
@@ -510,7 +535,9 @@ export class IntelligenceService {
     if (await this.conversations.textoOcultoParaPessoa(auth, conversation)) return null;
     // conteúdo JÁ persistido também não sai para contato restrito — inclusive o
     // gerado antes de a restrição existir (ADR-048 §6.3, item 3)
-    if (!(await this.llm.allows(this.scope(auth, sujeitosDaConversa(conversation))))) return null;
+    if (!(await this.llm.allows(this.scope(auth, await this.sujeitosDoTexto(conversation))))) {
+      return null;
+    }
     const latest = await this.runs.latestResult(CONVERSATION_SUMMARY_PROMPT.capability, {
       conversationId,
     });
@@ -594,12 +621,20 @@ export class IntelligenceService {
      * extensão, que o WHERE não alcança — então a página pode vir mais curta
      * que o limite. Preço aceito: a fila é de revisão, não de paginação.
      */
+    const recebidos = await this.conversations.contatosDoRecebimento(
+      rows.flatMap((row) => (row.conversationId ? [row.conversationId] : [])),
+    );
     const restricted = await this.llm.restrictedEach(
       auth.workspaceId as string,
       rows.map((row) =>
-        // a conversa pode ter sido religada: vale o contato da proposta E o atual
+        // a conversa pode ter sido religada: vale o contato da proposta, o
+        // atual e os do recebimento das mensagens (adendo 9, ressalvas)
         row.conversationId
-          ? [row.contactId ?? null, row.conversationContactId ?? null]
+          ? [
+              row.contactId ?? null,
+              row.conversationContactId ?? null,
+              ...(recebidos.get(row.conversationId) ?? []),
+            ]
           : [row.contactId ?? null],
       ),
     );
@@ -632,8 +667,9 @@ export class IntelligenceService {
       return { status: 'content_restricted', runId, reason: CONTEUDO_RESTRITO };
     }
 
-    // restrição antes da política, do consentimento e de qualquer leitura de corpo
-    const scope = this.scope(auth, sujeitosDaConversa(conversation));
+    // restrição antes da política, do consentimento e de qualquer leitura de
+    // corpo — com os contatos do recebimento, como no resumo
+    const scope = this.scope(auth, await this.sujeitosDoTexto(conversation));
     if ((await this.assertRestrictionAnswered(scope)) === 'restricted') {
       const runId = await this.refusedAsRestricted(auth, REPLY_SUGGESTION_PROMPT.capability, {
         conversationId,
@@ -740,6 +776,7 @@ export class IntelligenceService {
         scope,
       } satisfies ScopedLlmRequest,
       target: { conversationId, contactId: conversation.contactId },
+      identidade: sujeitosDaConversa(conversation),
       contextSummary,
       // NA transação da guarda: valida, grava o run e o rascunho, sob as travas
       onResponse: async (tx, { runId, promptVersionId, response, usage }) => {
@@ -863,9 +900,10 @@ export class IntelligenceService {
     if (await this.conversations.textoOcultoParaPessoa(auth, conversation)) return null;
     const proposal = await this.proposals.findPendingReply(conversationId);
     if (!proposal) return null;
-    // o rascunho é derivado da conversa: restrito pelo contato de HOJE e pelo
-    // contato de quando foi gerado — o vínculo pode ter mudado no meio
-    const subjects = sujeitosDaConversa(conversation, [proposal.contactId ?? null]);
+    // o rascunho é derivado da conversa: restrito pelo contato de HOJE, pelo
+    // contato de quando foi gerado — o vínculo pode ter mudado no meio — e
+    // pelos contatos do recebimento das mensagens
+    const subjects = await this.sujeitosDoTexto(conversation, [proposal.contactId ?? null]);
     if (!(await this.llm.allows(this.scope(auth, subjects)))) return null;
     if (proposal.expiresAt.getTime() < Date.now()) return null;
     const payload = sendMessagePayloadSchema.safeParse(proposal.payload);
@@ -921,7 +959,10 @@ export class IntelligenceService {
       throw new BadRequestException('Proposta sem conversa vinculada');
     }
     const conversation = await this.conversations.get(auth, proposal.conversationId);
-    const contatos = sujeitosDaConversa(conversation, [proposal.contactId ?? null]);
+    // quem a conversa é (o contato de hoje ou o da geração) e, no escopo da
+    // E6, também quem recebeu as mensagens de que o rascunho foi derivado
+    const identidade = sujeitosDaConversa(conversation, [proposal.contactId ?? null]);
+    const contatos = await this.sujeitosDoTexto(conversation, [proposal.contactId ?? null]);
     // checagem rápida (evita trabalho); a GARANTIA é a reconferência sob trava
     await this.assertProposalNotRestricted(auth, id, contatos);
     // revalida o payload NO ACEITE: entre propor e aprovar, nada garante que a
@@ -934,7 +975,7 @@ export class IntelligenceService {
       proposal.runId,
       { conversationId: proposal.conversationId, body, edited: body !== payload.body },
       { workspaceId: auth.workspaceId as string, membershipId: auth.membershipId as string },
-      this.guardFor(auth, contatos, proposal.conversationId),
+      this.guardFor(auth, contatos, proposal.conversationId, identidade),
     );
     if (result === 'not_pending') throw new BadRequestException('Proposta já revisada');
     if (result === 'restricted' || result === 'unavailable') {
@@ -944,8 +985,7 @@ export class IntelligenceService {
   }
 
   async approveProposal(auth: AuthContext, id: string): Promise<{ taskId: string }> {
-    const proposal = await this.proposals.findById(id);
-    if (!proposal) throw new NotFoundException('Proposta não encontrada');
+    const proposal = await this.propostaDaFilaGenerica(auth, id);
     if (proposal.status !== 'pending') {
       throw new BadRequestException('Proposta já revisada');
     }
@@ -994,8 +1034,7 @@ export class IntelligenceService {
    * as mesmas permissões cumulativas da aprovação (ADR-044, adendo 2).
    */
   async rejectProposal(auth: AuthContext, id: string): Promise<void> {
-    const proposal = await this.proposals.findById(id);
-    if (!proposal) throw new NotFoundException('Proposta não encontrada');
+    const proposal = await this.propostaDaFilaGenerica(auth, id);
     if (proposal.type === 'send_message') {
       throw new BadRequestException('Tipo de proposta não permitido nesta rota');
     }
@@ -1023,6 +1062,24 @@ export class IntelligenceService {
     const destino = proposal.expiresAt.getTime() < Date.now() ? 'expired' : 'rejected';
     const done = await this.proposals.transition(id, destino, this.approver(auth));
     if (!done) throw new BadRequestException('Proposta já revisada');
+  }
+
+  /**
+   * A proposta pelas rotas da fila GENÉRICA (`approve` e `reject`, só de
+   * `create_task`). No `uniforme` (ADR-061, adendo 9, item 8, e as ressalvas),
+   * o id de um rascunho de resposta dá o MESMO 404 do id que não existe: com o
+   * 400 "tipo não permitido", ele diria que o rascunho existe, logo que a
+   * conversa é de um contato liberado para a IA — de quem não é paciente. Fora
+   * do `uniforme`, nada muda. A conferência vem antes da leitura e para todo
+   * id, para o caminho ser o mesmo.
+   */
+  private async propostaDaFilaGenerica(auth: AuthContext, id: string) {
+    const semTexto = await this.conversations.semLeituraDoTextoDasConversas(auth);
+    const proposal = await this.proposals.findById(id);
+    if (!proposal || (semTexto && proposal.type === 'send_message')) {
+      throw new NotFoundException('Proposta não encontrada');
+    }
+    return proposal;
   }
 
   /** Contexto do revisor para o adaptador auditar a transição. */
@@ -1106,13 +1163,15 @@ export class IntelligenceService {
     auth: AuthContext,
     contactIds: readonly (string | null)[],
     conversationId?: string | null,
+    /** quem a conversa pode ser; omitido, o próprio escopo */
+    identidade: readonly (string | null)[] = contactIds,
   ): ExecutionGuard {
     return {
       workspaceId: auth.workspaceId as string,
       contactIds,
       recheck: async () =>
         this.conversaNaReconferencia(
-          await this.conversaMudou(auth, conversationId, contactIds),
+          await this.conversaMudou(auth, conversationId, identidade, contactIds),
           () => this.llm.verdict(this.scope(auth, contactIds)),
         ),
     };
@@ -1125,18 +1184,28 @@ export class IntelligenceService {
    * conversa RAI, ou a que sumiu (404), também recusa. Outra falha da leitura
    * (banco, prazo) não prova que a conversa mudou: é `indisponivel`, e o uso
    * não começa — sem virar "restrito" na trilha.
+   *
+   * Os contatos do recebimento são RELIDOS aqui, sob a trava (ADR-061, adendo
+   * 9, ressalvas): um contato que recebeu mensagem e não estava no escopo
+   * conferido (uma correção e uma volta no meio, com mensagem entre elas)
+   * também é "mudou" — a porta nunca o conferiu.
    */
   private async conversaMudou(
     auth: AuthContext,
     conversationId: string | null | undefined,
-    sujeitos: readonly (string | null)[],
+    identidade: readonly (string | null)[],
+    escopo: readonly (string | null)[],
   ): Promise<'mudou' | 'igual' | 'indisponivel'> {
     if (!conversationId) return 'igual';
     try {
       const atual = await this.conversations.get(auth, conversationId);
-      return atual.senderStatus === 'unidentified' || !sujeitos.includes(atual.contactId)
-        ? 'mudou'
-        : 'igual';
+      if (atual.senderStatus === 'unidentified' || !identidade.includes(atual.contactId)) {
+        return 'mudou';
+      }
+      const recebidos =
+        (await this.conversations.contatosDoRecebimento([conversationId])).get(conversationId) ??
+        [];
+      return recebidos.every((id) => escopo.includes(id)) ? 'igual' : 'mudou';
     } catch (erro) {
       return erro instanceof NotFoundException ? 'mudou' : 'indisponivel';
     }
@@ -1286,6 +1355,12 @@ export class IntelligenceService {
       prompt: PromptDefinition;
       request: ScopedLlmRequest;
       target: { conversationId?: string | null; contactId?: string | null };
+      /**
+       * Quem a conversa do alvo pode ser na reconferência (o contato atual),
+       * quando o escopo é maior que isso (os contatos do recebimento; ADR-061,
+       * adendo 9, ressalvas). Omitido, o próprio escopo.
+       */
+      identidade?: readonly (string | null)[];
       contextSummary: string;
       semRunNaFalha?: boolean;
       onResponse: (tx: AiTx, call: GuardedResponse) => Promise<R>;
@@ -1357,7 +1432,12 @@ export class IntelligenceService {
       reservations: { runs: runsReservation.reservationId, cost: costReservation.reservationId },
       recheck: async () =>
         this.conversaNaReconferencia(
-          await this.conversaMudou(auth, args.target.conversationId, request.scope.contactIds),
+          await this.conversaMudou(
+            auth,
+            args.target.conversationId,
+            args.identidade ?? request.scope.contactIds,
+            request.scope.contactIds,
+          ),
           () => this.llm.verdict(request.scope),
         ),
       call: (signal) => this.llm.completeUnderGuard(request, signal),

@@ -29,6 +29,7 @@ import {
 } from '../channels/send-policy';
 import { bloqueioAtivo, MENSAGEM_PEDIDO_DE_PARAR } from '../consents/consent-records';
 import { WhatsappSendService } from '../channels/whatsapp-send.service';
+import { MENSAGEM_MUDOU } from './conversation-sender.service';
 import { CONTEUDO_RESTRITO, ProtectedContentService } from '../extensions/protected-content';
 import { FilesService } from '../files/files.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -66,6 +67,10 @@ type Visao = { podeVerRai: boolean; mostraNumero: boolean };
  * conversa com pessoa ou a identificar sai como "Conteúdo restrito". `ia`: as
  * capacidades da IA leem o texto como antes; elas não passam pelo filtro de
  * leitura (decisão do adendo 9) e seguem sob a E6, que já recusa o paciente.
+ * Mas não leem POR quem está no `uniforme` (`textoOcultoParaPessoa`), e o
+ * escopo da E6 soma o contato atual aos contatos do recebimento das mensagens
+ * (`contatosDoRecebimento`): o texto da época de um paciente não vai ao
+ * provedor depois de uma correção de remetente.
  */
 export type LeitorDoTexto = 'pessoa' | 'ia';
 
@@ -311,6 +316,34 @@ export class ConversationsService {
   }
 
   /**
+   * Os contatos do RECEBIMENTO das mensagens de cada conversa (ADR-061, adendo
+   * 9, item 2, e as ressalvas do adendo 9): distintos e sem o NULL, que vale o
+   * contato ATUAL da conversa (a regra de sempre) — quem consome soma estes ao
+   * contato atual. Existe para a IA: o texto que ela lê é de TODAS as
+   * mensagens, e depois de uma correção de remetente (paciente → RAI →
+   * interessado) as mensagens da época do paciente continuam na conversa; o
+   * escopo da E6 tem de incluir quem as recebeu, não só o contato de hoje.
+   *
+   * São ids crus, sem resolução: o id de um contato excluído (a coluna não tem
+   * FK, de propósito) volta aqui e a porta o trata como restrito na dúvida. Lê
+   * TODAS as mensagens da conversa, não só a página que a IA manda: é a mesma
+   * resposta na geração, na releitura, na guarda da repetição e sob a trava.
+   * A conversa que não existe dá um mapa sem ela (quem chama já a leu).
+   */
+  async contatosDoRecebimento(conversationIds: readonly string[]): Promise<Map<string, string[]>> {
+    const ids = [...new Set(conversationIds)];
+    const porConversa = new Map<string, string[]>(ids.map((id) => [id, []]));
+    if (ids.length === 0) return porConversa;
+    const rows = (await this.prisma.db.message.findMany({
+      where: { conversationId: { in: ids }, receivedContactId: { not: null } },
+      select: { conversationId: true, receivedContactId: true },
+      distinct: ['conversationId', 'receivedContactId'],
+    } as never)) as unknown as { conversationId: string; receivedContactId: string }[];
+    for (const row of rows) porConversa.get(row.conversationId)?.push(row.receivedContactId);
+    return porConversa;
+  }
+
+  /**
    * QUEM NÃO LÊ NÃO ESCREVE (ADR-061, adendo 9, item 8; a regra das notas e
    * tarefas no `uniforme`): o texto escrito numa conversa cujo texto é oculto
    * para quem pede — a mensagem registrada, o assunto, a conversa nova com
@@ -527,7 +560,7 @@ export class ConversationsService {
         presa.contactId !== conversation.contactId ||
         presa.senderStatus !== conversation.senderStatus
       ) {
-        throw new ConflictException('A conversa acabou de mudar. Recarregue e tente de novo.');
+        throw new ConflictException(MENSAGEM_MUDOU);
       }
       const message = await tx.message.create({
         data: {
@@ -552,6 +585,16 @@ export class ConversationsService {
          * expurgo da exclusão de contato: as duas escritas se serializam. Se o
          * expurgo veio antes, o arquivo sumiu e o anexo é recusado; se veio
          * depois, ele vê este vínculo e o arquivo fica (revisão da F4.1a).
+         *
+         * A ORDEM das travas (conversa, depois arquivos) é a mesma do expurgo
+         * da exclusão de contato, que prende o contato, apaga a conversa dele
+         * em cascata (a trava mais forte da linha) e só DEPOIS prende os
+         * arquivos. Não há inversão, então não há deadlock (500): se a
+         * exclusão pegou a conversa antes, este registro espera, a relê
+         * apagada acima e responde o 409 de sempre; se este registro a pegou
+         * antes, a exclusão espera o commit e vê o anexo novo. Um anexo de
+         * OUTRA conversa também não inverte: a exclusão nunca prende a
+         * conversa deste registro, e prende os arquivos por último.
          */
         const presos = await tx.fileObject.updateMany({
           where: { id: { in: attachments.map((file) => file.id) } },

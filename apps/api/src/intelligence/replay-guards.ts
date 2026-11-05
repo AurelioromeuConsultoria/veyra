@@ -32,7 +32,12 @@ export class ConversationContentReplayGuard implements IdempotentReplayGuard {
     const auth = request.auth;
     const workspaceId = auth?.workspaceId;
     if (typeof id !== 'string' || !auth || !workspaceId) return 'discard';
-    let conversa: { contactId: string | null; senderStatus: string; textRestricted?: true };
+    let conversa: {
+      id: string;
+      contactId: string | null;
+      senderStatus: string;
+      textRestricted?: true;
+    };
     try {
       conversa = await this.conversations.get(auth, id);
     } catch {
@@ -47,7 +52,23 @@ export class ConversationContentReplayGuard implements IdempotentReplayGuard {
     if (conversa.textRestricted) return 'discard';
     // remetente a identificar (ADR-052 item 2): o corpo guardado nunca volta
     if (conversa.senderStatus === 'unidentified') return 'discard';
-    return fromGateway(await this.llm.verdict({ workspaceId, contactIds: [conversa.contactId] }));
+    /**
+     * O corpo guardado foi derivado do texto de TODAS as mensagens: o escopo
+     * soma ao contato atual os contatos do recebimento (ADR-061, adendo 9,
+     * ressalvas), como na geração — depois de uma correção de remetente, o
+     * resumo da época do paciente não volta pela mesma chave. A falha ao ler
+     * não prova nada: 503, sem apagar o guardado.
+     */
+    let recebidos: string[];
+    try {
+      recebidos =
+        (await this.conversations.contatosDoRecebimento([conversa.id])).get(conversa.id) ?? [];
+    } catch {
+      return 'unavailable';
+    }
+    return fromGateway(
+      await this.llm.verdict({ workspaceId, contactIds: [conversa.contactId, ...recebidos] }),
+    );
   }
 }
 

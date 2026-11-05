@@ -17,6 +17,14 @@ import {
   MENSAGEM_MIDIA_SEM_RECEBIMENTO,
 } from '../../conversations/conversation-sender.service';
 import { ProtectedContentService } from '../../extensions/protected-content';
+import { IntelligenceService } from '../../intelligence/intelligence.service';
+import {
+  LLM_CLIENT,
+  type LlmClient,
+  type LlmOutcome,
+  type LlmRequest,
+} from '../../intelligence/llm/llm.client';
+import { REPLY_SUGGESTION_PROMPT } from '../../intelligence/prompts';
 import { PrismaService } from '../../prisma/prisma.service';
 import { createTestApp } from '../../../test/integration/app';
 import { TEST_DATABASE_URL } from '../../../test/integration/db-url';
@@ -55,6 +63,36 @@ class FakeMeta implements MetaTransport {
   }
 }
 
+/**
+ * Provedor de IA FALSO, que REGISTRA cada chamada (o pedido inteiro, com o
+ * texto das mensagens): a prova de que nada saiu é a lista não crescer, e a
+ * de que o texto do paciente nunca saiu é nenhum pedido o conter.
+ */
+class LlmFalso implements LlmClient {
+  readonly model = 'claude-sonnet-5';
+  chamadas: LlmRequest[] = [];
+  async complete(request: LlmRequest): Promise<LlmOutcome> {
+    this.chamadas.push(request);
+    const rascunho = request.system === REPLY_SUGGESTION_PROMPT.system;
+    return {
+      kind: 'ok',
+      text: JSON.stringify(
+        rascunho
+          ? { body: 'Rascunho fictício: temos horário.', injectionAttempt: false }
+          : {
+              subject: 'Orçamento',
+              summary: 'Resumo fictício da conversa.',
+              pendencies: [],
+              sentiment: 'neutro',
+              injectionAttempt: false,
+            },
+      ),
+      inputTokens: 100,
+      outputTokens: 20,
+    };
+  }
+}
+
 interface Session {
   cookieHeader: string;
   csrf: string;
@@ -73,9 +111,16 @@ describe('Clinics — a correção segura do remetente com mídia (integração,
   let app: INestApplication;
   let prisma: PrismaService;
   let http: ReturnType<INestApplication['getHttpServer']>;
+  const llm = new LlmFalso();
 
   beforeAll(async () => {
-    app = await createTestApp([], [{ provide: META_TRANSPORT, useValue: new FakeMeta() }]);
+    app = await createTestApp(
+      [],
+      [
+        { provide: META_TRANSPORT, useValue: new FakeMeta() },
+        { provide: LLM_CLIENT, useValue: llm },
+      ],
+    );
     prisma = app.get(PrismaService);
     http = app.getHttpServer();
   });
@@ -107,7 +152,7 @@ describe('Clinics — a correção segura do remetente com mídia (integração,
     return { cookieHeader, csrf: /veyra_csrf=([^;]+)/.exec(cookieHeader)?.[1] ?? '' };
   };
   const enviar = (
-    metodo: 'post' | 'patch' | 'delete',
+    metodo: 'post' | 'patch' | 'put' | 'delete',
     path: string,
     s: Session,
     body?: unknown,
@@ -161,8 +206,8 @@ describe('Clinics — a correção segura do remetente com mídia (integração,
       type: 'image',
       image: { id: `midia-${++seq}`, mime_type: 'image/png' },
     });
-  const chegaTexto = (de: string, numero = NUMERO_A) =>
-    webhook(numero, { ...base(de), type: 'text', text: { body: `Mensagem fictícia ${seq}` } });
+  const chegaTexto = (de: string, numero = NUMERO_A, body = `Mensagem fictícia ${seq}`) =>
+    webhook(numero, { ...base(de), type: 'text', text: { body } });
   /** a coleta real das mídias pendentes (o transporte falso devolve um PNG) */
   const coletar = () => app.get(MediaCollectorService).collectPending();
 
@@ -791,5 +836,267 @@ describe('Clinics — a correção segura do remetente com mídia (integração,
       })
     )?.after as Record<string, unknown>;
     expect(linha.protectedMedia).toBe(0);
+  });
+
+  // ── a IA depois da correção (ressalvas do adendo 9, item 1) ──────────────────
+  /** o texto do paciente (FICTÍCIO): nenhum pedido ao provedor pode contê-lo */
+  const DO_PACIENTE = 'Estou com inchaço depois da aplicação da toxina';
+  const prepararIa = async (...liberados: string[]) => {
+    await enviar('put', '/api/intelligence/consent', owner, {
+      conversationContent: true,
+    }).expect((r) => expect(r.status).toBeLessThan(300));
+    for (const id of liberados) {
+      await post(`/api/clinics/contacts/${id}/ai-release`, owner, {
+        reason: 'non_clinical_business',
+      }).expect(201);
+    }
+  };
+  const resumir = (s: Session, c: string, chave?: string) =>
+    enviar(
+      'post',
+      `/api/intelligence/conversations/${c}/summary`,
+      s,
+      undefined,
+      chave ? { 'Idempotency-Key': chave } : {},
+    );
+  const rascunhar = (s: Session, c: string) =>
+    post(`/api/intelligence/conversations/${c}/reply-suggestion`, s);
+  const saiuOTextoDoPaciente = () =>
+    llm.chamadas.some((c) => `${c.context}\n${c.untrusted ?? ''}`.includes('inchaço'));
+  /** um rascunho pendente, como o que o código anterior gerava depois da correção */
+  const rascunhoPendente = async (conversationId: string, contactId: string) => {
+    const run = await prisma.raw.aiRun.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        capability: 'reply_suggestion',
+        model: 'claude-sonnet-5',
+        contextSummary: 'teste',
+        status: 'ok',
+        conversationId,
+      },
+    });
+    return prisma.raw.aiProposal.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        runId: run.id,
+        type: 'send_message',
+        payload: { body: 'Rascunho fictício: temos horário amanhã.' },
+        rationale: 'teste',
+        conversationId,
+        contactId,
+        pendingReplyMark: true,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60_000),
+      },
+    });
+  };
+
+  it('a IA depois da correção paciente → RAI → interessado liberado: resumo e rascunho recusados, e o texto do paciente não vai ao provedor; a repetição pela mesma chave também recusa', async () => {
+    const outro = await contato('Outro Interessado Fictício');
+    await prepararIa(interessado, outro);
+
+    // CONTROLE: um interessado liberado que nunca foi paciente — a IA chama o
+    // provedor no resumo e no rascunho (a janela está aberta, o consentimento dado)
+    const NC = '5511987650020';
+    await telefones(outro, [`+${NC}`]);
+    await chegaTexto(NC, NUMERO_A, 'Quanto custa a avaliação?');
+    const controle = await conversaDoNumero(ws.workspaceId, `+${NC}`);
+    const antesDoControle = llm.chamadas.length;
+    expect((await resumir(owner, controle.id).expect(201)).body.status).toBe('ok');
+    expect((await rascunhar(owner, controle.id).expect(201)).body.status).toBe('proposed');
+    expect(llm.chamadas.length).toBe(antesDoControle + 2);
+    expect(llm.chamadas.at(-1)?.untrusted).toMatch(/Quanto custa a avaliação/);
+
+    // a conversa do paciente, com o texto dele
+    const N = '5511987650021';
+    await telefones(paciente, [`+${N}`]);
+    await chegaTexto(N, NUMERO_A, DO_PACIENTE);
+    const conversa = await conversaDoNumero(ws.workspaceId, `+${N}`);
+    expect(conversa.contactId).toBe(paciente);
+    // a correção pelo Owner até o interessado liberado, que escreve depois
+    await post(`/api/conversations/${conversa.id}/sender/reject`, owner, {
+      removeNumber: true,
+    }).expect(201);
+    await telefones(interessado, [`+${N}`]);
+    await post(`/api/conversations/${conversa.id}/sender/identify`, owner, {
+      contactId: interessado,
+    }).expect(201);
+    await chegaTexto(N, NUMERO_A, 'Sou o interessado: qual o preço?');
+    expect(
+      (
+        await prisma.raw.message.findMany({
+          where: { conversationId: conversa.id },
+          select: { receivedContactId: true },
+          orderBy: { createdAt: 'asc' },
+        })
+      ).map((m) => m.receivedContactId),
+    ).toEqual([paciente, interessado]);
+
+    // o contato ATUAL é liberado, mas o texto da época do paciente segue na
+    // conversa: o resumo e o rascunho são recusados (a E6 com o contato do
+    // recebimento), para o Owner e para a recepção
+    const chamadas = llm.chamadas.length;
+    for (const s of [owner, recepcao]) {
+      expect((await resumir(s, conversa.id).expect(201)).body.status).toBe('content_restricted');
+      expect((await rascunhar(s, conversa.id).expect(201)).body).toMatchObject({
+        status: 'content_restricted',
+        reason: 'A IA não está disponível para este contato',
+      });
+    }
+    // a repetição pela mesma chave: a mesma recusa
+    for (let i = 0; i < 2; i++) {
+      expect((await resumir(owner, conversa.id, 'resumo-corrigida').expect(201)).body).toEqual({
+        status: 'content_restricted',
+        runId: expect.any(String),
+      });
+    }
+    // NENHUMA chamada ao provedor, e o texto do paciente nunca saiu
+    expect(llm.chamadas.length).toBe(chamadas);
+    expect(saiuOTextoDoPaciente()).toBe(false);
+    // os runs: recusados antes de montar contexto, sem tokens nem custo
+    const runs = await prisma.raw.aiRun.findMany({
+      where: { workspaceId: ws.workspaceId, conversationId: conversa.id },
+      select: { status: true, reasonCode: true, contextSummary: true, inputTokens: true },
+    });
+    expect(runs.length).toBeGreaterThan(0);
+    for (const run of runs) {
+      expect(run).toEqual({
+        status: 'refused',
+        reasonCode: 'content_restricted',
+        contextSummary: 'recusado antes de montar contexto: conteúdo do contato restrito',
+        inputTokens: 0,
+      });
+    }
+  });
+
+  it('a IA sobre o que JÁ existe: o resumo guardado, a repetição, o rascunho pendente, a fila e a aprovação consideram o contato do recebimento; o id que não resolve vai na dúvida', async () => {
+    await prepararIa(interessado);
+    const N = '5511987650022';
+    await telefones(interessado, [`+${N}`]);
+    await chegaTexto(N, NUMERO_A, 'Quanto custa o pacote?');
+    const conversa = await conversaDoNumero(ws.workspaceId, `+${N}`);
+    // o que a IA produziu enquanto a conversa só tinha o interessado
+    expect((await resumir(owner, conversa.id, 'resumo-antigo').expect(201)).body.status).toBe('ok');
+    const rascunho = await rascunhoPendente(conversa.id, interessado);
+    const fila = async () =>
+      (
+        (await get('/api/intelligence/proposals?status=pending', owner).expect(200)).body as {
+          id: string;
+        }[]
+      ).map((p) => p.id);
+    expect(await fila()).toEqual([rascunho.id]);
+
+    /**
+     * A mensagem da época do paciente na mesma conversa. Pelas rotas, ela só
+     * chega com uma correção, que expira o que a IA produziu e apaga os
+     * replays; aqui ela é gravada direto para exercitar as guardas sobre o
+     * que ficou guardado antes desta correção (o código anterior resumia e
+     * rascunhava a conversa corrigida).
+     */
+    const canal = conversa.channelId;
+    await prisma.raw.message.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        conversationId: conversa.id,
+        channelId: canal,
+        direction: 'inbound',
+        authorType: 'contact',
+        body: DO_PACIENTE,
+        receivedContactId: paciente,
+      },
+    });
+    const chamadas = llm.chamadas.length;
+
+    // a repetição com a chave antiga não devolve o resumo guardado
+    const repetido = await resumir(owner, conversa.id, 'resumo-antigo').expect(201);
+    expect(repetido.body.status).toBe('content_restricted');
+    expect(repetido.body.summary).toBeUndefined();
+    // a releitura: o resumo guardado e o rascunho pendente, vazios
+    expect(
+      (await get(`/api/intelligence/conversations/${conversa.id}/summary`, owner)).body,
+    ).toEqual({});
+    expect(
+      (await get(`/api/intelligence/conversations/${conversa.id}/reply-suggestion`, owner)).body,
+    ).toEqual({});
+    // a fila sem o rascunho
+    expect(await fila()).toEqual([]);
+
+    // a aprovação SOB A TRAVA (a checagem rápida desligada): a reconferência
+    // usa o mesmo escopo, com o contato do recebimento, e recusa sem enviar
+    const rapida = jest
+      .spyOn(
+        IntelligenceService.prototype as unknown as Record<string, () => Promise<void>>,
+        'assertProposalNotRestricted',
+      )
+      .mockResolvedValue(undefined);
+    const aprovada = await post(
+      `/api/intelligence/proposals/${rascunho.id}/approve-reply`,
+      owner,
+      {},
+    );
+    expect(aprovada.status).toBe(400);
+    expect(aprovada.body.message).toBe(
+      'Proposta indisponível: o conteúdo deste contato é restrito',
+    );
+    expect(rapida).toHaveBeenCalled();
+    rapida.mockRestore();
+    expect((await prisma.raw.aiProposal.findFirst({ where: { id: rascunho.id } }))?.status).toBe(
+      'expired',
+    );
+    // a aprovação pela checagem rápida, num rascunho novo
+    const outroRascunho = await rascunhoPendente(conversa.id, interessado);
+    const rapidaRecusa = await post(
+      `/api/intelligence/proposals/${outroRascunho.id}/approve-reply`,
+      owner,
+      {},
+    );
+    expect(rapidaRecusa.status).toBe(400);
+    expect(
+      await prisma.raw.message.count({
+        where: { conversationId: conversa.id, direction: 'outbound' },
+      }),
+    ).toBe(0);
+
+    // a geração SOB A TRAVA (a checagem antes da trava desligada): a guarda
+    // reconfere o escopo com o contato do recebimento e nada sai
+    const antesDaTrava = jest
+      .spyOn(
+        IntelligenceService.prototype as unknown as Record<string, () => Promise<string>>,
+        'assertRestrictionAnswered',
+      )
+      .mockResolvedValue('allowed');
+    const sobATrava = await resumir(owner, conversa.id).expect(201);
+    expect(sobATrava.body.status).toBe('content_restricted');
+    expect(antesDaTrava).toHaveBeenCalled();
+    antesDaTrava.mockRestore();
+    expect(
+      (await prisma.raw.aiRun.findFirst({ where: { id: sobATrava.body.runId } }))?.contextSummary,
+    ).toMatch(/recusado na chamada ao provedor/);
+
+    // o id que não resolve (um contato excluído) também recusa, na dúvida
+    const outro = await contato('Outro Interessado Fictício');
+    await post(`/api/clinics/contacts/${outro}/ai-release`, owner, {
+      reason: 'non_clinical_business',
+    }).expect(201);
+    const NO = '5511987650023';
+    await telefones(outro, [`+${NO}`]);
+    await chegaTexto(NO, NUMERO_A, 'Tem horário?');
+    const deOutro = await conversaDoNumero(ws.workspaceId, `+${NO}`);
+    const excluido = await contato('Excluído Fictício');
+    await prisma.raw.message.create({
+      data: {
+        workspaceId: ws.workspaceId,
+        conversationId: deOutro.id,
+        channelId: deOutro.channelId,
+        direction: 'inbound',
+        authorType: 'contact',
+        body: 'mensagem antiga',
+        receivedContactId: excluido,
+      },
+    });
+    await enviar('delete', `/api/contacts/${excluido}`, owner).expect(200);
+    expect((await resumir(owner, deOutro.id).expect(201)).body.status).toBe('content_restricted');
+
+    expect(llm.chamadas.length).toBe(chamadas);
+    expect(saiuOTextoDoPaciente()).toBe(false);
   });
 });

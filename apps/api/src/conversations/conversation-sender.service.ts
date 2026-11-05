@@ -52,7 +52,8 @@ const SELECAO = {
 export const MENSAGEM_DO_LEGADO =
   'Esta conversa tem mensagens anteriores à atualização, ligadas ao contato. Corrigir o remetente dela ainda não é possível.';
 
-const MENSAGEM_MUDOU = 'A conversa acabou de mudar. Recarregue e tente de novo.';
+/** O 409 de quem perdeu a corrida para a conversa (também o do registro manual). */
+export const MENSAGEM_MUDOU = 'A conversa acabou de mudar. Recarregue e tente de novo.';
 
 /**
  * O remetente de uma conversa (ADR-052 item 2): identificar, desfazer e
