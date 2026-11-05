@@ -31,6 +31,10 @@ import { ConsentsService } from './consents.service';
  * `Idempotency-Key`. Pela conversa, o replay passa pela guarda que refaz a
  * visibilidade e a projeção do número com o acesso de agora; pelo contato, o
  * guard de permissões já exige `contacts:read` em toda repetição.
+ *
+ * Sob o E8 (ADR-061, adendo 8, item 7): quem não pode saber quem é protegido
+ * (o `uniforme`) não vê as finalidades da extensão — nem nas listas de TODO
+ * contato, nem nas oferecidas, nem na concessão ou na revogação por id.
  */
 @Controller()
 export class ConsentsController {
@@ -38,8 +42,8 @@ export class ConsentsController {
 
   @RequirePermissions('consents:read')
   @Get('consent-purposes')
-  purposes(): Promise<ConsentPurposeDto[]> {
-    return this.consents.purposes();
+  purposes(@CurrentAuth() auth: AuthContext): Promise<ConsentPurposeDto[]> {
+    return this.consents.purposes(auth);
   }
 
   /** Os canais de WhatsApp, para a tela da concessão (F4.4b): só id e nome. */
@@ -52,9 +56,10 @@ export class ConsentsController {
   @RequirePermissions('consents:read', 'contacts:read')
   @Get('contacts/:contactId/consents')
   forContact(
+    @CurrentAuth() auth: AuthContext,
     @Param('contactId', new ParseUUIDPipe()) contactId: string,
   ): Promise<ContactConsentsDto> {
-    return this.consents.forContact(contactId);
+    return this.consents.forContact(auth, contactId);
   }
 
   @RequirePermissions('consents:read', 'conversations:read')

@@ -202,9 +202,40 @@ export class ProtectedContentService {
   }
 
   /**
+   * Os prefixos de finalidade de consentimento que revelam quem é protegido,
+   * para quem NÃO pode sabê-lo (o `uniforme`): os das extensões sujeitas neste
+   * workspace. Fora do `uniforme`, nenhum — quem tem a chave que revela já sabe.
+   */
+  private async prefixosDeFinalidadeQueRevelam(auth: AuthContext): Promise<string[]> {
+    if ((await this.modo(auth)).tipo !== 'uniforme') return [];
+    const prefixos: string[] = [];
+    for (const p of this.providers) {
+      const prefixo = p.auditReveal?.purposeKeyPrefix;
+      if (prefixo && (await p.appliesToWorkspace())) prefixos.push(prefixo);
+    }
+    return prefixos;
+  }
+
+  /**
+   * O `where` sobre `ConsentPurpose` que EXCLUI as finalidades da extensão
+   * para quem não pode saber quem é protegido (ADR-061, adendo 8, item 7): no
+   * `uniforme`, elas saem das listas de consentimento de TODO contato (e das
+   * finalidades oferecidas), igual para quem é protegido e quem não é. No
+   * `restrito` e no `livre`, `{}`: nada muda. Só para as LEITURAS e os atos de
+   * quem pede — o envio do negócio lê os consentimentos no servidor, sem isto.
+   */
+  async finalidadeVisivel(auth: AuthContext): Promise<Record<string, unknown>> {
+    const prefixos = await this.prefixosDeFinalidadeQueRevelam(auth);
+    if (prefixos.length === 0) return {};
+    return { NOT: { OR: prefixos.map((p) => ({ key: { startsWith: p } })) } };
+  }
+
+  /**
    * O que EXCLUI da trilha as linhas que revelam a classificação, para quem
    * NÃO pode sabê-la (o `uniforme`; adendo 7). `where`: as ações da extensão
-   * (falha fechada, menos a configuração), no SQL. `revela`: as linhas do
+   * (falha fechada, menos a configuração) e as linhas de um consentimento de
+   * finalidade da extensão (a revogação não grava a finalidade, e o id ligaria
+   * a linha ao contato; adendo 8, item 7), no SQL. `revela`: as linhas do
    * Core cuja origem ou finalidade é da extensão — conferidas linha a linha,
    * porque um filtro JSON no SQL vira NULL onde o campo falta. `null`: nada.
    */
@@ -237,6 +268,18 @@ export class ProtectedContentService {
       }
     }
     if (acoes.length === 0) return null;
+    // os consentimentos de finalidade da extensão, inclusive os revogados: as
+    // linhas deles (concessão e revogação) saem da trilha pelo id
+    const consentimentos =
+      finalidades.size === 0
+        ? []
+        : ((await this.prisma.db.consent.findMany({
+            where: { purposeId: { in: [...finalidades] } },
+            select: { id: true },
+          } as never)) as unknown as { id: string }[]);
+    if (consentimentos.length > 0) {
+      acoes.push({ entityType: 'consent', entityId: { in: consentimentos.map((c) => c.id) } });
+    }
     const campo = (lado: unknown, nome: string): unknown =>
       lado && typeof lado === 'object' ? (lado as Record<string, unknown>)[nome] : undefined;
     return {

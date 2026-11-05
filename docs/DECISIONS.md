@@ -10624,7 +10624,7 @@ O workspace que nunca teve o Clinics fica sempre no modo livre, com o comportame
     4. a corrida do registro manual de mensagem com anexo contra o rejeitar (adendo 6, backlog);
     5. a corrida do vínculo profissional lido fora da transação (D8, adendo 1, aceito só para a demonstração);
     6. **o sinal fraco da IA:** um interessado liberado para IA que vira paciente passa a ser recusado, o que se confunde com a revogação manual;
-    7. **a lista de consentimentos por contato:** `GET /contacts/:id/consents` e `GET /conversations/:id/consents` devolvem `purposeKey: 'clinics_confirmacao'` sem o E8. Quem tem `consents:read` e não tem a agenda deduz quem é paciente. Isso vale para um papel personalizado e para todos depois da desativação. O `consent.revoked` da trilha não tem `purposeId`, e a lista liga o id ao contato;
+    7. _(resolvido no adendo 8, item 7)_ **a lista de consentimentos por contato:** `GET /contacts/:id/consents` e `GET /conversations/:id/consents` devolvem `purposeKey: 'clinics_confirmacao'` sem o E8. Quem tem `consents:read` e não tem a agenda deduz quem é paciente. Isso vale para um papel personalizado e para todos depois da desativação. O `consent.revoked` da trilha não tem `purposeId`, e a lista liga o id ao contato;
     8. **o texto das conversas:** o adendo 5 manteve o texto visível. Quem lê conversas sem a agenda (o Guest padrão, por exemplo) lê o envio do vertical, como a confirmação com data e hora, e a mensagem do próprio paciente. As conversas estão entre as superfícies que revelam a classificação (adendo 3, item 9);
     9. **a condição para a política de exclusão do B3:** excluir um paciente apagaria em cascata as atividades do tempo dele, e os títulos antigos voltariam em claro na trilha;
     10. a validação operacional e jurídica do modelo de acesso, junto com o B3 (a política de exclusão de pacientes) e o B4.
@@ -10648,6 +10648,24 @@ O workspace que nunca teve o Clinics fica sempre no modo livre, com o comportame
 **Alternativas.** Esconder a agenda do Core inteira no workspace com o Clinics: tira do CRM uma função do Core sem necessidade, e a API continuaria respondendo. Tirar `consents:read` dos papéis sem a agenda: muda papéis e o que cada um faz, o que o usuário pediu para decidir antes.
 
 **Consequências.** O Guest e o papel personalizado sem a agenda passam a ver, em workspace sujeito, os eventos de pessoa sem texto e a lista de consentimentos sem as finalidades da extensão. Depois da desativação do vertical, vale o que já vale para notas e tarefas (o workspace segue sujeito enquanto houver dado protegido, adendo 7).
+
+**Resultado do item 7, a lista de consentimentos (commit local, 2026-11-04):**
+
+- **O sinal, reproduzido antes da correção** (integração `clinics-patient-consents`): um papel personalizado com `consents:read`, `contacts:read` e `conversations:read`, sem `clinics:schedule:read`, recebia `clinics_confirmacao` na lista do paciente e não na do interessado, pelo contato e pela conversa; a finalidade aparecia entre as oferecidas; e a trilha mostrava a revogação (`consent.revoked`) do consentimento da extensão. Nos papéis padrão, todos os que têm `consents:read` (Owner, Admin, Member/Recepção e "Recepção e atendimento") têm a agenda; o Guest e o `Profissional` não têm `consents:read`. O sinal valia para o papel personalizado e, depois da desativação, para todos.
+- **A correção, pela porta do E8** (o Core não cita o Clinics): o `ProtectedContentService` ganhou `finalidadeVisivel(auth)`, um `where` sobre a finalidade que, no `uniforme`, exclui o `purposeKeyPrefix` que a extensão já declarava no `auditReveal`; no `restrito` e no `livre`, é vazio. O `ConsentsService` o aplica:
+  - nas listas `GET /contacts/:id/consents` e `GET /conversations/:id/consents`, para TODO contato;
+  - nas finalidades oferecidas (`GET /consent-purposes`);
+  - na concessão: a finalidade da extensão responde 404 "Finalidade não encontrada", como a inexistente, para todo contato. Sem isso, conceder sobre o consentimento ativo do paciente devolvia o registro existente (ou o 409 de outra origem), e no interessado criava um novo;
+  - na revogação por id: o consentimento da extensão responde 404, como o inexistente.
+  - **Na trilha,** `trilhaQueRevela` também tira, pelo id, as linhas de consentimento de finalidade da extensão (a revogação não grava a finalidade). O filtro vai no SQL, e a paginação fica correta.
+- **A recepção não muda:** o Member (com a agenda) vê a confirmação nas duas listas e entre as oferecidas, revoga e concede de novo, como antes. O Owner também. A ficha e o Inbox usam essas rotas, sem mudança no web.
+- **O envio do negócio não é afetado:** a prévia, a aprovação e o despacho leem os consentimentos no servidor (`conferencia.ts`, `opcoes`), fora do `ConsentsService`; o pedido de parar continua revogando TODO consentimento do número.
+- **O workspace sem o Clinics:** nada muda, inclusive uma finalidade de mesmo prefixo.
+- **Validado pelos testes:** a integração `clinics-patient-consents` (6 cenários: as listas iguais sem a agenda, a concessão, a revogação e as oferecidas, a trilha, a recepção, a desativação e o workspace sem o Clinics), e os specs de consentimentos, envio do negócio, auditoria, trilha do Clinics, pedidos de envio do Clinics, comercial do Clinics, templates, escritores de telefone e a carga dos templates da demonstração.
+- **Resíduos registrados, para decisão:**
+  - **a contagem do pedido de parar na trilha:** `stop.registered` grava `consentsRevoked`, que conta também os consentimentos da extensão. Quem tem `audit:read` e `consents:read` sem a agenda compara com a lista visível do contato e deduz que havia um consentimento oculto. Exige um papel personalizado (ou a desativação);
+  - **a revogação de um consentimento apagado em cascata** (a exclusão do contato) continua na trilha, porque o id já não resolve a finalidade. Sem a lista, ela não se liga a ninguém;
+  - **o custo:** no `uniforme`, a trilha lê os ids de todos os consentimentos da extensão do workspace a cada pedido.
 
 ## ADR-062 — Redesenho visual e de UX: "Mineral" com moldura, estados e próxima ação (2026-11-04)
 

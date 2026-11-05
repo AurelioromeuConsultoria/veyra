@@ -21,6 +21,7 @@ import { chaveDeCoincidencia, coincideExatamente, numerosExatos } from '../conta
 import { TravasDeIdentidade } from '../content-use/identity-locks';
 import { MudancasDeRestricao, type ExecutorDeTransacao } from '../content-use/restriction-changes';
 import { ConversationsService } from '../conversations/conversations.service';
+import { ProtectedContentService } from '../extensions/protected-content';
 import { PrismaService, type Db } from '../prisma/prisma.service';
 import { bloqueioAtivo, emitirRecibo } from './consent-records';
 
@@ -97,14 +98,29 @@ export class ConsentsService {
     private readonly travas: TravasDeIdentidade,
     private readonly cancelamento: CancelamentoDeDespachos,
     private readonly conversations: ConversationsService,
+    private readonly protegido: ProtectedContentService,
   ) {}
+
+  /**
+   * O `where` sobre `Consent` que deixa de fora as finalidades da extensão
+   * para quem não pode saber quem é protegido (ADR-061, adendo 8, item 7):
+   * no `uniforme`, a lista de TODO contato sai sem elas, igual para quem é
+   * protegido e quem não é. `{}`: nada a excluir (o `restrito`, o `livre` e o
+   * workspace sem extensão sujeita).
+   */
+  private async consentimentoVisivel(auth: AuthContext): Promise<Record<string, unknown>> {
+    const finalidade = await this.protegido.finalidadeVisivel(auth);
+    return Object.keys(finalidade).length === 0 ? {} : { purpose: { is: finalidade } };
+  }
 
   private get executor(): ExecutorDeTransacao {
     return this.prisma.db as unknown as ExecutorDeTransacao;
   }
 
-  async purposes(): Promise<ConsentPurposeDto[]> {
+  async purposes(auth: AuthContext): Promise<ConsentPurposeDto[]> {
+    // as finalidades da extensão não são oferecidas a quem não as vê nas listas
     const rows = await this.prisma.db.consentPurpose.findMany({
+      where: await this.protegido.finalidadeVisivel(auth),
       orderBy: [{ key: 'asc' }, { version: 'asc' }],
     });
     return rows.map((row) => ({
@@ -129,12 +145,13 @@ export class ConsentsService {
     });
   }
 
-  async forContact(contactId: string): Promise<ContactConsentsDto> {
+  async forContact(auth: AuthContext, contactId: string): Promise<ContactConsentsDto> {
     const contato = await this.lerContato(this.prisma.db, contactId);
     const numeros = numerosExatos(contato);
+    const visivel = await this.consentimentoVisivel(auth);
     const [consents, blocks] = await Promise.all([
       this.prisma.db.consent.findMany({
-        where: { contactId },
+        where: { contactId, ...visivel },
         include: CONSENT_INCLUDE,
         orderBy: [{ grantedAt: 'desc' }, { id: 'asc' }],
       }),
@@ -158,12 +175,13 @@ export class ConsentsService {
     const numero = alvo.externalAddress;
     if (!numero) return { number: null, stopBlock: null, consents: [] };
     const mascara = this.mascara(alvo.mostraNumero);
+    const visivel = await this.consentimentoVisivel(auth);
     const [block, consents] = await Promise.all([
       this.prisma.db.stopBlock.findFirst({ where: { number: numero, activeMark: true } }),
       // na RAI não há contato: nenhum consentimento é dela
       alvo.senderStatus === 'identified' && alvo.contactId
         ? this.prisma.db.consent.findMany({
-            where: { contactId: alvo.contactId, number: numero },
+            where: { contactId: alvo.contactId, number: numero, ...visivel },
             include: CONSENT_INCLUDE,
             orderBy: [{ grantedAt: 'desc' }, { id: 'asc' }],
           })
@@ -185,6 +203,12 @@ export class ConsentsService {
   async grant(auth: AuthContext, contactId: string, input: GrantConsentInput): Promise<ConsentDto> {
     const workspaceId = auth.workspaceId as string;
     await this.lerContato(this.prisma.db, contactId);
+    // a finalidade que quem pede não vê não existe para ele: conceder a da
+    // extensão no `uniforme` responde como a inexistente, para todo contato —
+    // senão a repetição sobre o consentimento ativo do protegido o revelaria
+    // (ADR-061, adendo 8, item 7). Calculado antes da transação, sem prender
+    // uma conexão do pool com as travas
+    const finalidadeVisivel = await this.protegido.finalidadeVisivel(auth);
     const id = await this.restricao.naTransacaoInterativa(this.executor, async (tx) => {
       await this.travas.paraNumero(tx, {
         workspaceId,
@@ -199,7 +223,7 @@ export class ConsentsService {
       if (await bloqueioAtivo(tx, input.number)) throw new ConflictException(MENSAGEM_SOB_BLOQUEIO);
       const [purpose, channel] = await Promise.all([
         tx.consentPurpose.findFirst({
-          where: { id: input.purposeId },
+          where: { AND: [{ id: input.purposeId }, finalidadeVisivel] },
           select: { description: true },
         }),
         tx.channel.findFirst({ where: { id: input.channelId }, select: { type: true } }),
@@ -264,8 +288,10 @@ export class ConsentsService {
     origin: ConsentOrigin,
   ): Promise<ConsentDto> {
     const workspaceId = auth.workspaceId as string;
+    // o consentimento de finalidade que quem pede não vê responde como o
+    // inexistente (a finalidade de um consentimento não muda)
     const atual = await this.prisma.db.consent.findFirst({
-      where: { id: consentId, contactId },
+      where: { id: consentId, contactId, ...(await this.consentimentoVisivel(auth)) },
       select: { number: true },
     });
     if (!atual) throw new NotFoundException('Consentimento não encontrado');
