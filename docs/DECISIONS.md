@@ -10734,7 +10734,7 @@ O workspace que nunca teve o Clinics fica sempre no modo livre, com o comportame
 
 1. **No `uniforme`** (sem a chave que revela, em workspace sujeito): o texto de TODA conversa com pessoa, e de toda conversa a identificar, sai oculto, igual para paciente e não paciente. Isso vale para o corpo das mensagens e para todo lugar que mostra esse texto: prévia na lista, assunto escrito sobre a pessoa, busca, notificações e trilha, conforme o mapa da implementação. A forma é a do E8: "Conteúdo restrito", sem diferença de código, contagem ou forma entre paciente e não paciente. As escritas que tocariam essas conversas seguem a regra das notas e tarefas no `uniforme`: quem não lê não escreve.
 2. **No `restrito` e no `livre`,** o texto continua visível. A recepção, os profissionais e quem tem a agenda clínica leem o que o paciente escreve, inclusive conteúdo clínico, porque precisam disso para atender. Fica registrado como **necessidade operacional**, para a validação jurídica do item 10.
-3. **O envio, a ingestão e a IA não mudam:** o filtro é só de leitura pela pessoa. A IA já não usa conteúdo de paciente (ADR-048).
+3. **O envio, a ingestão e a IA não mudam:** o filtro é só de leitura pela pessoa. A IA já não usa conteúdo de paciente (ADR-048). _(Ajustado depois, para a IA: no `uniforme`, as capacidades sobre conversa com pessoa são recusadas (o "ajuste do item 8", no fim deste adendo), e fora dele o escopo da E6 soma os contatos do recebimento das mensagens (as ressalvas da revisão, item 1).)_
 
 **Decisão — item 2, a correção de remetente.**
 
@@ -10754,6 +10754,7 @@ O workspace que nunca teve o Clinics fica sempre no modo livre, com o comportame
   - `20261105090100_message_received_contact_backfill`: o preenchimento, em migration própria, com o contato ATUAL da conversa de cada mensagem (a RAI fica com NULL).
   - **O ensaio da skill `create-migration`:** cada uma é uma transação só. Na da coluna, a falha forçada deixou o schema idêntico e o inventário em 0, e a aplicação limpa deu 1 e o `migrate diff` vazio. Na do preenchimento, com uma base semeada de dados fictícios (`SEMEIA`, `DADOS` e `DADOS_ESPERADO`), a falha deixou os dados intactos, e a aplicação deu o esperado. A regra do job (`migrations_que_nao_sobem`) deu "ok" para as duas. O inventário e a conferência estão no `DEPLOY_STAGING` §4.
   - **A compatibilidade:** o código anterior ignora a coluna. A mensagem que ele gravar na troca fica com NULL, que a API nova trata como "vale o contato atual".
+  - **A mídia da RAI identificada antes da migration:** o preenchimento grava nela o contato ATUAL da conversa. A proteção fica mais estrita (a mídia passa a ter o contato do recebimento) e a correção dessa conversa fica liberada, quando pela regra nova seria o 409 `MENSAGEM_MIDIA_SEM_RECEBIMENTO` (a mídia sem o contato do recebimento). É aceitável no staging, que só tem dados fictícios e nenhum piloto.
 - **Sem FK, de propósito** (`DOMAIN_MODEL` §9, exceção no `check:fk`). A coluna é uma fotografia que precisa sobreviver ao contato, e cada opção de FK quebrava algo:
   - em cascata, excluir o contato apagaria mensagens de uma conversa que hoje é de outro;
   - `NoAction` travaria a exclusão do contato (LGPD);
@@ -10857,7 +10858,7 @@ O workspace que nunca teve o Clinics fica sempre no modo livre, com o comportame
 
     A falha ao decidir dá 503, sem apagar o guardado. No `restrito` e no `livre`, a repetição é a de antes.
 
-  - **A IA não passa pelo filtro:** as leituras de texto dela (o resumo e o rascunho) pedem `leitor: 'ia'`, e o padrão `pessoa` falha fechado para qualquer outro chamador. O envio, a ingestão (o webhook do WhatsApp) e o worker não usam essas rotas.
+  - **A IA não passa pelo filtro:** as leituras de texto dela (o resumo e o rascunho) pedem `leitor: 'ia'`, e o padrão `pessoa` falha fechado para qualquer outro chamador. O envio, a ingestão (o webhook do WhatsApp) e o worker não usam essas rotas. _(Ver o ajuste do item 8, que recusa a IA no `uniforme`, e o item 1 das ressalvas da revisão, que soma ao escopo da E6 os contatos do recebimento.)_
 - **O web (Inbox):**
   - a legenda da lista, o assunto no contexto e o corpo de cada mensagem mostram o mesmo aviso, em itálico e com um cadeado, sem mudar o layout nem a contagem;
   - na conversa restrita, o compositor dá lugar ao aviso "Conteúdo restrito: … não é possível registrar mensagens nela";
@@ -10908,6 +10909,20 @@ O workspace que nunca teve o Clinics fica sempre no modo livre, com o comportame
 - **Limites registrados:**
   - **o histórico de custo** (`GET /intelligence/usage`, `workspace:manage`) mostra os runs antigos de quem tem a agenda, com o `contextSummary` de cada um: a recusa da E6 de um paciente e o resumo de um interessado diferem ali. Exige uma permissão administrativa; fica no item 6 do adendo 7;
   - **a próxima ação e o score** (`/contacts/:id/next-action`, `/contacts/:id/score`) não leem o texto das conversas (só contagens e sinais determinísticos) e ficam como estão; a diferença entre o paciente e o interessado liberado ali também é o sinal do item 6.
+
+**Ressalvas da revisão de `security` e `reviewer` (2026-11-05, em commit próprio).** Sem migration, sem permissão nova, sem `raw`; o `intelligence` continua sem Prisma, e o Core não cita o vertical. A recepção não perdeu nenhuma ação.
+
+1. **[P1] A IA lia o texto da época do paciente depois de uma correção de remetente.** A E6 avaliava só o contato ATUAL. Depois de paciente → RAI → interessado liberado, o resumo e o rascunho liam todas as mensagens, inclusive as do paciente, e as mandavam ao provedor.
+   - **A correção:** `ConversationsService.contatosDoRecebimento` devolve, em lote, os `receivedContactId` distintos das mensagens de cada conversa, sem o NULL (que vale o contato atual). O `IntelligenceService` soma esses contatos aos sujeitos da E6 em toda capacidade que lê o texto: a geração (resumo e rascunho), a releitura (o resumo guardado, o rascunho pendente e a fila de propostas), a guarda da repetição (`ConversationContentReplayGuard`) e a aprovação do rascunho, na checagem rápida e na reconferência sob a trava. A reconferência relê os contatos do recebimento e responde "mudou" se apareceu um que a porta não conferiu. A identidade da conversa (o contato atual e o da geração) continua separada do escopo, para que a volta a um contato que só recebeu mensagens não conte como "a mesma conversa".
+   - **O id que não resolve** (contato excluído) a porta do Clinics trata como restrito, como manda o contrato da E6. Sem vertical composto, nada muda.
+   - **Os testes:** dois cenários em `clinics-sender-correction`, com o provedor falso que registra cada pedido. (a) O controle, com um interessado liberado que nunca foi paciente: 2 chamadas. Depois, paciente → RAI → interessado liberado: o resumo e o rascunho recusados (`content_restricted`) para o Owner e para a recepção, a repetição pela mesma chave também, nenhuma chamada nova e nenhum pedido com o texto do paciente. (b) O que já existia antes desta correção (gravado direto, porque a correção pelas rotas expira o que a IA produziu): a repetição da chave antiga, o resumo guardado, o rascunho pendente, a fila, a aprovação (com a checagem rápida desligada, a recusa vem da trava) e a geração (com a checagem antes da trava desligada, a guarda recusa); e o contato do recebimento excluído. Com `contatosDoRecebimento` devolvendo vazio, os dois cenários falham (o resumo sai `ok`).
+   - **Resíduo em aberto:** a mensagem recebida na RAI tem NULL e, depois da identificação, vale o contato atual. Se a RAI foi identificada como paciente e depois corrigida para um interessado liberado, esse texto conta como do interessado. O fechamento é o mesmo da pendência da mídia: o preenchimento único NULL → contato na identificação, como desfecho de `Message`, com `reviewer` e `security`. Fica junto dela, antes do piloto.
+2. **[P2] O oráculo do rascunho na fila genérica.** No `uniforme`, `/proposals/:id/approve` e `/proposals/:id/reject` (só de tarefa) davam 400 "tipo não permitido" para o id de um rascunho e 404 para o inexistente. Agora os dois dão o mesmo 404, com a conferência antes da leitura e para todo id. A proposta de tarefa segue decidível no `uniforme`, e fora dele o 400 continua. O teste está em `clinics-patient-conversations`, e falha com a conferência desligada.
+3. **[P2] O preenchimento:** a linha sobre a mídia da RAI identificada antes da migration entrou no resultado do item 2.
+4. **Os docs:** `ARCHITECTURE` (a linha do E8), `DOMAIN_MODEL` (`Message.receivedContactId`, o contato ATUAL no preenchimento) e `SECURITY` (o escopo da E6 sobre o texto, o resíduo e o 404 da fila genérica), mais as notas na decisão 8.3 e no resultado do item 8.
+5. **As sugestões:**
+   - o 409 do registro manual reusa `MENSAGEM_MUDOU`, agora exportada pelo `ConversationSenderService`;
+   - a ordem das travas do registro manual (a conversa, depois os arquivos) é a mesma do expurgo da exclusão de contato, que prende o contato, apaga a conversa em cascata e só depois prende os arquivos. Não há inversão, logo não há deadlock. Ficou num comentário no `addMessage`.
 
 ## ADR-062 — Redesenho visual e de UX: "Mineral" com moldura, estados e próxima ação (2026-11-04)
 
