@@ -137,6 +137,10 @@ describe('relógio de agendamento (ADR-049)', () => {
       // o prazo da aprovação do envio do negócio (F4.1c-3, ADR-052 item 8):
       // fixado na prévia e conferido na aprovação e no despacho, num só lugar
       'business-outbound/conferencia.ts',
+      // o "hoje" local da unidade dos pagamentos de pacote (ADR-063, F6.1a):
+      // a data do recebimento não pode ser futura; uma leitura por pedido,
+      // fora de transação
+      'verticals/clinics/care/clinics-package-payments.service.ts',
       // a sugestão de remarcação (ADR-062 adendo 1, parte B): "futuro" e "a
       // partir de agora", uma leitura por pedido, fora de transação
       'verticals/clinics/schedule/clinics-appointments.service.ts',
