@@ -6,6 +6,7 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { semRepetidos } from './sujeitos';
 import { replyDraftSchema, sendMessagePayloadSchema, type ConversationDto } from '@veyra/contracts';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -167,7 +168,7 @@ function sujeitosDaConversa(
   outros: readonly (string | null)[] = [],
 ): (string | null)[] {
   if (conversation.senderStatus === 'unidentified') return [];
-  return [conversation.contactId, ...outros];
+  return semRepetidos([conversation.contactId, ...outros]);
 }
 
 @Injectable()
@@ -630,11 +631,11 @@ export class IntelligenceService {
         // a conversa pode ter sido religada: vale o contato da proposta, o
         // atual e os do recebimento das mensagens (adendo 9, ressalvas)
         row.conversationId
-          ? [
+          ? semRepetidos([
               row.contactId ?? null,
               row.conversationContactId ?? null,
               ...(recebidos.get(row.conversationId) ?? []),
-            ]
+            ])
           : [row.contactId ?? null],
       ),
     );

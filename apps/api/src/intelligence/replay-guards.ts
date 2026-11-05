@@ -1,4 +1,5 @@
 import { HttpException, Injectable } from '@nestjs/common';
+import { semRepetidos } from './sujeitos';
 import type { Request } from 'express';
 import type { AuthContext } from '../common/decorators';
 import type { IdempotentReplayGuard, ReplayVerdict } from '../common/idempotency.decorator';
@@ -67,7 +68,10 @@ export class ConversationContentReplayGuard implements IdempotentReplayGuard {
       return 'unavailable';
     }
     return fromGateway(
-      await this.llm.verdict({ workspaceId, contactIds: [conversa.contactId, ...recebidos] }),
+      await this.llm.verdict({
+        workspaceId,
+        contactIds: semRepetidos([conversa.contactId, ...recebidos]),
+      }),
     );
   }
 }
