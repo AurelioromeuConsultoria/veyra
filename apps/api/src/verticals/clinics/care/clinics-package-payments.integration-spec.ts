@@ -539,6 +539,74 @@ describe('Clinics — pagamentos de pacotes (integração, F6.1a e F6.1b)', () =
       expect(d.timezone).not.toBeNull();
     });
 
+    it('a resposta GUARDADA pela versão anterior (pagamento sem unidade, corpo sem `unit`): a mesma chave devolve o pagamento original, mesmo com as unidades mudadas, sem lançamento novo', async () => {
+      const p = await criarPacote();
+      const corpoAntigo = { amountCents: 1_000, receivedOn: '2026-01-15', method: 'pix' };
+      const rota = `/api/clinics/packages/${p}/payments`;
+      // um pedido real, com OUTRA chave, dá o endpoint e o hash que o servidor
+      // calcula para este corpo, este pacote e esta membership (a chave não entra)
+      const sonda = randomUUID();
+      await post(rota, owner).set('Idempotency-Key', sonda).send(corpoAntigo).expect(201);
+      const daSonda = (await prisma.raw.idempotencyKey.findFirst({
+        where: { workspaceId: wsA.workspaceId, key: sonda },
+      }))!;
+      // o estado que a F6.1a deixou: o pagamento SEM unidade e a resposta
+      // guardada no formato dela, sem o campo `unit`
+      const original = await prisma.raw.clinicsPackagePayment.create({
+        data: {
+          workspaceId: wsA.workspaceId,
+          packageId: p,
+          amountCents: 1_000,
+          currency: 'BRL',
+          receivedOn: new Date('2026-01-15T00:00:00.000Z'),
+          method: 'pix',
+          createdByMembershipId: membroOwner,
+        },
+      });
+      expect(original.unitId).toBeNull();
+      const corpoGuardado = {
+        id: original.id,
+        packageId: p,
+        amountCents: 1_000,
+        currency: 'BRL',
+        receivedOn: '2026-01-15',
+        method: 'pix',
+        createdBy: { membershipId: membroOwner, name: 'Owner' },
+        createdAt: original.createdAt.toISOString(),
+        void: null,
+      };
+      const chaveAntiga = randomUUID();
+      await prisma.raw.idempotencyKey.create({
+        data: {
+          workspaceId: wsA.workspaceId,
+          key: chaveAntiga,
+          endpoint: daSonda.endpoint,
+          requestHash: daSonda.requestHash,
+          state: 'completed',
+          responseStatus: 201,
+          responseBody: corpoGuardado,
+          expiresAt: daSonda.expiresAt,
+        },
+      });
+      // as unidades mudam: uma segunda ativa (o pedido NOVO sem unidade seria recusado)
+      await segundaUnidade();
+      const antes = await pagamentos();
+      const repetido = await post(rota, owner)
+        .set('Idempotency-Key', chaveAntiga)
+        .send(corpoAntigo)
+        .expect(201);
+      expect(repetido.headers['idempotent-replay']).toBe('true');
+      expect(repetido.body).toEqual(corpoGuardado);
+      expect(repetido.body).not.toHaveProperty('unit');
+      expect(await pagamentos()).toBe(antes);
+      // e o histórico mostra o original com a unidade não registrada
+      const d = await detalhe(p);
+      expect(d.payments.find((x: { id: string }) => x.id === original.id)).toMatchObject({
+        unit: null,
+        receivedOn: '2026-01-15',
+      });
+    });
+
     it('o pedido anterior à publicação: executado, a repetição devolve o MESMO lançamento mesmo com as unidades mudadas; não executado, segue a regra nova', async () => {
       const p = await criarPacote();
       // o corpo da F6.1a, sem `unitId`, executado com uma unidade ativa

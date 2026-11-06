@@ -11259,4 +11259,4 @@ O que o canvas mostra como conceito, sem suporte no produto, NÃO entra sem deci
   - **`reviewer`:** a data do recebimento acompanha o "hoje" da unidade escolhida enquanto a pessoa não a altera.
 - **Resíduos registrados:**
   - **Unidade arquivada durante o registro:** a unidade é validada fora da transação. Se for arquivada entre a validação e a inserção, o pagamento grava a mesma unidade, do mesmo workspace, já arquivada. Hoje não há como arquivar unidade pelo app.
-  - **Corpo de replay da F6.1a:** o replay de um corpo guardado pela F6.1a, sem `unit`, é coberto pelo tipo opcional e pela tela, mas não por um teste com a resposta antiga gravada.
+  - **Corpo de replay da F6.1a (fechado em 2026-11-06):** um teste de integração grava o estado que a F6.1a deixava: o pagamento sem unidade e a resposta guardada sem `unit`, com o mesmo endpoint e o mesmo hash que o servidor calcula. Depois de uma segunda unidade ativa, a mesma chave devolve o pagamento original (replay, corpo idêntico) e nenhum lançamento é criado.
