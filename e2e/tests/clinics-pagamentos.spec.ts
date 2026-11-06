@@ -1,11 +1,11 @@
 import { expect, test, type Page, type Route } from '@playwright/test';
 import type { Client } from 'pg';
-import { OWNER_C } from '../env';
+import { MEMBER_C, OWNER_C } from '../env';
 import { login, openE2eDb } from './helpers';
 
 /**
- * Pagamentos de pacotes pela UI (ADR-063, F6.1a e os ajustes), no workspace
- * `clinica`, como Owner. Dados FICTÍCIOS, com nomes únicos por execução; o
+ * Pagamentos de pacotes pela UI (ADR-063, F6.1a, os ajustes e a F6.1b), no
+ * workspace `clinica`, como Owner e como a recepção. Dados FICTÍCIOS, com nomes únicos por execução; o
  * serviço, o paciente e o pacote com preço nascem direto no banco.
  *
  * O cenário que importa: o servidor GRAVA e a resposta se perde no caminho. A
@@ -20,6 +20,8 @@ interface Cenario {
   servico: string;
   pacienteId: string;
   pacote: string;
+  ws: string;
+  dono: string;
 }
 
 const sufixo = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
@@ -60,7 +62,7 @@ async function cenario(db: Client): Promise<Cenario> {
      VALUES (gen_random_uuid(), $1, $2, $3, 4, 60000, 'BRL', $4) RETURNING "id"`,
     [ws, pacienteId, servicoId, dono],
   );
-  return { servico, pacienteId, pacote };
+  return { servico, pacienteId, pacote, ws, dono };
 }
 
 /**
@@ -343,6 +345,67 @@ test.describe('Clinics — pagamentos de pacotes', () => {
       expect(await anulacoes()).toBe('1');
       expect(chaves).toHaveLength(2);
       expect(chaves[1]).toBe(chaves[0]);
+    } finally {
+      await db.end();
+    }
+  });
+  test('a recepção (F6.1b): o saldo no resumo, a aba Pagamentos sem Pacotes, o registro com a unidade e sem anular; o lançamento anterior sem unidade', async ({
+    page,
+  }) => {
+    const db = await openE2eDb();
+    try {
+      const c = await cenario(db);
+      // um lançamento anterior à F6.1b: R$ 100,00, sem unidade
+      await db.query(
+        `INSERT INTO "ClinicsPackagePayment" ("id","workspaceId","packageId","amountCents","currency","receivedOn","method","createdByMembershipId")
+         VALUES (gen_random_uuid(), $1, $2, 10000, 'BRL', DATE '2026-11-03', 'cash', $3)`,
+        [c.ws, c.pacote, c.dono],
+      );
+      await login(page, MEMBER_C);
+      await page.goto(`/clinics/patient?id=${c.pacienteId}`);
+      // o resumo: o saldo dos pacotes com preço registrado
+      const bloco = page.getByRole('region', { name: 'Saldo pendente' });
+      await expect(bloco).toContainText('A receber, pacotes com preço registrado');
+      await expect(bloco).toContainText(/R\$\s500,00 em 1 pacote/);
+      // a recepção sem `care:read`: Pagamentos, não Pacotes
+      await expect(page.getByRole('tab', { name: 'Pagamentos' })).toBeVisible();
+      await expect(page.getByRole('tab', { name: 'Pacotes' })).toHaveCount(0);
+      await bloco.getByRole('button', { name: 'Ver pagamentos' }).click();
+      const painel = await abrirPainel(page, c);
+      await expect(painel).toContainText('Unidade não registrada (lançamento anterior)');
+      await expect(painel).toContainText('recebido em 03/11/2026');
+      // o horário do lançamento anterior diz o fuso usado
+      await expect(
+        painel.getByText(/^registrado por .+ em .+ \(America\/Sao_Paulo\)$/),
+      ).toBeVisible();
+      await expect(painel.getByRole('button', { name: /^Anular/ })).toHaveCount(0);
+      await expect(painel).toContainText(
+        'Para corrigir um lançamento, peça a quem administra a clínica.',
+      );
+      await painel.getByRole('button', { name: 'Registrar pagamento' }).click();
+      await expect(painel.getByLabel(/Valor recebido/)).toHaveValue('500,00');
+      // uma unidade ativa: o nome dela, sem campo de escolha
+      await expect(painel.getByLabel(/^Unidade/)).toHaveCount(0);
+      await painel.getByLabel(/Valor recebido/).fill('200,00');
+      await painel.getByLabel('Forma').selectOption('pix');
+      await painel.getByRole('button', { name: 'Revisar pagamento' }).click();
+      await expect(painel.getByText(/Registrar o recebimento de/)).toContainText(
+        /recebido em \d{2}\/\d{2}\/\d{4} na /,
+      );
+      await painel.getByRole('button', { name: 'Confirmar registro' }).click();
+      await expect(painel.getByRole('status')).toContainText(/Pagamento de R\$\s200,00 registrado/);
+      await expect(painel.getByText(/^na .+$/).first()).toBeVisible();
+      const { rows } = await db.query<{ unidade: string | null }>(
+        `SELECT "unitId"::text AS unidade FROM "ClinicsPackagePayment"
+          WHERE "packageId" = $1 AND "amountCents" = 20000`,
+        [c.pacote],
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0].unidade).not.toBeNull();
+      await page.getByRole('dialog').getByRole('button', { name: 'Fechar' }).click();
+      await expect(page.getByRole('row', { name: `Pacote de ${c.servico}` })).toContainText(
+        /R\$\s300,00 a receber/,
+      );
     } finally {
       await db.end();
     }

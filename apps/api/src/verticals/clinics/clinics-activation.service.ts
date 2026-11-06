@@ -89,15 +89,20 @@ const PREENCHIMENTOS: readonly {
     preRequisito: 'contacts:read',
     papeis: ['owner', 'admin', CLINICS_RECEPTION_CARE_SYSTEM_KEY],
   },
-  // os pagamentos de pacotes (ADR-063, F6.1a): SÓ Owner e Admin. A recepção e
-  // "Recepção e atendimento" entram na F6.1b, com a visão financeira deles
-  ...(['clinics:payments:read', 'clinics:payments:write', 'clinics:payments:void'] as const).map(
-    (chave) => ({
-      chave,
-      preRequisito: 'clinics:schedule:read' as const,
-      papeis: ['owner', 'admin'],
-    }),
-  ),
+  // os pagamentos de pacotes (ADR-063): consultar e registrar para Owner, Admin,
+  // a recepção (Member) e "Recepção e atendimento" (adendo 1, F6.1b); anular,
+  // SÓ Owner e Admin. O livro guarda cada par (papel, chave): o Owner e o Admin
+  // avaliados na F6.1a não são avaliados de novo
+  ...(['clinics:payments:read', 'clinics:payments:write'] as const).map((chave) => ({
+    chave,
+    preRequisito: 'clinics:schedule:read' as const,
+    papeis: ['owner', 'admin', 'member', CLINICS_RECEPTION_CARE_SYSTEM_KEY],
+  })),
+  {
+    chave: 'clinics:payments:void',
+    preRequisito: 'clinics:schedule:read',
+    papeis: ['owner', 'admin'],
+  },
 ];
 
 /**

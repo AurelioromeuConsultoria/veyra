@@ -11192,6 +11192,71 @@ O que o canvas mostra como conceito, sem suporte no produto, NÃO entra sem deci
 - **"Registrar pagamento" indisponível** no pacote quitado (preço registrado e saldo 0, "Pacote quitado: o recebido cobre o preço.") e no cancelado (com o motivo). Sem preço, continua disponível.
 - O espaço em "R$ 600,00 a receber" (o chip é flex) e dois comentários: o nome do autor aparece sempre (memberships não são apagadas); o serviço só pré-confere o cancelado — saldo e moeda ficam com o gatilho.
 
-**Limitação da unidade (decisão pendente para a F6.1b).** O pacote não guarda unidade. O pagamento usa a única unidade ativa do workspace — o critério da agenda sem `unitId` — para o "hoje" (a data mais recente aceita) e para o fuso dos instantes. Com zero ou mais de uma unidade ativa, o painel vem sem `today` e sem `timezone`, e o registro é recusado (400). A F6.1b decide de onde vem a unidade (do pacote, da operação ou de uma escolha na tela).
+**Limitação da unidade (resolvida no adendo 1, F6.1b).** O pacote não guarda unidade. O pagamento usa a única unidade ativa do workspace — o critério da agenda sem `unitId` — para o "hoje" (a data mais recente aceita) e para o fuso dos instantes. Com zero ou mais de uma unidade ativa, o painel vem sem `today` e sem `timezone`, e o registro é recusado (400). A F6.1b decide de onde vem a unidade (do pacote, da operação ou de uma escolha na tela).
 
 **Conferência no staging: pendente.** O percurso autenticado (registrar, anular, a pendência) foi conferido na demo local e no E2E. No staging, só a publicação, a saúde e a rota respondendo 401 sem sessão; a conferência autenticada lá continua por fazer.
+
+### ADR-063, adendo 1 — F6.1b: a recepção registra, a unidade no pagamento e o saldo na ficha (2026-11-05)
+
+**Status:** APROVADO pelo usuário em 2026-11-05 ("Aprovo as cinco recomendações da F6.1b"), com as precisões dele.
+
+**Contexto.**
+
+- A F6.1a deixou o pagamento sem unidade. O "hoje" e o fuso vinham da única unidade ativa; com zero ou várias, o registro era recusado.
+- O app é de uma unidade:
+  - a ativação cria uma, e não há rota para criar outra;
+  - a agenda usa a primeira ativa;
+  - "multiunidade na interface" está fora do Clinics no roadmap.
+- Mesmo assim, várias unidades ativas podem existir por dado inserido fora do app, e o fluxo precisa ser utilizável nesse caso.
+
+**Decisão.**
+
+1. **A escolha da unidade.**
+   - **Uma unidade ativa:** o formulário mostra o nome dela e a usa, sem campo.
+   - **Mais de uma:** o campo "Unidade" é obrigatório, sem nada pré-selecionado. A data só libera depois da escolha, porque o "hoje" é o do fuso da unidade escolhida.
+   - **Nenhuma:** o registro fica indisponível, com a explicação.
+   - Não há sugestão pela última consulta do paciente. O pacote não pertence a uma unidade, e um palpite pré-selecionado gera lançamento errado sem ninguém perceber.
+2. **A unidade guardada no pagamento.**
+   - Coluna `ClinicsPackagePayment.unitId`, opcional no banco porque os lançamentos anteriores não têm unidade, com FK composta `(workspaceId, unitId)` para a unidade.
+   - O servidor exige unidade ATIVA do workspace, calcula o "hoje" no fuso dela e grava a unidade em todo pagamento novo.
+   - Pedido sem `unitId` só é aceito com exatamente uma unidade ativa, a regra da F6.1a. Assim, uma tentativa pendente anterior à publicação e ainda não executada segue a mesma regra.
+   - A obrigatoriedade para os novos é do serviço e do contrato, não do banco. Um CHECK recusaria os registros do código anterior enquanto ele ainda atende, durante a troca de versão (ADR-058 adendo 2).
+3. **A repetição de um pedido anterior à publicação.** O pedido original e a `Idempotency-Key` são preservados.
+   - **Já executado:** a repetição devolve o lançamento existente (o corpo guardado), mesmo que as unidades tenham mudado depois. A guarda de replay só refaz o acesso de agora, nunca a regra da unidade.
+   - **Ainda não executado:** a unidade segue o item 2.
+4. **Os lançamentos anteriores.** A unidade fica não registrada, e a tela mostra "Unidade não registrada (lançamento anterior)".
+   - **Por que não preencher:** pelo código da F6.1a, eles só foram aceitos com uma única unidade ativa, mas não ficou registrado qual. Além disso, o pagamento é imutável por gatilho, e preencher exigiria desligar essa proteção.
+   - **Horários (registrado em, anulado em):** no fuso da única unidade ativa ou, sem ela, no fuso do navegador, sempre com o fuso usado escrito.
+   - **Data do recebimento:** mostrada como a data informada, sem conversão de fuso.
+5. **Os horários dos lançamentos novos.** No fuso da unidade do pagamento, com o nome do fuso.
+6. **A recepção.**
+   - Recepção (Member) e "Recepção e atendimento" recebem `clinics:payments:read` e `clinics:payments:write`, pela matriz da ativação e pelo livro do preenchimento, com o pré-requisito `clinics:schedule:read`. A chave que o workspace tirar depois não volta.
+   - `payments:void` continua só de Owner e Admin. No lugar de "Anular", quem não tem a chave lê "Para corrigir um lançamento, peça a quem administra a clínica".
+   - A Recepção sem `clinics:care:read` vê a aba Pagamentos (a visão financeira: serviço, estado, preço, recebido, saldo), não a aba Pacotes.
+   - "Recepção e atendimento" continua vendo Pacotes pelas permissões clínicas que já tem.
+7. **O bloco "Saldo pendente" no resumo da ficha.** Aparece para quem tem `payments:read` e leva à aba Pagamentos.
+   - **Pacotes com preço registrado, ativos ou concluídos:** o total a receber e quantos pacotes são, por moeda, identificados como pacotes com preço registrado.
+   - **Pacotes sem preço registrado, ativos ou concluídos:** aparecem à parte, com "saldo não calculável".
+   - **Cancelados:** ficam fora.
+   - **"Nada pendente":** só aparece quando não há saldo conhecido a receber nem pacote de saldo não calculável.
+
+**Alternativas.**
+
+- **A unidade no pacote:** o pacote não pertence a uma unidade, e os pacotes anteriores ficariam sem.
+- **Pré-selecionar a unidade da última consulta:** é um palpite que erra calado.
+- **Preencher a unidade dos lançamentos anteriores:** exige desligar o gatilho de imutabilidade e afirma o que não ficou registrado.
+- **CHECK no banco para a unidade dos novos:** quebra o código anterior durante a troca de versão.
+
+**Consequências.**
+
+- Uma migration aditiva (coluna, FK composta e índice), que sobe sozinha (ADR-058 adendo 2).
+- A recepção recebe as chaves pelo preenchimento periódico, sem passo manual. Quem estiver com a sessão aberta pode precisar entrar de novo para ver a aba.
+- O fluxo com várias unidades é provado pelos testes, porque no staging há uma só unidade e não há rota para criar outra.
+- **Revisão de fechamento:**
+  - **`security` (bloqueio corrigido):** as relações novas (`ClinicsPackagePayment.unit` e `ClinicsUnit.payments`) faltavam no mapa de relações protegidas da extensão, e a suíte unitária completa ficava vermelha. Elas foram acrescentadas.
+  - **Chaves conferidas no serviço:** registrar e anular passaram a conferir no próprio serviço a chave de escrita e a de anulação, porque agora a recepção tem a de leitura.
+  - **Bloco de saldo:** exige também `clinics:schedule:read`, como a rota.
+  - **`reviewer`:** a data do recebimento acompanha o "hoje" da unidade escolhida enquanto a pessoa não a altera.
+- **Resíduos registrados:**
+  - **Unidade arquivada durante o registro:** a unidade é validada fora da transação. Se for arquivada entre a validação e a inserção, o pagamento grava a mesma unidade, do mesmo workspace, já arquivada. Hoje não há como arquivar unidade pelo app.
+  - **Corpo de replay da F6.1a:** o replay de um corpo guardado pela F6.1a, sem `unit`, é coberto pelo tipo opcional e pela tela, mas não por um teste com a resposta antiga gravada.

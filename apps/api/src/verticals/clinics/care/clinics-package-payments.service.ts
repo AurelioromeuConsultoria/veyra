@@ -14,6 +14,8 @@ import {
   type ClinicsPackageStatus,
   type ClinicsPaymentActorDto,
   type ClinicsPaymentMethod,
+  type ClinicsPaymentUnitDto,
+  type ClinicsPaymentUnitOptionDto,
   type ClinicsPaymentVoidReason,
   type ClinicsPermissionKey,
   type RecordClinicsPackagePaymentInput,
@@ -51,6 +53,7 @@ type PagamentoRow = {
   method: ClinicsPaymentMethod;
   createdByMembershipId: string;
   createdAt: Date;
+  unit: { id: string; name: string; timezone: string; archivedAt: Date | null } | null;
   void: {
     reason: ClinicsPaymentVoidReason;
     voidedByMembershipId: string;
@@ -78,6 +81,7 @@ const SELECAO_DO_PAGAMENTO = {
   method: true,
   createdByMembershipId: true,
   createdAt: true,
+  unit: { select: { id: true, name: true, timezone: true, archivedAt: true } },
   void: { select: { reason: true, voidedByMembershipId: true, createdAt: true } },
 } as const;
 
@@ -86,13 +90,21 @@ const ACIMA_DO_SALDO =
   'O valor passa do saldo do pacote (o preço registrado menos o já recebido); nada foi registrado';
 const CANCELADO = 'Pacote cancelado não recebe pagamento novo; nada foi registrado';
 const JA_ANULADO = 'Este pagamento já foi anulado';
+const ESCOLHA_A_UNIDADE =
+  'Escolha a unidade do recebimento: a clínica tem mais de uma unidade ativa; nada foi registrado';
+const SEM_UNIDADE =
+  'A data do recebimento segue o fuso da unidade, e a clínica não tem unidade ativa; nada foi registrado';
+const UNIDADE_INVALIDA =
+  'Unidade não encontrada ou arquivada: escolha uma unidade ativa; nada foi registrado';
+
+type Unidade = { id: string; name: string; timezone: string };
 
 /**
- * Pagamentos de pacotes (ADR-063, F6.1a; fecha a D1 do ADR-048). Classe S.
+ * Pagamentos de pacotes (ADR-063, F6.1a e F6.1b; fecha a D1 do ADR-048). Classe S.
  *
  * O pagamento é um LANÇAMENTO que não muda: valor em centavos (> 0, na moeda do
- * pacote), data LOCAL do recebimento, forma de lista fechada, autoria e
- * instante do banco. Corrigir é anular (um registro próprio, no máximo um por
+ * pacote), data LOCAL do recebimento na unidade dele (ADR-063 adendo 1), forma
+ * de lista fechada, autoria e instante do banco. Corrigir é anular (um registro próprio, no máximo um por
  * pagamento) e registrar o certo. Nada aqui toca as sessões: o pagamento não
  * libera nem bloqueia consumo.
  *
@@ -154,12 +166,14 @@ export class ClinicsPackagePaymentsService {
         ...(p.void ? [p.void.voidedByMembershipId] : []),
       ]),
     );
-    const unidade = await this.hojeNaUnidade();
+    const units = await this.unidadesComHoje();
+    const unica = units.length === 1 ? units[0] : null;
     return {
       package: toBalanceDto(pacote, recebido),
       payments: pagamentos.map((p) => toPaymentDto(p, nomes)),
-      today: unidade?.hoje ?? null,
-      timezone: unidade?.fuso ?? null,
+      today: unica?.today ?? null,
+      timezone: unica?.timezone ?? null,
+      units,
     };
   }
 
@@ -175,14 +189,12 @@ export class ClinicsPackagePaymentsService {
   ): Promise<ClinicsPackagePaymentDto> {
     const workspaceId = auth.workspaceId as string;
     // a resposta revela o pacote e o pagamento: quem registra precisa poder
-    // lê-los. A regra mora AQUI, e não só na rota, para valer a qualquer chamador
+    // lê-los. A regra mora AQUI, e não só na rota, para valer a qualquer chamador;
+    // e a de registrar também, desde que a recepção lê (ADR-063 adendo 1)
+    await this.exigir(auth, 'clinics:payments:write');
     await this.exigir(auth, 'clinics:payments:read');
-    const hoje = (await this.hojeNaUnidade())?.hoje ?? null;
-    if (hoje === null) {
-      throw new BadRequestException(
-        'A data do recebimento segue o fuso da unidade, e a clínica não tem exatamente uma unidade ativa',
-      );
-    }
+    const unidade = await this.unidadeDoRecebimento(input.unitId);
+    const hoje = horaLocal(await agoraDoBanco(this.prisma), unidade.timezone).data;
     if (input.receivedOn > hoje) {
       throw new BadRequestException('A data do recebimento não pode ser futura');
     }
@@ -210,6 +222,7 @@ export class ClinicsPackagePaymentsService {
               currency: pacote.currency,
               receivedOn: diaParaData(input.receivedOn),
               method: input.method,
+              unitId: unidade.id,
               createdByMembershipId: auth.membershipId as string,
             },
             select: SELECAO_DO_PAGAMENTO,
@@ -224,6 +237,7 @@ export class ClinicsPackagePaymentsService {
               currency: criado.currency,
               receivedOn: dataParaDia(criado.receivedOn),
               method: criado.method,
+              unitId: unidade.id,
             },
           });
           return criado;
@@ -257,6 +271,9 @@ export class ClinicsPackagePaymentsService {
     input: VoidClinicsPackagePaymentInput,
   ): Promise<ClinicsPackagePaymentDto> {
     const workspaceId = auth.workspaceId as string;
+    // anular é SÓ de Owner e Admin; a recepção lê e registra (ADR-063 adendo 1):
+    // a regra mora aqui também, para valer a qualquer chamador
+    await this.exigir(auth, 'clinics:payments:void');
     await this.exigir(auth, 'clinics:payments:read');
     let row: PagamentoRow;
     try {
@@ -322,20 +339,44 @@ export class ClinicsPackagePaymentsService {
     }
   }
 
-  /**
-   * A data local de hoje na unidade, pelo relógio do BANCO (ADR-049), e o fuso
-   * dela: a única unidade ativa, como a agenda sem `unitId` (o pacote não guarda
-   * unidade; limitação registrada no ADR-063). Sem exatamente uma, `null`.
-   */
-  private async hojeNaUnidade(): Promise<{ hoje: string; fuso: string } | null> {
-    const ativas = (await this.prisma.db.clinicsUnit.findMany({
+  /** As unidades ATIVAS deste workspace, por nome. */
+  private async unidadesAtivas(): Promise<Unidade[]> {
+    return (await this.prisma.db.clinicsUnit.findMany({
       where: { archivedAt: null },
-      select: { timezone: true },
-      take: 2,
-    })) as unknown as { timezone: string }[];
-    if (ativas.length !== 1) return null;
-    const fuso = ativas[0].timezone;
-    return { hoje: horaLocal(await agoraDoBanco(this.prisma), fuso).data, fuso };
+      select: { id: true, name: true, timezone: true },
+      orderBy: [{ name: 'asc' }, { id: 'asc' }],
+    })) as unknown as Unidade[];
+  }
+
+  /**
+   * As unidades ativas, cada uma com a data local de hoje no fuso dela, pelo
+   * relógio do BANCO (ADR-049): uma leitura só, fora de transação.
+   */
+  private async unidadesComHoje(): Promise<ClinicsPaymentUnitOptionDto[]> {
+    const ativas = await this.unidadesAtivas();
+    if (ativas.length === 0) return [];
+    const agora = await agoraDoBanco(this.prisma);
+    return ativas.map((u) => ({ ...u, today: horaLocal(agora, u.timezone).data }));
+  }
+
+  /**
+   * A unidade do recebimento (ADR-063 adendo 1): a pedida, se ATIVA neste
+   * workspace; sem pedido, só a única ativa (a regra da F6.1a, para o pedido
+   * anterior à F6.1b). Com várias e nenhuma escolhida, 400.
+   */
+  private async unidadeDoRecebimento(unitId: string | undefined): Promise<Unidade> {
+    if (unitId !== undefined) {
+      const unidade = (await this.prisma.db.clinicsUnit.findFirst({
+        where: { id: unitId, archivedAt: null },
+        select: { id: true, name: true, timezone: true },
+      })) as unknown as Unidade | null;
+      if (!unidade) throw new BadRequestException(UNIDADE_INVALIDA);
+      return unidade;
+    }
+    const ativas = await this.unidadesAtivas();
+    if (ativas.length === 0) throw new BadRequestException(SEM_UNIDADE);
+    if (ativas.length > 1) throw new BadRequestException(ESCOLHA_A_UNIDADE);
+    return ativas[0];
   }
 
   /** O nome de exibição de cada membership deste workspace (vazio se não há). */
@@ -384,6 +425,10 @@ function toBalanceDto(p: PacoteFinanceiro, recebido: number): ClinicsPackageBala
   };
 }
 
+function toUnitDto(u: NonNullable<PagamentoRow['unit']>): ClinicsPaymentUnitDto {
+  return { id: u.id, name: u.name, timezone: u.timezone, archived: u.archivedAt !== null };
+}
+
 function ator(membershipId: string, nomes: Map<string, string>): ClinicsPaymentActorDto {
   return { membershipId, name: nomes.get(membershipId) ?? '' };
 }
@@ -396,6 +441,7 @@ function toPaymentDto(p: PagamentoRow, nomes: Map<string, string>): ClinicsPacka
     currency: p.currency,
     receivedOn: dataParaDia(p.receivedOn),
     method: p.method,
+    unit: p.unit ? toUnitDto(p.unit) : null,
     createdBy: ator(p.createdByMembershipId, nomes),
     createdAt: p.createdAt.toISOString(),
     void: p.void

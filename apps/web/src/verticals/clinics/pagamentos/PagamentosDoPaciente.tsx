@@ -5,6 +5,7 @@ import {
   type ClinicsPackagePaymentDto,
   type ClinicsPackagePaymentsDto,
   type ClinicsPaymentMethod,
+  type ClinicsPaymentUnitOptionDto,
   type ClinicsPaymentVoidReason,
   horaLocal,
 } from '@veyra/contracts/verticals/clinics';
@@ -58,42 +59,90 @@ export function valor(cents: number, moeda: string): string {
 }
 
 /**
- * Um instante do banco na hora LOCAL da unidade da operação (a mesma do "hoje"
- * do serviço): "05/11/2026 às 14:32". Sem o fuso da unidade (zero ou mais de uma
- * ativa), na hora do navegador — e dito, com o fuso dele.
+ * Um instante do banco na hora LOCAL de uma unidade, sempre com o fuso usado:
+ * "05/11/2026 às 14:32 (America/Sao_Paulo)". Sem fuso de unidade, na hora do
+ * navegador — e dito: "(fuso do navegador, America/Sao_Paulo)".
  */
 export function quando(iso: string, fuso: string | null): string {
   if (fuso) {
     const h = horaLocal(new Date(iso), fuso);
-    return `${dataCurta(h.data)} às ${h.hora}`;
+    return `${dataCurta(h.data)} às ${h.hora} (${fuso})`;
   }
   const doNavegador = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const h = horaLocal(new Date(iso), doNavegador);
   return `${dataCurta(h.data)} às ${h.hora} (fuso do navegador, ${doNavegador})`;
 }
 
+/**
+ * O fuso dos instantes de um pagamento (ADR-063 adendo 1): o da unidade dele;
+ * sem unidade registrada (o lançamento anterior), o da única unidade ativa, se
+ * houver — `quando` diz qual foi usado.
+ */
+const fusoDoPagamento = (pg: ClinicsPackagePaymentDto, daUnicaAtiva: string | null) =>
+  pg.unit?.timezone ?? daUnicaAtiva;
+
 /** Ativo ou concluído com saldo a receber: o que a recepção precisa ver primeiro. */
 const pendente = (p: ClinicsPackageBalanceDto) =>
   p.status !== 'canceled' && p.balanceCents !== null && p.balanceCents > 0;
 
-// memberships não são apagadas: o nome vem sempre; vazio só no caso defensivo
-const quem = (nome: string) => nome || 'pessoa não identificada';
-
-/**
- * A aba "Pagamentos" da ficha (ADR-063, F6.1a). Só montada com
- * `clinics:payments:read`. A visão FINANCEIRA de cada pacote — estado, preço,
- * recebido e saldo — sem sessões nem atendimentos. Clicar abre o painel do
- * pacote, com o histórico e as ações que a pessoa tem.
- */
-export function PagamentosDoPaciente({ pacienteId }: { pacienteId: string }) {
-  const [aberto, setAberto] = useState<ClinicsPackageBalanceDto | null>(null);
-  const pacotes = useQuery({
+/** Os pacotes (visão financeira) do paciente: a MESMA consulta da aba e do resumo. */
+export function useSaldosDoPaciente(pacienteId: string) {
+  return useQuery({
     queryKey: [...PAYMENTS_KEY, 'patient', pacienteId],
     queryFn: () =>
       api.get<ClinicsPackageBalanceDto[]>(
         `/api/clinics/patients/${encodeURIComponent(pacienteId)}/package-payments`,
       ),
   });
+}
+
+export interface ResumoDoSaldo {
+  /** por moeda, o total a receber dos pacotes ativos ou concluídos COM preço registrado */
+  aReceber: { moeda: string; totalCents: number; pacotes: number }[];
+  /** ativos ou concluídos sem preço registrado: saldo não calculável */
+  semPreco: number;
+}
+
+/**
+ * O saldo pendente do paciente (ADR-063 adendo 1): cancelados fora; o total
+ * só dos pacotes com preço, separado por moeda; os sem preço, à parte.
+ */
+export function resumoDoSaldo(pacotes: readonly ClinicsPackageBalanceDto[]): ResumoDoSaldo {
+  const porMoeda = new Map<string, { totalCents: number; pacotes: number }>();
+  let semPreco = 0;
+  for (const p of pacotes) {
+    if (p.status === 'canceled') continue;
+    if (p.balanceCents === null) {
+      semPreco += 1;
+      continue;
+    }
+    if (p.balanceCents <= 0) continue;
+    const atual = porMoeda.get(p.currency) ?? { totalCents: 0, pacotes: 0 };
+    porMoeda.set(p.currency, {
+      totalCents: atual.totalCents + p.balanceCents,
+      pacotes: atual.pacotes + 1,
+    });
+  }
+  return {
+    aReceber: [...porMoeda.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([moeda, v]) => ({ moeda, ...v })),
+    semPreco,
+  };
+}
+
+// memberships não são apagadas: o nome vem sempre; vazio só no caso defensivo
+const quem = (nome: string) => nome || 'pessoa não identificada';
+
+/**
+ * A aba "Pagamentos" da ficha (ADR-063, F6.1a; a recepção na F6.1b). Só montada
+ * com `clinics:payments:read`. A visão FINANCEIRA de cada pacote — estado, preço,
+ * recebido e saldo — sem sessões nem atendimentos. Clicar abre o painel do
+ * pacote, com o histórico e as ações que a pessoa tem.
+ */
+export function PagamentosDoPaciente({ pacienteId }: { pacienteId: string }) {
+  const [aberto, setAberto] = useState<ClinicsPackageBalanceDto | null>(null);
+  const pacotes = useSaldosDoPaciente(pacienteId);
   // com erro, nada de dado antigo: é dado financeiro
   const linhas = pacotes.isError ? [] : (pacotes.data ?? []);
 
@@ -265,9 +314,9 @@ function PainelDoPacote({ packageId }: { packageId: string }) {
   }
   // a ação aberta continua montada mesmo se a recarga falhar (o dado fica)
   if (acaoAtual && detalhe.data) {
-    const { package: p, today } = detalhe.data;
+    const { package: p, units } = detalhe.data;
     return acaoAtual.tipo === 'registrar' ? (
-      <RegistrarPagamento pacote={p} hoje={today} envio={envio} onFim={() => setAcao(null)} />
+      <RegistrarPagamento pacote={p} unidades={units} envio={envio} onFim={() => setAcao(null)} />
     ) : (
       <AnularPagamento
         pagamento={acaoAtual.pagamento}
@@ -281,7 +330,9 @@ function PainelDoPacote({ packageId }: { packageId: string }) {
   if (!detalhe.data) return <p className="text-data text-muted-fg">Carregando…</p>;
   const p = detalhe.data.package;
   const quitado = p.balanceCents !== null && p.balanceCents <= 0;
-  const semRegistro = p.status === 'canceled' || quitado;
+  // sem unidade ativa não há "hoje" para a data do recebimento (ADR-063 adendo 1)
+  const semUnidade = detalhe.data.units.length === 0;
+  const semRegistro = p.status === 'canceled' || quitado || semUnidade;
 
   return (
     <div className="space-y-4">
@@ -314,6 +365,11 @@ function PainelDoPacote({ packageId }: { packageId: string }) {
             <p id="motivo-sem-registro" className="text-data text-muted-fg">
               Pacote quitado: o recebido cobre o preço.
             </p>
+          ) : semUnidade ? (
+            <p id="motivo-sem-registro" className="text-data text-muted-fg">
+              A clínica não tem unidade ativa: a data do recebimento segue o fuso da unidade, então
+              o registro fica indisponível.
+            </p>
           ) : null}
         </div>
       ) : null}
@@ -321,6 +377,7 @@ function PainelDoPacote({ packageId }: { packageId: string }) {
         dados={detalhe.data}
         podeAnular={podeAnular}
         onAnular={(pagamento) => abrir({ tipo: 'anular', pagamento })}
+        orientarCorrecao={!podeAnular}
       />
     </div>
   );
@@ -408,17 +465,24 @@ function Releitura({
   );
 }
 
-/** O saldo e o histórico; "Anular" só para quem tem a chave e sem tentativa pendente. */
+/**
+ * O saldo e o histórico; "Anular" só para quem tem a chave e sem tentativa
+ * pendente. `orientarCorrecao`: quem não tem a chave lê a quem pedir.
+ */
 function Resumo({
   dados,
   podeAnular,
   onAnular,
+  orientarCorrecao = false,
 }: {
   dados: ClinicsPackagePaymentsDto;
   podeAnular: boolean;
   onAnular?: (pagamento: ClinicsPackagePaymentDto) => void;
+  orientarCorrecao?: boolean;
 }) {
   const { package: p, payments, timezone } = dados;
+  // quem não anula vê por que o botão não existe (ADR-063 adendo 1)
+  const algumAnulavel = payments.some((pg) => pg.void === null);
   return (
     <>
       <dl className="grid grid-cols-3 gap-3 text-body-sm">
@@ -460,12 +524,18 @@ function Resumo({
                   </span>
                 </div>
                 <p className="text-[13px] text-muted-fg">
-                  registrado por {quem(pg.createdBy.name)} em {quando(pg.createdAt, timezone)}
+                  {pg.unit
+                    ? `na ${pg.unit.name}${pg.unit.archived ? ' (arquivada)' : ''}`
+                    : 'Unidade não registrada (lançamento anterior)'}
+                </p>
+                <p className="text-[13px] text-muted-fg">
+                  registrado por {quem(pg.createdBy.name)} em{' '}
+                  {quando(pg.createdAt, fusoDoPagamento(pg, timezone))}
                 </p>
                 {pg.void ? (
                   <p className="text-[13px] text-negative">
                     anulado por {quem(pg.void.voidedBy.name)} em{' '}
-                    {quando(pg.void.createdAt, timezone)}, motivo:{' '}
+                    {quando(pg.void.createdAt, fusoDoPagamento(pg, timezone))}, motivo:{' '}
                     {ROTULO_DO_MOTIVO_DA_ANULACAO[pg.void.reason].toLowerCase()}
                   </p>
                 ) : podeAnular && onAnular ? (
@@ -482,25 +552,31 @@ function Resumo({
             ))}
           </ul>
         )}
+        {orientarCorrecao && algumAnulavel ? (
+          <p className="text-data text-muted-fg">
+            Para corrigir um lançamento, peça a quem administra a clínica.
+          </p>
+        ) : null}
       </section>
     </>
   );
 }
 
 /**
- * Registrar: o valor vem preenchido com o saldo (editável), a data é hoje na
- * unidade e a forma é escolhida. Revisar mostra o que será gravado; a
+ * Registrar: o valor vem preenchido com o saldo (editável), a unidade é a única
+ * ativa ou escolhida sem sugestão (ADR-063 adendo 1), a data é hoje no fuso
+ * dela e a forma é escolhida. Revisar mostra o que será gravado; a
  * confirmação manda com `Idempotency-Key`. O resultado que não chega vira a
  * tentativa pendente do pacote, repetida com a MESMA chave.
  */
 function RegistrarPagamento({
   pacote,
-  hoje,
+  unidades,
   envio,
   onFim,
 }: {
   pacote: ClinicsPackageBalanceDto;
-  hoje: string | null;
+  unidades: ClinicsPaymentUnitOptionDto[];
   envio: Envio;
   onFim: () => void;
 }) {
@@ -509,7 +585,14 @@ function RegistrarPagamento({
       ? centsToReaisInput(pacote.balanceCents)
       : '',
   );
-  const [data, setData] = useState(hoje ?? '');
+  // uma unidade ativa: ela, sem campo; várias: a escolha, sem nada pré-selecionado
+  const unica = unidades.length === 1 ? unidades[0] : null;
+  const [unidadeId, setUnidadeId] = useState(unica?.id ?? '');
+  const unidade = unidades.find((u) => u.id === unidadeId) ?? null;
+  const hoje = unidade?.today ?? null;
+  const [data, setData] = useState(unica?.today ?? '');
+  // enquanto a pessoa não mexeu na data, ela acompanha o hoje da unidade escolhida
+  const [dataTocada, setDataTocada] = useState(false);
   const [forma, setForma] = useState<ClinicsPaymentMethod | ''>('');
   const [revisando, setRevisando] = useState(false);
   const ocupado = envio.pendente !== null;
@@ -518,8 +601,8 @@ function RegistrarPagamento({
     typeof centavos === 'number' && centavos > 0 && centavos <= CLINICS_PAYMENT_MAX_CENTS;
   const acimaDoSaldo =
     valorValido && pacote.balanceCents !== null && (centavos as number) > pacote.balanceCents;
-  const dataValida = /^\d{4}-\d{2}-\d{2}$/.test(data) && (hoje === null || data <= hoje);
-  const pronto = valorValido && !acimaDoSaldo && dataValida && forma !== '';
+  const dataValida = hoje !== null && /^\d{4}-\d{2}-\d{2}$/.test(data) && data <= hoje;
+  const pronto = unidade !== null && valorValido && !acimaDoSaldo && dataValida && forma !== '';
 
   return (
     <div className="space-y-3">
@@ -535,8 +618,8 @@ function RegistrarPagamento({
             Registrar o recebimento de{' '}
             <strong className="num">{valor(centavos as number, pacote.currency)}</strong> em{' '}
             {ROTULO_DA_FORMA[forma as ClinicsPaymentMethod].toLowerCase()}, recebido em{' '}
-            {dataCurta(data)}, no pacote de {pacote.serviceName}. O registro não se edita depois:
-            para corrigir, anule e registre de novo.
+            {dataCurta(data)} na {unidade?.name}, no pacote de {pacote.serviceName}. O registro não
+            se edita depois: para corrigir, anule e registre de novo.
           </p>
           <div className="flex gap-2">
             <Button
@@ -549,8 +632,13 @@ function RegistrarPagamento({
                 envio.enviar({
                   tipo: 'registrar',
                   caminho: `/api/clinics/packages/${encodeURIComponent(pacote.packageId)}/payments`,
-                  corpo: { amountCents: centavos, receivedOn: data, method: forma },
-                  resumo: `Pagamento de ${quanto} em ${comoFoi}, recebido em ${dataCurta(data)}, no pacote de ${pacote.serviceName}.`,
+                  corpo: {
+                    amountCents: centavos,
+                    receivedOn: data,
+                    method: forma,
+                    unitId: unidade?.id,
+                  },
+                  resumo: `Pagamento de ${quanto} em ${comoFoi}, recebido em ${dataCurta(data)} na ${unidade?.name ?? 'unidade'}, no pacote de ${pacote.serviceName}.`,
                   confirmacao: `Pagamento de ${quanto} registrado.`,
                 });
               }}
@@ -588,14 +676,57 @@ function RegistrarPagamento({
               O valor passa do saldo do pacote.
             </p>
           ) : null}
-          <Field label="Data do recebimento" hint="Na data da unidade; não pode ser futura.">
+          {unica ? (
+            <p className="text-body-sm">
+              <span className="eyebrow mr-2 text-muted-fg">Unidade</span>
+              {unica.name}
+            </p>
+          ) : (
+            <Field label="Unidade" hint="Onde o pagamento foi recebido: a data segue o fuso dela.">
+              <Select
+                value={unidadeId}
+                onChange={(e) => {
+                  const escolhida = unidades.find((u) => u.id === e.target.value);
+                  setUnidadeId(e.target.value);
+                  // a data não tocada (ou vazia) acompanha o hoje da unidade escolhida
+                  if (escolhida && (!dataTocada || data === '')) setData(escolhida.today);
+                }}
+              >
+                <option value="" disabled>
+                  Escolha a unidade
+                </option>
+                {unidades.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          )}
+          <Field
+            label="Data do recebimento"
+            hint={
+              unidade
+                ? 'Na data da unidade; não pode ser futura.'
+                : 'Escolha a unidade primeiro: a data segue o fuso dela.'
+            }
+          >
             <Input
               type="date"
               value={data}
+              disabled={unidade === null}
               max={hoje ?? undefined}
-              onChange={(e) => setData(e.target.value)}
+              onChange={(e) => {
+                setDataTocada(true);
+                setData(e.target.value);
+              }}
             />
           </Field>
+          {unidade && data !== '' && hoje !== null && data > hoje ? (
+            <p role="alert" className="text-data text-negative">
+              A data não pode ser futura na {unidade.name}.
+            </p>
+          ) : null}
           <Field label="Forma">
             <Select
               value={forma}

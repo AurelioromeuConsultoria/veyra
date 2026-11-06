@@ -45,6 +45,8 @@ export const clinicsExtension: CoreExtension = {
         workingHours: 'ClinicsWorkingHours',
         appointments: 'ClinicsAppointment',
         returns: 'ClinicsReturn',
+        // a unidade do recebimento (ADR-063 adendo 1)
+        payments: 'ClinicsPackagePayment',
       },
       ClinicsService: {
         workspace: 'Workspace',
@@ -117,6 +119,7 @@ export const clinicsExtension: CoreExtension = {
       ClinicsPackagePayment: {
         workspace: 'Workspace',
         package: 'ClinicsPackage',
+        unit: 'ClinicsUnit',
         createdBy: 'Membership',
         void: 'ClinicsPackagePaymentVoid',
       },
@@ -260,9 +263,17 @@ export const clinicsExtension: CoreExtension = {
     ],
     // classe S (ADR-063, F6.1): o pagamento é um FATO financeiro, e o valor é o
     // próprio fato (sem ele, a trilha não serve para conferir um lançamento):
-    // o pacote, o valor em centavos, a moeda, a data local e a forma de lista
-    // fechada. Nada clínico, nenhum texto livre, nenhum dado do paciente
-    clinicsPackagePayment: ['packageId', 'amountCents', 'currency', 'receivedOn', 'method'],
+    // o pacote, o valor em centavos, a moeda, a data local, a forma de lista
+    // fechada e a unidade do recebimento (ADR-063 adendo 1). Nada clínico,
+    // nenhum texto livre, nenhum dado do paciente
+    clinicsPackagePayment: [
+      'packageId',
+      'amountCents',
+      'currency',
+      'receivedOn',
+      'method',
+      'unitId',
+    ],
     // a anulação: o pagamento, o pacote e o motivo de lista fechada
     clinicsPackagePaymentVoid: ['paymentId', 'packageId', 'reason'],
     // classe S (ADR-048 adendo 7, F3.2): ids, vencimento, estado, origem e

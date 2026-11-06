@@ -8,6 +8,7 @@ import { criarQueryClient } from '../../lib/session-query';
 import { clinicsExperience } from './experience';
 import { PagamentosDoPaciente } from './pagamentos/PagamentosDoPaciente';
 import { limparTentativasPendentes } from './pagamentos/tentativa-pendente';
+import { escopoAtual } from '../../lib/session-scope';
 import { ClinicsPatientPage } from './PatientPage';
 
 /**
@@ -73,6 +74,21 @@ const P2 = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e12';
 const P3 = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e13';
 const PG1 = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e31';
 const PG2 = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e32';
+const U1 = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e41';
+const U2 = '0b9f1c2e-5d6a-4c3b-9e8f-1a2b3c4d5e42';
+/** a unidade do pagamento e a opção de unidade ativa (ADR-063 adendo 1) */
+const UNIDADE = {
+  id: U1,
+  name: 'Unidade principal',
+  timezone: 'America/Sao_Paulo',
+  archived: false,
+};
+const OPCAO = {
+  id: U1,
+  name: 'Unidade principal',
+  timezone: 'America/Sao_Paulo',
+  today: '2026-11-05',
+};
 
 const saldo = (extra: Record<string, unknown> = {}) => ({
   packageId: P1,
@@ -95,6 +111,7 @@ const pagamento = (extra: Record<string, unknown> = {}) => ({
   currency: 'BRL',
   receivedOn: '2026-11-03',
   method: 'pix',
+  unit: UNIDADE,
   createdBy: { membershipId: 'm1', name: 'Fulana Fictícia' },
   createdAt: '2026-11-05T17:32:00.000Z',
   void: null,
@@ -106,6 +123,7 @@ const detalhe = (pagamentos: unknown[], extra: Record<string, unknown> = {}) => 
   payments: pagamentos,
   today: '2026-11-05',
   timezone: 'America/Sao_Paulo',
+  units: [OPCAO],
 });
 
 let client: QueryClient;
@@ -217,14 +235,21 @@ describe('a lista e o painel', () => {
     });
     renderizar(<PagamentosDoPaciente pacienteId={PAC} />);
     const painel = await abrirPainel();
-    // no fuso da UNIDADE (São Paulo, UTC−3), não no do navegador
+    // no fuso da UNIDADE do pagamento (São Paulo, UTC−3), dito, não no do navegador
     expect(
-      await within(painel).findAllByText('registrado por Fulana Fictícia em 05/11/2026 às 14:32'),
+      await within(painel).findAllByText(
+        'registrado por Fulana Fictícia em 05/11/2026 às 14:32 (America/Sao_Paulo)',
+      ),
     ).toHaveLength(2);
+    expect(within(painel).getAllByText('na Unidade principal')).toHaveLength(2);
     expect(
       within(painel).getByText(
-        /^anulado por Beltrana Fictícia em 05\/11\/2026 às 15:00, motivo: duplicado$/,
+        /^anulado por Beltrana Fictícia em 05\/11\/2026 às 15:00 \(America\/Sao_Paulo\), motivo: duplicado$/,
       ),
+    ).toBeVisible();
+    // sem `void`, quem lê sabe a quem pedir a correção
+    expect(
+      within(painel).getByText('Para corrigir um lançamento, peça a quem administra a clínica.'),
     ).toBeVisible();
     expect(within(painel).getByText(/R\$\s400,00 · Pix/)).toHaveClass('line-through');
     expect(within(painel).getByText(/R\$\s300,00 · Dinheiro/)).not.toHaveClass('line-through');
@@ -246,6 +271,9 @@ describe('a lista e o painel', () => {
     const painel = await abrirPainel();
     fireEvent.click(await within(painel).findByRole('button', { name: 'Registrar pagamento' }));
     expect(within(painel).getByLabelText(/Valor recebido/)).toHaveValue('600,00');
+    // uma unidade ativa: o nome dela, sem campo de escolha
+    expect(within(painel).getByText('Unidade principal')).toBeVisible();
+    expect(within(painel).queryByLabelText(/^Unidade/)).toBeNull();
     expect(within(painel).getByLabelText(/Data do recebimento/)).toHaveValue('2026-11-05');
     // sem a forma, não revisa
     const revisar = within(painel).getByRole('button', { name: 'Revisar pagamento' });
@@ -262,14 +290,19 @@ describe('a lista e o painel', () => {
     });
     fireEvent.click(within(painel).getByRole('button', { name: 'Revisar pagamento' }));
     expect(within(painel).getByText(/Registrar o recebimento de/)).toHaveTextContent(
-      /R\$\s600,00 em pix, recebido em 05\/11\/2026/,
+      /R\$\s600,00 em pix, recebido em 05\/11\/2026 na Unidade principal/,
     );
     fireEvent.click(within(painel).getByRole('button', { name: 'Confirmar registro' }));
     expect(await within(painel).findByRole('status')).toHaveTextContent(
       /Pagamento de R\$\s600,00 registrado/,
     );
     const post = chamadas.find((c) => c.chave.startsWith('POST'));
-    expect(post?.corpo).toEqual({ amountCents: 60_000, receivedOn: '2026-11-05', method: 'pix' });
+    expect(post?.corpo).toEqual({
+      amountCents: 60_000,
+      receivedOn: '2026-11-05',
+      method: 'pix',
+      unitId: U1,
+    });
     expect(post?.headers.get('Idempotency-Key')).toMatch(/^[0-9a-f-]{36}$/);
   });
 
@@ -349,13 +382,164 @@ describe('o botão de registrar e o fuso', () => {
     expect(within(painel).queryByText(/Pacote quitado/)).toBeNull();
   });
 
-  it('sem o fuso da unidade: os instantes na hora do navegador, e dito', async () => {
-    const painel = await painelCom({}, { today: null, timezone: null });
+  it('o lançamento anterior sem unidade ativa única: "Unidade não registrada", na hora do navegador, e dito', async () => {
+    const painel = await painelCom(
+      {},
+      { today: null, timezone: null, units: [], payments: [pagamento({ unit: null })] },
+    );
     expect(
       await within(painel).findByText(
         /^registrado por Fulana Fictícia em \d{2}\/\d{2}\/\d{4} às \d{2}:\d{2} \(fuso do navegador, .+\)$/,
       ),
     ).toBeVisible();
+    expect(within(painel).getByText('Unidade não registrada (lançamento anterior)')).toBeVisible();
+    // a data do recebimento é a informada, sem conversão
+    expect(within(painel).getByText('recebido em 03/11/2026')).toBeVisible();
+  });
+
+  it('o lançamento anterior com uma unidade ativa: os instantes no fuso dela, dito', async () => {
+    const painel = await painelCom({}, { payments: [pagamento({ unit: null })] });
+    expect(
+      await within(painel).findByText(
+        'registrado por Fulana Fictícia em 05/11/2026 às 14:32 (America/Sao_Paulo)',
+      ),
+    ).toBeVisible();
+    expect(within(painel).getByText('Unidade não registrada (lançamento anterior)')).toBeVisible();
+  });
+
+  it('sem unidade ativa: "Registrar pagamento" indisponível, com a explicação', async () => {
+    const painel = await painelCom({}, { today: null, timezone: null, units: [] });
+    expect(await within(painel).findByText(/A clínica não tem unidade ativa/)).toBeVisible();
+    expect(within(painel).getByRole('button', { name: 'Registrar pagamento' })).toBeDisabled();
+  });
+
+  it('com `void`, sem a orientação de pedir a correção', async () => {
+    const painel = await painelCom({});
+    expect(
+      await within(painel).findByRole('button', { name: /^Anular o pagamento/ }),
+    ).toBeVisible();
+    expect(within(painel).queryByText(/peça a quem administra a clínica/)).toBeNull();
+  });
+});
+
+describe('a unidade do recebimento com várias ativas (ADR-063 adendo 1)', () => {
+  it('a escolha é obrigatória, sem pré-seleção; a data só libera depois e segue o hoje da escolhida; o corpo leva a unidade', async () => {
+    const chamadas = mockApi({
+      'GET /api/auth/me': { body: usuario(TUDO) },
+      [`GET /api/clinics/patients/${PAC}/package-payments`]: { body: [saldo()] },
+      [`GET /api/clinics/packages/${P1}/payments`]: {
+        body: {
+          ...detalhe([]),
+          today: null,
+          timezone: null,
+          units: [
+            { id: U2, name: 'Unidade Centro', timezone: 'Pacific/Kiritimati', today: '2026-11-06' },
+            OPCAO,
+          ],
+        },
+      },
+      [`POST /api/clinics/packages/${P1}/payments`]: {
+        status: 201,
+        body: pagamento({ id: PG2, amountCents: 60_000 }),
+      },
+    });
+    renderizar(<PagamentosDoPaciente pacienteId={PAC} />);
+    const painel = await abrirPainel();
+    fireEvent.click(await within(painel).findByRole('button', { name: 'Registrar pagamento' }));
+    const unidade = within(painel).getByLabelText(/^Unidade/);
+    expect(unidade).toHaveValue('');
+    const data = within(painel).getByLabelText(/Data do recebimento/);
+    expect(data).toBeDisabled();
+    expect(data).toHaveValue('');
+    fireEvent.change(within(painel).getByLabelText('Forma'), { target: { value: 'pix' } });
+    expect(within(painel).getByRole('button', { name: 'Revisar pagamento' })).toBeDisabled();
+    fireEvent.change(unidade, { target: { value: U2 } });
+    expect(data).toBeEnabled();
+    expect(data).toHaveValue('2026-11-06');
+    expect(data).toHaveAttribute('max', '2026-11-06');
+    // sem a data tocada, ela acompanha o hoje da unidade escolhida
+    fireEvent.change(unidade, { target: { value: U1 } });
+    expect(data).toHaveValue('2026-11-05');
+    fireEvent.change(unidade, { target: { value: U2 } });
+    expect(data).toHaveValue('2026-11-06');
+    // a data escolhida pela pessoa fica; trocar para a unidade atrás a torna futura nela
+    // (o mesmo valor não dispara o evento: muda e volta)
+    fireEvent.change(data, { target: { value: '2026-11-05' } });
+    fireEvent.change(data, { target: { value: '2026-11-06' } });
+    fireEvent.change(unidade, { target: { value: U1 } });
+    expect(data).toHaveValue('2026-11-06');
+    expect(
+      within(painel).getByText('A data não pode ser futura na Unidade principal.'),
+    ).toBeVisible();
+    expect(within(painel).getByRole('button', { name: 'Revisar pagamento' })).toBeDisabled();
+    fireEvent.change(unidade, { target: { value: U2 } });
+    fireEvent.click(within(painel).getByRole('button', { name: 'Revisar pagamento' }));
+    expect(within(painel).getByText(/Registrar o recebimento de/)).toHaveTextContent(
+      /recebido em 06\/11\/2026 na Unidade Centro/,
+    );
+    fireEvent.click(within(painel).getByRole('button', { name: 'Confirmar registro' }));
+    await within(painel).findByText(/^Pagamento de R\$\s600,00 registrado\.$/);
+    expect(chamadas.find((c) => c.chave.startsWith('POST'))?.corpo).toEqual({
+      amountCents: 60_000,
+      receivedOn: '2026-11-06',
+      method: 'pix',
+      unitId: U2,
+    });
+  });
+});
+
+describe('o bloco "Saldo pendente" do resumo da ficha', () => {
+  const ficha = (pacotes: unknown[]) => {
+    mockApi({
+      'GET /api/auth/me': { body: usuario(LE) },
+      'GET /api/clinics/status': { body: { active: true } },
+      [`GET /api/clinics/patients/${PAC}`]: {
+        body: { id: PAC, name: 'Paciente Fictícia', createdAt: '2030-01-01T00:00:00Z' },
+      },
+      [`GET /api/clinics/patients/${PAC}/package-payments`]: { body: pacotes },
+      'GET /api/clinics/returns': { body: [] },
+    });
+    renderizar(<ClinicsPatientPage />, `/clinics/patient?id=${PAC}`);
+    return screen.findByRole('region', { name: 'Saldo pendente' });
+  };
+
+  it('o total só dos pacotes com preço, por moeda; os sem preço à parte; o cancelado fora', async () => {
+    const bloco = await ficha([
+      saldo({ packageId: P1, balanceCents: 60_000 }),
+      saldo({ packageId: P2, status: 'completed', balanceCents: 15_000 }),
+      saldo({ packageId: P3, status: 'canceled', balanceCents: 90_000 }),
+      saldo({ packageId: 'p-usd', currency: 'USD', balanceCents: 1_000 }),
+      saldo({ packageId: 'p-sem', totalPriceCents: null, balanceCents: null }),
+      saldo({ packageId: 'p-quitado', balanceCents: 0 }),
+    ]);
+    expect(await within(bloco).findByText('A receber, pacotes com preço registrado')).toBeVisible();
+    const linhas = within(bloco)
+      .getAllByRole('listitem')
+      .map((li) => li.textContent);
+    expect(linhas).toHaveLength(2);
+    expect(linhas[0]).toMatch(/^R\$\s750,00 em 2 pacotes$/);
+    expect(linhas[1]).toMatch(/^US\$\s10,00 em 1 pacote$/);
+    expect(
+      within(bloco).getByText('1 pacote sem preço registrado: saldo não calculável.'),
+    ).toBeVisible();
+    expect(within(bloco).queryByText('Nada pendente.')).toBeNull();
+  });
+
+  it('só pacotes sem preço: sem "Nada pendente", com a informação clara', async () => {
+    const bloco = await ficha([saldo({ totalPriceCents: null, balanceCents: null })]);
+    expect(
+      await within(bloco).findByText('1 pacote sem preço registrado: saldo não calculável.'),
+    ).toBeVisible();
+    expect(within(bloco).queryByText('Nada pendente.')).toBeNull();
+    expect(within(bloco).queryByText(/A receber/)).toBeNull();
+  });
+
+  it('nada a receber nem saldo não calculável: "Nada pendente"', async () => {
+    const bloco = await ficha([
+      saldo({ balanceCents: 0 }),
+      saldo({ packageId: P2, status: 'canceled', totalPriceCents: null, balanceCents: null }),
+    ]);
+    expect(await within(bloco).findByText('Nada pendente.')).toBeVisible();
   });
 });
 
@@ -464,6 +648,37 @@ describe('a tentativa pendente (o resultado que não chegou)', () => {
       await within(painel).findByRole('button', { name: 'Registrar pagamento' }),
     ).toBeVisible();
     expect(within(painel).queryByRole('region', { name: /pendente de confirmação/ })).toBeNull();
+  });
+
+  it('a tentativa anterior à publicação (corpo sem `unitId`): "Tentar de novo" repete o MESMO corpo e a MESMA chave, sem acrescentar a unidade', async () => {
+    const { estado, chamadas } = cenario();
+    renderizar(<PagamentosDoPaciente pacienteId={PAC} />);
+    await abrirPainel();
+    // a pendência guardada pela versão anterior, na sessão desta aba
+    const antiga = {
+      tipo: 'registrar',
+      chave: '3f1e2d4c-5b6a-4789-8abc-def012345678',
+      caminho: `/api/clinics/packages/${P1}/payments`,
+      corpo: { amountCents: 60_000, receivedOn: '2026-11-04', method: 'pix' },
+      resumo:
+        'Pagamento de R$ 600,00 em pix, recebido em 04/11/2026, no pacote de Limpeza de pele.',
+      confirmacao: 'Pagamento de R$ 600,00 registrado.',
+    };
+    sessionStorage.setItem(
+      `veyra:clinics:pagamento-pendente:${String(escopoAtual())}:${P1}`,
+      JSON.stringify(antiga),
+    );
+    const painel = await fecharEReabrir();
+    expect(
+      await within(painel).findByRole('region', { name: 'Registro pendente de confirmação' }),
+    ).toBeVisible();
+    estado.perder = false;
+    fireEvent.click(within(painel).getByRole('button', { name: 'Tentar de novo' }));
+    await within(painel).findByText(/^Pagamento de R\$\s600,00 registrado\.$/);
+    const [unico] = posts(chamadas);
+    expect(posts(chamadas)).toHaveLength(1);
+    expect(unico.corpo).toEqual(antiga.corpo);
+    expect(unico.headers.get('Idempotency-Key')).toBe(antiga.chave);
   });
 
   it('enquanto pendente, nada novo é enviado: o histórico aparece sem "Registrar" nem "Anular"', async () => {

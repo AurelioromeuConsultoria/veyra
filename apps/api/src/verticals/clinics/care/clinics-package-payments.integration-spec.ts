@@ -39,12 +39,14 @@ const CANCELADO = /Pacote cancelado não recebe pagamento novo/;
 const JA_ANULADO = /já foi anulado/;
 
 /**
- * F6.1a (ADR-063): pagamentos de pacotes, para Owner e Admin. Dados FICTÍCIOS.
+ * F6.1a e F6.1b (ADR-063 e adendo 1): pagamentos de pacotes — Owner e Admin
+ * registram e anulam; a recepção e "Recepção e atendimento" consultam e
+ * registram; a unidade do recebimento fica no pagamento. Dados FICTÍCIOS.
  * As corridas são forçadas como na F5.2a: a primeira transação pausa na
  * auditoria, segurando a trava do pacote (do gatilho), e a segunda é vista
  * esperando a trava (`pg_stat_activity`), nunca por sono.
  */
-describe('Clinics — pagamentos de pacotes (integração, F6.1a)', () => {
+describe('Clinics — pagamentos de pacotes (integração, F6.1a e F6.1b)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let http: ReturnType<INestApplication['getHttpServer']>;
@@ -309,6 +311,8 @@ describe('Clinics — pagamentos de pacotes (integração, F6.1a)', () => {
         currency: 'BRL',
         receivedOn: hoje,
         method: 'cash',
+        // sem `unitId` e com uma unidade ativa: a única, gravada no pagamento
+        unit: { id: unitA, archived: false },
         createdBy: { membershipId: membroOwner },
         void: null,
       });
@@ -360,6 +364,7 @@ describe('Clinics — pagamentos de pacotes (integração, F6.1a)', () => {
         currency: 'BRL',
         receivedOn: hoje,
         method: 'cash',
+        unitId: unitA,
       });
     });
 
@@ -400,16 +405,165 @@ describe('Clinics — pagamentos de pacotes (integração, F6.1a)', () => {
       expect(await pagamentos()).toBe(2);
     });
 
-    it('sem exatamente uma unidade ativa: o painel vem sem hoje e sem fuso, e o registro é recusado (400)', async () => {
+    it('sem unidade ativa: o painel vem sem unidades, sem hoje e sem fuso, e o registro é recusado (400)', async () => {
       const p = await criarPacote();
       await prisma.raw.clinicsUnit.updateMany({
         where: { id: unitA },
         data: { archivedAt: new Date() },
       });
-      expect(await detalhe(p)).toMatchObject({ today: null, timezone: null });
-      const r = await registrar(p).expect(400);
-      expect(r.body.message).toMatch(/exatamente uma unidade ativa/);
+      expect(await detalhe(p)).toMatchObject({ today: null, timezone: null, units: [] });
+      expect((await registrar(p).expect(400)).body.message).toMatch(/não tem unidade ativa/);
+      // a unidade arquivada não vale nem pedida
+      expect((await registrar(p, { unitId: unitA }).expect(400)).body.message).toMatch(/arquivada/);
       expect(await pagamentos()).toBe(0);
+    });
+  });
+
+  // ── A unidade do recebimento (F6.1b, ADR-063 adendo 1) ───────────────────
+
+  describe('a unidade do recebimento', () => {
+    /** Uma segunda unidade ATIVA em A, num fuso que está sempre um dia à frente de Pago Pago. */
+    const segundaUnidade = async () => {
+      await prisma.raw.clinicsUnit.updateMany({
+        where: { id: unitA },
+        data: { timezone: 'Pacific/Pago_Pago' },
+      });
+      return (
+        await prisma.raw.clinicsUnit.create({
+          data: {
+            workspaceId: wsA.workspaceId,
+            name: 'Unidade Centro',
+            timezone: 'Pacific/Kiritimati',
+          },
+        })
+      ).id;
+    };
+
+    it('com várias ativas: o painel lista cada uma com o hoje dela; sem escolha, 400; a escolhida fica no pagamento', async () => {
+      const p = await criarPacote();
+      const unitB = await segundaUnidade();
+      const hojeA = await hojeNaUnidade();
+      const d = await detalhe(p);
+      // os campos da única unidade ficam vazios; as opções vêm por nome
+      expect(d).toMatchObject({ today: null, timezone: null });
+      expect(d.units).toEqual([
+        {
+          id: unitB,
+          name: 'Unidade Centro',
+          timezone: 'Pacific/Kiritimati',
+          today: expect.any(String),
+        },
+        {
+          id: unitA,
+          name: expect.any(String),
+          timezone: 'Pacific/Pago_Pago',
+          today: hojeA,
+        },
+      ]);
+      const hojeB = d.units[0].today as string;
+      expect(hojeB > hojeA).toBe(true);
+      expect((await registrar(p, { receivedOn: hojeA }).expect(400)).body.message).toMatch(
+        /mais de uma unidade ativa/,
+      );
+      // o hoje é o da unidade ESCOLHIDA: o de B é futuro em A
+      await registrar(p, { receivedOn: hojeB, unitId: unitA }).expect(400);
+      const emB = await registrar(p, { receivedOn: hojeB, unitId: unitB, amountCents: 1 }).expect(
+        201,
+      );
+      expect(emB.body.unit).toEqual({
+        id: unitB,
+        name: 'Unidade Centro',
+        timezone: 'Pacific/Kiritimati',
+        archived: false,
+      });
+      const emA = await registrar(p, { receivedOn: hojeA, unitId: unitA, amountCents: 2 }).expect(
+        201,
+      );
+      expect(emA.body.unit).toMatchObject({ id: unitA, timezone: 'Pacific/Pago_Pago' });
+      const linhas = await prisma.raw.clinicsPackagePayment.findMany({
+        select: { unitId: true, amountCents: true },
+        orderBy: { amountCents: 'asc' },
+      });
+      expect(linhas).toEqual([
+        { unitId: unitB, amountCents: 1 },
+        { unitId: unitA, amountCents: 2 },
+      ]);
+      // a unidade arquivada depois: o pagamento a mantém, marcada
+      await prisma.raw.clinicsUnit.updateMany({
+        where: { id: unitB },
+        data: { archivedAt: new Date() },
+      });
+      const depois = await detalhe(p);
+      expect(
+        depois.payments.find((x: { amountCents: number }) => x.amountCents === 1).unit,
+      ).toMatchObject({
+        id: unitB,
+        archived: true,
+      });
+      expect(depois.units.map((u: { id: string }) => u.id)).toEqual([unitA]);
+      await registrar(p, { unitId: unitB, receivedOn: hojeA, amountCents: 3 }).expect(400);
+    });
+
+    it('a unidade de outro workspace ou inexistente: 400, sem efeito', async () => {
+      const p = await criarPacote();
+      const deB = (await prisma.raw.clinicsUnit.findFirst({
+        where: { workspaceId: wsB.workspaceId },
+      }))!.id;
+      for (const unitId of [deB, randomUUID()]) {
+        expect((await registrar(p, { unitId }).expect(400)).body.message).toMatch(
+          /Unidade não encontrada/,
+        );
+      }
+      await registrar(p, { unitId: 'nao-e-uuid' }).expect(400);
+      expect(await pagamentos()).toBe(0);
+    });
+
+    it('o lançamento anterior à F6.1b: a unidade vem não registrada (null)', async () => {
+      const p = await criarPacote();
+      // como o código da F6.1a gravava: sem unidade
+      await prisma.raw.clinicsPackagePayment.create({
+        data: {
+          workspaceId: wsA.workspaceId,
+          packageId: p,
+          amountCents: 5_000,
+          currency: 'BRL',
+          receivedOn: new Date(`${hoje}T00:00:00.000Z`),
+          method: 'pix',
+          createdByMembershipId: membroOwner,
+        },
+      });
+      const d = await detalhe(p);
+      expect(d.payments).toHaveLength(1);
+      expect(d.payments[0]).toMatchObject({ unit: null, receivedOn: hoje });
+      // com uma unidade ativa, o fuso dela é o dos instantes sem unidade
+      expect(d.timezone).not.toBeNull();
+    });
+
+    it('o pedido anterior à publicação: executado, a repetição devolve o MESMO lançamento mesmo com as unidades mudadas; não executado, segue a regra nova', async () => {
+      const p = await criarPacote();
+      // o corpo da F6.1a, sem `unitId`, executado com uma unidade ativa
+      const chave = randomUUID();
+      const corpoAntigo = { amountCents: 1_000, receivedOn: '2026-01-15', method: 'pix' };
+      const primeiro = await post(`/api/clinics/packages/${p}/payments`, owner)
+        .set('Idempotency-Key', chave)
+        .send(corpoAntigo)
+        .expect(201);
+      // as unidades mudam: uma segunda ativa (sem escolha, o pedido NOVO seria recusado)
+      await segundaUnidade();
+      const repetido = await post(`/api/clinics/packages/${p}/payments`, owner)
+        .set('Idempotency-Key', chave)
+        .send(corpoAntigo)
+        .expect(201);
+      expect(repetido.headers['idempotent-replay']).toBe('true');
+      expect(repetido.body).toEqual(primeiro.body);
+      expect(await pagamentos()).toBe(1);
+      // o pedido antigo que NÃO foi executado: com várias unidades, 400, sem efeito
+      const naoExecutado = await post(`/api/clinics/packages/${p}/payments`, owner)
+        .set('Idempotency-Key', randomUUID())
+        .send(corpoAntigo)
+        .expect(400);
+      expect(naoExecutado.body.message).toMatch(/mais de uma unidade ativa/);
+      expect(await pagamentos()).toBe(1);
     });
 
     it('pacote sem preço: aceita qualquer valor, e o saldo não é calculável', async () => {
@@ -611,24 +765,42 @@ describe('Clinics — pagamentos de pacotes (integração, F6.1a)', () => {
   // ── Permissões, distribuição e isolamento ─────────────────────────────────
 
   describe('permissões e isolamento', () => {
-    it('Owner e Admin sim; Member, "Recepção e atendimento", Profissional e Guest: 403 em tudo', async () => {
+    it('consultar e registrar: Owner, Admin, Recepção e "Recepção e atendimento"; anular, só Owner e Admin; Profissional e Guest: 403 em tudo', async () => {
       const p = await criarPacote();
       const pago = (await registrar(p).expect(201)).body.id;
-      for (const s of [owner, admin]) {
+      for (const s of [owner, admin, recepcao, recepcaoAtendimento]) {
         await get(`/api/clinics/patients/${paciente}/package-payments`, s).expect(200);
         await get(`/api/clinics/packages/${p}/payments`, s).expect(200);
+        await registrar(p, { amountCents: 1, unitId: unitA }, s).expect(201);
       }
-      for (const s of [recepcao, recepcaoAtendimento, profissional, convidado]) {
+      for (const s of [recepcao, recepcaoAtendimento]) await anular(pago, s).expect(403);
+      for (const s of [profissional, convidado]) {
         await get(`/api/clinics/patients/${paciente}/package-payments`, s).expect(403);
         await get(`/api/clinics/packages/${p}/payments`, s).expect(403);
         await registrar(p, { amountCents: 1 }, s).expect(403);
         await anular(pago, s).expect(403);
       }
-      expect(await pagamentos()).toBe(1);
+      expect(await pagamentos()).toBe(5);
       expect(await anulacoes()).toBe(0);
+      // a visão financeira da recepção: sem sessões nem atendimentos
+      const visao = (await get(`/api/clinics/packages/${p}/payments`, recepcao).expect(200)).body;
+      expect(Object.keys(visao.package).sort()).toEqual(
+        [
+          'balanceCents',
+          'createdAt',
+          'currency',
+          'packageId',
+          'patientId',
+          'receivedCents',
+          'serviceId',
+          'serviceName',
+          'status',
+          'totalPriceCents',
+        ].sort(),
+      );
     });
 
-    it('a distribuição: as três chaves SÓ em Owner e Admin; o livro preenche e a chave revogada não volta', async () => {
+    it('a distribuição: consultar e registrar com a recepção, anular SÓ em Owner e Admin; o livro preenche e a chave revogada não volta', async () => {
       const comChave = async (chave: string) =>
         (
           await prisma.raw.role.findMany({
@@ -641,8 +813,42 @@ describe('Clinics — pagamentos de pacotes (integração, F6.1a)', () => {
         )
           .map((r) => r.systemKey)
           .sort();
-      for (const chave of CHAVES) expect(await comChave(chave)).toEqual(['admin', 'owner']);
-      // um workspace anterior às chaves: o preenchimento as dá a Owner e Admin
+      const esperado = {
+        'clinics:payments:read': [
+          'admin',
+          'member',
+          'owner',
+          CLINICS_RECEPTION_CARE_SYSTEM_KEY,
+        ].sort(),
+        'clinics:payments:write': [
+          'admin',
+          'member',
+          'owner',
+          CLINICS_RECEPTION_CARE_SYSTEM_KEY,
+        ].sort(),
+        'clinics:payments:void': ['admin', 'owner'],
+      } as Record<string, string[]>;
+      for (const chave of CHAVES) expect(await comChave(chave)).toEqual(esperado[chave]);
+      // um workspace da F6.1a: Owner e Admin já avaliados no livro; a recepção, não
+      await prisma.raw.rolePermission.deleteMany({
+        where: {
+          workspaceId: wsA.workspaceId,
+          permissionKey: { in: CHAVES },
+          role: { systemKey: { in: ['member', CLINICS_RECEPTION_CARE_SYSTEM_KEY] } },
+        },
+      });
+      await prisma.raw.permissionBackfill.deleteMany({
+        where: {
+          workspaceId: wsA.workspaceId,
+          permissionKey: { in: CHAVES },
+          role: { systemKey: { in: ['member', CLINICS_RECEPTION_CARE_SYSTEM_KEY] } },
+        },
+      });
+      await get(`/api/clinics/patients/${paciente}/package-payments`, recepcao).expect(403);
+      await app.get(ClinicsActivationService).preencherChavesNovas();
+      for (const chave of CHAVES) expect(await comChave(chave)).toEqual(esperado[chave]);
+      await get(`/api/clinics/patients/${paciente}/package-payments`, recepcao).expect(200);
+      // um workspace anterior às chaves: o preenchimento as dá a todos os papéis da matriz
       await prisma.raw.rolePermission.deleteMany({
         where: { workspaceId: wsA.workspaceId, permissionKey: { in: CHAVES } },
       });
@@ -651,7 +857,7 @@ describe('Clinics — pagamentos de pacotes (integração, F6.1a)', () => {
       });
       await get(`/api/clinics/patients/${paciente}/package-payments`, owner).expect(403);
       await app.get(ClinicsActivationService).preencherChavesNovas();
-      for (const chave of CHAVES) expect(await comChave(chave)).toEqual(['admin', 'owner']);
+      for (const chave of CHAVES) expect(await comChave(chave)).toEqual(esperado[chave]);
       await get(`/api/clinics/patients/${paciente}/package-payments`, owner).expect(200);
       // o workspace tira do Admin: a próxima passada não devolve
       await prisma.raw.rolePermission.deleteMany({

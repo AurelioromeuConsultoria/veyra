@@ -1106,6 +1106,28 @@ muda o registro da migration e não desfaz nenhum objeto.
    ORDER BY 1, 2;
    ```
 
+   Para a `20261105200000_clinics_package_payment_unit` (F6.1b, ADR-063
+   adendo 1), com **3 objetos**: a coluna `ClinicsPackagePayment.unitId`
+   (opcional), o índice `(workspaceId, unitId)` e a FK composta para
+   `ClinicsUnit`. Os pagamentos existentes ficam com a coluna NULL. Ela sobe
+   sozinha na API (ADR-058, adendo 2). O ensaio da falha forçada deu o schema
+   idêntico e o inventário em 0; a aplicação limpa, 3 e o `migrate diff`
+   vazio. **Volta ao código anterior:** o código anterior ignora a coluna e
+   grava os pagamentos novos sem unidade; os registrados com unidade a
+   mantêm.
+
+   ```sql
+   -- inventário da 20261105200000_clinics_package_payment_unit: 0 linhas =
+   -- nada ficou; 3 = inteira; qualquer outro número = estado parcial
+   SELECT 'coluna' AS k FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = 'ClinicsPackagePayment'
+       AND column_name = 'unitId'
+   UNION ALL SELECT 'indice' FROM pg_indexes
+     WHERE schemaname = 'public' AND indexname = 'ClinicsPackagePayment_workspaceId_unitId_idx'
+   UNION ALL SELECT 'fk' FROM pg_constraint
+     WHERE conname = 'ClinicsPackagePayment_workspaceId_unitId_fkey' AND contype <> 'n';
+   ```
+
    Para outra migration, monte o inventário do mesmo jeito, a partir das
    instruções do arquivo: cada `CREATE` e cada `ADD CONSTRAINT`.
 

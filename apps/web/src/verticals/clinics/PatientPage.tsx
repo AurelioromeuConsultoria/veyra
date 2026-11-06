@@ -38,7 +38,12 @@ import { ChipDoConsentimento, EnviarMensagem, OrigemDoContato } from './ficha/Ca
 import { reaisToCents } from './format';
 import { CLINICS_AGENDA_PATH, CLINICS_PATIENTS_PATH } from './nav';
 import { NotasETarefasDoPaciente } from './NotasETarefasDoPaciente';
-import { PagamentosDoPaciente } from './pagamentos/PagamentosDoPaciente';
+import {
+  PagamentosDoPaciente,
+  resumoDoSaldo,
+  useSaldosDoPaciente,
+  valor,
+} from './pagamentos/PagamentosDoPaciente';
 import { ListaDeRetornos, TETO_DOS_RETORNOS, useRetornos } from './retornos/ListaDeRetornos';
 import { SessoesDoPacote } from './SessoesDoPacote';
 import { ContatoDaPessoa } from './pessoa/ContatoDaPessoa';
@@ -235,6 +240,10 @@ function FichaReady() {
             ) : null}
             <RetornosPendentes pacienteId={id} onVer={() => abrirAba('retornos')} />
             {lePacotes ? <PacotesAtivos pacienteId={id} onVer={() => abrirAba('pacotes')} /> : null}
+            {/* as mesmas chaves da rota: ler pagamentos e a agenda */}
+            {lePagamentos && leAgenda ? (
+              <SaldoPendente pacienteId={id} onVer={() => abrirAba('pagamentos')} />
+            ) : null}
           </aside>
         </div>
       </div>
@@ -415,6 +424,52 @@ function PacotesAtivos({ pacienteId, onVer }: { pacienteId: string; onVer: () =>
             </li>
           ))}
         </ul>
+      )}
+    </CartaoDoResumo>
+  );
+}
+
+/**
+ * O saldo pendente (ADR-063 adendo 1): a MESMA consulta da aba Pagamentos. O
+ * total é só dos pacotes com preço registrado, por moeda, e diz isso; os sem
+ * preço aparecem à parte. "Nada pendente" só sem nenhum dos dois.
+ */
+function SaldoPendente({ pacienteId, onVer }: { pacienteId: string; onVer: () => void }) {
+  const pacotes = useSaldosDoPaciente(pacienteId);
+  const resumo = pacotes.data && !pacotes.isError ? resumoDoSaldo(pacotes.data) : null;
+  const plural = (n: number, um: string, varios: string) => `${n} ${n === 1 ? um : varios}`;
+  return (
+    <CartaoDoResumo titulo="Saldo pendente" verRotulo="Ver pagamentos" onVer={onVer}>
+      {pacotes.isError ? (
+        <p className="px-5 py-4 text-data text-negative">Saldos indisponíveis agora.</p>
+      ) : !resumo ? (
+        <CarregandoNoResumo />
+      ) : resumo.aReceber.length === 0 && resumo.semPreco === 0 ? (
+        <p className="px-5 py-4 text-[13.5px] text-muted-fg">Nada pendente.</p>
+      ) : (
+        <div className="space-y-2.5 px-5 py-3.5">
+          {resumo.aReceber.length > 0 ? (
+            <div>
+              <p className="text-[13px] text-muted-fg">A receber, pacotes com preço registrado</p>
+              <ul>
+                {resumo.aReceber.map((m) => (
+                  <li key={m.moeda} className="text-[14px]">
+                    <strong className="num font-semibold">{valor(m.totalCents, m.moeda)}</strong>{' '}
+                    <span className="text-muted-fg">
+                      em {plural(m.pacotes, 'pacote', 'pacotes')}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {resumo.semPreco > 0 ? (
+            <p className="text-[13.5px]">
+              {plural(resumo.semPreco, 'pacote', 'pacotes')} sem preço registrado: saldo não
+              calculável.
+            </p>
+          ) : null}
+        </div>
       )}
     </CartaoDoResumo>
   );

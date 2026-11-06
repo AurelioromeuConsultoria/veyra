@@ -254,7 +254,7 @@ A tese comercial do ADR-036 se mantém (`lead → WhatsApp → agendamento → c
   5. **F6 — Financeiro e administração.** Preço registrado não é pagamento recebido.
      - **F6.1 — Pagamentos de pacotes (ADR-063; fecha a D1):** lançamentos manuais de pagamento, com anulação, autoria e data; saldo = preço congelado − recebido.
        - **F6.1a ✅ (implementada em 2026-11-05):** Owner e Admin; a aba "Pagamentos" da ficha, as rotas, as três chaves `clinics:payments:*` e a migration `20261105150000_clinics_package_payments`.
-       - **F6.1b (a seguir):** a recepção e "Recepção e atendimento" (`read` e `write`), com a visão financeira própria e o bloco de saldo no resumo da ficha. A data do recebimento com mais de uma unidade ativa fica para decidir aqui.
+       - **F6.1b ✅ (implementada em 2026-11-05; ADR-063 adendo 1):** a recepção e "Recepção e atendimento" consultam e registram (sem anular); a unidade do recebimento guardada no pagamento (a única ativa, ou escolhida sem sugestão entre várias), os lançamentos anteriores com a unidade não registrada; o bloco "Saldo pendente" no resumo da ficha. Migration `20261105200000_clinics_package_payment_unit`.
      - Fora da F6.1: cobrança de atendimento avulso, integração bancária, cartão, Pix automático, emissão fiscal, repasses, painel financeiro e devolução ao paciente.
 
 **Dependências externas:**

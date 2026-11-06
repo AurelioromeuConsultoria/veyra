@@ -837,12 +837,17 @@ export const CLINICS_PAYMENT_MAX_CENTS = 100_000_000;
  * em CENTAVOS inteiros, maior que zero, na moeda do pacote. A data é a do
  * recebimento, LOCAL da unidade: pode ser anterior, nunca futura (400). Com
  * preço registrado, o valor não passa do saldo (409).
+ *
+ * `unitId` é a unidade do recebimento, ATIVA (ADR-063 adendo 1): o "hoje" é o
+ * do fuso dela, e ela fica gravada no pagamento. Sem ela, o servidor aceita só
+ * com exatamente uma unidade ativa (o pedido anterior à F6.1b); com várias, 400.
  */
 export const recordClinicsPackagePaymentSchema = z
   .object({
     amountCents: z.number().int().min(1).max(CLINICS_PAYMENT_MAX_CENTS),
     receivedOn: localDate,
     method: z.enum(CLINICS_PAYMENT_METHODS),
+    unitId: z.string().uuid().optional(),
   })
   .strict();
 export type RecordClinicsPackagePaymentInput = z.infer<typeof recordClinicsPackagePaymentSchema>;
@@ -884,10 +889,33 @@ export interface ClinicsPackageBalanceDto {
   createdAt: string;
 }
 
+/** A unidade de um pagamento: nome e fuso; `archived` se foi arquivada depois. */
+export interface ClinicsPaymentUnitDto {
+  id: string;
+  name: string;
+  /** o fuso IANA, para os instantes do pagamento */
+  timezone: string;
+  archived: boolean;
+}
+
+/** Uma unidade ATIVA, para o registro: a data de hoje no fuso dela. */
+export interface ClinicsPaymentUnitOptionDto {
+  id: string;
+  name: string;
+  timezone: string;
+  /** a data local de HOJE nela, pelo relógio do banco: a mais recente aceita */
+  today: string;
+}
+
 /** Um pagamento registrado, com a anulação se houver. Nunca muda depois. */
 export interface ClinicsPackagePaymentDto {
   id: string;
   packageId: string;
+  /**
+   * a unidade do recebimento; `null` = não registrada (lançamento anterior à
+   * F6.1b, ADR-063 adendo 1). Ausente num corpo guardado antes dela (replay).
+   */
+  unit?: ClinicsPaymentUnitDto | null;
   amountCents: number;
   currency: string;
   /** data LOCAL do recebimento, `AAAA-MM-DD` */
@@ -913,10 +941,12 @@ export interface ClinicsPackagePaymentsDto {
    */
   today: string | null;
   /**
-   * o fuso IANA da mesma unidade (a única ativa), para mostrar os instantes
-   * (registrado em, anulado em) na hora local dela; `null` junto com `today`
+   * o fuso IANA da mesma unidade (a única ativa): o dos instantes dos
+   * lançamentos SEM unidade registrada; `null` junto com `today`
    */
   timezone: string | null;
+  /** as unidades ATIVAS, por nome, para escolher a do recebimento (ADR-063 adendo 1) */
+  units: ClinicsPaymentUnitOptionDto[];
 }
 
 // ── Retornos (ADR-048 adendo 7, F3.2) ─────────────────────────────────────

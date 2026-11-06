@@ -228,7 +228,21 @@ describe('Clinics — garantias estáticas (ADR-047, ADR-048)', () => {
         'clinics:care:all',
         // as notas e tarefas de pacientes (ADR-061, adendo 2)
         'clinics:patient-content:read',
+        // consultar e registrar pagamentos de pacotes, sem anular (ADR-063 adendo 1)
+        'clinics:payments:read',
+        'clinics:payments:write',
       ].sort(),
+    );
+    // anular pagamento é SÓ de Owner e Admin (ADR-063 adendo 1)
+    for (const k of [
+      CLINICS_RECEPTION_CARE_SYSTEM_KEY,
+      'member',
+      CLINICS_PROFESSIONAL_SYSTEM_KEY,
+    ]) {
+      expect(CLINICS_ROLE_GRANTS[k]).not.toContain('clinics:payments:void');
+    }
+    expect(CLINICS_ROLE_GRANTS[CLINICS_PROFESSIONAL_SYSTEM_KEY]).not.toContain(
+      'clinics:payments:read',
     );
     // a soma da recepção e do atendimento PADRÃO do vertical, mais o alcance "todos"
     expect([...CLINICS_ROLE_GRANTS[CLINICS_RECEPTION_CARE_SYSTEM_KEY]].sort()).toEqual(

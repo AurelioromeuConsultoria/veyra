@@ -17,11 +17,14 @@ import { PERMISSIONS_KEY } from '../../common/decorators';
 export const RequireClinicsPermissions = (...keys: (ClinicsPermissionKey | PermissionKey)[]) =>
   SetMetadata(PERMISSIONS_KEY, keys);
 
-// recepção: agenda, sem atendimento e sem liberação de contatos
+// recepção: agenda, sem atendimento e sem liberação de contatos. Os pagamentos
+// de pacotes, consultar e registrar, sem anular (ADR-063 adendo 1, F6.1b)
 const RECEPCAO: readonly ClinicsPermissionKey[] = [
   'clinics:catalog:read',
   'clinics:schedule:read',
   'clinics:schedule:write',
+  'clinics:payments:read',
+  'clinics:payments:write',
 ];
 // consulta a agenda e registra atendimento; marcar e remarcar é da recepção
 const ATENDIMENTO: readonly ClinicsPermissionKey[] = [

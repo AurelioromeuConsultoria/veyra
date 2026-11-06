@@ -55,10 +55,11 @@ model ClinicsUnit {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 
-  workspace    Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace    Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   workingHours ClinicsWorkingHours[]
   appointments ClinicsAppointment[]
   returns      ClinicsReturn[]
+  payments     ClinicsPackagePayment[]
 
   @@unique([workspaceId, id])
   @@index([workspaceId, archivedAt])
@@ -456,18 +457,23 @@ model ClinicsPackagePayment {
   /// data LOCAL do recebimento na unidade; nunca futura (conferida no serviço)
   receivedOn            DateTime             @db.Date
   method                ClinicsPaymentMethod
+  /// a unidade do recebimento (ADR-063 adendo 1): o "hoje" e o fuso. NULL só nos
+  /// lançamentos anteriores à F6.1b; o serviço grava em todo pagamento novo
+  unitId                String?              @db.Uuid
   createdByMembershipId String               @db.Uuid
   /// pelo relógio do banco (gatilho, ADR-049); nunca escrito pelo Prisma
   createdAt             DateTime             @default(dbgenerated("transaction_timestamp()")) @db.Timestamptz(3)
 
   workspace Workspace                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   package   ClinicsPackage             @relation(fields: [workspaceId, packageId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
+  unit      ClinicsUnit?               @relation(fields: [workspaceId, unitId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
   createdBy Membership                 @relation("ClinicsPackagePaymentCreatedBy", fields: [workspaceId, createdByMembershipId], references: [workspaceId, id], onDelete: NoAction, onUpdate: NoAction)
   void      ClinicsPackagePaymentVoid?
 
   @@unique([workspaceId, id])
   @@index([workspaceId, packageId, createdAt])
   @@index([workspaceId, createdByMembershipId])
+  @@index([workspaceId, unitId])
 }
 
 /// A anulação de um pagamento (ADR-063). No máximo UMA por pagamento (única);
