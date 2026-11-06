@@ -338,7 +338,9 @@ test.describe('Clinics — continuidade (pacotes, retornos e faltas)', () => {
         if (r.url().includes('/api/clinics/packages')) aPacotes.push(r.url());
       });
       await login(page, MEMBER_C);
-      await page.goto(`/clinics/patient?id=${c.pacienteId}`);
+      // a aba Retornos explícita: desde a F6.1b a recepção tem Pagamentos, que
+      // vem antes na ficha (ADR-063 adendo 1)
+      await page.goto(`/clinics/patient?id=${c.pacienteId}&aba=retornos`);
       await expect(page.getByRole('heading', { name: c.paciente, level: 1 })).toBeVisible();
       const retornos = page.getByRole('region', { name: 'Retornos do paciente' });
       const cancelado = retornos.getByRole('row', {
